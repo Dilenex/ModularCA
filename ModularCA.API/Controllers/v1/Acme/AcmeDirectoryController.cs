@@ -75,7 +75,12 @@ public class AcmeDirectoryController(IAcmeNonceService nonceService, SystemConfi
 
         MetricsService.AcmeRequestsTotal.WithLabels("directory", "ok").Inc();
         MetricsService.ProtocolRequestsTotal.WithLabels("ACME", "ok").Inc();
-        var baseUrl = $"{Request.Scheme}://{Request.Host}";
+        // Advertise endpoints from the canonical PublicDomain-derived base URL, the
+        // same source the JWS filter uses to rebuild the expected `url` for signature
+        // verification (AcmeJwsAttribute). Deriving from the proxy-rewritable Host
+        // header here let the advertised URL drift from the verified one, producing a
+        // spurious "JWS url does not match request URL" 400 on new-order/finalize.
+        var baseUrl = _config.Https.GetPublicHttpsBaseUrl();
         var acmeBase = $"{baseUrl}/acme/{label}";
 
         var directory = new AcmeDirectoryResponse

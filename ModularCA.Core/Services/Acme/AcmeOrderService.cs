@@ -40,11 +40,24 @@ public class AcmeOrderService(
     /// </summary>
     public async Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, string? caLabel = null)
     {
+        // Deduplicate identifiers before creating authorizations. ACME clients may repeat
+        // a name in the order (e.g. the same domain passed twice, or a CN that is also a
+        // SAN). One authorization was previously created per entry, so the duplicate's
+        // authorization stayed Pending forever — the client validates each unique name
+        // only once — and the order never reached Ready (finalize then 403'd with
+        // orderNotReady). Match on type + case/trailing-dot-insensitive value, keeping the
+        // first occurrence's original form. Wildcard (*.x) and apex (x) stay distinct.
+        var identifiers = request.Identifiers
+            .GroupBy(i => (Type: (i.Type ?? string.Empty).ToLowerInvariant(),
+                           Value: (i.Value ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant()))
+            .Select(g => g.First())
+            .ToList();
+
         var order = new AcmeOrderEntity
         {
             AccountId = accountId,
             Status = nameof(AcmeOrderStatus.Pending),
-            IdentifiersJson = JsonSerializer.Serialize(request.Identifiers),
+            IdentifiersJson = JsonSerializer.Serialize(identifiers),
             NotBefore = request.NotBefore,
             NotAfter = request.NotAfter,
             ExpiresAt = DateTime.UtcNow.AddHours(24),
@@ -60,7 +73,7 @@ public class AcmeOrderService(
         // authorization + its challenges in the change tracker and commit once after the loop.
         // AcmeAuthorizationEntity.Id is Guid-generated in the entity default, so challenges
         // can reference authz.Id without a flush.
-        foreach (var identifier in request.Identifiers)
+        foreach (var identifier in identifiers)
         {
             var authz = AcmeAuthorizationService.CreateAuthorizationWithChallenges(order.Id, identifier);
             _db.AcmeAuthorizations.Add(authz);

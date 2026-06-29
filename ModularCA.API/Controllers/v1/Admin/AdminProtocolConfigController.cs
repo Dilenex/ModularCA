@@ -98,7 +98,11 @@ public class AdminProtocolConfigController(
         if (ca.Label != null && ReservedSystemLabels.Contains(ca.Label))
             return NotFound(new { error = "Protocol configuration is not available for the system signing CA." });
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateProtocolConfig))
+        // The admin UI mints the step-up token scoped to this CA id (targetId), so the
+        // validation must look it up under the same scope. Omitting caId here built a
+        // target-less cache key that never matched the issued token — every save 403'd
+        // even after a successful TOTP/WebAuthn step-up.
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateProtocolConfig, caId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var normalizedProtocol = protocol.ToUpperInvariant();

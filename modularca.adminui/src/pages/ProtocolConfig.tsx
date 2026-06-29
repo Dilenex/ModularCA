@@ -409,7 +409,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'ACME' && (
                             <div className="space-y-3">
                                 <ToggleField label="Require External Account Binding" description="Accounts must provide an EAB key during registration (RFC 8555 \u00A77.3.4)" checked={form.acmeRequireEab} onChange={(v) => setForm({ ...form, acmeRequireEab: v })} selectClass={selectClass} />
-                                <ToggleField label="Allow Private Address Validation (HTTP-01)" description="Permit the http-01 validator to fetch challenges from RFC 1918 / loopback / link-local addresses for this CA. Required for internal-only PKI; leave off for public deployments to prevent SSRF." checked={form.acmeAllowPrivateAddressValidation} onChange={(v) => setForm({ ...form, acmeAllowPrivateAddressValidation: v })} selectClass={selectClass} />
+                                <ToggleField label="Allow Private Address Validation (HTTP-01)" description="Permit the http-01 validator to fetch challenges from RFC 1918 / loopback / link-local addresses, and to resolve identifiers via the server's OS hosts file (/etc/hosts or the Windows hosts file) in addition to DNS. Required for internal-only PKI; leave off for public deployments to prevent SSRF." checked={form.acmeAllowPrivateAddressValidation} onChange={(v) => setForm({ ...form, acmeAllowPrivateAddressValidation: v })} selectClass={selectClass} />
                                 <div>
                                     <label className={labelClass}>Allowed Challenge Types</label>
                                     <div className="flex gap-3 mt-1">

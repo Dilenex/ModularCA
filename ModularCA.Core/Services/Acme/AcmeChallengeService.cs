@@ -25,7 +25,11 @@ namespace ModularCA.Core.Services.Acme;
 /// <c>/.well-known/acme-challenge/{token}</c> path. Private address space
 /// is rejected unless the per-CA
 /// <c>CaProtocolConfigEntity.AcmeAllowPrivateAddressValidation</c> flag is
-/// set on the ACME protocol config row for the order's CA. The
+/// set on the ACME protocol config row for the order's CA. When that flag is
+/// set the validator additionally resolves the identifier through the OS hosts
+/// file (/etc/hosts or the Windows hosts file) and tries those addresses first,
+/// since the DNS-protocol resolver never consults it — letting internal
+/// deployments map identifiers locally. The
 /// dns-01 validator runs on a cache-disabled recursive resolver.
 /// </summary>
 public class AcmeChallengeService(
@@ -261,8 +265,27 @@ public class AcmeChallengeService(
                 }
             }
 
+            // For internal/air-gapped deployments the operator may map the identifier
+            // in the machine hosts file rather than DNS. DnsClient (like dig) speaks the
+            // DNS protocol directly and never consults the OS hosts file, so when this
+            // CA has private-address validation enabled we also resolve via the platform
+            // hosts file (/etc/hosts on Unix, %SystemRoot%\System32\drivers\etc\hosts on
+            // Windows) and try those addresses first — they take precedence over a DNS
+            // answer that may point elsewhere.
+            if (allowPrivate)
+            {
+                var hostsAddresses = await ResolveFromHostsFileAsync(domain);
+                // Insert in reverse so the file's first-listed address ends up first.
+                for (var i = hostsAddresses.Count - 1; i >= 0; i--)
+                {
+                    addresses.Remove(hostsAddresses[i]);
+                    addresses.Insert(0, hostsAddresses[i]);
+                }
+            }
+
             if (addresses.Count == 0)
-                throw new InvalidOperationException($"DNS returned no A/AAAA records for {domain}.");
+                throw new InvalidOperationException(
+                    $"No A/AAAA records for {domain} from DNS{(allowPrivate ? " or the hosts file" : "")}.");
 
             // Reject private address space unless explicitly allowed.
             if (!allowPrivate)
@@ -273,12 +296,12 @@ public class AcmeChallengeService(
             }
 
             var attempted = addresses.Take(maxAddresses).ToList();
-            var results = new List<(IPAddress addr, bool ok, string? body)>();
+            var results = new List<(IPAddress addr, bool ok, string? body, string detail)>();
 
             foreach (var address in attempted)
             {
-                var (ok, body) = await FetchKeyAuthzAsync(address, domain, wellKnownPath, expectedKeyAuthz, perRequestTimeout, allowPrivate);
-                results.Add((address, ok, body));
+                var (ok, body, detail) = await FetchKeyAuthzAsync(address, domain, wellKnownPath, expectedKeyAuthz, perRequestTimeout, allowPrivate);
+                results.Add((address, ok, body, detail));
             }
 
             // Fail closed on any conflicting body that is non-empty and not
@@ -302,11 +325,15 @@ public class AcmeChallengeService(
             }
             else
             {
+                // Report the actual per-address outcome (HTTP status, empty body,
+                // or connection failure) rather than a blanket "mismatch", which
+                // misleads operators when the real cause is a 404 or unreachable :80.
+                var perAddress = string.Join("; ", results.Select(r => $"{r.addr} → {r.detail}"));
                 entity.Status = nameof(AcmeChallengeStatus.Invalid);
                 entity.ErrorJson = System.Text.Json.JsonSerializer.Serialize(new AcmeErrorResponse
                 {
                     Type = "urn:ietf:params:acme:error:incorrectResponse",
-                    Detail = "Key authorization mismatch on all resolved addresses.",
+                    Detail = $"No resolved address served the expected key authorization at http://{domain}{wellKnownPath}. Per-address results: {perAddress}",
                     Status = 403
                 });
             }
@@ -340,7 +367,7 @@ public class AcmeChallengeService(
     /// connects directly to the target IP. A single redirect hop is permitted
     /// and validated.
     /// </summary>
-    private async Task<(bool ok, string? body)> FetchKeyAuthzAsync(
+    private async Task<(bool ok, string? body, string detail)> FetchKeyAuthzAsync(
         IPAddress targetAddress,
         string identifier,
         string wellKnownPath,
@@ -386,23 +413,23 @@ public class AcmeChallengeService(
                 // Single manual redirect hop, allow-listed.
                 var location = resp.Headers.Location;
                 if (location == null)
-                    return (false, null);
+                    return (false, null, $"HTTP {(int)resp.StatusCode} redirect without Location header");
 
                 if (!location.IsAbsoluteUri)
                     location = new Uri(uri, location);
 
                 if (location.Scheme != "http" && location.Scheme != "https")
-                    return (false, null);
+                    return (false, null, $"redirect to disallowed scheme '{location.Scheme}'");
 
                 // Path must remain on the well-known challenge path.
                 if (!string.Equals(location.AbsolutePath, wellKnownPath, StringComparison.Ordinal))
-                    return (false, null);
+                    return (false, null, $"redirect changed path to '{location.AbsolutePath}'");
 
                 // Host must be the identifier itself, or share the same
                 // registrable apex (simple eTLD+1 suffix match — rejects
                 // bare IPs and mismatched domains).
                 if (!IsHostAllowed(location.Host, identifier))
-                    return (false, null);
+                    return (false, null, $"redirect to disallowed host '{location.Host}'");
 
                 // Re-resolve the redirect target address and enforce the same
                 // private-address policy as the original.
@@ -420,10 +447,10 @@ public class AcmeChallengeService(
                     }
                     catch { /* handled below */ }
                 }
-                if (redirectAddr == null) return (false, null);
+                if (redirectAddr == null) return (false, null, $"redirect host '{location.Host}' did not resolve");
 
                 if (!allowPrivateAddresses && IsPrivateAddress(redirectAddr))
-                    return (false, null);
+                    return (false, null, $"redirect target {redirectAddr} is a private address");
 
                 using var redirectHandler = new SocketsHttpHandler
                 {
@@ -449,21 +476,81 @@ public class AcmeChallengeService(
                 using var redirectClient = new HttpClient(redirectHandler) { Timeout = perRequestTimeout };
                 redirectClient.DefaultRequestHeaders.UserAgent.ParseAdd("ModularCA-ACME/1.0");
                 using var redirectResp = await redirectClient.GetAsync(location);
-                if (!redirectResp.IsSuccessStatusCode) return (false, null);
+                if (!redirectResp.IsSuccessStatusCode)
+                    return (false, null, $"redirect target returned HTTP {(int)redirectResp.StatusCode}");
                 body = (await redirectResp.Content.ReadAsStringAsync()).Trim();
-                return (body == expectedKeyAuthz, body);
+                return (body == expectedKeyAuthz, body, DescribeBody(body, expectedKeyAuthz));
             }
 
             if (!resp.IsSuccessStatusCode)
-                return (false, null);
+                return (false, null, $"HTTP {(int)resp.StatusCode}");
 
             body = (await resp.Content.ReadAsStringAsync()).Trim();
-            return (body == expectedKeyAuthz, body);
+            return (body == expectedKeyAuthz, body, DescribeBody(body, expectedKeyAuthz));
+        }
+        catch (Exception ex)
+        {
+            return (false, body, $"connection failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Produces a short diagnostic describing how a fetched body compares to the
+    /// expected key authorization: <c>ok</c>, <c>empty body (HTTP 200)</c>, or
+    /// <c>content mismatch</c>. Used to build an actionable validation error.
+    /// </summary>
+    private static string DescribeBody(string body, string expectedKeyAuthz) =>
+        body == expectedKeyAuthz ? "ok"
+        : string.IsNullOrWhiteSpace(body) ? "empty body (HTTP 200)"
+        : "content mismatch";
+
+    /// <summary>
+    /// Resolves <paramref name="host"/> against the operating-system hosts file
+    /// (<c>/etc/hosts</c> on Unix, <c>%SystemRoot%\System32\drivers\etc\hosts</c> on
+    /// Windows) and returns every matching A/AAAA address. The DNS-protocol resolver
+    /// used for validation never consults the hosts file, so internal deployments that
+    /// map the identifier locally would otherwise be unreachable. Comments
+    /// (<c>#</c>...) are stripped and hostname matching is case- and trailing-dot
+    /// insensitive. Returns an empty list on any read/parse error (best-effort).
+    /// </summary>
+    private static async Task<List<IPAddress>> ResolveFromHostsFileAsync(string host)
+    {
+        var matches = new List<IPAddress>();
+        try
+        {
+            var path = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts")
+                : "/etc/hosts";
+            if (!File.Exists(path)) return matches;
+
+            var target = host.TrimEnd('.').ToLowerInvariant();
+            foreach (var raw in await File.ReadAllLinesAsync(path))
+            {
+                var line = raw;
+                var hash = line.IndexOf('#');
+                if (hash >= 0) line = line[..hash];
+                line = line.Trim();
+                if (line.Length == 0) continue;
+
+                // Format: <IP> <hostname> [aliases...] separated by whitespace.
+                var tokens = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length < 2 || !IPAddress.TryParse(tokens[0], out var ip)) continue;
+
+                for (var i = 1; i < tokens.Length; i++)
+                {
+                    if (string.Equals(tokens[i].TrimEnd('.'), target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!matches.Contains(ip)) matches.Add(ip);
+                        break;
+                    }
+                }
+            }
         }
         catch
         {
-            return (false, body);
+            // Best-effort: hosts file unreadable/missing — fall back to DNS only.
         }
+        return matches;
     }
 
     /// <summary>
@@ -647,8 +734,24 @@ public class AcmeChallengeService(
         Url = $"{baseUrl}/api/v1/acme/challenge/{entity.Id}",
         Token = entity.Token,
         Status = entity.Status.ToLowerInvariant(),
-        ValidatedAt = entity.ValidatedAt
+        ValidatedAt = entity.ValidatedAt,
+        // Surface the stored validation-failure problem document (RFC 8555 §8) so the
+        // challenge object carries the reason it went invalid.
+        Error = DeserializeError(entity.ErrorJson)
     };
+
+    /// <summary>
+    /// Deserializes a challenge's stored <c>ErrorJson</c> into an
+    /// <see cref="AcmeErrorResponse"/> for inclusion in the challenge object.
+    /// Returns null when absent or unparseable so a malformed record never breaks
+    /// the response.
+    /// </summary>
+    private static AcmeErrorResponse? DeserializeError(string? errorJson)
+    {
+        if (string.IsNullOrWhiteSpace(errorJson)) return null;
+        try { return System.Text.Json.JsonSerializer.Deserialize<AcmeErrorResponse>(errorJson); }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
 
     private static string Base64UrlEncode(byte[] input)
     {

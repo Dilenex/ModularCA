@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -203,6 +204,19 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
+    /// <summary>
+    /// Deserializes a challenge's stored <c>ErrorJson</c> into an
+    /// <see cref="AcmeErrorResponse"/> for inclusion in the challenge object.
+    /// Returns null when there is no stored error or the payload is unparseable,
+    /// so a malformed record never breaks the authorization response.
+    /// </summary>
+    private static AcmeErrorResponse? DeserializeError(string? errorJson)
+    {
+        if (string.IsNullOrWhiteSpace(errorJson)) return null;
+        try { return JsonSerializer.Deserialize<AcmeErrorResponse>(errorJson); }
+        catch (JsonException) { return null; }
+    }
+
     private static AcmeAuthorizationDto MapToDto(
         AcmeAuthorizationEntity entity,
         List<AcmeChallengeEntity> challenges,
@@ -220,7 +234,10 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
                 Url = $"{baseUrl}/api/v1/acme/challenge/{c.Id}",
                 Token = c.Token,
                 Status = c.Status.ToLowerInvariant(),
-                ValidatedAt = c.ValidatedAt
+                ValidatedAt = c.ValidatedAt,
+                // Surface the stored validation-failure problem document (RFC 8555 §8)
+                // so polling clients can display why the challenge went invalid.
+                Error = DeserializeError(c.ErrorJson)
             }).ToList()
         };
 }
