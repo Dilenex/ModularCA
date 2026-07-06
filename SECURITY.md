@@ -14,7 +14,7 @@ Instead, use one of the following private channels:
 1. **GitHub Security Advisories (preferred).** Open a private report via the
    **"Security" tab → "Report a vulnerability"** on this repository. This keeps
    the discussion confidential until a fix is released.
-2. **Email.** Send details to `ca-security@ephemeralintel.com`. Provide an encrypted archive if
+2. **Email.** Send details to `ca-security@dilenex.com`. Provide an encrypted archive if
    the report contains sensitive material. We will reach out to retrieve the passphrase.
 
 Please include as much of the following as you can:
