@@ -241,7 +241,8 @@ public class AdminAuditController : ControllerBase
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        return Ok(new { total, page, pageSize, items });
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
     }
 
     /// <summary>
@@ -270,7 +271,8 @@ public class AdminAuditController : ControllerBase
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        return Ok(new { total, page, pageSize, items });
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
     }
 
     /// <summary>
@@ -299,7 +301,8 @@ public class AdminAuditController : ControllerBase
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        return Ok(new { total, page, pageSize, items });
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
     }
 
     /// <summary>
@@ -328,7 +331,8 @@ public class AdminAuditController : ControllerBase
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        return Ok(new { total, page, pageSize, items });
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
     }
 
     /// <summary>
@@ -359,7 +363,8 @@ public class AdminAuditController : ControllerBase
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        return Ok(new { total, page, pageSize, items });
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
     }
 
     /// <summary>

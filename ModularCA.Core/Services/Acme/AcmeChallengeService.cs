@@ -37,12 +37,14 @@ public class AcmeChallengeService(
     IHttpClientFactory httpClientFactory,
     IServiceScopeFactory scopeFactory,
     IAcmeAccountRateLimiter accountLimiter,
+    IProtocolAuditService protocolAudit,
     SystemConfig config) : IAcmeChallengeService
 {
     private readonly ModularCADbContext _db = db;
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly IAcmeAccountRateLimiter _accountLimiter = accountLimiter;
+    private readonly IProtocolAuditService _protocolAudit = protocolAudit;
     private readonly SystemConfig _config = config;
 
     /// <summary>
@@ -355,8 +357,32 @@ public class AcmeChallengeService(
 
         await _db.SaveChangesAsync();
 
+        await LogChallengeOutcomeAsync(entity, "ChallengeHttp01");
+
         if (entity.Status == nameof(AcmeChallengeStatus.Invalid))
             await RecordFailedValidationAsync(challengeId);
+    }
+
+    /// <summary>
+    /// Records a challenge validation outcome on the ACME audit tab so operators see
+    /// every validation attempt — success or failure with its reason — not just issuance.
+    /// The failure detail is pulled from the challenge's stored problem document.
+    /// </summary>
+    private async Task LogChallengeOutcomeAsync(AcmeChallengeEntity entity, string operation)
+    {
+        var success = entity.Status == nameof(AcmeChallengeStatus.Valid);
+        await _protocolAudit.LogAcmeAsync(
+            operation,
+            entity.Authorization?.Order?.AccountId,
+            entity.Authorization?.OrderId,
+            subjectDN: null,
+            certSerial: null,
+            identifiers: entity.Authorization?.IdentifierValue,
+            revocationReason: null,
+            sourceIp: null,
+            success: success,
+            errorMessage: success ? null : DeserializeError(entity.ErrorJson)?.Detail,
+            caLabel: entity.Authorization?.Order?.CaLabel);
     }
 
     /// <summary>
@@ -632,6 +658,7 @@ public class AcmeChallengeService(
     {
         var entity = await _db.AcmeChallenges
             .Include(c => c.Authorization)
+                .ThenInclude(a => a!.Order)
             .Where(c => c.Id == challengeId)
             .FirstOrDefaultAsync()
             ?? throw new InvalidOperationException("Challenge not found.");
@@ -689,6 +716,8 @@ public class AcmeChallengeService(
 
         entity.NextAttemptAt = null;
         await _db.SaveChangesAsync();
+
+        await LogChallengeOutcomeAsync(entity, "ChallengeDns01");
 
         if (entity.Status == nameof(AcmeChallengeStatus.Invalid))
             await RecordFailedValidationAsync(challengeId);

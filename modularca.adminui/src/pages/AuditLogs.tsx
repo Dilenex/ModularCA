@@ -9,6 +9,23 @@ function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/// Renders the ACME `identifiers` field, which arrives either as a JSON array of
+/// {type,value} objects (order/issuance events) or a plain domain string (challenge events).
+function formatIdentifiers(raw: any): string {
+    if (!raw) return '';
+    if (typeof raw !== 'string') return String(raw);
+    const s = raw.trim();
+    if (s.startsWith('[')) {
+        try {
+            const arr = JSON.parse(s);
+            if (Array.isArray(arr)) {
+                return arr.map((i: any) => (typeof i === 'string' ? i : (i.value ?? i.Value ?? ''))).filter(Boolean).join(', ');
+            }
+        } catch { /* not JSON — fall through to raw */ }
+    }
+    return s;
+}
+
 const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'Network'] as const;
 type Tab = typeof TABS[number];
 
@@ -46,11 +63,16 @@ function buildColumns(tab: Tab): DataTableColumn<any>[] {
     }
 
     if (cat === 'protocol') {
+        // ACME identifies subjects by domain (identifiers), not Subject DN — which is empty
+        // for everything but issuance. Swap in an Identifiers column so ACME rows are legible.
+        const subjectOrIdentifiers: DataTableColumn<any> = tab === 'ACME'
+            ? { key: 'identifiers', header: 'Identifiers', defaultWidth: 240, exportValue: (l) => formatIdentifiers(l.identifiers) || l.subjectDN || '', render: (l) => { const v = formatIdentifiers(l.identifiers) || l.subjectDN; return <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{v || '-'}</span>; } }
+            : { key: 'subjectDN', header: 'Subject DN', defaultWidth: 220, exportValue: (l) => l.subjectDN || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.subjectDN || '-'}</span> };
         return [
             timeCol,
             { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (l) => (l.success ? 'OK' : 'FAIL'), render: okFailBadge },
             { key: 'operation', header: 'Operation', defaultWidth: 170, exportValue: (l) => l.operation || l.messageType || '', render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300">{l.operation || l.messageType || '-'}</span> },
-            { key: 'subjectDN', header: 'Subject DN', defaultWidth: 220, exportValue: (l) => l.subjectDN || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.subjectDN || '-'}</span> },
+            subjectOrIdentifiers,
             { key: 'serial', header: 'Serial', defaultWidth: 140, exportValue: (l) => l.certificateSerial || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.certificateSerial || '-'}</span> },
             { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.caLabel || '-'}</span> },
         ];

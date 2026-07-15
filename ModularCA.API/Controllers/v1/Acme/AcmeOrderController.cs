@@ -87,6 +87,14 @@ public class AcmeOrderController(
         var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
         var order = await _orderService.CreateAsync(jws.AccountId.Value, request, baseUrl, caLabel);
 
+        // Record order creation on the ACME audit tab. Previously only finalize/issue/revoke
+        // were logged, so the tab gave no visibility into orders that never completed.
+        await _protocolAudit.LogAcmeAsync("OrderCreated", jws.AccountId, order.Id,
+            subjectDN: null, certSerial: null,
+            identifiers: JsonSerializer.Serialize(order.Identifiers), revocationReason: null,
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+            caLabel: caLabel);
+
         Response.Headers["Location"] = $"{baseUrl}{LabelPrefix()}/order/{order.Id}";
         return StatusCode(201, order);
     }

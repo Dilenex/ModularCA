@@ -107,7 +107,16 @@ public class EstService : IEstService
         // Enrollment authorization check
         var (allowed, authError) = await _enrollmentAuth.ValidateAsync("EST", caLabel, csrPem, clientCert, isAuthenticated);
         if (!allowed)
+        {
+            // Surface authorization denials on the EST audit tab — previously these threw
+            // without any protocol audit row, leaving rejected enrollments invisible.
+            await _protocolAudit.LogEstAsync("EstEnrollRejected", null, null,
+                null, null, caLabel, sourceIp,
+                success: false, errorMessage: authError ?? "Enrollment not authorized",
+                callerPrincipal: clientCert != null ? $"mtls:{clientCert.Subject}"
+                    : (!string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null));
             throw new InvalidOperationException(authError ?? "Enrollment not authorized");
+        }
 
         var parsedCsr = CertificateUtil.ParseCsr(csrPem);
 
@@ -214,7 +223,12 @@ public class EstService : IEstService
             var (isValid, error, modifiedSubject) = await _requestProfileValidation
                 .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
             if (!isValid)
+            {
+                await _protocolAudit.LogEstAsync("EstEnrollRejected", subject, null,
+                    parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
+                    success: false, errorMessage: error ?? "Request profile validation failed");
                 throw new InvalidOperationException(error ?? "Request profile validation failed");
+            }
             if (modifiedSubject != null)
                 subject = modifiedSubject;
 
@@ -291,9 +305,9 @@ public class EstService : IEstService
             // 1. Verify the client certificate is not expired
             var now = DateTime.UtcNow;
             if (now > clientCert.NotAfter)
-                throw new InvalidOperationException("Client certificate has expired and cannot be used for re-enrollment.");
+                await ThrowReenrollRejectedAsync("Client certificate has expired and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
             if (now < clientCert.NotBefore)
-                throw new InvalidOperationException("Client certificate is not yet valid.");
+                await ThrowReenrollRejectedAsync("Client certificate is not yet valid.", caLabel, sourceIp, clientCert);
 
             // 2. Verify the client certificate is not revoked (check our DB)
             var clientSerialHex = clientCert.SerialNumber?.ToUpperInvariant();
@@ -303,7 +317,7 @@ public class EstService : IEstService
                     .AsNoTracking()
                     .FirstOrDefaultAsync(c => c.SerialNumber == clientSerialHex);
                 if (certEntity != null && certEntity.Revoked)
-                    throw new InvalidOperationException("Client certificate has been revoked and cannot be used for re-enrollment.");
+                    await ThrowReenrollRejectedAsync("Client certificate has been revoked and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
             }
 
             // 3. Verify the client cert was issued by the target CA
@@ -325,8 +339,8 @@ public class EstService : IEstService
                         var normalizedCaSubject = NormalizeDn(caSubjectDn);
                         var normalizedClientIssuer = NormalizeDn(clientIssuerDn);
                         if (!string.Equals(normalizedCaSubject, normalizedClientIssuer, StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidOperationException(
-                                "Client certificate was not issued by the CA being re-enrolled against.");
+                            await ThrowReenrollRejectedAsync(
+                                "Client certificate was not issued by the CA being re-enrolled against.", caLabel, sourceIp, clientCert);
                     }
                 }
             }
@@ -335,9 +349,9 @@ public class EstService : IEstService
             var totalValidity = clientCert.NotAfter - clientCert.NotBefore;
             var renewalWindowStart = clientCert.NotBefore + TimeSpan.FromTicks((long)(totalValidity.Ticks * 0.70));
             if (now < renewalWindowStart)
-                throw new InvalidOperationException(
+                await ThrowReenrollRejectedAsync(
                     $"Re-enrollment is only allowed within the renewal window (last 30% of validity). " +
-                    $"Renewal opens on {renewalWindowStart:u}.");
+                    $"Renewal opens on {renewalWindowStart:u}.", caLabel, sourceIp, clientCert);
 
             // 5. Verify the CSR subject matches the original certificate subject
             var csrPem = DecodeCsrFromBase64(base64Csr);
@@ -345,11 +359,25 @@ public class EstService : IEstService
             var csrSubject = NormalizeDn(parsedCsr.SubjectName);
             var clientSubject = NormalizeDn(clientCert.Subject);
             if (!string.Equals(csrSubject, clientSubject, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    "CSR subject must match the original certificate subject for re-enrollment.");
+                await ThrowReenrollRejectedAsync(
+                    "CSR subject must match the original certificate subject for re-enrollment.", caLabel, sourceIp, clientCert);
         }
 
         return await SimpleEnrollAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername);
+    }
+
+    /// <summary>
+    /// Records an EST re-enrollment rejection on the protocol audit tab, then throws.
+    /// The renewal-gating checks in <see cref="SimpleReenrollAsync"/> previously threw with
+    /// no audit row, so rejected renewals never appeared on the EST tab. Always throws.
+    /// </summary>
+    private async Task ThrowReenrollRejectedAsync(string reason, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert)
+    {
+        await _protocolAudit.LogEstAsync("EstReenrollRejected", clientCert.Subject, null,
+            null, null, caLabel, sourceIp, success: false, errorMessage: reason,
+            callerPrincipal: $"mtls:{clientCert.Subject}");
+        throw new InvalidOperationException(reason);
     }
 
     /// <summary>

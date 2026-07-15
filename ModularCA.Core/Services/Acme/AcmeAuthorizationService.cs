@@ -65,6 +65,18 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
         await _db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// Re-evaluates a pending authorization against its challenges and propagates the
+    /// result to the parent order. If any challenge is <c>valid</c> the authorization
+    /// becomes <c>valid</c> (and the order may become <c>ready</c>). If no challenge is
+    /// valid but at least one is <c>invalid</c>, the authorization fails: per RFC 8555
+    /// §7.1.6 a failed challenge attempt invalidates the whole authorization. Previously
+    /// this required <em>all</em> challenges to be invalid, but a non-wildcard authz
+    /// carries both http-01 and dns-01 and the client only attempts one — so a single
+    /// failed challenge left the others <c>pending</c> and the authz/order stalled in
+    /// <c>pending</c> until expiry (finalize then 403'd with orderNotReady). No-op while
+    /// every challenge is still pending.
+    /// </summary>
     public async Task EvaluateAsync(Guid authzId)
     {
         var entity = await _db.AcmeAuthorizations.FindAsync(authzId)
@@ -78,7 +90,7 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             .ToListAsync();
 
         var anyValid = challenges.Any(c => c.Status == nameof(AcmeChallengeStatus.Valid));
-        var allInvalid = challenges.All(c => c.Status == nameof(AcmeChallengeStatus.Invalid));
+        var anyInvalid = challenges.Any(c => c.Status == nameof(AcmeChallengeStatus.Invalid));
 
         if (anyValid)
         {
@@ -88,7 +100,7 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             // Check if the parent order is now ready
             await EvaluateParentOrderAsync(entity.OrderId);
         }
-        else if (allInvalid)
+        else if (anyInvalid)
         {
             entity.Status = nameof(AcmeAuthorizationStatus.Invalid);
             await _db.SaveChangesAsync();

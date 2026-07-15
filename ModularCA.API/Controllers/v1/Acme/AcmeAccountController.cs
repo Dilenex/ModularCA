@@ -22,13 +22,15 @@ public class AcmeAccountController(
     IAcmeJwsService jwsService,
     ModularCADbContext db,
     SystemConfig config,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    IProtocolAuditService protocolAudit) : ControllerBase
 {
     private readonly IAcmeAccountService _accountService = accountService;
     private readonly IAcmeJwsService _jwsService = jwsService;
     private readonly ModularCADbContext _db = db;
     private readonly SystemConfig _config = config;
     private readonly IAuditService _audit = audit;
+    private readonly IProtocolAuditService _protocolAudit = protocolAudit;
 
     /// <summary>
     /// Canonical base URL sourced from
@@ -135,6 +137,13 @@ public class AcmeAccountController(
         // Persist the CA label the account was created under.
         var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
         var account = await _accountService.CreateAsync(jwkJson, thumbprint, payload.Contact, payload.TermsOfServiceAgreed, caLabel);
+
+        // Surface account registration on the ACME audit tab so operators can see new
+        // enrollments, not just issuance/revocation.
+        await _protocolAudit.LogAcmeAsync("AccountRegistered", account.Id, null,
+            subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+            caLabel: caLabel);
 
         // Mark EAB key as used if present
         if (_config.Acme.ExternalAccountRequired && payload.ExternalAccountBinding.HasValue)

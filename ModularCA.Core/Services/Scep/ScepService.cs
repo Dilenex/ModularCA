@@ -325,6 +325,8 @@ public class ScepService : IScepService
                     {
                         _logger.LogWarning("SCEP renewal rejected — signer subject does not match CSR subject. signer='{Signer}' csr='{Csr}'",
                             signerSubject, parsedCsr.SubjectName);
+                        await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                            "Renewal signer subject does not match CSR subject.");
                         return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
                     }
                 }
@@ -347,7 +349,11 @@ public class ScepService : IScepService
         {
             var (authAllowed, authError) = await _enrollmentAuth.ValidateAsync("SCEP", context.Ca?.Label, csrPem, null, false);
             if (!authAllowed)
+            {
+                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                    authError ?? "Enrollment not authorized (challenge password or policy).");
                 return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+            }
         }
 
         // Persist SCEP transaction before issuance. Unique index
@@ -377,6 +383,8 @@ public class ScepService : IScepService
             catch (DbUpdateException)
             {
                 // Duplicate transaction id → replay.
+                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                    "Duplicate SCEP transaction id (replay).");
                 return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
             }
         }
@@ -404,6 +412,8 @@ public class ScepService : IScepService
             if (allowedAlgs.Length > 0 && !allowedAlgs.Any(a =>
                 string.Equals(a, parsedCsr.KeyAlgorithm, StringComparison.OrdinalIgnoreCase)))
             {
+                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                    $"CSR key algorithm '{parsedCsr.KeyAlgorithm}' not permitted by certificate profile.");
                 return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadAlg);
             }
         }
@@ -417,7 +427,11 @@ public class ScepService : IScepService
             var (isValid, error, modifiedSubject) = await _requestProfileValidation
                 .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
             if (!isValid)
+            {
+                await LogPkcsReqRejectedAsync(subject, context, transactionId, sourceIp,
+                    error ?? "Request profile validation failed.");
                 return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+            }
             if (modifiedSubject != null)
                 subject = modifiedSubject;
         }
@@ -602,6 +616,18 @@ public class ScepService : IScepService
         }
         return null;
     }
+
+    /// <summary>
+    /// Records a SCEP PKCSReq rejection on the protocol audit tab. SCEP previously logged
+    /// only successful enrollments, so rejected requests (bad challenge, bad algorithm,
+    /// profile violation, replay, renewal-binding mismatch) never appeared on the SCEP tab.
+    /// </summary>
+    private Task LogPkcsReqRejectedAsync(string? subject, ResolvedCaContext context,
+        string? transactionId, string? sourceIp, string reason)
+        => _protocolAudit.LogScepAsync("PKCSReq", subject, certSerial: null,
+            keyAlgorithm: null, keySize: null, caLabel: context.Ca?.Label,
+            transactionId: transactionId, sourceIp: sourceIp,
+            success: false, errorMessage: reason);
 
     private static byte[] BuildSuccessResponse(
         X509Certificate caCert,
