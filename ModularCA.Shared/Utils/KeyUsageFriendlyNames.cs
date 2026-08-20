@@ -1,4 +1,4 @@
-using Org.BouncyCastle.Asn1.X509;
+﻿using Org.BouncyCastle.Asn1.X509;
 
 namespace ModularCA.Shared.Utils
 {
@@ -33,23 +33,51 @@ namespace ModularCA.Shared.Utils
         /// </exception>
         public static int Parse(string name)
         {
-            return name.Trim().ToLowerInvariant() switch
+            // Three vocabularies for the same nine bits exist in this system and all three reach
+            // here depending on who wrote the profile:
+            //
+            //   this map's display form   "Digital Signature"  "Key Certificate Signing"  "CRL Signing"
+            //   OIDOptions.FriendlyName   "digitalSignature"   "keyCertSign"              "crlSign"
+            //   the admin UI's old label  "Digital Signature"  "Key Cert Sign"            "CRL Sign"
+            //
+            // Most collapse onto the same key once case and separators are removed, but KeyCertSign
+            // and CrlSign genuinely differ in WORDS ("keycertsign" vs "keycertificatesigning"), so
+            // they need explicit aliases. Accepting every spelling here is what lets the catalog,
+            // the UI and the seeder disagree without aborting issuance.
+            return Normalize(name) switch
             {
-                "digital signature" => KeyUsage.DigitalSignature,
-                "non repudiation" => KeyUsage.NonRepudiation,
-                "key encipherment" => KeyUsage.KeyEncipherment,
-                "data encipherment" => KeyUsage.DataEncipherment,
-                "key agreement" => KeyUsage.KeyAgreement,
-                "key certificate signing" => KeyUsage.KeyCertSign,
-                "crl signing" => KeyUsage.CrlSign,
-                "encipher only" => KeyUsage.EncipherOnly,
-                "decipher only" => KeyUsage.DecipherOnly,
+                "digitalsignature" => KeyUsage.DigitalSignature,
+                "nonrepudiation" => KeyUsage.NonRepudiation,
+                "keyencipherment" => KeyUsage.KeyEncipherment,
+                "dataencipherment" => KeyUsage.DataEncipherment,
+                "keyagreement" => KeyUsage.KeyAgreement,
+                "keycertificatesigning" or "keycertsign" => KeyUsage.KeyCertSign,
+                "crlsigning" or "crlsign" => KeyUsage.CrlSign,
+                "encipheronly" => KeyUsage.EncipherOnly,
+                "decipheronly" => KeyUsage.DecipherOnly,
                 _ => throw new InvalidOperationException(
                     $"Unknown key usage friendly name: '{name}'. " +
                     "Expected one of: 'Digital Signature', 'Non Repudiation', 'Key Encipherment', " +
                     "'Data Encipherment', 'Key Agreement', 'Key Certificate Signing', 'CRL Signing', " +
-                    "'Encipher Only', 'Decipher Only'.")
+                    "'Encipher Only', 'Decipher Only' (the camelCase OIDOptions spellings such as " +
+                    "'digitalSignature' and 'keyCertSign' are accepted too).")
             };
+        }
+
+        /// <summary>
+        /// Collapses a usage name to a comparison key: lowercase, non-alphanumerics removed.
+        /// Matches IssuanceValidationService.NormalizeUsageKey and the admin UI's
+        /// normalizeUsageKey so all three layers agree on what counts as the same usage.
+        /// </summary>
+        private static string Normalize(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return string.Empty;
+            Span<char> buffer = stackalloc char[name.Length];
+            var len = 0;
+            foreach (var ch in name)
+                if (char.IsLetterOrDigit(ch))
+                    buffer[len++] = char.ToLowerInvariant(ch);
+            return new string(buffer[..len]);
         }
 
         /// <summary>

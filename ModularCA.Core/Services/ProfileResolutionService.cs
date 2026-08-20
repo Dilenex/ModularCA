@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Models;
 using ModularCA.Database;
@@ -314,8 +314,8 @@ public class ProfileResolutionService : IProfileResolutionService
             AllowWildcard = effectiveAllowWildcard,
 
             // String fields: merge with fallback to parent
-            KeyUsages = MergeString(child.KeyUsages, parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), sources),
-            ExtendedKeyUsages = MergeString(child.ExtendedKeyUsages, parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), sources),
+            KeyUsages = MergeJsonArray(child.KeyUsages, parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), sources),
+            ExtendedKeyUsages = MergeJsonArray(child.ExtendedKeyUsages, parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), sources),
             ValidityPeriodMin = mergedValidityMin,
             ValidityPeriodMax = mergedValidityMax,
             CtLogIds = MergeNullableString(child.CtLogIds, parent.CtLogIds, nameof(EffectiveCertProfile.CtLogIds), sources),
@@ -443,6 +443,7 @@ public class ProfileResolutionService : IProfileResolutionService
         return parent ?? string.Empty;
     }
 
+
     /// <summary>
     /// Merges a nullable string field. If the child value is non-empty, it overrides; otherwise inherits from parent.
     /// </summary>
@@ -458,20 +459,56 @@ public class ProfileResolutionService : IProfileResolutionService
     }
 
     /// <summary>
-    /// Merges a JSON array field. Treats "[]" or null/empty as "not set" (inherit from parent).
-    /// Any non-empty array in the child is treated as an override.
+    /// Merges a JSON array field. Treats an empty array or null/empty as "not set" (inherit from
+    /// parent). Any non-empty array in the child is treated as an override.
+    /// <para>
+    /// KeyUsages and ExtendedKeyUsages used to route through <see cref="MergeString"/> instead,
+    /// which tests only <c>string.IsNullOrEmpty</c> — and <c>"[]"</c> is a two-character string, so
+    /// an empty child array counted as a deliberate override and the parent's list was discarded.
+    /// Downstream, <c>IssuanceValidationService.SetupAllowedExtendedOids</c> short-circuits on an
+    /// empty cert-profile list and emits no EKU extension at all, so an empty array anywhere in the
+    /// chain silently stripped EKUs from every certificate issued under that profile — no error, no
+    /// log. Emptiness is now decided by parsing rather than by an exact <c>"[]"</c> compare, so a
+    /// whitespace variant such as <c>"[ ]"</c> cannot reintroduce it.
+    /// </para>
+    /// <para>
+    /// TRADE-OFF, deliberate: a child cannot express "explicitly none" while its parent declares
+    /// some. That is the safer reading — <c>ValidateJsonArraySubset</c> already treats an empty
+    /// child as trivially valid, so the alternative lets a profile silently drop to no-usages while
+    /// passing every check. An explicit clear should be a distinct marker, not an empty array that
+    /// is indistinguishable from an unset field.
+    /// </para>
     /// </summary>
     private static string MergeJsonArray(string child, string parent, string fieldName, Dictionary<string, string> sources)
     {
         // Empty child array means "inherit all from parent" (permissive inheritance).
         // Non-empty child array intersects with parent array (restrictive inheritance).
-        if (!string.IsNullOrEmpty(child) && child != "[]")
+        if (!IsEmptyJsonArray(child))
         {
             sources[fieldName] = "overridden";
             return child;
         }
         sources[fieldName] = "inherited";
         return parent;
+    }
+
+    /// <summary>
+    /// True when <paramref name="value"/> carries no entries: null, whitespace, or a JSON array with
+    /// zero elements. Malformed JSON counts as NON-empty so a corrupt value surfaces downstream
+    /// rather than being silently replaced by the parent's list.
+    /// </summary>
+    private static bool IsEmptyJsonArray(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<string>>(value);
+            return parsed is null || parsed.Count == 0;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

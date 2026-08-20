@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -32,17 +32,35 @@ public class LoginRateLimitMiddleware
 
     /// <summary>
     /// Rate-limited paths with per-endpoint limits: (maxAttempts, windowMinutes).
+    /// <para>
+    /// These are REQUEST budgets, not failure budgets — <see cref="IsRateLimitedAsync"/> records
+    /// an attempt before the request runs, so a successful sign-in spends the same allowance as a
+    /// failed one. Matching is also longest-prefix-agnostic (<c>StartsWith</c>, first match wins),
+    /// which means the challenge half of a WebAuthn ceremony shares its bucket with the assertion:
+    /// <c>/webauthn/assertion-options</c> starts with <c>/webauthn/assertion</c>, and
+    /// <c>/verify-stepup/webauthn-options</c> starts with <c>/verify-stepup/webauthn</c>. Budget
+    /// accordingly — a WebAuthn limit of N permits roughly N/2 real sign-ins.
+    /// </para>
+    /// <para>
+    /// The MFA verification limits are set well above a plausible brute-force threshold on purpose.
+    /// Guessing is already bounded by the underlying factor (a WebAuthn assertion needs the private
+    /// key resident on the authenticator; TOTP and mTLS have their own failure lockouts via
+    /// SecurityPolicy.MaxFailedLoginAttempts), so the job of these buckets is to stop request floods
+    /// rather than to be the last line against credential guessing. Setting them low mainly locks
+    /// out legitimate users retrying a fiddly hardware-key tap — and behind a layer-4 proxy, where
+    /// every client presents the same source IP, it locks out everyone at once.
+    /// </para>
     /// </summary>
     private static readonly Dictionary<string, (int maxAttempts, int windowMinutes)> RateLimitedPaths = new()
     {
         ["/api/v1/auth/login"] = (10, 5),
-        ["/api/v1/auth/totp/verify"] = (10, 5),
+        ["/api/v1/auth/totp/verify"] = (25, 5),
         ["/api/v1/auth/totp/verify-setup"] = (5, 5),
-        ["/api/v1/auth/webauthn/assertion"] = (10, 5),
-        ["/api/v1/auth/mtls/verify"] = (10, 5),
+        ["/api/v1/auth/webauthn/assertion"] = (50, 5),
+        ["/api/v1/auth/mtls/verify"] = (25, 5),
         ["/api/v1/auth/change-password"] = (5, 5),
-        ["/api/v1/auth/mfa/verify-stepup/totp"] = (5, 5),
-        ["/api/v1/auth/mfa/verify-stepup/webauthn"] = (10, 5),
+        ["/api/v1/auth/mfa/verify-stepup/totp"] = (25, 5),
+        ["/api/v1/auth/mfa/verify-stepup/webauthn"] = (50, 5),
         ["/api/v1/setup/database/test"] = (5, 5),
         ["/api/v1/setup/database/save"] = (3, 10),
         ["/api/v1/setup/initialize"] = (3, 10),

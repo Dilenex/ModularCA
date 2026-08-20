@@ -8,7 +8,7 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
 import {
-    KEY_USAGE_OPTIONS, EKU_OPTIONS,
+    KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS, SSH_EXTENSION_OPTIONS,
     inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
@@ -250,12 +250,12 @@ const CertProfilesTab: React.FC = () => {
                     </div>
                     <div>
                         <label className={labelClass}>Key Usages</label>
-                        <MultiToggle options={KEY_USAGE_OPTIONS} selected={form.keyUsages}
+                        <MultiToggle options={KEY_USAGE_OPTIONS} formatLabel={keyUsageLabel} selected={form.keyUsages}
                             onChange={(next) => setForm({ ...form, keyUsages: next })} />
                     </div>
                     <div>
                         <label className={labelClass}>Extended Key Usages</label>
-                        <MultiToggle options={EKU_OPTIONS} selected={form.extendedKeyUsages}
+                        <MultiToggle options={EKU_OPTIONS} formatLabel={ekuLabel} selected={form.extendedKeyUsages}
                             onChange={(next) => setForm({ ...form, extendedKeyUsages: next })} />
                     </div>
                     <div>
@@ -469,7 +469,7 @@ const SigningProfilesTab: React.FC = () => {
             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
             <DetailField label="Issuer" value={authorityName(p.issuerId)} />
             <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEkus} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEKUs ?? p.allowedEkus} /></div>
             <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
             <p className="text-[11px] text-gray-500 pt-3">Open the full page for all settings or to edit.</p>
         </div>

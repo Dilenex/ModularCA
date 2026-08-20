@@ -3,11 +3,41 @@ import React from 'react';
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
 export const KEY_USAGE_OPTIONS = [
-    'Digital Signature', 'Key Encipherment', 'Key Cert Sign', 'CRL Sign',
+    'digitalSignature', 'keyEncipherment', 'keyCertSign', 'crlSign',
 ];
+/**
+ * Certificate-profile usage option values.
+ *
+ * These are the values PERSISTED into CertProfile.KeyUsages / ExtendedKeyUsages, so they must be the
+ * canonical forms the issuance path resolves against OIDOptions — EKUs as OIDs, key usages as the
+ * catalog's friendly names. They previously held display labels ('Server Auth', 'Digital Signature'),
+ * which matched no catalog row, so any cert profile edited in the admin UI was issued with NO
+ * ExtendedKeyUsage and NO KeyUsage extension. Use the *_LABELS maps for presentation only.
+ */
 export const EKU_OPTIONS = [
-    'Server Auth', 'Client Auth', 'Code Signing', 'Email Protection', 'Time Stamping', 'OCSP Signing',
+    '1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.3',
+    '1.3.6.1.5.5.7.3.4', '1.3.6.1.5.5.7.3.8', '1.3.6.1.5.5.7.3.9',
 ];
+
+export const EKU_LABELS: Record<string, string> = {
+    '1.3.6.1.5.5.7.3.1': 'Server Auth',
+    '1.3.6.1.5.5.7.3.2': 'Client Auth',
+    '1.3.6.1.5.5.7.3.3': 'Code Signing',
+    '1.3.6.1.5.5.7.3.4': 'Email Protection',
+    '1.3.6.1.5.5.7.3.8': 'Time Stamping',
+    '1.3.6.1.5.5.7.3.9': 'OCSP Signing',
+};
+
+export const ekuLabel = (v: string): string => EKU_LABELS[v] ?? v;
+
+export const KEY_USAGE_LABELS: Record<string, string> = {
+    digitalSignature: 'Digital Signature',
+    keyEncipherment: 'Key Encipherment',
+    keyCertSign: 'Key Cert Sign',
+    crlSign: 'CRL Sign',
+};
+
+export const keyUsageLabel = (v: string): string => KEY_USAGE_LABELS[v] ?? v;
 
 export const ALLOWED_KEY_ALGORITHM_OPTIONS = [
     'RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F',
@@ -46,6 +76,32 @@ export const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border b
 export const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
 /** Parse a JSON array field from the API (could be string or array) into a string array */
+/**
+ * Reads a list-valued profile field regardless of the shape the API returned it in.
+ *
+ * The backend canonicalises these to a JSON array string (CertProfileService.NormalizeJsonStringArray,
+ * SigningProfileService), but that normaliser also ACCEPTS a comma-separated string on write and
+ * converts it — so a field can legitimately arrive as `["a","b"]`, as `a, b`, or already as an array
+ * depending on how it was last written and by which client.
+ *
+ * Parsing a JSON array with `.split(',')` yields tokens like `["a"` and `"b"]`, which then match no
+ * option in a toggle list. That renders as "nothing selected", which reads to a user as "my changes
+ * did not save" even though the write succeeded — the bug this helper exists to prevent.
+ */
+export const parseListField = (val: any): string[] => {
+    if (Array.isArray(val)) return val.map(String);
+    if (typeof val !== 'string') return [];
+    const trimmed = val.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.map(String);
+        } catch { /* fall through to comma-separated */ }
+    }
+    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+};
+
 export const parseJsonArray = (val: any): string[] => {
     if (Array.isArray(val)) return val.map(String);
     if (typeof val === 'string') {

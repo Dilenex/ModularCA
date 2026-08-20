@@ -9,7 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import {
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS,
-    inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle,
+    inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
 } from './profileHelpers';
 
 const SIGNING_TAB = `/profiles?tab=${encodeURIComponent('Signing Profiles')}`;
@@ -72,7 +72,11 @@ const SigningProfileDetail: React.FC = () => {
             if (p) {
                 const seeded = {
                     name: p.name || '', description: p.description || '', isDefault: !!p.isDefault, issuerId: p.issuerId || '',
-                    allowedAlgorithms: parseJsonArray(p.allowedAlgorithms), allowedEkus: parseJsonArray(p.allowedEkus),
+                    allowedAlgorithms: parseJsonArray(p.allowedAlgorithms),
+                    // Wire name is `allowedEKUs`: System.Text.Json's camelCase policy lowercases only
+                    // the leading char of `AllowedEKUs`. Reading `allowedEkus` gave undefined, so the
+                    // toggles rendered empty and saving wrote that empty list back over the real one.
+                    allowedEkus: parseListField(p.allowedEKUs ?? p.allowedEkus),
                     maxPathLength: p.maxPathLength != null ? String(p.maxPathLength) : '',
                     nameConstraintsPermitted: typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : (p.nameConstraintsPermitted || ''),
                     nameConstraintsExcluded: typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : (p.nameConstraintsExcluded || ''),
@@ -247,7 +251,7 @@ const SigningProfileDetail: React.FC = () => {
                     <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                     <DetailField label="Issuer" value={authorityName(p.issuerId)} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEkus} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEKUs ?? p.allowedEkus} /></div>
                     <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
                     <DetailField label="Name Constraints Permitted" value={typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : p.nameConstraintsPermitted} />
                     <DetailField label="Name Constraints Excluded" value={typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : p.nameConstraintsExcluded} />

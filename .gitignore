@@ -379,3 +379,12 @@ modularca.userui/dist/
 modularca.publicui/dist/
 modularca.docsui/dist/
 modularca.setupui/dist/
+
+# Publish output — `dotnet publish -o dist/<rid>` per target runtime.
+# Root-anchored so it does not collide with the per-UI dist/ rules above.
+/dist/
+
+# Local deployment artifacts (systemd unit, nginx/nftables templates).
+# Operator-specific for now — paths, ports and hostnames are environment-bound.
+# Drop this rule (or `git add -f deploy/`) to start sharing them with the repo.
+/deploy/

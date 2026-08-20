@@ -1,4 +1,5 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using ModularCA.Core.Models;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -16,14 +17,17 @@ namespace ModularCA.Core.Services
     public class IssuanceValidationService
     {
         private readonly ModularCADbContext _db;
+        private readonly ILogger<IssuanceValidationService> _logger;
 
         /// <summary>
         /// Initializes a new instance of <see cref="IssuanceValidationService"/>.
         /// </summary>
         /// <param name="db">Database context used for OID option lookups.</param>
-        public IssuanceValidationService(ModularCADbContext db)
+        /// <param name="logger">Logger used to report usages dropped by the OIDOptions filter.</param>
+        public IssuanceValidationService(ModularCADbContext db, ILogger<IssuanceValidationService> logger)
         {
             _db = db;
+            _logger = logger;
         }
 
         /// <summary>
@@ -169,6 +173,22 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Collapses a key-usage identifier to a comparison key: lowercase, with every non
+        /// alphanumeric character removed. Lets "Server Auth", "serverAuth" and "server_auth" all
+        /// resolve to the same catalog entry, which is what makes the profile tolerant of the three
+        /// spellings that have historically been written into it.
+        /// </summary>
+        private static string NormalizeUsageKey(string value)
+        {
+            Span<char> buffer = stackalloc char[value.Length];
+            var len = 0;
+            foreach (var ch in value)
+                if (char.IsLetterOrDigit(ch))
+                    buffer[len++] = char.ToLowerInvariant(ch);
+            return new string(buffer[..len]);
+        }
+
+        /// <summary>
         /// Resolves the effective extended key usages by intersecting the cert profile EKUs
         /// with the signing profile's hard-constraint AllowedEKUs, then filtering against
         /// the OID options table.
@@ -202,20 +222,69 @@ namespace ModularCA.Core.Services
                     "Signing profile AllowedEKUs contains anyExtendedKeyUsage (OID 2.5.29.37.0), which is forbidden.");
             }
 
-            IEnumerable<string> effective = certEkus;
-            if (sigEkus.Count > 0)
+            // Canonicalise BOTH lists to OIDs before doing anything else.
+            //
+            // The same usage reaches this method under three different spellings depending on who
+            // wrote the profile: the bootstrap seeder stores OIDs ("1.3.6.1.5.5.7.3.1"), the
+            // OIDOptions catalog also carries a friendly name ("serverAuth"), and the admin UI's
+            // cert-profile editor wrote display labels ("Server Auth"). Only the first matched the
+            // old exact-OID filter, so ANY cert profile edited in the UI silently lost every EKU —
+            // for manual issuance and every protocol alike. Resolving by OID or by friendly name
+            // (ignoring case and separators) accepts all three spellings, which also heals rows
+            // already written with labels without a data migration.
+            var extendedCatalog = _db.OIDOptions
+                .Where(o => o.KeyUsage == "Extended")
+                .Select(o => new { o.OID, o.FriendlyName })
+                .ToList();
+
+            var byOid = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in extendedCatalog)
             {
-                var sigSet = new HashSet<string>(sigEkus, StringComparer.OrdinalIgnoreCase);
-                effective = certEkus.Where(e => sigSet.Contains(e));
+                byOid[entry.OID] = entry.OID;
+                if (!string.IsNullOrWhiteSpace(entry.FriendlyName))
+                    byOid[NormalizeUsageKey(entry.FriendlyName)] = entry.OID;
             }
 
-            var oidSet = new HashSet<string>(effective);
-            var allowedExtended = _db.OIDOptions
-                .Where(o => o.KeyUsage == "Extended")
-                .Select(o => o.OID)
-                .ToList()
-                .Where(oid => oidSet.Contains(oid) && oid != AnyExtendedKeyUsageOid)
+            string? ResolveEku(string raw)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+                if (byOid.TryGetValue(raw.Trim(), out var direct)) return direct;
+                return byOid.TryGetValue(NormalizeUsageKey(raw), out var viaName) ? viaName : null;
+            }
+
+            var unresolved = certEkus.Where(e => ResolveEku(e) == null).ToList();
+            if (unresolved.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Extended key usage(s) {Unresolved} on the certificate profile match no OIDOptions row with "
+                    + "KeyUsage='Extended' (by OID or friendly name), so they were omitted from the issued "
+                    + "certificate. Add them to OIDOptions or correct the profile.",
+                    string.Join(", ", unresolved));
+            }
+
+            var certOids = certEkus.Select(ResolveEku).Where(o => o != null).Select(o => o!).Distinct().ToList();
+            var sigOids = sigEkus.Select(ResolveEku).Where(o => o != null).Select(o => o!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var allowedExtended = certOids
+                .Where(oid => !string.Equals(oid, AnyExtendedKeyUsageOid, StringComparison.Ordinal))
+                .Where(oid => sigOids.Count == 0 || sigOids.Contains(oid))
                 .ToList();
+
+            // Usages the signing profile's hard constraint removed. Distinct from an unresolved
+            // entry: this is policy working as designed, but it still explains a certificate that
+            // lacks an EKU the cert profile plainly lists.
+            if (sigOids.Count > 0)
+            {
+                var droppedByPolicy = certOids.Where(o => !sigOids.Contains(o)).ToList();
+                if (droppedByPolicy.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Extended key usage(s) {DroppedOids} were requested by the certificate profile but are not "
+                        + "permitted by the signing profile's AllowedEKUs, so they were omitted.",
+                        string.Join(", ", droppedByPolicy));
+                }
+            }
+
             return allowedExtended;
         }
 
@@ -230,13 +299,51 @@ namespace ModularCA.Core.Services
             var standardOidsDeserialize = JsonSerializer.Deserialize<List<string>>(allowedStandardOids, SafeJsonOptions.Default);
             if (standardOidsDeserialize == null)
                 return new List<string>();
-            var oidSet = new HashSet<string>(standardOidsDeserialize);
-            var allowedStandard = _db.OIDOptions
+            // Resolve by friendly name OR OID, ignoring case and separators — same reasoning as
+            // SetupAllowedExtendedOids. The admin UI's cert-profile editor wrote display labels
+            // ("Digital Signature") while the catalog stores "digitalSignature", so a UI-edited
+            // profile matched nothing and the certificate was issued with NO KeyUsage extension.
+            // The builder consumes friendly names (KeyUsageFriendlyNames.ParseMany), so that is what
+            // this returns.
+            var standardCatalog = _db.OIDOptions
                 .Where(o => o.KeyUsage == "Standard")
-                .Select(o => o.FriendlyName)
-                .ToList()
-                .Where(name => oidSet.Contains(name))
+                .Select(o => new { o.OID, o.FriendlyName })
                 .ToList();
+
+            var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in standardCatalog)
+            {
+                if (string.IsNullOrWhiteSpace(entry.FriendlyName)) continue;
+                byName[entry.FriendlyName] = entry.FriendlyName;
+                byName[NormalizeUsageKey(entry.FriendlyName)] = entry.FriendlyName;
+                if (!string.IsNullOrWhiteSpace(entry.OID))
+                    byName[entry.OID] = entry.FriendlyName;
+            }
+
+            string? ResolveUsage(string raw)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+                if (byName.TryGetValue(raw.Trim(), out var direct)) return direct;
+                return byName.TryGetValue(NormalizeUsageKey(raw), out var viaNorm) ? viaNorm : null;
+            }
+
+            var unresolvedUsages = standardOidsDeserialize.Where(u => ResolveUsage(u) == null).ToList();
+            if (unresolvedUsages.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Key usage(s) {Unresolved} on the certificate profile match no OIDOptions row with "
+                    + "KeyUsage='Standard' (by friendly name or OID), so they were omitted from the issued "
+                    + "certificate.",
+                    string.Join(", ", unresolvedUsages));
+            }
+
+            var allowedStandard = standardOidsDeserialize
+                .Select(ResolveUsage)
+                .Where(n => n != null)
+                .Select(n => n!)
+                .Distinct()
+                .ToList();
+
             return allowedStandard;
         }
 

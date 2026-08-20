@@ -7,15 +7,16 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import {
-    KEY_USAGE_OPTIONS, EKU_OPTIONS,
+    KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
-    inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
+    inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
     FieldSourceBadge, SourceBorderedField,
 } from './profileHelpers';
 
 const CERT_TAB = `/profiles?tab=${encodeURIComponent('Certificate Profiles')}`;
 const cpId = (p: any): string => p.id || p.certProfileId;
-const displayCommaSep = (val: any): string => Array.isArray(val) ? val.join(', ') : (typeof val === 'string' ? val : '');
+// Goes through parseListField so a JSON array string displays as 'a, b' rather than raw '["a","b"]'.
+const displayCommaSep = (val: any): string => parseListField(val).join(', ');
 
 /// <summary>
 /// Editable detail page for a single certificate profile (a tab on Profile Management). View shows
@@ -68,8 +69,11 @@ const CertProfileDetail: React.FC = () => {
             if (p) {
                 const seeded = {
                     name: p.name || '', description: p.description || '', isCaProfile: !!p.isCaProfile,
-                    keyUsages: typeof p.keyUsages === 'string' ? p.keyUsages.split(',').map((s: string) => s.trim()).filter(Boolean) : (Array.isArray(p.keyUsages) ? p.keyUsages : []),
-                    extendedKeyUsages: typeof p.extendedKeyUsages === 'string' ? p.extendedKeyUsages.split(',').map((s: string) => s.trim()).filter(Boolean) : (Array.isArray(p.extendedKeyUsages) ? p.extendedKeyUsages : []),
+                    // The API returns these as JSON array strings. Splitting on ',' produced tokens
+                    // like '["digitalSignature"' that matched no toggle option, so the selection rendered
+                    // empty and a subsequent save wrote that empty selection back over the real one.
+                    keyUsages: parseListField(p.keyUsages),
+                    extendedKeyUsages: parseListField(p.extendedKeyUsages),
                     allowedKeyAlgorithms: parseJsonArray(p.allowedKeyAlgorithms),
                     allowedKeySizes: parseJsonArray(p.allowedKeySizes),
                     allowedSignatureAlgorithms: parseJsonArray(p.allowedSignatureAlgorithms),
@@ -208,8 +212,8 @@ const CertProfileDetail: React.FC = () => {
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowWildcard} onChange={(e) => setEditForm({ ...editForm, allowWildcard: e.target.checked })} className="w-4 h-4 rounded" />Allow wildcard SAN/CN entries</label>
                             <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance. Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the leftmost label, and at least two labels.</p>
                         </div>
-                        <div><label className={labelClass}>Key Usages</label><MultiToggle options={KEY_USAGE_OPTIONS} selected={editForm.keyUsages} onChange={(next) => setEditForm({ ...editForm, keyUsages: next })} /></div>
-                        <div><label className={labelClass}>Extended Key Usages</label><MultiToggle options={EKU_OPTIONS} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} /></div>
+                        <div><label className={labelClass}>Key Usages</label><MultiToggle options={KEY_USAGE_OPTIONS} selected={editForm.keyUsages} onChange={(next) => setEditForm({ ...editForm, keyUsages: next })} formatLabel={keyUsageLabel} /></div>
+                        <div><label className={labelClass}>Extended Key Usages</label><MultiToggle options={EKU_OPTIONS} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuLabel} /></div>
                         <div><label className={labelClass}>Allowed Key Algorithms</label><MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={editForm.allowedKeyAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedKeyAlgorithms: next })} /></div>
                         <div><label className={labelClass}>Allowed Key Sizes</label><MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={editForm.allowedKeySizes} onChange={(next) => setEditForm({ ...editForm, allowedKeySizes: next })} formatLabel={formatKeySizeLabel} /></div>
                         <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} /></div>
@@ -220,8 +224,8 @@ const CertProfileDetail: React.FC = () => {
                     <DetailField label="Name" value={p.name} />
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
-                    <DetailField label="Key Usages" value={displayCommaSep(p.keyUsages)} />
-                    <DetailField label="Extended Key Usages" value={displayCommaSep(p.extendedKeyUsages)} />
+                    <DetailField label="Key Usages" value={parseListField(p.keyUsages).map(keyUsageLabel).join(', ')} />
+                    <DetailField label="Extended Key Usages" value={parseListField(p.extendedKeyUsages).map(ekuLabel).join(', ')} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><BadgeList items={p.allowedKeyAlgorithms} /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><BadgeList items={p.allowedKeySizes} /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><BadgeList items={p.allowedSignatureAlgorithms} /></div>
