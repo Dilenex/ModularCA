@@ -1,7 +1,8 @@
-using System.Security.Cryptography.X509Certificates;
+﻿using System.Security.Cryptography.X509Certificates;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.API.Services;
 
@@ -25,31 +26,22 @@ public static class MtlsChainValidator
     /// Builds a chain for <paramref name="clientCert"/> rooted at <paramref name="expectedCa"/>.
     /// Returns <c>true</c> when the chain is valid (and optionally the OCSP/CRL check
     /// passes). Writes the outcome to <paramref name="chainErrors"/> for audit.
+    /// <para>
+    /// The chain build itself now lives in
+    /// <see cref="ModularCA.Shared.Utils.X509ChainValidationUtil.ValidateAgainstAnchor"/> so the
+    /// mTLS login path and the EST re-enrollment path share one implementation. EST lives in
+    /// <c>ModularCA.Core</c>, which cannot reference this assembly, so the chain core was pulled
+    /// down into <c>ModularCA.Shared</c>; this method stays as the login path's entry point and
+    /// is behaviourally unchanged.
+    /// </para>
     /// </summary>
     public static bool ValidateAgainstCa(
         X509Certificate2 clientCert,
         X509Certificate2 expectedCa,
         bool requireRevocationCheck,
         out string? chainErrors)
-    {
-        chainErrors = null;
-        using var chain = new X509Chain();
-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(expectedCa);
-        chain.ChainPolicy.RevocationMode = requireRevocationCheck
-            ? X509RevocationMode.Online
-            : X509RevocationMode.NoCheck;
-        chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
-        chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
-
-        bool ok = chain.Build(clientCert);
-        if (!ok)
-        {
-            chainErrors = string.Join("; ", chain.ChainStatus.Select(s => $"{s.Status}:{s.StatusInformation?.Trim()}"));
-            return false;
-        }
-        return true;
-    }
+        => X509ChainValidationUtil.ValidateAgainstAnchor(
+            clientCert, expectedCa, requireRevocationCheck, out chainErrors);
 
     /// <summary>
     /// Loads the signing CA's <see cref="X509Certificate2"/> from the DB for the given

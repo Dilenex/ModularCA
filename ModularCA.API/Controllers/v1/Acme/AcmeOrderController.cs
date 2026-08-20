@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -244,7 +244,7 @@ public class AcmeOrderController(
             var serial = ModularCA.Shared.Utils.CertificateUtil.FormatSerialNumber(cert.SerialNumber);
 
             // Ownership verification: the revoking account must have issued this certificate
-            var ownerAccountId = await _orderService.GetAccountIdForCertificateSerialAsync(serial);
+            var ownerAccountId = await _orderService.GetAccountIdForCertificateSerialAsync(serial, certDer);
             if (ownerAccountId == null)
                 return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
                     "Certificate was not issued via ACME.");

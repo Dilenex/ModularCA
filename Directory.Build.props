@@ -20,4 +20,59 @@
     <Version>$(ModularCaVersionRaw.Trim())</Version>
   </PropertyGroup>
 
+  <!--
+    Supply-chain vulnerability gate (NuGet audit).
+
+    Rationale: a certificate authority is a trust anchor. A known-vulnerable dependency shipping in a
+    CA build is a materially worse outcome than a red build, so advisories must STOP the pipeline
+    rather than scroll past in the warning noise. This block was added after finding F-04, where
+    Microsoft.OpenApi 2.4.1 (GHSA-v5pm-xwqc-g5wc, HIGH) emitted NU1903 on every single compile for an
+    extended period and nobody noticed, because a warning among hundreds of warnings is invisible.
+
+    What each setting does, and why it is set the way it is:
+
+      NuGetAudit=true
+        Turns on NuGet's restore-time check of every resolved package against the GitHub Advisory
+        Database (served through the nuget.org registration feed). This is the SDK default today, but
+        it is stated explicitly so that a future SDK default-flip, or a stray global property, cannot
+        silently disable the gate. Security controls should never depend on an implicit default.
+
+      NuGetAuditMode=all
+        The SDK default is "direct", which only audits packages we reference by name. That is exactly
+        the wrong scope for us: the overwhelming majority of a .NET app's attack surface arrives
+        transitively (Swashbuckle.AspNetCore, for example, is what drags Microsoft.OpenApi in). "all"
+        audits the entire resolved graph, direct and transitive alike.
+
+      NuGetAuditLevel=low
+        Report EVERYTHING — low, moderate, high, critical. Note this is the REPORTING threshold, not
+        the failure threshold; the two are deliberately decoupled below. We want full visibility of
+        every advisory touching the graph, including low-severity ones we may consciously choose to
+        accept, because "we never saw it" is not an acceptable answer during an audit. Verified: at
+        this threshold, with mode=all, the solution currently restores with ZERO audit warnings, so
+        turning the dial all the way down costs us nothing today.
+
+      WarningsAsErrors += NU1903;NU1904
+        The failure threshold. NuGet emits one warning code per severity band:
+          NU1901 = low, NU1902 = moderate, NU1903 = high, NU1904 = critical.
+        Only HIGH and CRITICAL are promoted to build-breaking errors. Low and moderate advisories stay
+        visible as warnings so they can be triaged on their own schedule. This asymmetry is
+        intentional: moderate advisories against transitive dependencies are common and often have no
+        fixed version available yet, and a gate that fires constantly for un-actionable reasons gets
+        disabled by the first developer it inconveniences. A gate that only fires on high/critical
+        stays credible, and those are the ones that genuinely must not ship.
+
+        NU1900 (audit could not reach the advisory source) is deliberately NOT promoted — it fires on
+        offline or air-gapped builds, which is an availability problem, not a vulnerability.
+
+    Escape hatch: if a high-severity advisory has no fix and the build must proceed, suppress that ONE
+    package with a scoped <NoWarn>NU1903</NoWarn> on its PackageReference and a comment recording the
+    advisory ID and the accepted risk. Do not weaken this file — the blast radius is every project.
+  -->
+  <PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1903;NU1904</WarningsAsErrors>
+  </PropertyGroup>
+
 </Project>

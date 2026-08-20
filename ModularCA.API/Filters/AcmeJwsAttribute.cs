@@ -82,14 +82,7 @@ public class AcmeJwsActionFilter(
         }
         catch (InvalidOperationException ex)
         {
-            // Surface badSignatureAlgorithm errors raised by the
-            // JWS verifier with the RFC 8555-specified problem type.
-            var type = ex.Message.StartsWith("badSignatureAlgorithm:", StringComparison.Ordinal)
-                ? "urn:ietf:params:acme:error:badSignatureAlgorithm"
-                : "urn:ietf:params:acme:error:malformed";
-            var detail = ex.Message.StartsWith("badSignatureAlgorithm:", StringComparison.Ordinal)
-                ? ex.Message["badSignatureAlgorithm:".Length..].TrimStart()
-                : ex.Message;
+            var (type, detail) = MapAcmeProblem(ex.Message);
             context.Result = AcmeError(400, type, detail);
             return;
         }
@@ -125,6 +118,37 @@ public class AcmeJwsActionFilter(
         context.HttpContext.Response.Headers["Cache-Control"] = "no-store";
 
         await next();
+    }
+
+    /// <summary>
+    /// Problem-type prefixes the JWS verifier stamps onto its exception messages, mapped to the
+    /// RFC 8555 problem type each one means. The verifier lives in ModularCA.Core and has no
+    /// business constructing HTTP problem documents, so it tags the message and this filter does
+    /// the translation — <c>badSignatureAlgorithm:</c> for a rejected <c>alg</c>, and
+    /// <c>badPublicKey:</c> for a key that is malformed or outside the CA's key-size policy
+    /// (RFC 8555 §6.7 defines <c>badPublicKey</c> for exactly that). Anything untagged is a
+    /// generic malformed-request problem. Ordered longest-prefix-first is unnecessary here since
+    /// the prefixes are disjoint.
+    /// </summary>
+    private static readonly (string Prefix, string Type)[] ProblemPrefixes =
+    [
+        ("badSignatureAlgorithm:", "urn:ietf:params:acme:error:badSignatureAlgorithm"),
+        ("badPublicKey:", "urn:ietf:params:acme:error:badPublicKey"),
+    ];
+
+    /// <summary>
+    /// Translates a JWS verifier exception message into an ACME problem type and a detail string
+    /// with the routing prefix stripped, so the prefix convention never leaks to the client.
+    /// Falls back to <c>urn:ietf:params:acme:error:malformed</c> for untagged messages.
+    /// </summary>
+    private static (string Type, string Detail) MapAcmeProblem(string message)
+    {
+        foreach (var (prefix, type) in ProblemPrefixes)
+        {
+            if (message.StartsWith(prefix, StringComparison.Ordinal))
+                return (type, message[prefix.Length..].TrimStart());
+        }
+        return ("urn:ietf:params:acme:error:malformed", message);
     }
 
     /// <summary>

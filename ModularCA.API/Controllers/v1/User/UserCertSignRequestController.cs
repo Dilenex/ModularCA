@@ -16,7 +16,6 @@ using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
-using System.Text.RegularExpressions;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -250,6 +249,10 @@ public class UserCertSignRequestController(
 
     /// <summary>
     /// Validates parsed CSR subject and SAN fields against a request profile's rules.
+    /// Preview only (nothing is stored), but the patterns are operator-authored and the values are
+    /// caller-supplied, so matching goes through <see cref="ProfileRegex"/> under a bounded timeout.
+    /// A pattern that times out or does not compile is reported as an error against the profile —
+    /// never as "valid" — so a broken profile is visible here instead of previewing as a pass.
     /// </summary>
     [HttpPost("validate-against-profile")]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
@@ -303,8 +306,28 @@ public class UserCertSignRequestController(
             }
             else if (sanRules.Rules.TryGetValue(san.Type, out var typeRule) && !string.IsNullOrWhiteSpace(typeRule.Regex))
             {
-                try { sanResult.Status = Regex.IsMatch(san.Value, typeRule.Regex) ? "valid" : "error"; if (sanResult.Status == "error") { sanResult.Message = $"Does not match pattern: {typeRule.Regex}"; response.Valid = false; } }
-                catch { sanResult.Status = "valid"; }
+                // Bounded, fail-closed match. A pattern that cannot be evaluated used to report
+                // "valid" so as not to penalise the user; that presented a broken profile as a
+                // passing one, so it is now an error that names the profile as the cause.
+                switch (ProfileRegex.Evaluate(san.Value, typeRule.Regex))
+                {
+                    case ProfileRegexOutcome.Match:
+                        sanResult.Status = "valid";
+                        break;
+                    case ProfileRegexOutcome.NoMatch:
+                        sanResult.Status = "error";
+                        sanResult.Message = $"Does not match pattern: {typeRule.Regex}";
+                        response.Valid = false;
+                        break;
+                    default:
+                        Log.Warning(
+                            "ValidateAgainstProfile: SAN pattern for type '{SanType}' in profile {ProfileId} could not be evaluated ('{Pattern}'); reporting as unevaluable.",
+                            san.Type, request.RequestProfileId, typeRule.Regex);
+                        sanResult.Status = "error";
+                        sanResult.Message = $"The profile's pattern for SAN type '{san.Type}' could not be evaluated (invalid or too slow); this value could not be validated. Ask an administrator to review the profile.";
+                        response.Valid = false;
+                        break;
+                }
             }
             else { sanResult.Status = "valid"; }
 
@@ -361,11 +384,14 @@ public class UserCertSignRequestController(
 
     /// <summary>
     /// Validates a subject DN field value against its profile rule.
-    /// A malformed admin-supplied regex (bad escape, unterminated group, catastrophic timeout)
-    /// previously had its <see cref="ArgumentException"/> swallowed, which meant the rule was
-    /// treated as passing — effectively matching everything. The fail-closed contract is now:
-    /// any regex that <see cref="Regex.IsMatch(string, string)"/> rejects as invalid causes the
-    /// field to be marked as an error with the pattern echoed back so the profile author can fix it.
+    /// A malformed admin-supplied regex (bad escape, unterminated group) previously had its
+    /// <see cref="ArgumentException"/> swallowed, which meant the rule was treated as passing —
+    /// effectively matching everything. The fail-closed contract is: any pattern that cannot be
+    /// evaluated marks the field as an error so the profile author can fix it.
+    /// Matching goes through <see cref="ProfileRegex"/>, which also bounds the match with a
+    /// timeout — without one, an operator pattern with nested quantifiers plus a crafted field
+    /// value pins a CPU core (ReDoS), and a timeout now lands in the same fail-closed branch as an
+    /// uncompilable pattern rather than being reported as a pass.
     /// </summary>
     private static FieldValidationResult ValidateFieldValue(SubjectDnFieldRule rule, string value)
     {
@@ -374,23 +400,21 @@ public class UserCertSignRequestController(
         { result.Status = "error"; result.Message = $"Exceeds max length of {rule.MaxLength.Value}."; return result; }
         if (!string.IsNullOrWhiteSpace(rule.Regex))
         {
-            try
+            switch (ProfileRegex.Evaluate(value, rule.Regex))
             {
-                if (!Regex.IsMatch(value, rule.Regex))
-                {
+                case ProfileRegexOutcome.Match:
+                    break;
+                case ProfileRegexOutcome.NoMatch:
                     result.Status = "error";
                     result.Message = $"Does not match pattern: {rule.Regex}";
                     return result;
-                }
-            }
-            catch (Exception ex) when (ex is ArgumentException || ex is RegexMatchTimeoutException)
-            {
-                Log.Warning(ex,
-                    "ValidateFieldValue: invalid profile regex for field '{Field}' pattern '{Pattern}'; failing closed (rejecting value).",
-                    rule.Field, rule.Regex);
-                result.Status = "error";
-                result.Message = $"Profile regex is invalid for field '{rule.Field}'; value cannot be validated.";
-                return result;
+                default:
+                    Log.Warning(
+                        "ValidateFieldValue: profile regex for field '{Field}' pattern '{Pattern}' could not be evaluated (invalid or timed out); failing closed (rejecting value).",
+                        rule.Field, rule.Regex);
+                    result.Status = "error";
+                    result.Message = $"Profile regex for field '{rule.Field}' could not be evaluated; value cannot be validated.";
+                    return result;
             }
         }
         if (!string.IsNullOrWhiteSpace(rule.FixedValue) && value != rule.FixedValue)

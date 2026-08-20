@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -23,6 +23,7 @@ using Org.BouncyCastle.X509.Extension;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services.SchedulerJobs;
 
@@ -169,7 +170,7 @@ public class TlsRenewalJob : SingletonCronJob
         var currentSerial = currentCert.SerialNumber;
         var dbCert = await _db.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == currentSerial, cancellationToken);
+            .ResolveBySerialOrNullAsync(currentSerial, cancellationToken);
 
         if (dbCert == null)
         {
@@ -219,7 +220,7 @@ public class TlsRenewalJob : SingletonCronJob
         {
             try
             {
-                var chain = new X509Chain();
+                using var chain = new X509Chain();
                 chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                 chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
                 chain.ChainPolicy.CustomTrustStore.Add(X509CertificateLoader.LoadCertificate(caCertEntity.RawCertificate));

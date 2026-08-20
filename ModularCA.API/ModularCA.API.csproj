@@ -20,7 +20,7 @@
 	</PackageReference>
 	<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
 	<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.5" />
-	<PackageReference Include="Microsoft.OpenApi" Version="2.4.1" />
+	<PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
 	<PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
 	<PackageReference Include="NCrontab.Signed" Version="3.4.0" />
 	<PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
@@ -47,26 +47,31 @@
     <!-- Admin UI -->
     <Message Text="Building Admin UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
+    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
 
     <!-- Public UI -->
     <Message Text="Building Public UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
+    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
 
     <!-- User UI -->
     <Message Text="Building User UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.userui" />
+    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.userui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.userui" />
 
     <!-- Setup UI -->
     <Message Text="Building Setup UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
+    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
 
     <!-- Docs UI -->
     <Message Text="Building Docs UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
+    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
   </Target>
 

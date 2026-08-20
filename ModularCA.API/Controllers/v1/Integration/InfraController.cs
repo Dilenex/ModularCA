@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
@@ -9,6 +9,7 @@ using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Models.Csr;
 using ModularCA.Shared.Utils;
 using Serilog;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Integration;
 
@@ -256,7 +257,7 @@ public class InfraController(
         // Look up the certificate entity to get profile IDs
         var certEntity = await _db.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (certEntity == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -474,7 +475,7 @@ public class InfraController(
 
         var certEntity = await _db.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
 
         if (certEntity == null)
             return null;

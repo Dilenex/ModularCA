@@ -1,9 +1,10 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services
 {
@@ -255,19 +256,54 @@ namespace ModularCA.Core.Services
             }
         }
 
+        /// <summary>
+        /// Resolves the certificate a revocation operation targets, preferring the primary key.
+        /// <para>
+        /// A serial number does NOT identify a certificate on its own. X.509 requires serials to be
+        /// unique only within an issuer, and the schema models exactly that: the unique index on
+        /// <c>Certificates</c> is <c>(SerialNumber, Issuer)</c>, not <c>SerialNumber</c>. So a
+        /// bare <c>FirstOrDefault(c =&gt; c.SerialNumber == s)</c> asks the database for "any row
+        /// with this serial" and silently accepts whichever one it returns first — a choice with
+        /// no defined ordering, which the engine may answer differently between two calls in the
+        /// same request.
+        /// </para>
+        /// <para>
+        /// For a mutation that revokes a certificate that is not an acceptable failure mode, so a
+        /// serial matching more than one row is rejected outright rather than resolved by guess.
+        /// Callers that can supply <paramref name="certificateId"/> should always do so; the serial
+        /// overload exists for protocol paths that only ever see a serial on the wire.
+        /// </para>
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// No certificate matches, or the serial is ambiguous across issuers.
+        /// </exception>
         private async Task<CertificateEntity> ResolveCertificateEntityAsync(Guid? certificateId, string? certificateSerialNumber)
         {
-            CertificateEntity? certEntity = null;
-
             if (certificateId.HasValue)
-                certEntity = await _db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == certificateId.Value);
-            else if (!string.IsNullOrWhiteSpace(certificateSerialNumber))
-                certEntity = await _db.Certificates.FirstOrDefaultAsync(c => c.SerialNumber == certificateSerialNumber);
+            {
+                return await _db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == certificateId.Value)
+                    ?? throw new InvalidOperationException("Certificate not found.");
+            }
 
-            if (certEntity == null)
-                throw new Exception("Certificate not found.");
+            if (string.IsNullOrWhiteSpace(certificateSerialNumber))
+                throw new InvalidOperationException("Certificate not found: neither an ID nor a serial number was supplied.");
 
-            return certEntity;
+            var resolution = await _db.Certificates.ResolveBySerialAsync(certificateSerialNumber);
+
+            if (resolution.Outcome == SerialResolution.NotFound)
+                throw new InvalidOperationException("Certificate not found.");
+
+            if (resolution.Outcome == SerialResolution.Ambiguous)
+            {
+                _logger.LogError(
+                    "Refusing to act on serial {Serial}: it matches more than one certificate (issuers differ). "
+                    + "Re-issue the request against the certificate ID.", certificateSerialNumber);
+                throw new InvalidOperationException(
+                    $"Serial number '{certificateSerialNumber}' matches more than one certificate. "
+                    + "Serials are unique only per issuer — retry using the certificate ID.");
+            }
+
+            return resolution.Certificate!;
         }
     }
 }

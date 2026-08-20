@@ -246,8 +246,12 @@ export function DataTable<Row>({
         const rowsOut = selected.size > 0 ? selectedRows : rows;
         const cols = visibleCols;
         const esc = (v: unknown) => {
-            const s = v == null ? '' : String(v);
-            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            if (typeof v === 'number') return String(v);
+            let s = v == null ? '' : String(v);
+            // Neutralize spreadsheet formula injection (OWASP): a leading =,+,-,@,tab,CR can be
+            // executed as a formula (DDE/HYPERLINK/WEBSERVICE) when the CSV is opened in Excel/Sheets.
+            if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+            return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
         };
         const cellVal = (c: DataTableColumn<Row>, r: Row): string | number => {
             if (c.exportValue) { const v = c.exportValue(r); return v == null ? '' : v; }

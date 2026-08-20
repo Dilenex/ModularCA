@@ -1,4 +1,4 @@
-using ModularCA.Shared.Models.Config;
+﻿using ModularCA.Shared.Models.Config;
 using System.Security.Cryptography.X509Certificates;
 
 namespace ModularCA.API.Middleware;
@@ -74,10 +74,22 @@ public class MtlsMiddleware
             return;
         }
 
-        // Validate client cert against trusted CAs
-        var chain = new X509Chain();
+        // Validate client cert against trusted CAs.
+        //
+        // `using` because X509Chain holds unmanaged certificate-context handles; this runs on every
+        // request to a configured mTLS path, and both failure branches below return early, so an
+        // undisposed chain leaked a handle per request.
+        using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.Offline;
         chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
+        // Offline revocation consults only the local CRL cache. On a cold cache the chain reports
+        // RevocationStatusUnknown and Build() returns false, which would 403 every client for a
+        // reason unrelated to its standing. These flags suppress "could not determine" only — an
+        // explicitly Revoked certificate still fails the build.
+        chain.ChainPolicy.VerificationFlags =
+            X509VerificationFlags.IgnoreEndRevocationUnknown
+            | X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown
+            | X509VerificationFlags.IgnoreRootRevocationUnknown;
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         foreach (var ca in _trustedCas)
             chain.ChainPolicy.CustomTrustStore.Add(ca);

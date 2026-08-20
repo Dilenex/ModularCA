@@ -1,4 +1,4 @@
-using ModularCA.Shared.Models.Acme;
+﻿using ModularCA.Shared.Models.Acme;
 
 namespace ModularCA.Shared.Interfaces;
 
@@ -21,7 +21,13 @@ public interface IAcmeOrderService
     /// Retrieves the account ID that owns the ACME order associated with the given certificate serial number.
     /// Returns null if no ACME order is linked to that serial.
     /// </summary>
-    Task<Guid?> GetAccountIdForCertificateSerialAsync(string serialNumber);
+    /// <param name="serialNumber">Serial of the certificate whose owning account is sought.</param>
+    /// <param name="presentedDer">
+    /// The DER bytes the caller presented, when available. Supplied by ACME revocation so the
+    /// stored certificate can be byte-compared against what was actually presented rather than
+    /// trusted on a serial match alone. Null skips the comparison.
+    /// </param>
+    Task<Guid?> GetAccountIdForCertificateSerialAsync(string serialNumber, byte[]? presentedDer = null);
 
     /// <summary>
     /// Audit findings #28: returns the issued certificate's serial number for an ACME order

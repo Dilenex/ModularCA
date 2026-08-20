@@ -902,9 +902,24 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             caCheck.CommandText = "SELECT EXISTS(SELECT 1 FROM CertificateAuthorities WHERE IsDeleted = 0 LIMIT 1)";
             return Convert.ToInt64(caCheck.ExecuteScalar()) > 0;
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            // "Cannot tell" is not the same as "not configured".
+            //
+            // Every caller uses this to decide whether the unauthenticated setup wizard is still
+            // reachable, and returning false re-opens endpoints including
+            // POST /setup/database/drop and /setup/initialize. A database outage on a configured
+            // system therefore used to hand a loopback caller — or any RFC1918 caller when the
+            // server was started with --setup-local — the ability to drop the CA database, since
+            // in non-setup mode no setup token is required either.
+            //
+            // config.yaml existing is by itself sufficient evidence that bootstrap has already
+            // run; we only got here because that check passed. So an unreachable database means
+            // deny, not open.
+            Log.Warning(ex,
+                "Setup wizard: could not verify configured state (config.yaml exists but the database "
+                + "is unreachable). Treating the system as CONFIGURED so setup endpoints stay closed.");
+            return true;
         }
     }
 }

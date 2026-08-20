@@ -365,12 +365,18 @@ public class ComplianceReportService : IComplianceReportService
 
     /// <summary>
     /// Escapes a value for safe inclusion in a CSV field.
-    /// Wraps in double quotes if the value contains commas, quotes, or newlines.
+    /// Neutralizes spreadsheet formula injection (a leading =,+,-,@,tab,CR that Excel/Sheets would
+    /// execute as a formula) by prefixing a single quote, then wraps in double quotes if the value
+    /// contains commas, quotes, or newlines.
     /// </summary>
     private static string CsvEscape(string value)
     {
         if (string.IsNullOrEmpty(value))
             return string.Empty;
+
+        // OWASP CSV injection defense: a leading formula-trigger char is escaped with a single quote.
+        if (value[0] is '=' or '+' or '-' or '@' or '\t' or '\r')
+            value = "'" + value;
 
         if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
             return "\"" + value.Replace("\"", "\"\"") + "\"";

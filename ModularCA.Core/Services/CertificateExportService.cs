@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
@@ -6,6 +6,7 @@ using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.X509;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services;
 
@@ -38,7 +39,7 @@ public class CertificateExportService : ICertificateExportService
     {
         var certEntity = await _db.Certificates
             .Include(c => c.SigningProfile)
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
 
         if (certEntity == null) return null;
 
@@ -103,7 +104,7 @@ public class CertificateExportService : ICertificateExportService
     public async Task<string?> ExportPemWithKeyAsync(string serial)
     {
         var certEntity = await _db.Certificates
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
 
         if (certEntity?.EncryptedPrivateKey == null || certEntity.AesKeyEncryptionIv == null || certEntity.EncryptedAesForPrivateKey == null)
             return null;

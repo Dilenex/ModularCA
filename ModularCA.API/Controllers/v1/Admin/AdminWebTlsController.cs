@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -12,6 +12,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -69,8 +70,7 @@ public class AdminWebTlsController(
         // Attempt to find the matching DB row — optional, the response stays usable without it.
         var dbCert = await _db.Certificates
             .AsNoTracking()
-            .Where(c => c.SerialNumber == normalizedSerial)
-            .FirstOrDefaultAsync();
+            .ResolveBySerialOrNullAsync(normalizedSerial);
 
         var dnComponents = ParseSubjectDnInline(current.Subject);
 
@@ -173,8 +173,7 @@ public class AdminWebTlsController(
 
         var normalizedSerial = NormalizeSerial(current.SerialNumber);
         var currentCertEntity = await _db.Certificates
-            .Where(c => c.SerialNumber == normalizedSerial)
-            .FirstOrDefaultAsync();
+            .ResolveBySerialOrNullAsync(normalizedSerial);
 
         if (currentCertEntity == null)
         {

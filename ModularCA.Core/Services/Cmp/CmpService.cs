@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -16,6 +16,7 @@ using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services.Cmp;
 
@@ -439,7 +440,7 @@ public class CmpService : ICmpService
         var signingCertSerial = CertificateUtil.FormatSerialNumber(signingCert.SerialNumber);
         var revokedCheck = await _db.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == signingCertSerial);
+            .ResolveBySerialOrNullAsync(signingCertSerial);
         if (revokedCheck != null && revokedCheck.Revoked)
             return "Signing certificate has been revoked.";
 
@@ -868,7 +869,7 @@ public class CmpService : ICmpService
                 // Look up the certificate by serial number
                 var serialHex = CertificateUtil.FormatSerialNumber(serialNumber);
                 var certEntity = await _db.Certificates
-                    .FirstOrDefaultAsync(c => c.SerialNumber == serialHex);
+                    .ResolveBySerialOrNullAsync(serialHex);
 
                 if (certEntity == null)
                 {

@@ -35,7 +35,13 @@ const csvCells = (c: any): (string | number)[] => [
     c.notBefore || '', c.notAfter || '', c.keyAlgorithm || '', c.revoked ? 'Yes' : 'No', c.revocationReason || '',
 ];
 function downloadCsv(rows: any[], filename: string) {
-    const esc = (v: unknown) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const esc = (v: unknown) => {
+        if (typeof v === 'number') return String(v);
+        let s = v == null ? '' : String(v);
+        // Neutralize spreadsheet formula injection (OWASP): a leading =,+,-,@,tab,CR can execute in Excel/Sheets.
+        if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
     const lines = [CSV_HEADERS.join(',')];
     for (const r of rows) lines.push(csvCells(r).map(esc).join(','));
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });

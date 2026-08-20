@@ -1,4 +1,4 @@
-using ModularCA.Database;
+﻿using ModularCA.Database;
 using Microsoft.Extensions.Logging;
 
 namespace ModularCA.API.Middleware;
@@ -49,7 +49,18 @@ public class SetupRedirectMiddleware
     {
         var path = context.Request.Path.Value ?? "";
 
-        // Check cached state, query DB if needed
+        // Check cached state, query DB if needed.
+        //
+        // dbUnreadable is resolved inside the lock but acted on outside it: a database failure must
+        // not be answered as "unconfigured", because that re-opens the unauthenticated setup wizard
+        // — including the database-drop recovery action — on a system that may be fully deployed and
+        // simply having an outage. config.yaml is written at the end of bootstrap, so its presence is
+        // sufficient evidence that setup already completed.
+        //
+        // The failure is deliberately NOT cached. _isConfigured is a process-lifetime static, so
+        // caching a value derived from a transient error would freeze the wrong answer in until the
+        // next restart; leaving it null re-evaluates on the following request.
+        var dbUnreadable = false;
         if (_isConfigured == null)
         {
             lock (_lock)
@@ -60,19 +71,40 @@ public class SetupRedirectMiddleware
                     {
                         _isConfigured = db.CertificateAuthorities.Any();
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // DB doesn't exist, table missing, or schema broken — treat as unconfigured
-                        _isConfigured = false;
+                        dbUnreadable = true;
+                        Serilog.Log.Warning(ex,
+                            "Setup middleware: database unreachable while determining configured state. "
+                            + "Falling back to on-disk config.yaml presence; not caching the result.");
                     }
                 }
             }
         }
 
+        if (dbUnreadable)
+        {
+            // config.yaml present → already bootstrapped → let the request through untouched, so
+            // setup routes stay closed. Absent → genuinely a fresh install, fall through to the
+            // normal unconfigured handling below.
+            if (!IsSetupMode())
+            {
+                await _next(context);
+                return;
+            }
+            _isConfigured = false;
+        }
+
+        // Snapshot the (now definitely resolved) state into a local. _isConfigured is a nullable
+        // static that another thread could in principle reset via InvalidateCache between here and
+        // the reads below, so reading it once keeps this request internally consistent — and lets
+        // the compiler see it is non-null without a bare .Value assertion.
+        var isConfigured = _isConfigured ?? false;
+
         // Stale-DB recovery: if the DB has CAs but on-disk state is fresh (no config.yaml), the
         // previous install left rows behind. Treat this as unconfigured so the wizard loads and
         // can offer the operator a "drop databases" recovery action. Log loudly once.
-        var staleDb = _isConfigured.Value && IsSetupMode();
+        var staleDb = isConfigured && IsSetupMode();
         if (staleDb && !_staleDbWarned)
         {
             lock (_lock)
@@ -88,7 +120,7 @@ public class SetupRedirectMiddleware
             }
         }
 
-        if (!_isConfigured.Value || staleDb)
+        if (!isConfigured || staleDb)
         {
             // Unconfigured: allow setup routes and API, redirect everything else
             if (path.StartsWith("/api/v1/setup", StringComparison.OrdinalIgnoreCase)

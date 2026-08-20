@@ -809,6 +809,12 @@ namespace ModularCA.Shared.Models.Config
         /// requests a client cert on <see cref="AuthSubdomain"/> and the /auth/mtls/* login
         /// endpoints are active. Ordinary admin API calls under /api/v1/admin are unaffected
         /// — those are gated by JWT + group-role as usual.
+        /// <para>
+        /// Enabling this together with a non-empty <see cref="AuthSubdomain"/> requires at
+        /// least one loadable anchor in <see cref="TrustedCaCertPaths"/>: outside setup mode
+        /// the API refuses to start otherwise, because the handshake would request a client
+        /// certificate it has no way to validate.
+        /// </para>
         /// </summary>
         public bool Enabled { get; set; } = false;
 
@@ -821,7 +827,22 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         public List<string> RequiredPaths { get; set; } = new();
 
-        /// <summary>PEM file paths of trusted CA certificates for client cert validation.</summary>
+        /// <summary>
+        /// PEM/DER file paths of the CA certificates that anchor client-certificate
+        /// validation, both at the TLS handshake (Kestrel's SNI-gated client-cert callback)
+        /// and in <c>MtlsMiddleware</c>. Relative paths resolve against the application
+        /// base directory.
+        /// <para>
+        /// The handshake fails closed on an empty anchor set — a client certificate cannot
+        /// be validated against zero anchors, so every certificate is rejected rather than
+        /// waved through. Because the default is empty, <see cref="Enabled"/> must not be
+        /// turned on without populating this list; the API fail-fasts at startup on that
+        /// combination (see the mTLS block in <c>StartModularCA.cs</c>) instead of serving
+        /// a client-cert prompt that can never succeed. Paths that fail to load are reported
+        /// and count as absent, so a list of three unreadable paths trips the same fail-fast
+        /// as an empty list.
+        /// </para>
+        /// </summary>
         public List<string> TrustedCaCertPaths { get; set; } = new();
 
         /// <summary>

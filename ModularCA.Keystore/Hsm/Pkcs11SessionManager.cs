@@ -1,4 +1,4 @@
-using Net.Pkcs11Interop.Common;
+﻿using Net.Pkcs11Interop.Common;
 using Net.Pkcs11Interop.HighLevelAPI;
 using Net.Pkcs11Interop.HighLevelAPI.Factories;
 using System.Security.Cryptography;
@@ -450,12 +450,20 @@ public sealed class Pkcs11SessionManager : IDisposable
             try { _session?.Logout(); } catch { /* best-effort */ }
             try { _session?.CloseSession(); } catch { /* best-effort */ }
             _session = null;
-            _library.Dispose();
+
+            // Zero the PIN FIRST, and guard the library teardown.
+            //
+            // The whole point of holding the PIN in a char[] rather than a string is that it can be
+            // wiped. Previously an unguarded _library.Dispose() sat between the session teardown and
+            // the wipe, so a throw from the PKCS#11 module — exactly the situation where an operator
+            // is least likely to notice — left the PIN recoverable in managed memory for the rest of
+            // the process lifetime, defeating the design this class documents at length.
             if (_pin != null)
             {
                 CryptographicOperations.ZeroMemory(System.Runtime.InteropServices.MemoryMarshal.AsBytes(_pin.AsSpan()));
                 _pin = null;
             }
+            try { _library.Dispose(); } catch { /* best-effort: the PIN is already gone */ }
         }
     }
 

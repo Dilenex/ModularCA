@@ -8,8 +8,8 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Utils;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -235,6 +235,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <summary>
     /// Validates principals, extensions, and validity against an SSH cert profile.
     /// Returns an error message string if validation fails, or null if valid.
+    /// AllowedPrincipalPatterns are operator-authored regexes matched against caller-supplied
+    /// principals, so they run through <see cref="ProfileRegex"/>: the match is time-boxed (a
+    /// backtracking-prone pattern plus a crafted principal would otherwise pin a CPU core) and a
+    /// pattern that times out or fails to compile counts as "did not match", so a broken pattern
+    /// narrows what can be issued rather than widening it.
     /// </summary>
     private static string? ValidateCertProfile(Shared.Entities.SshCertProfileEntity certProfile,
         List<string> principals, List<string>? extensions, int? validityHours)
@@ -253,7 +258,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         {
             foreach (var principal in principals)
             {
-                if (!patterns.Any(p => Regex.IsMatch(principal, p)))
+                if (!patterns.Any(p => ProfileRegex.IsMatch(principal, p)))
                     return $"Principal '{principal}' does not match any allowed pattern";
             }
         }

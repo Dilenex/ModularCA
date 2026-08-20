@@ -13,6 +13,7 @@ using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.Text;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -268,10 +269,15 @@ public class UserCertificateController(
 
         var chainPems = new List<string> { cert.Pem.Trim() };
 
-        // Find the issuing CA and walk up the hierarchy
+        // Find the issuing CA and walk up the hierarchy.
+        //
+        // Keyed on the ID already resolved above, not on the serial again. The access check a few
+        // lines up authorized cert.CertificateId; re-resolving the serial could select a different
+        // row (serials are unique only per issuer), and the chain returned would then describe a
+        // certificate the caller was never granted.
         var certEntity = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId);
 
         if (certEntity != null && certEntity.SigningProfileId != null)
         {
@@ -346,7 +352,7 @@ public class UserCertificateController(
         // Load the certificate entity to get profile IDs
         var certEntity = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (certEntity == null)
             return NotFound(new { error = "Certificate not found." });
 

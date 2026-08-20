@@ -167,14 +167,13 @@ public class CsrService : ICsrService
 
         MetricsService.CsrSubmissionsTotal.WithLabels("generated").Inc();
 
-        var csrId = _dbContext.CertificateRequests.Where(e => e.CSR == entity.CSR).FirstOrDefaultAsync();
-
-        var csrList = new List<string> { csrPem };
-        if (csrId.Result != null)
-            csrList.Add(csrId.Result.Id.ToString());
-        else
-            throw new Exception("CSR ID not found");
-        return csrList;
+        // entity.Id is populated by SaveChangesAsync above, so the row needs no re-query.
+        //
+        // This used to re-select the row by matching on the CSR PEM and then block on the Task with
+        // .Result — which stalled a thread-pool thread inside an async method, evaluated the task
+        // twice, and, because the same PEM can legitimately appear on more than one row, could
+        // return the id of a different request than the one just written.
+        return new List<string> { csrPem, entity.Id.ToString() };
     }
 
     /// <summary>

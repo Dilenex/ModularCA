@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -17,6 +17,7 @@ using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
@@ -554,7 +555,7 @@ public class AdminCertificateController(
         // Load the certificate entity to get profile IDs
         var certEntity = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (certEntity == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -637,7 +638,7 @@ public class AdminCertificateController(
 
         var cert = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -685,7 +686,7 @@ public class AdminCertificateController(
             return BadRequest(new { error = "Tag value must not exceed 500 characters." });
 
         var cert = await _dbContext.Certificates
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -730,7 +731,7 @@ public class AdminCertificateController(
 
         var cert = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -849,7 +850,7 @@ public class AdminCertificateController(
 
         var cert = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -950,7 +951,7 @@ public class AdminCertificateController(
 
         var cert = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 
@@ -988,7 +989,7 @@ public class AdminCertificateController(
 
         var cert = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
             return NotFound(new { error = "Certificate not found." });
 

@@ -1,7 +1,7 @@
 using ModularCA.Database;
 using ModularCA.Shared.Models.RequestProfiles;
+using ModularCA.Shared.Utils;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace ModularCA.Core.Services
 {
@@ -81,6 +81,11 @@ namespace ModularCA.Core.Services
         /// Validates a certificate request against the specified request profile.
         /// Returns (isValid, errorMessage, modifiedSubject) where modifiedSubject has
         /// fixed values applied and defaults filled in.
+        /// Profile-supplied regexes are evaluated through <see cref="ProfileRegex"/> rather than
+        /// the static <c>Regex.IsMatch</c>: this method is on the hot path for every enrollment
+        /// protocol (ACME/EST/SCEP/CMP/public enrollment), so an untimed match against an
+        /// operator-authored pattern with nested quantifiers would let an unauthenticated
+        /// requester burn a CPU core per request. The helper bounds the match and fails closed.
         /// </summary>
         public async Task<(bool IsValid, string? Error, string? ModifiedSubject)> ValidateAsync(
             Guid requestProfileId,
@@ -125,7 +130,10 @@ namespace ModularCA.Core.Services
                 // Regex check
                 if (!string.IsNullOrEmpty(rule.Regex) && !string.IsNullOrEmpty(effectiveValue))
                 {
-                    if (!Regex.IsMatch(effectiveValue, rule.Regex))
+                    // ProfileRegex applies a bounded match timeout and fails closed: a hostile or
+                    // uncompilable profile pattern reads as "no match" and rejects the request
+                    // rather than pinning a core (ReDoS) or waving the value through.
+                    if (!ProfileRegex.IsMatch(effectiveValue, rule.Regex))
                         return (false, $"Subject field '{rule.Field}' value '{effectiveValue}' does not match pattern '{rule.Regex}'", null);
                 }
 
@@ -258,6 +266,9 @@ namespace ModularCA.Core.Services
         /// Validates a list of SANs against the SAN rules.
         /// SANs are stored as "TYPE:value" (e.g., "DNS:example.com", "IP:1.2.3.4").
         /// Returns an error string if validation fails, null if valid.
+        /// Per-type patterns run through <see cref="ProfileRegex"/> so a pathological profile
+        /// pattern cannot be turned into a denial of service by a crafted SAN value, and so a
+        /// pattern that times out or fails to compile rejects the SAN instead of accepting it.
         /// </summary>
         internal static string? ValidateSans(List<string> sans, SanRules rules)
         {
@@ -290,7 +301,8 @@ namespace ModularCA.Core.Services
                 if (rules.Rules != null && rules.Rules.TryGetValue(sanType, out var typeRule))
                 {
                     // Regex validation
-                    if (!string.IsNullOrEmpty(typeRule.Regex) && !Regex.IsMatch(sanValue, typeRule.Regex))
+                    // Bounded, fail-closed match — see the subject-DN rule check in ValidateAsync.
+                    if (!string.IsNullOrEmpty(typeRule.Regex) && !ProfileRegex.IsMatch(sanValue, typeRule.Regex))
                         return $"SAN value '{sanValue}' (type {sanType}) does not match pattern '{typeRule.Regex}'";
                 }
             }

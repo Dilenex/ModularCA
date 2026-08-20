@@ -478,6 +478,18 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the mTLS configuration (enable/disable, auth subdomain, required paths, trusted CAs).
     /// Requires step-up MFA verification.
+    /// <para>
+    /// Explicitly-listed <c>TrustedCaCertPaths</c> are verified to resolve and parse before the
+    /// config is persisted. The startup path treats an empty effective anchor set as fatal, so a
+    /// typo'd or unreadable anchor path written here would not surface until the next restart —
+    /// as a server that refuses to boot. Rejecting at write time turns that into an error message
+    /// in the admin UI while the operator still has the field in front of them.
+    /// </para>
+    /// <para>
+    /// An empty list is NOT an error: startup falls back to the enrolled mTLS signing CAs recorded
+    /// in <c>CaGroups.MtlsSigningCaId</c>, which is the normal configuration for an instance that
+    /// issues its own client certificates. Only paths the operator actually named are checked.
+    /// </para>
     /// </summary>
     [HttpPut("mtls")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
@@ -485,6 +497,43 @@ public class AdminConfigController(
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
+
+        if (update.TrustedCaCertPaths is { Count: > 0 })
+        {
+            var anchorErrors = new List<string>();
+            foreach (var path in update.TrustedCaCertPaths)
+            {
+                if (string.IsNullOrWhiteSpace(path)) continue;
+
+                // Mirror the startup resolution rule: relative paths resolve against the
+                // application base directory, not the process working directory.
+                var resolved = Path.IsPathRooted(path)
+                    ? path
+                    : Path.Combine(AppContext.BaseDirectory, path);
+                try
+                {
+                    if (!System.IO.File.Exists(resolved))
+                    {
+                        anchorErrors.Add($"{path}: file not found (resolved to {resolved})");
+                        continue;
+                    }
+                    using var probe = System.Security.Cryptography.X509Certificates.X509CertificateLoader
+                        .LoadCertificateFromFile(resolved);
+                }
+                catch (Exception ex)
+                {
+                    anchorErrors.Add($"{path}: not a readable certificate ({ex.GetType().Name})");
+                }
+            }
+
+            if (anchorErrors.Count > 0)
+                return BadRequest(new
+                {
+                    error = "One or more trusted CA certificate paths could not be loaded. "
+                          + "Fix or remove them — the server will refuse to start with an unusable anchor list.",
+                    details = anchorErrors
+                });
+        }
 
         _config.Mtls.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.AuthSubdomain)) _config.Mtls.AuthSubdomain = update.AuthSubdomain;

@@ -1,10 +1,11 @@
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Mvc.Filters;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using Serilog;
@@ -32,6 +33,13 @@ namespace ModularCA.Auth.Authorization;
 public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequirement>
 {
     internal const string ResolvedCaIdKey = "ResolvedCaId";
+
+    /// <summary>
+    /// Request-scoped marker set when a route identifier matched more than one certificate.
+    /// Authorization denies rather than falling back to the broader cross-CA check, because an
+    /// unresolvable target cannot be authorized against.
+    /// </summary>
+    internal const string AmbiguousTargetKey = "CaAuthAmbiguousTarget";
     private readonly ICaGroupAuthorizationService _authService;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ModularCADbContext _db;
@@ -99,6 +107,15 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             {
                 LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
             }
+            return;
+        }
+
+        // A route identifier that matched several certificates is not a listing endpoint — it is a
+        // scoped request whose target could not be pinned down. Falling through to the ANY-CA check
+        // below would silently downgrade a CA-scoped requirement to a cross-CA one, so deny.
+        if (_httpContextAccessor.HttpContext?.Items.ContainsKey(AmbiguousTargetKey) == true)
+        {
+            LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
             return;
         }
 
@@ -308,9 +325,26 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         return await ResolveCaFromSigningProfileAsync(cert.SigningProfileId.Value);
     }
 
+    /// <summary>
+    /// Resolves the CA that owns the certificate named by a <c>{serial}</c> route value.
+    /// <para>
+    /// A serial identifies a certificate only within an issuer, so it can legitimately match more
+    /// than one row. This resolver must NOT collapse that case to null: a null return here means
+    /// "the route names no particular CA", which sends <c>HandleRequirementAsync</c> down the
+    /// listing-endpoint path where holding the capability on ANY CA is sufficient. Returning null
+    /// for an ambiguous serial would therefore weaken a CA-scoped check into a cross-CA one — a
+    /// fail-open. Ambiguity is recorded on the request instead, and the caller denies outright.
+    /// </para>
+    /// </summary>
     private async Task<Guid?> ResolveCaFromSerialAsync(string serial)
     {
-        var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+        var resolution = await _db.Certificates.AsNoTracking().ResolveBySerialAsync(serial);
+        if (resolution.Outcome == SerialResolution.Ambiguous)
+        {
+            _httpContextAccessor.HttpContext?.Items.TryAdd(AmbiguousTargetKey, true);
+            return null;
+        }
+        var cert = resolution.Certificate;
         if (cert?.SigningProfileId == null) return null;
         return await ResolveCaFromSigningProfileAsync(cert.SigningProfileId.Value);
     }

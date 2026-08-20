@@ -36,8 +36,15 @@ public class EstService : IEstService
     private readonly IEnrollmentAuthorizationService _enrollmentAuth;
     private readonly RequestProfileValidationService _requestProfileValidation;
     private readonly INotificationService _notifications;
+    private readonly ISecurityPolicyService _securityPolicy;
     private readonly ILogger<EstService> _logger;
 
+    /// <summary>
+    /// Constructs the EST protocol service. Takes <see cref="ISecurityPolicyService"/> so
+    /// re-enrollment's client-certificate chain build honours the same
+    /// <see cref="ModularCA.Shared.Entities.SecurityPolicyEntity.RequireMtlsOcspCheck"/> switch
+    /// the mTLS login path uses, instead of EST having its own implicit revocation policy.
+    /// </summary>
     public EstService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
@@ -47,6 +54,7 @@ public class EstService : IEstService
         IEnrollmentAuthorizationService enrollmentAuth,
         RequestProfileValidationService requestProfileValidation,
         INotificationService notifications,
+        ISecurityPolicyService securityPolicy,
         ILogger<EstService> logger)
     {
         _db = db;
@@ -57,6 +65,7 @@ public class EstService : IEstService
         _enrollmentAuth = enrollmentAuth;
         _requestProfileValidation = requestProfileValidation;
         _notifications = notifications;
+        _securityPolicy = securityPolicy;
         _logger = logger;
     }
 
@@ -290,78 +299,156 @@ public class EstService : IEstService
     }
 
     /// <summary>
-    /// Performs EST simple re-enrollment (RFC 7030 §4.2.2). Validates the presenting client
-    /// certificate is not expired, not revoked, was issued by the target CA, is within the
-    /// configurable renewal window (last 30% of validity), and that the CSR subject matches
-    /// the original certificate subject before delegating to the enrollment pipeline.
+    /// Performs EST simple re-enrollment (RFC 7030 4.2.2). The presenting mTLS client
+    /// certificate must be currently valid, must cryptographically chain to the CA being
+    /// re-enrolled against, must not be revoked, must be inside the renewal window (last 30% of
+    /// validity), and its Subject must match the CSR Subject - only then is the request handed to
+    /// the normal enrollment pipeline.
+    /// <para>
+    /// The issuer check used to be a DN <em>string</em> comparison: it loaded the CA
+    /// certificate row, normalized <c>caCert.SubjectDN</c> and <c>clientCert.Issuer</c>, and
+    /// compared the two strings. Nothing about that proves issuance - the Issuer field is
+    /// attacker-controlled text in a certificate the attacker generates. Anyone who could
+    /// complete the TLS handshake could present a self-signed certificate carrying a victim's
+    /// Subject and the CA's Subject copied into its Issuer field and pass every gate below
+    /// (expiry, revocation-by-serial, "issuer", renewal window, CSR subject match), and the CA
+    /// would then mint a genuine certificate for an identity the caller does not control. Worse,
+    /// the check silently fell through to success whenever the signing profile had no
+    /// <c>IssuerId</c>, the CA row was missing, or either DN string was empty. It is now a real
+    /// <see cref="System.Security.Cryptography.X509Certificates.X509Chain"/> build against the CA
+    /// certificate as the sole trust anchor, and every one of those former skip-paths is a hard
+    /// reject audited on the EST protocol tab.
+    /// </para>
     /// </summary>
     public async Task<byte[]> SimpleReenrollAsync(string base64Csr, string? caLabel = null, string? sourceIp = null,
         System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert = null, bool isAuthenticated = false,
         string? callerUsername = null)
     {
-        // RFC 7030 §4.2.2: The client certificate from mTLS authenticates the renewal.
-        if (clientCert != null)
+        // RFC 7030 4.2.2: the client's existing certificate is what authenticates a renewal.
+        // EstController already answers 401 when no client certificate is on the connection, but
+        // the service must not lean on its caller for that: every renewal gate below used to sit
+        // inside `if (clientCert != null)`, so a null certificate meant *all* of them were
+        // skipped and the request fell straight through to SimpleEnrollAsync. Fail closed here so
+        // the guarantee belongs to the service, not to one controller.
+        if (clientCert == null)
         {
-            // 1. Verify the client certificate is not expired
-            var now = DateTime.UtcNow;
-            if (now > clientCert.NotAfter)
-                await ThrowReenrollRejectedAsync("Client certificate has expired and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
-            if (now < clientCert.NotBefore)
-                await ThrowReenrollRejectedAsync("Client certificate is not yet valid.", caLabel, sourceIp, clientCert);
-
-            // 2. Verify the client certificate is not revoked (check our DB)
-            var clientSerialHex = clientCert.SerialNumber?.ToUpperInvariant();
-            if (!string.IsNullOrEmpty(clientSerialHex))
-            {
-                var certEntity = await _db.Certificates
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.SerialNumber == clientSerialHex);
-                if (certEntity != null && certEntity.Revoked)
-                    await ThrowReenrollRejectedAsync("Client certificate has been revoked and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
-            }
-
-            // 3. Verify the client cert was issued by the target CA
-            var context = await _caResolver.ResolveAsync(caLabel, "EST");
-            var signingProfile = await _db.SigningProfiles.FindAsync(context.SigningProfileId);
-            if (signingProfile?.IssuerId != null)
-            {
-                var caCertEntity = await _db.Certificates
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.CertificateId == signingProfile.IssuerId);
-                if (caCertEntity != null)
-                {
-                    // Compare issuer DN: the client cert's Issuer must match the CA cert's Subject
-                    var caSubjectDn = caCertEntity.SubjectDN;
-                    var clientIssuerDn = clientCert.Issuer;
-                    if (!string.IsNullOrEmpty(caSubjectDn) && !string.IsNullOrEmpty(clientIssuerDn))
-                    {
-                        // Normalize for comparison: both may use different RDN orderings
-                        var normalizedCaSubject = NormalizeDn(caSubjectDn);
-                        var normalizedClientIssuer = NormalizeDn(clientIssuerDn);
-                        if (!string.Equals(normalizedCaSubject, normalizedClientIssuer, StringComparison.OrdinalIgnoreCase))
-                            await ThrowReenrollRejectedAsync(
-                                "Client certificate was not issued by the CA being re-enrolled against.", caLabel, sourceIp, clientCert);
-                    }
-                }
-            }
-
-            // 4. Only allow re-enrollment within the last 30% of the validity period
-            var totalValidity = clientCert.NotAfter - clientCert.NotBefore;
-            var renewalWindowStart = clientCert.NotBefore + TimeSpan.FromTicks((long)(totalValidity.Ticks * 0.70));
-            if (now < renewalWindowStart)
-                await ThrowReenrollRejectedAsync(
-                    $"Re-enrollment is only allowed within the renewal window (last 30% of validity). " +
-                    $"Renewal opens on {renewalWindowStart:u}.", caLabel, sourceIp, clientCert);
-
-            // 5. Verify the CSR subject matches the original certificate subject
-            var csrPem = DecodeCsrFromBase64(base64Csr);
-            var parsedCsr = CertificateUtil.ParseCsr(csrPem);
-            var csrSubject = NormalizeDn(parsedCsr.SubjectName);
-            var clientSubject = NormalizeDn(clientCert.Subject);
-            if (!string.Equals(csrSubject, clientSubject, StringComparison.OrdinalIgnoreCase))
-                await ThrowReenrollRejectedAsync(
-                    "CSR subject must match the original certificate subject for re-enrollment.", caLabel, sourceIp, clientCert);
+            await _protocolAudit.LogEstAsync("EstReenrollRejected", null, null,
+                null, null, caLabel, sourceIp, success: false,
+                errorMessage: "Re-enrollment attempted without an mTLS client certificate.",
+                callerPrincipal: !string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null);
+            throw new InvalidOperationException(
+                "EST re-enrollment requires an mTLS client certificate (RFC 7030 4.2.2).");
         }
+
+        // 1. Verify the client certificate is not expired
+        var now = DateTime.UtcNow;
+        if (now > clientCert.NotAfter)
+            await ThrowReenrollRejectedAsync("Client certificate has expired and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
+        if (now < clientCert.NotBefore)
+            await ThrowReenrollRejectedAsync("Client certificate is not yet valid.", caLabel, sourceIp, clientCert);
+
+        // 2. Prove the target CA actually issued this certificate, cryptographically.
+        //    This runs *before* the revocation lookup on purpose: a serial number is only unique
+        //    per issuer, so the revocation query below is only meaningful once we know which
+        //    issuer's namespace the serial belongs to.
+        var context = await _caResolver.ResolveAsync(caLabel, "EST");
+        var signingProfile = await _db.SigningProfiles.FindAsync(context.SigningProfileId);
+        if (signingProfile?.IssuerId == null)
+            await ThrowReenrollRejectedAsync(
+                "The EST signing profile has no issuing CA configured, so the presenting certificate's issuer cannot be verified.",
+                caLabel, sourceIp, clientCert);
+
+        var caCertEntity = await _db.Certificates
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CertificateId == signingProfile!.IssuerId);
+        if (caCertEntity == null)
+            await ThrowReenrollRejectedAsync(
+                "The issuing CA certificate configured for this EST signing profile is missing, so issuance cannot be verified.",
+                caLabel, sourceIp, clientCert);
+
+        System.Security.Cryptography.X509Certificates.X509Certificate2? caCert = null;
+        try
+        {
+            caCert = LoadIssuerCertificate(caCertEntity!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "EST re-enrollment could not load the issuing CA certificate {CertificateId}; rejecting the renewal.",
+                caCertEntity!.CertificateId);
+        }
+        if (caCert == null)
+            await ThrowReenrollRejectedAsync(
+                "The issuing CA certificate could not be parsed, so issuance cannot be verified.",
+                caLabel, sourceIp, clientCert);
+
+        Guid verifiedIssuerCertificateId;
+        // Bound to a non-nullable local because ThrowReenrollRejectedAsync always throws but,
+        // being an awaited Task-returning method, cannot tell the compiler so — leaving caCert
+        // flagged as possibly-null at the chain call below. Asserting once here is clearer than
+        // a null-forgiving operator on the argument, where it would read as suppressing exactly
+        // the fail-open this method exists to close.
+        using (var anchorCert = caCert!)
+        {
+            // Honour the same operator switch the mTLS login path uses. When OCSP is not
+            // required we still catch revocation through the DB gate immediately below.
+            var requireRevocationCheck = (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck;
+            if (!X509ChainValidationUtil.ValidateAgainstAnchor(
+                    clientCert, anchorCert, requireRevocationCheck, out var chainErrors))
+            {
+                _logger.LogWarning(
+                    "EST re-enrollment chain validation failed for subject '{Subject}' against CA '{CaSubject}': {ChainErrors}",
+                    clientCert.Subject, caCertEntity!.SubjectDN, chainErrors);
+                await ThrowReenrollRejectedAsync(
+                    "Client certificate does not chain to the CA being re-enrolled against.", caLabel, sourceIp, clientCert);
+            }
+            verifiedIssuerCertificateId = caCertEntity!.CertificateId;
+        }
+
+        // 3. Verify the client certificate is not revoked (check our DB).
+        //    Scoped to the issuer we just verified: serial numbers are unique only within one
+        //    issuer's namespace, so the old "first row whose SerialNumber matches" lookup could
+        //    land on an unrelated CA's row. Where two rows share a serial that meant the revoked
+        //    one could be passed over - an evasion - and it could also reject a healthy renewal
+        //    because some other CA revoked the same serial. Rows with no IssuerCertificateId
+        //    (legacy, pre-FK) are still considered so the check fails closed for them.
+        var clientSerialHex = clientCert.SerialNumber?.ToUpperInvariant();
+        if (!string.IsNullOrEmpty(clientSerialHex))
+        {
+            var serialMatches = await _db.Certificates
+                .AsNoTracking()
+                .Where(c => c.SerialNumber == clientSerialHex)
+                .Select(c => new { c.IssuerCertificateId, c.Revoked })
+                .ToListAsync();
+            if (serialMatches.Any(c => c.Revoked
+                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
+                await ThrowReenrollRejectedAsync("Client certificate has been revoked and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
+        }
+
+        // 4. Only allow re-enrollment within the last 30% of the validity period
+        var totalValidity = clientCert.NotAfter - clientCert.NotBefore;
+        var renewalWindowStart = clientCert.NotBefore + TimeSpan.FromTicks((long)(totalValidity.Ticks * 0.70));
+        if (now < renewalWindowStart)
+            await ThrowReenrollRejectedAsync(
+                $"Re-enrollment is only allowed within the renewal window (last 30% of validity). " +
+                $"Renewal opens on {renewalWindowStart:u}.", caLabel, sourceIp, clientCert);
+
+        // 5. Verify the CSR subject matches the original certificate subject.
+        //    Compared as parsed ASN.1 names, not as normalized strings: this is the gate that
+        //    decides what identity the renewed certificate carries, so it must not rest on a
+        //    text heuristic. See TryParseCsrSubject for what the old string path allowed.
+        var csrPem = DecodeCsrFromBase64(base64Csr);
+        var csrSubject = TryParseCsrSubject(csrPem);
+        var certSubject = TryParseCertificateSubject(clientCert.RawData);
+        if (csrSubject == null || certSubject == null)
+            await ThrowReenrollRejectedAsync(
+                "The subject DN of the CSR or of the presented certificate could not be parsed; re-enrollment cannot verify identity.",
+                caLabel, sourceIp, clientCert);
+        // inOrder: true - RDN sequence order is part of a DN's identity; a reordered DN is a
+        // different name and must not be accepted as "the same subject".
+        if (!csrSubject!.Equivalent(certSubject!, true))
+            await ThrowReenrollRejectedAsync(
+                "CSR subject must match the original certificate subject for re-enrollment.", caLabel, sourceIp, clientCert);
 
         return await SimpleEnrollAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername);
     }
@@ -381,29 +468,71 @@ public class EstService : IEstService
     }
 
     /// <summary>
-    /// RFC 2253 canonical form via BouncyCastle's <see cref="X509Name"/>
-    /// equivalence. The old heuristic (split-on-comma, upper, sort) broke on escaped commas
-    /// (<c>CN=Doe\, Jane</c>) and multi-value RDNs (<c>CN=a+OU=b</c>). Falling back to the
-    /// old behaviour on parse failure keeps renewal working for malformed inputs rather than
-    /// rejecting with a confusing error. Equivalence check via <see cref="X509Name.Equivalent(X509Name, bool)"/>
-    /// from the caller.
+    /// Materializes a stored CA certificate row as an
+    /// <see cref="System.Security.Cryptography.X509Certificates.X509Certificate2"/> for use as a
+    /// chain trust anchor. Prefers the stored DER (<c>RawCertificate</c>) and falls back to the
+    /// PEM column for rows written before DER was persisted. Throws when the row carries neither,
+    /// so the caller rejects the renewal rather than silently skipping the issuer check.
+    /// Callers own the returned instance and must dispose it.
     /// </summary>
-    private static string NormalizeDn(string dn)
+    private static System.Security.Cryptography.X509Certificates.X509Certificate2 LoadIssuerCertificate(
+        CertificateEntity entity)
     {
-        if (string.IsNullOrWhiteSpace(dn)) return string.Empty;
+        if (entity.RawCertificate is { Length: > 0 } der)
+            return System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(der);
+        if (!string.IsNullOrWhiteSpace(entity.Pem))
+            return System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(entity.Pem);
+        throw new InvalidOperationException(
+            $"CA certificate row {entity.CertificateId} contains neither DER nor PEM certificate data.");
+    }
+
+    /// <summary>
+    /// Parses a PKCS#10 CSR and returns its subject as a BouncyCastle
+    /// <see cref="X509Name"/>, or <c>null</c> when the CSR cannot be parsed.
+    /// <para>
+    /// Re-enrollment compares subjects as parsed ASN.1 names rather than as normalized DN
+    /// strings. The previous <c>NormalizeDn</c> helper rendered both sides to text and, when
+    /// BouncyCastle's parser threw, fell back to "split on comma, upper-case, sort" - a heuristic
+    /// that discards RDN order, treats an escaped comma inside a value as a separator, and cannot
+    /// see multi-valued RDNs. That fallback was tolerable while it only had to keep renewal
+    /// convenient, but it is now load-bearing for identity, so both sides are parsed properly and
+    /// an unparseable name is a rejection instead of a guess.
+    /// </para>
+    /// </summary>
+    private static X509Name? TryParseCsrSubject(string csrPem)
+    {
         try
         {
-            var x500 = new X509Name(dn);
-            return x500.ToString(reverse: true, X509Name.RFC2253Symbols).ToUpperInvariant();
+            using var reader = new StringReader(csrPem);
+            var request = new Org.BouncyCastle.OpenSsl.PemReader(reader).ReadObject()
+                as Org.BouncyCastle.Pkcs.Pkcs10CertificationRequest;
+            return request?.GetCertificationRequestInfo().Subject;
         }
         catch
         {
-            // Defensive fallback for malformed DNs
-            var parts = dn.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(p => p.Trim().ToUpperInvariant())
-                .OrderBy(p => p)
-                .ToArray();
-            return string.Join(",", parts);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Parses DER certificate bytes and returns the subject as a BouncyCastle
+    /// <see cref="X509Name"/>, or <c>null</c> when the certificate cannot be parsed. Reading the
+    /// name from the certificate's own ASN.1 rather than from
+    /// <c>X509Certificate2.Subject</c> also removes a format mismatch: .NET and BouncyCastle
+    /// render some attribute types differently (for example <c>S=</c> versus <c>ST=</c>), which
+    /// made a text comparison between a .NET-rendered certificate subject and a
+    /// BouncyCastle-rendered CSR subject unreliable.
+    /// </summary>
+    private static X509Name? TryParseCertificateSubject(byte[] der)
+    {
+        try
+        {
+            var parsed = new X509CertificateParser().ReadCertificate(der);
+            return parsed?.SubjectDN;
+        }
+        catch
+        {
+            return null;
         }
     }
 

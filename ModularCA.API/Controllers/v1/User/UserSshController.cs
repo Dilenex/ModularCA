@@ -6,6 +6,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using System.Text.Json;
 
 namespace ModularCA.API.Controllers.v1.User;
@@ -52,6 +53,10 @@ public class UserSshController(
     /// Defaults the KeyId to the authenticated user's username when not provided.
     /// Requires an SshRequestProfileId to derive signing and cert profiles from the
     /// request profile's allowed lists; validates that approval is not required.
+    /// The cert profile's AllowedPrincipalPatterns are matched via <see cref="ProfileRegex"/> so a
+    /// caller-supplied principal cannot trigger catastrophic backtracking in an operator-authored
+    /// pattern (bounded match timeout), and a pattern that times out or does not compile is treated
+    /// as "did not match" — the request is refused rather than issued unchecked.
     /// </summary>
     [HttpPost("sign-user")]
     public async Task<IActionResult> SignUserKey([FromBody] UserSshSignRequest request)
@@ -172,7 +177,7 @@ public class UserSshController(
         {
             foreach (var principal in request.Principals)
             {
-                if (!patterns.Any(p => System.Text.RegularExpressions.Regex.IsMatch(principal, p)))
+                if (!patterns.Any(p => ProfileRegex.IsMatch(principal, p)))
                     return BadRequest(new { error = $"Principal '{principal}' does not match any allowed pattern" });
             }
         }

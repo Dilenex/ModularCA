@@ -14,7 +14,6 @@ using ModularCA.Shared.Models.Csr;
 using ModularCA.Shared.Models.RequestProfiles;
 using ModularCA.Shared.Utils;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -76,8 +75,11 @@ public class AdminCertSignRequestController(
 
     /// <summary>
     /// Generates a new certificate signing request from the provided parameters.
+    /// Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
+    /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Generate([FromBody] CreateCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -118,6 +120,11 @@ public class AdminCertSignRequestController(
     /// <summary>
     /// Validates parsed CSR subject and SAN fields against a request profile's SubjectDnRules
     /// and SanRules. Returns per-field validation results (valid/warning/error) without storing anything.
+    /// This is a preview endpoint, but the profile patterns it runs are operator-authored and the
+    /// values are caller-supplied, so every match goes through <see cref="ProfileRegex"/> under a
+    /// bounded timeout. A pattern that times out or does not compile yields "error" (never "valid")
+    /// with a message pointing at the profile, so a broken profile surfaces as broken here instead
+    /// of previewing as a pass and then behaving differently at issuance time.
     /// </summary>
     [HttpPost("validate-against-profile")]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
@@ -217,22 +224,38 @@ public class AdminCertSignRequestController(
                 {
                     if (!string.IsNullOrWhiteSpace(typeRule.Regex))
                     {
-                        try
+                        // ProfileRegex bounds the match (ReDoS guard) and tells us *why* a pattern
+                        // did not pass. A pattern that cannot be evaluated used to be reported as
+                        // "valid" so as not to penalise the user — but that made a broken profile
+                        // look like a passing one, and the same value would then be rejected (or
+                        // silently unchecked) at issuance time. A non-evaluable pattern is now an
+                        // error against the profile, with a message that blames the profile.
+                        switch (ProfileRegex.Evaluate(san.Value, typeRule.Regex))
                         {
-                            if (!Regex.IsMatch(san.Value, typeRule.Regex))
-                            {
+                            case ProfileRegexOutcome.Match:
+                                sanResult.Status = "valid";
+                                break;
+                            case ProfileRegexOutcome.NoMatch:
                                 sanResult.Status = "error";
                                 sanResult.Message = $"Value does not match required pattern: {typeRule.Regex}";
                                 response.Valid = false;
-                            }
-                            else
-                            {
-                                sanResult.Status = "valid";
-                            }
-                        }
-                        catch
-                        {
-                            sanResult.Status = "valid"; // Invalid regex in profile, don't penalize the user
+                                break;
+                            case ProfileRegexOutcome.Timeout:
+                                Log.Warning(
+                                    "ValidateAgainstProfile: SAN pattern for type '{SanType}' in profile {ProfileId} timed out after {Timeout}ms; reporting as unevaluable.",
+                                    san.Type, request.RequestProfileId, ProfileRegex.MatchTimeout.TotalMilliseconds);
+                                sanResult.Status = "error";
+                                sanResult.Message = $"The profile's pattern for SAN type '{san.Type}' took too long to evaluate and may be unsafe; this value could not be validated. Ask an administrator to review the profile.";
+                                response.Valid = false;
+                                break;
+                            default:
+                                Log.Warning(
+                                    "ValidateAgainstProfile: SAN pattern for type '{SanType}' in profile {ProfileId} is not a valid regular expression ('{Pattern}'); reporting as unevaluable.",
+                                    san.Type, request.RequestProfileId, typeRule.Regex);
+                                sanResult.Status = "error";
+                                sanResult.Message = $"The profile's pattern for SAN type '{san.Type}' is not a valid regular expression; this value could not be validated. Ask an administrator to review the profile.";
+                                response.Valid = false;
+                                break;
                         }
                     }
                     else
@@ -303,6 +326,12 @@ public class AdminCertSignRequestController(
 
     /// <summary>
     /// Validates a single subject DN field value against its rule's regex and max length constraints.
+    /// The pattern comes from the profile (operator-authored) and the value from the requester, so
+    /// the match runs through <see cref="ProfileRegex"/> under a bounded timeout — an untimed match
+    /// here would let a crafted value plus a backtracking-prone pattern pin a CPU core.
+    /// A pattern that cannot be evaluated (uncompilable, or so expensive it times out) is reported
+    /// as an error naming the profile as the cause. It previously swallowed the exception and left
+    /// the field marked "valid", which presented a broken profile as a passing one.
     /// </summary>
     private static FieldValidationResult ValidateFieldValue(SubjectDnFieldRule rule, string value)
     {
@@ -317,18 +346,21 @@ public class AdminCertSignRequestController(
 
         if (!string.IsNullOrWhiteSpace(rule.Regex))
         {
-            try
+            switch (ProfileRegex.Evaluate(value, rule.Regex))
             {
-                if (!Regex.IsMatch(value, rule.Regex))
-                {
+                case ProfileRegexOutcome.Match:
+                    break;
+                case ProfileRegexOutcome.NoMatch:
                     result.Status = "error";
                     result.Message = $"Value does not match required pattern: {rule.Regex}";
                     return result;
-                }
-            }
-            catch
-            {
-                // Invalid regex in the profile — don't penalize the user
+                default:
+                    Log.Warning(
+                        "ValidateFieldValue: profile pattern for field '{Field}' could not be evaluated ('{Pattern}'); reporting the field as unevaluable.",
+                        rule.Field, rule.Regex);
+                    result.Status = "error";
+                    result.Message = $"The profile's pattern for '{rule.Field}' could not be evaluated (invalid or too slow); this value could not be validated. Ask an administrator to review the profile.";
+                    return result;
             }
         }
 
@@ -345,8 +377,11 @@ public class AdminCertSignRequestController(
     /// <summary>
     /// Uploads an externally-generated PEM-encoded CSR for processing, with optional
     /// subject and SAN overrides that replace the CSR's original values during issuance.
+    /// Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
+    /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost("upload")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> UploadCsrRequest([FromBody] UploadCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();

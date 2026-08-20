@@ -246,10 +246,19 @@ public static class BootstrapDatabaseSetup
             {
                 Enabled = network?.MtlsEnabled ?? false,
                 AuthSubdomain = network?.MtlsAuthSubdomain ?? "",
-                // Empty by default. The SNI-gated design never requests a client cert on
-                // the main hostname, so any path listed here would 403 every JWT request.
-                // Only populate when fronting with a reverse proxy that forwards client certs.
+                // RequiredPaths: empty by default. The SNI-gated design never requests a
+                // client cert on the main hostname, so any path listed here would 403 every
+                // JWT request. Only populate when fronting with a reverse proxy that
+                // forwards client certs.
                 RequiredPaths = Array.Empty<string>(),
+                // TrustedCaCertPaths: intentionally empty even when the operator ticked
+                // "enable mTLS" in the wizard. At this point in bootstrap no CA group has an
+                // mTLS signing CA assigned yet and there is nothing to export, so there is no
+                // honest value to write. Startup treats an empty list as "seed anchors from
+                // the enrolled mTLS signing CAs in the database" (see the trust-anchor block
+                // in StartModularCA.cs), which is the correct anchor set for an instance that
+                // issues its own client certificates. Populate this only to pin an external
+                // or narrower trust set — doing so disables the database fallback.
                 TrustedCaCertPaths = Array.Empty<string>()
             },
             WebAuthn = new

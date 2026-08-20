@@ -19,6 +19,7 @@ using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using System.Text;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -86,7 +87,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 cert = await _dbContext.Certificates
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.SerialNumber == serial);
+                    .ResolveBySerialOrNullAsync(serial);
             }
             if (cert == null)
                 return NotFound();
@@ -138,7 +139,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             var certName = CertificateUtil.ParseCnFromPem(cert);
             var accept = Request.Headers.Accept.ToString().ToLowerInvariant();
             var certSerial = CertificateUtil.FormatSerialNumber(certDer.SerialNumber);
-            var certEntry = await _dbContext.Certificates.Where(c => c.SerialNumber == certSerial).FirstOrDefaultAsync();
+            var certEntry = await _dbContext.Certificates.ResolveBySerialOrNullAsync(certSerial);
 
             if (certEntry == null)
             {
@@ -426,7 +427,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
             var certSerial2 = CertificateUtil.FormatSerialNumber(certDer.SerialNumber);
-            var certEntry = await _dbContext.Certificates.Where(c => c.SerialNumber == certSerial2).FirstOrDefaultAsync();
+            var certEntry = await _dbContext.Certificates.ResolveBySerialOrNullAsync(certSerial2);
 
             if (certEntry == null)
             {
@@ -501,7 +502,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
-            var certEntry = await _dbContext.Certificates.Where(c => c.SerialNumber == CertificateUtil.FormatSerialNumber(certDer.SerialNumber)).FirstOrDefaultAsync();
+            var certEntry = await _dbContext.Certificates.ResolveBySerialOrNullAsync(CertificateUtil.FormatSerialNumber(certDer.SerialNumber));
 
             if (certEntry == null)
             {
@@ -580,7 +581,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
-            var certEntry = await _dbContext.Certificates.Where(c => c.SerialNumber == CertificateUtil.FormatSerialNumber(certDer.SerialNumber)).FirstOrDefaultAsync();
+            var certEntry = await _dbContext.Certificates.ResolveBySerialOrNullAsync(CertificateUtil.FormatSerialNumber(certDer.SerialNumber));
 
             if (certEntry == null)
             {
@@ -663,7 +664,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (certId.HasValue)
                 cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId.Value);
             else if (!string.IsNullOrWhiteSpace(serial))
-                cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+                cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
             if (cert == null)
                 return NotFound();
 

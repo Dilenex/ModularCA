@@ -8,6 +8,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Management;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Admin.Management
 {
@@ -35,7 +36,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpGet("serial/{serial}")]
         public async Task<IActionResult> GetBySerial(string serial)
         {
-            var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            var cert = await _db.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
             if (cert == null) return NotFound(new { error = "Certificate not found." });
 
             // The cert→CA navigation is a shadow FK that isn't populated, so resolve the CA via real
@@ -152,7 +153,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!Guid.TryParse(request.UserId, out var targetUserId))
                 return BadRequest(new { error = "A valid userId is required." });
 
-            var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            var cert = await _db.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
             if (cert == null) return NotFound(new { error = "Certificate not found." });
 
             var manage = string.Equals(request.AccessLevel, "Manage", StringComparison.OrdinalIgnoreCase);
@@ -181,7 +182,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!Guid.TryParse(request.UserId, out var targetUserId))
                 return BadRequest(new { error = "A valid userId is required." });
 
-            var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+            var cert = await _db.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
             if (cert == null) return NotFound(new { error = "Certificate not found." });
 
             var ok = await _accessAssignment.RevokeCertificateAccessAsync(targetUserId, cert.CertificateId);

@@ -10,6 +10,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Revocation;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -113,21 +114,39 @@ public class AdminRevocationController(
     /// failed revocation attempts.
     /// </summary>
     [HttpPost("serial/{serial}/revoke")]
-    public async Task<IActionResult> RevokeByCertSerial([FromBody] RevokeCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> RevokeByCertSerial(string serial, [FromBody] RevokeCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
-        // KC-06: CA cert revocation uses RevokeCa step-up op; leaf certs use RevokeCert.
-        var cert = await _dbContext.Certificates.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == request.SerialNumber);
-        if (cert == null) return NotFound(new { error = "Certificate not found." });
+        // The {serial} route segment was declared but never bound, so the body's SerialNumber
+        // governed entirely: a request to /serial/AAAA/revoke carrying BBBB acted on BBBB while
+        // every access log, proxy trace and metric recorded AAAA. Step-up is validated against the
+        // body value too, so this was never an authorization bypass — but on a CA, an audit trail
+        // that names the wrong certificate is its own problem. Bind it and require agreement.
+        if (!string.IsNullOrWhiteSpace(serial)
+            && !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "Serial number in the URL does not match the request body." });
 
-        var stepUpOp = cert.IsCA ? StepUpOps.RevokeCa : StepUpOps.RevokeCert;
+        // Resolve the target ONCE, then key every subsequent step off the primary key.
+        //
+        // This method used to look the serial up four separate times — here, inside the tenant
+        // fence, inside the revocation service, and again for audit attribution. Because a serial
+        // is unique only per issuer (the unique index is (SerialNumber, Issuer)), those were four
+        // independent "give me any row with this serial" queries with no defined ordering, and
+        // nothing guaranteed they agreed. A serial present under two issuers could therefore have
+        // the step-up requirement and the tenant check evaluated against one certificate while the
+        // revocation landed on the other — a confused deputy across the tenant boundary, not just
+        // a cosmetically wrong row.
+        var (cert, resolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
+        if (resolveError != null) return resolveError;
+
+        // KC-06: CA cert revocation uses RevokeCa step-up op; leaf certs use RevokeCert.
+        var stepUpOp = cert!.IsCA ? StepUpOps.RevokeCa : StepUpOps.RevokeCert;
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(null, request.SerialNumber);
+        var fence = await EnforceTenantFenceForCertAsync(cert.CertificateId, null);
         if (fence != null) return fence;
 
         // KC-06: if the cert is a CA cert, check if the tenant requires a ceremony.
@@ -140,15 +159,17 @@ public class AdminRevocationController(
         Shared.Interfaces.RevocationResult result;
         try
         {
+            // Pass the resolved ID, not the serial, so the service acts on the exact row this
+            // request authorized rather than re-resolving and possibly selecting a different one.
             result = await _revocationService.RevokeCertificateAsync(
-                null, request.SerialNumber, request.Reason, request.InvalidityDate);
+                cert.CertificateId, null, request.Reason, request.InvalidityDate);
         }
         catch (Exception ex)
         {
-            await TryAuditRevocationFailureAsync(cert, null, request.SerialNumber, request.Reason, ex);
+            await TryAuditRevocationFailureAsync(cert, cert.CertificateId, request.SerialNumber, request.Reason, ex);
             throw;
         }
-        var caInfoBySn = await ResolveCaFromSerialAsync(request.SerialNumber);
+        var caInfoBySn = await ResolveCaFromCertIdAsync(cert.CertificateId);
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber, new { request.Reason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -191,18 +212,24 @@ public class AdminRevocationController(
 
         foreach (var serial in request.SerialNumbers.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
         {
-            var cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
-            if (cert == null) { results.Add(new { serialNumber = serial, status = "not_found" }); skipped++; continue; }
+            // Same resolve-once rule as the single-serial path. An ambiguous serial is reported
+            // per-entry as "ambiguous" and skipped rather than aborting the batch — the operator
+            // can re-submit that one by certificate ID.
+            var resolution = await _dbContext.Certificates.AsNoTracking().ResolveBySerialAsync(serial);
+            if (resolution.Outcome == SerialResolution.NotFound) { results.Add(new { serialNumber = serial, status = "not_found" }); skipped++; continue; }
+            if (resolution.Outcome == SerialResolution.Ambiguous) { results.Add(new { serialNumber = serial, status = "ambiguous" }); skipped++; continue; }
+
+            var cert = resolution.Certificate!;
             if (cert.IsCA) { results.Add(new { serialNumber = serial, status = "skipped_ca" }); skipped++; continue; }
             if (cert.Revoked) { results.Add(new { serialNumber = serial, status = "already_revoked" }); skipped++; continue; }
 
-            var fence = await EnforceTenantFenceForCertAsync(null, serial);
+            var fence = await EnforceTenantFenceForCertAsync(cert.CertificateId, null);
             if (fence != null) { results.Add(new { serialNumber = serial, status = "denied" }); skipped++; continue; }
 
             try
             {
-                await _revocationService.RevokeCertificateAsync(null, serial, request.Reason, request.InvalidityDate);
-                var caInfo = await ResolveCaFromSerialAsync(serial);
+                await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
+                var caInfo = await ResolveCaFromCertIdAsync(cert.CertificateId);
                 await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
                     "Certificate", serial, new { request.Reason, Bulk = true },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -274,27 +301,37 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
     [HttpPost("serial/{serial}/hold")]
-    public async Task<IActionResult> HoldByCertSerial([FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> HoldByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
+        // Route/body agreement — see RevokeByCertSerial for why the {serial} segment is bound.
+        if (!string.IsNullOrWhiteSpace(serial)
+            && !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "Serial number in the URL does not match the request body." });
+
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(null, request.SerialNumber);
+        // Resolve once, then key off the primary key — see RevokeByCertSerial for why a serial
+        // is not a safe identifier to re-resolve at each step.
+        var (holdCert, holdResolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
+        if (holdResolveError != null) return holdResolveError;
+
+        var fence = await EnforceTenantFenceForCertAsync(holdCert!.CertificateId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult holdSnResult;
         try
         {
-            holdSnResult = await _revocationService.HoldCertificateAsync(null, request.SerialNumber);
+            holdSnResult = await _revocationService.HoldCertificateAsync(holdCert.CertificateId, null);
         }
         catch (Exception ex)
         {
-            await TryAuditHoldFailureAsync(AuditActionType.CertificateHeld, null, request.SerialNumber, ex);
+            await TryAuditHoldFailureAsync(AuditActionType.CertificateHeld, holdCert.CertificateId, request.SerialNumber, ex);
             throw;
         }
-        var caInfoHoldSn = await ResolveCaFromSerialAsync(request.SerialNumber);
+        var caInfoHoldSn = await ResolveCaFromCertIdAsync(holdCert.CertificateId);
         await _audit.LogAsync(AuditActionType.CertificateHeld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -359,27 +396,36 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
     [HttpPost("serial/{serial}/unhold")]
-    public async Task<IActionResult> UnholdByCertSerial([FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> UnholdByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
+        // Route/body agreement — see RevokeByCertSerial for why the {serial} segment is bound.
+        if (!string.IsNullOrWhiteSpace(serial)
+            && !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "Serial number in the URL does not match the request body." });
+
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(null, request.SerialNumber);
+        // Resolve once, then key off the primary key — see RevokeByCertSerial for the rationale.
+        var (unholdCert, unholdResolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
+        if (unholdResolveError != null) return unholdResolveError;
+
+        var fence = await EnforceTenantFenceForCertAsync(unholdCert!.CertificateId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult unholdSnResult;
         try
         {
-            unholdSnResult = await _revocationService.UnholdCertificateAsync(null, request.SerialNumber);
+            unholdSnResult = await _revocationService.UnholdCertificateAsync(unholdCert.CertificateId, null);
         }
         catch (Exception ex)
         {
-            await TryAuditHoldFailureAsync(AuditActionType.CertificateUnheld, null, request.SerialNumber, ex);
+            await TryAuditHoldFailureAsync(AuditActionType.CertificateUnheld, unholdCert.CertificateId, request.SerialNumber, ex);
             throw;
         }
-        var caInfoUnholdSn = await ResolveCaFromSerialAsync(request.SerialNumber);
+        var caInfoUnholdSn = await ResolveCaFromCertIdAsync(unholdCert.CertificateId);
         await _audit.LogAsync(AuditActionType.CertificateUnheld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -471,9 +517,18 @@ public class AdminRevocationController(
 
         Shared.Entities.CertificateEntity? cert = null;
         if (certId.HasValue)
+        {
             cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId.Value);
+        }
         else if (!string.IsNullOrWhiteSpace(serial))
-            cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+        {
+            // Ambiguity denies. This method is the tenant isolation boundary, so resolving an
+            // ambiguous serial to an arbitrary row could authorize against a certificate in a
+            // tenant the caller can reach while the operation targets one they cannot.
+            cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
+            if (cert == null)
+                return NotFound();
+        }
         if (cert == null)
             return NotFound();
 
@@ -488,6 +543,41 @@ public class AdminRevocationController(
         if (tenantIds == null || !tenantIds.Contains(config.Ca.TenantId))
             return NotFound();
         return null;
+    }
+
+    /// <summary>
+    /// Resolves a serial number to exactly one certificate, or returns the error response to send.
+    /// <para>
+    /// X.509 scopes serial uniqueness to the issuer, and the schema follows suit — the unique
+    /// index on <c>Certificates</c> is <c>(SerialNumber, Issuer)</c>. A serial is therefore a
+    /// lookup key only when it happens to be unambiguous, and the caller has no way to know that
+    /// without asking. Returning HTTP 409 on ambiguity keeps the operator in control: revoking
+    /// the wrong certificate is unrecoverable, so "tell me which one" is the only safe answer.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// The single matching certificate and a null error, or a null certificate and the
+    /// <see cref="IActionResult"/> to return (404 when nothing matches, 409 when several do).
+    /// </returns>
+    private async Task<(Shared.Entities.CertificateEntity? Cert, IActionResult? Error)> ResolveUniqueCertBySerialAsync(string? serial)
+    {
+        if (string.IsNullOrWhiteSpace(serial))
+            return (null, BadRequest(new { error = "A serial number is required." }));
+
+        var resolution = await _dbContext.Certificates.AsNoTracking().ResolveBySerialAsync(serial);
+
+        if (resolution.Outcome == SerialResolution.NotFound)
+            return (null, NotFound(new { error = "Certificate not found." }));
+
+        if (resolution.Outcome == SerialResolution.Ambiguous)
+            return (null, Conflict(new
+            {
+                error = $"Serial number '{serial}' matches more than one certificate. "
+                      + "Serial numbers are unique only within an issuer — retry using the certificate ID.",
+                ambiguousSerial = serial
+            }));
+
+        return (resolution.Certificate, null);
     }
 
     /// <summary>
@@ -510,7 +600,7 @@ public class AdminRevocationController(
     /// </summary>
     private async Task<(Guid CaId, Guid TenantId)?> ResolveCaFromSerialAsync(string serial)
     {
-        var cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
+        var cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
         if (cert?.SigningProfileId == null) return null;
         var config = await _dbContext.CaProtocolConfigs
             .Include(pc => pc.Ca)

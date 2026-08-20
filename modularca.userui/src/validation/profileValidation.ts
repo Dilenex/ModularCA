@@ -136,7 +136,12 @@ export function validateAgainstProfileClient(
                         result.valid = false;
                     }
                 } catch {
-                    // Mirror server: fail open for invalid SAN regex (server logs and proceeds with valid).
+                    // Mirror server: an un-evaluable profile pattern is an error against the
+                    // profile, not a pass. (The server also time-boxes the match; the browser
+                    // cannot, so a pathological pattern only costs the user's own tab.)
+                    sanResult.status = 'error';
+                    sanResult.message = `The profile's pattern for SAN type '${san.type}' could not be evaluated; this value could not be validated. Ask an administrator to review the profile.`;
+                    result.valid = false;
                 }
             }
         }

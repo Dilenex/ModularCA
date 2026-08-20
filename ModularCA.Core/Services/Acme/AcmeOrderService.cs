@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -261,17 +261,44 @@ public class AcmeOrderService(
     }
 
     /// <summary>
-    /// Retrieves the account ID that owns the ACME order associated with the given certificate serial number.
-    /// Returns null if no ACME order is linked to that serial.
+    /// Retrieves the account ID that owns the ACME order associated with the given certificate
+    /// serial number. Returns null if no ACME order is linked to that serial, or if the serial
+    /// is linked to more than one order.
+    /// <para>
+    /// This is the ownership gate for ACME revocation, so an ambiguous serial must not resolve to
+    /// an arbitrary order. A serial is unique only within an issuer, and picking either candidate
+    /// would mean authorizing the revocation against a different certificate than the caller
+    /// presented. Returning null denies, which is the correct answer when ownership cannot be
+    /// established.
+    /// </para>
     /// </summary>
-    public async Task<Guid?> GetAccountIdForCertificateSerialAsync(string serialNumber)
+    public async Task<Guid?> GetAccountIdForCertificateSerialAsync(string serialNumber, byte[]? presentedDer = null)
     {
-        var order = await _db.AcmeOrders
+        var orders = await _db.AcmeOrders
             .Include(o => o.Certificate)
-            .FirstOrDefaultAsync(o => o.CertificateId != null
+            .Where(o => o.CertificateId != null
                 && o.Certificate != null
-                && o.Certificate.SerialNumber == serialNumber);
-        return order?.AccountId;
+                && o.Certificate.SerialNumber == serialNumber)
+            .Take(2)
+            .ToListAsync();
+
+        if (orders.Count != 1) return null;
+
+        // Bind the decision to the exact certificate the caller presented.
+        //
+        // RFC 8555 §7.6 has the client send the whole certificate, but matching only its serial
+        // means the check answers "some certificate with this serial belongs to you" rather than
+        // "this certificate belongs to you". A serial is unique only within an issuer, so those
+        // are not the same question. Comparing the DER closes the gap for free — a legitimate
+        // client is presenting the very bytes we issued.
+        if (presentedDer is { Length: > 0 })
+        {
+            var stored = orders[0].Certificate?.RawCertificate;
+            if (stored == null || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(stored, presentedDer))
+                return null;
+        }
+
+        return orders[0].AccountId;
     }
 
     /// <summary>

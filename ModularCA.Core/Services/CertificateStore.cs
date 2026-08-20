@@ -5,6 +5,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services;
 
@@ -76,7 +77,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
     {
         var entity = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serialNumber);
+            .ResolveBySerialOrNullAsync(serialNumber);
 
         if (entity == null) return null;
 
@@ -184,7 +185,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
     {
         var entity = await _dbContext.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SerialNumber == serialNumber);
+            .ResolveBySerialOrNullAsync(serialNumber);
         if (entity == null) return null;
         return new CertificateInfoModel
         {
@@ -241,7 +242,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
 
     public async Task RevokeCertificateAsync(string serialNumber, string reason)
     {
-        var entity = await _dbContext.Certificates.FirstOrDefaultAsync(c => c.SerialNumber == serialNumber);
+        var entity = await _dbContext.Certificates.ResolveBySerialOrNullAsync(serialNumber);
 
         if (entity == null)
             throw new InvalidOperationException("Certificate not found.");
@@ -280,11 +281,11 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
 
     public async Task<byte[]?> GetRawCertificateAsync(string serialNumber)
     {
-        var entity = await _dbContext.Certificates
+        // Resolved as a whole row rather than a projection so the serial's uniqueness can be
+        // checked; RawCertificate is the only column read afterwards.
+        var entity = (await _dbContext.Certificates
             .AsNoTracking()
-            .Where(c => c.SerialNumber == serialNumber)
-            .Select(c => c.RawCertificate)
-            .FirstOrDefaultAsync();
+            .ResolveBySerialOrNullAsync(serialNumber))?.RawCertificate;
 
         return entity;
     }

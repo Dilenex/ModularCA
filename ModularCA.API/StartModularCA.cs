@@ -1431,17 +1431,131 @@ else
             // when a cert is presented; additional per-credential validation
             // (thumbprint, bind to enrolled SigningCaId) still happens in the
             // mTLS login controllers.
+            //
+            // Every load failure is collected rather than swallowed. A config
+            // that lists three CA paths of which none resolve used to leave an
+            // empty anchor set behind a one-line console notice — and an empty
+            // anchor set is indistinguishable, at handshake time, from "mTLS was
+            // never configured". The failures are reported to the operator and
+            // then folded into the fail-fast check below, so a typo'd or
+            // unreadable anchor path stops the server instead of quietly
+            // degrading the transport gate.
             var mtlsTrustedCas = new List<System.Security.Cryptography.X509Certificates.X509Certificate2>();
+            var mtlsAnchorLoadFailures = new List<string>();
             foreach (var path in config.Mtls.TrustedCaCertPaths ?? new List<string>())
             {
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                // Relative anchor paths resolve against the application base directory
+                // (same convention as Https.CertificatePath above) rather than the
+                // process working directory, which differs between a console run, a
+                // systemd unit, and a Windows service.
+                var anchorPath = Path.IsPathRooted(path)
+                    ? path
+                    : Path.Combine(AppContext.BaseDirectory, path);
+
                 try
                 {
-                    if (File.Exists(path))
-                        mtlsTrustedCas.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificateFromFile(path));
+                    if (!File.Exists(anchorPath))
+                    {
+                        mtlsAnchorLoadFailures.Add($"{path} — file not found (resolved to {anchorPath})");
+                        continue;
+                    }
+                    mtlsTrustedCas.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificateFromFile(anchorPath));
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[mTLS] Failed to load trusted CA cert {path}: {ex.Message}");
+                    mtlsAnchorLoadFailures.Add($"{path} — {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            if (mtlsAnchorLoadFailures.Count > 0)
+            {
+                Console.WriteLine("[mTLS WARNING] One or more Mtls.TrustedCaCertPaths entries could not be loaded:");
+                foreach (var failure in mtlsAnchorLoadFailures)
+                    Console.WriteLine($"               {failure}");
+                Log.Warning("[SECURITY] {Count} configured mTLS trust anchor(s) failed to load: {Failures}",
+                    mtlsAnchorLoadFailures.Count, string.Join(" | ", mtlsAnchorLoadFailures));
+            }
+
+            // Fall back to the enrolled mTLS signing CAs recorded in the database when
+            // config.yaml names no anchor paths.
+            //
+            // Every mTLS client certificate this system will ever see was issued by one of
+            // its own CAs: MtlsController signs them with the CA named by the requesting
+            // user's group (CaGroups.MtlsSigningCaId), and MtlsCredential.SigningCaId
+            // records which one. The database therefore already holds the exact and complete
+            // anchor set, and requiring the operator to hand-export those same certificates
+            // to PEM files and list their paths is busywork that the setup wizard does not
+            // do — it writes Mtls.Enabled from the operator's checkbox but hardcodes
+            // TrustedCaCertPaths to empty (BootstrapDatabaseSetup.cs), so the wizard's own
+            // happy path could never satisfy a config-only anchor requirement.
+            //
+            // Config wins when present. An operator who lists explicit paths is asserting a
+            // narrower or external trust set (e.g. fronting with a proxy that forwards certs
+            // from a CA this instance does not run), and silently widening that back out to
+            // "every CA in the database" would defeat the point.
+            //
+            // Setup mode is skipped: the schema may not exist yet, and the fail-fast below
+            // is itself setup-exempt, so there is nothing to feed.
+            if (mtlsTrustedCas.Count == 0 && !isSetupMode && config.Mtls.Enabled)
+            {
+                try
+                {
+                    var anchorDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
+                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .Options;
+                    using var anchorDb = new ModularCADbContext(anchorDbOptions);
+
+                    // Resolved in three steps rather than one joined query: the FK columns are
+                    // Guid? (a group may have no mTLS CA, an SSH-only CA has no X.509 cert) and
+                    // threading nullable keys through Join is both harder to read and easy to get
+                    // subtly wrong. Three small round-trips at startup cost nothing.
+                    var mtlsCaIds = anchorDb.CaGroups
+                        .AsNoTracking()
+                        .Where(g => g.MtlsSigningCaId != null)
+                        .Select(g => g.MtlsSigningCaId!.Value)
+                        .Distinct()
+                        .ToList();
+
+                    var caCertIds = anchorDb.CertificateAuthorities
+                        .AsNoTracking()
+                        .Where(ca => mtlsCaIds.Contains(ca.Id) && ca.CertificateId != null)
+                        .Select(ca => ca.CertificateId!.Value)
+                        .Distinct()
+                        .ToList();
+
+                    var seededAnchors = anchorDb.Certificates
+                        .AsNoTracking()
+                        .Where(c => caCertIds.Contains(c.CertificateId))
+                        .Select(c => c.RawCertificate)
+                        .ToList();
+
+                    foreach (var raw in seededAnchors)
+                    {
+                        if (raw == null || raw.Length == 0)
+                            continue;
+                        try
+                        {
+                            mtlsTrustedCas.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(raw));
+                        }
+                        catch (Exception ex)
+                        {
+                            mtlsAnchorLoadFailures.Add($"database-seeded anchor — {ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
+
+                    if (mtlsTrustedCas.Count > 0)
+                        Console.WriteLine($"[mTLS] Seeded {mtlsTrustedCas.Count} trust anchor(s) from enrolled mTLS signing CAs (Mtls.TrustedCaCertPaths is empty).");
+                }
+                catch (Exception ex)
+                {
+                    // A read failure here is not the same as "no anchors exist" — say so, so the
+                    // fatal below does not send the operator hunting for a config problem when
+                    // the real cause was an unreachable database at boot.
+                    mtlsAnchorLoadFailures.Add($"database anchor lookup failed — {ex.GetType().Name}: {ex.Message}");
+                    Log.Warning(ex, "[SECURITY] Could not read enrolled mTLS signing CAs for trust-anchor seeding.");
                 }
             }
 
@@ -1462,6 +1576,54 @@ else
                     : !string.IsNullOrWhiteSpace(config.Https.PublicDomain)
                         ? $"{raw}.{config.Https.PublicDomain.Trim()}"
                         : raw;
+            }
+
+            // Fail-fast: mTLS gating without trust anchors is not a working configuration.
+            //
+            // The handshake callback below rejects every client certificate when the
+            // anchor set is empty (nothing can be validated against zero anchors), so an
+            // instance that reaches this point with no anchors from EITHER source —
+            // Mtls.TrustedCaCertPaths or the enrolled-signing-CA fallback seeded above —
+            // would prompt for a certificate on the auth subdomain and then refuse every
+            // one of them, with no explanation anywhere except a TLS alert in the browser.
+            // Refuse to start instead, and name every remedy.
+            //
+            // Scope of the check, deliberately narrow:
+            //   * Setup mode is exempt. A fresh install has no config.yaml at all, so
+            //     Mtls.Enabled is the SystemConfig default (false) and this can't fire —
+            //     but the second setup-mode trigger (config.yaml present, db.yaml not yet
+            //     written) CAN see an operator-authored Mtls block. The wizard must be
+            //     able to boot so the operator can finish bootstrap and fix the config
+            //     from the UI, so the check follows the same !isSetupMode convention as
+            //     the JWT-secret and cron-expression fail-fasts above.
+            //   * An empty AuthSubdomain is exempt. Without a gated SNI hostname the
+            //     listener never sets ClientCertificateRequired, so no client cert is
+            //     ever requested and there is no fail-open to close. That case is already
+            //     covered by the [mTLS WARNING] block further down, which explains why
+            //     mTLS login won't work.
+            if (!isSetupMode && config.Mtls.Enabled && !string.IsNullOrEmpty(authSubdomainFqdn) && mtlsTrustedCas.Count == 0)
+            {
+                Console.Error.WriteLine("[FATAL] Mtls.Enabled=true but no usable client-certificate trust anchors are available.");
+                Console.Error.WriteLine($"        Mtls.TrustedCaCertPaths yielded 0 loadable certificates ({config.Mtls.TrustedCaCertPaths?.Count ?? 0} path(s) configured, {mtlsAnchorLoadFailures.Count} failure(s) recorded).");
+                Console.Error.WriteLine("        The database fallback also produced none: no CA group has an mTLS signing CA");
+                Console.Error.WriteLine("        assigned (CaGroups.MtlsSigningCaId), or the database could not be read.");
+                if (mtlsAnchorLoadFailures.Count > 0)
+                {
+                    Console.Error.WriteLine("        Recorded failures:");
+                    foreach (var failure in mtlsAnchorLoadFailures)
+                        Console.Error.WriteLine($"          - {failure}");
+                }
+                Console.Error.WriteLine("        The TLS handshake on the mTLS auth subdomain would request a client");
+                Console.Error.WriteLine("        certificate and have nothing to validate it against. Refusing to start");
+                Console.Error.WriteLine("        rather than run with an unvalidated client-certificate transport gate.");
+                Console.Error.WriteLine("        Fix by any of:");
+                Console.Error.WriteLine("          - assigning an mTLS signing CA to at least one group in the admin UI");
+                Console.Error.WriteLine("            (Groups -> group -> mTLS signing CA), which seeds anchors automatically, or");
+                Console.Error.WriteLine("          - setting Mtls.TrustedCaCertPaths in config.yaml to the PEM/DER file(s) of");
+                Console.Error.WriteLine("            the CA(s) that issue mTLS client certificates, or");
+                Console.Error.WriteLine("          - setting Mtls.Enabled: false to turn the mTLS login flow off.");
+                Log.Warning("[SECURITY] Startup aborted: Mtls.Enabled=true with an empty effective trust-anchor set (subdomain {Subdomain}).", authSubdomainFqdn);
+                Environment.Exit(1);
             }
 
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
@@ -1489,15 +1651,46 @@ else
                             {
                                 if (cert is not System.Security.Cryptography.X509Certificates.X509Certificate2 x509)
                                     return false;
+
+                                // Fail CLOSED on an empty trust store. Nothing presented here
+                                // can have been validated against zero anchors, so returning
+                                // true would mean "any self-signed certificate completes the
+                                // mTLS handshake" — the transport gate would be decorative and
+                                // the whole burden would silently fall on the login controllers.
+                                // Startup already refuses to come up in this state (see the
+                                // fail-fast above); this is the belt to that suspenders, for the
+                                // case where the anchor list is somehow emptied at runtime.
                                 if (mtlsTrustedCas.Count == 0)
-                                    return true;
+                                    return false;
 
                                 using var buildChain = new System.Security.Cryptography.X509Certificates.X509Chain();
                                 buildChain.ChainPolicy.TrustMode = System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust;
                                 foreach (var ca in mtlsTrustedCas)
                                     buildChain.ChainPolicy.CustomTrustStore.Add(ca);
-                                buildChain.ChainPolicy.RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck;
+
+                                // Revocation: Offline, matching MtlsMiddleware's chain policy.
+                                // A revoked client certificate must not survive the handshake
+                                // just because the authoritative revocation decision happens a
+                                // layer up (MtlsController.Verify → MtlsChainValidator, which
+                                // does an Online check when SecurityPolicy.RequireMtlsOcspCheck
+                                // is set). Offline consults the locally cached/published CRL
+                                // only — no OCSP or CDP fetch on the connection path — so this
+                                // costs no network round trip inside the 10s handshake budget.
+                                //
+                                // The Ignore*RevocationUnknown flags are deliberate: with a cold
+                                // CRL cache Offline mode reports RevocationStatusUnknown and
+                                // Build() would fail every handshake, taking mTLS login down for
+                                // a reason that has nothing to do with the client's standing. So
+                                // an explicit Revoked status is fatal here, while "can't tell"
+                                // defers to the application layer, which is the tier that can
+                                // fetch OCSP and is policy-configurable about failing closed.
+                                buildChain.ChainPolicy.RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.Offline;
                                 buildChain.ChainPolicy.RevocationFlag = System.Security.Cryptography.X509Certificates.X509RevocationFlag.ExcludeRoot;
+                                buildChain.ChainPolicy.VerificationFlags =
+                                    System.Security.Cryptography.X509Certificates.X509VerificationFlags.IgnoreEndRevocationUnknown
+                                    | System.Security.Cryptography.X509Certificates.X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown
+                                    | System.Security.Cryptography.X509Certificates.X509VerificationFlags.IgnoreRootRevocationUnknown;
+
                                 return buildChain.Build(x509);
                             };
                         }

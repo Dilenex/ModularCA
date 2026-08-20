@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Models;
 using ModularCA.Database;
 using ModularCA.Keystore.Adapters;
@@ -21,6 +21,7 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Enums;
 using System.Text;
 using System.Text.Json;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services
 {
@@ -208,7 +209,7 @@ namespace ModularCA.Core.Services
                 caMatch = preResolvedCaCert;
                 caKeyHandle = preResolvedCaKeyHandle;
                 refCACert = await _db.Certificates
-                    .FirstOrDefaultAsync(c => c.CertificateId == csrEntity.SigningProfile.IssuerId)
+                    .FirstOrDefaultAsync(c => c.CertificateId == csrEntity.SigningProfile.IssuerId, cancellationToken)
                     ?? throw new InvalidOperationException("CA certificate entity not found for pre-resolved CA.");
             }
             else
@@ -218,10 +219,10 @@ namespace ModularCA.Core.Services
 
             // Check tenant is enabled — block issuance if the CA's tenant has been disabled
             var issuingCaEntity = await _db.CertificateAuthorities
-                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId);
+                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId, cancellationToken);
             if (issuingCaEntity != null)
             {
-                var caTenant = await _db.Tenants.FindAsync(issuingCaEntity.TenantId);
+                var caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
                 if (caTenant != null && !caTenant.IsEnabled)
                     throw new InvalidOperationException("Certificate issuance is blocked — the tenant is disabled.");
 
@@ -429,7 +430,7 @@ namespace ModularCA.Core.Services
             }
             else if (!string.IsNullOrWhiteSpace(certSN))
             {
-                var certEntity = await _db.Certificates.Where(c => c.SerialNumber == certSN).FirstOrDefaultAsync();
+                var certEntity = await _db.Certificates.ResolveBySerialOrNullAsync(certSN);
                 if (certEntity == null)
                     throw new Exception("Certificate not found.");
 
@@ -705,7 +706,7 @@ namespace ModularCA.Core.Services
             // Link the new certificate to a CSR record so subsequent reissues can find it.
             // Clone the original CSR entity with the new cert's ID.
             var newCertForLink = await _db.Certificates
-                .FirstOrDefaultAsync(c => c.SerialNumber == certModel.SerialNumber);
+                .ResolveBySerialOrNullAsync(certModel.SerialNumber);
             if (newCertForLink != null)
             {
                 var reissueCsr = new CertRequestEntity
@@ -733,7 +734,7 @@ namespace ModularCA.Core.Services
             {
                 var newCertEntity = await _db.Certificates
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.SerialNumber == certModel.SerialNumber);
+                    .ResolveBySerialOrNullAsync(certModel.SerialNumber);
                 if (newCertEntity != null)
                 {
                     await _certificateAccessService.UpdatePermissionsOntoReissuedCertificate(
@@ -787,7 +788,7 @@ namespace ModularCA.Core.Services
                     var sctJson = JsonSerializer.Serialize(sctBase64List);
 
                     var certEntity = await _db.Certificates
-                        .FirstOrDefaultAsync(c => c.SerialNumber == serialNumber);
+                        .ResolveBySerialOrNullAsync(serialNumber);
                     if (certEntity != null)
                     {
                         certEntity.SctJson = sctJson;
@@ -1442,7 +1443,7 @@ namespace ModularCA.Core.Services
             IKeyWrappingPassphraseProvider passphraseProvider)
         {
             var encryptorPrivKeySerial = db.Certificates
-                .FirstOrDefault(c => c.SerialNumber == EncryptionCertSerialNumber);
+                .ResolveBySerialOrNull(EncryptionCertSerialNumber);
             if (encryptorPrivKeySerial == null) throw new InvalidOperationException("Encryptor certificate not found for private key decryption.");
             var encryptorPubKey = new X509CertificateParser();
             var encryptorCert = encryptorPubKey.ReadCertificate(encryptorPrivKeySerial.RawCertificate);
@@ -1477,7 +1478,7 @@ namespace ModularCA.Core.Services
         /// </summary>
         private static async Task SetCsrStatus(ModularCADbContext db, CertRequestEntity csr, string certSN)
         {
-            var cert = await db.Certificates.Where(c => c.SerialNumber == certSN).FirstOrDefaultAsync();
+            var cert = await db.Certificates.ResolveBySerialOrNullAsync(certSN);
             if (cert == null)
                 throw new InvalidOperationException("Certificate not found when setting CSR status.");
 
