@@ -1,4 +1,5 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -44,7 +45,9 @@ namespace ModularCA.Core.Services
                 Name = r.Name,
                 Description = r.Description,
                 AllowedAlgorithms = r.AllowedAlgorithms,
-                AllowedEKUs = r.AllowedEKUs,
+                AllowedEKUs = NormalizeJsonStringArray(r.AllowedEKUs),
+                ExtendedKeyUsageCritical = r.ExtendedKeyUsageCritical,
+                PolicyQualifiersJson = r.PolicyQualifiersJson,
                 IsDefault = r.IsDefault,
                 IssuerId = r.IssuerId,
                 MaxPathLength = r.MaxPathLength,
@@ -78,7 +81,9 @@ namespace ModularCA.Core.Services
             entity.Name = r.Name;
             entity.Description = r.Description;
             entity.AllowedAlgorithms = r.AllowedAlgorithms;
-            entity.AllowedEKUs = r.AllowedEKUs;
+            entity.AllowedEKUs = NormalizeJsonStringArray(r.AllowedEKUs);
+            entity.ExtendedKeyUsageCritical = r.ExtendedKeyUsageCritical;
+            entity.PolicyQualifiersJson = r.PolicyQualifiersJson;
             entity.IsDefault = r.IsDefault;
             entity.IssuerId = r.IssuerId;
             entity.MaxPathLength = r.MaxPathLength;
@@ -163,6 +168,61 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Canonicalises a JSON string array before persisting it.
+        /// <para>
+        /// This write path used to store whatever the client sent, verbatim — unlike
+        /// <c>CertProfileService</c>, which has always normalised. That let malformed values
+        /// accumulate: a client round-tripping a mis-parsed field could persist fragments of a JSON
+        /// array (<c>["[]"</c>, <c>"Server Auth"</c>) or a double-encoded array, and each save
+        /// compounded it. Normalising here makes the next save of an affected profile repair it.
+        /// </para>
+        /// <para>
+        /// Accepts a JSON array (kept as-is), a comma-separated list (converted), or an array whose
+        /// elements are themselves encoded arrays (flattened one level). Entries are trimmed of
+        /// stray brackets and quotes so a fragment resolves to its bare value.
+        /// </para>
+        /// </summary>
+        private static string NormalizeJsonStringArray(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "[]";
+
+            List<string> items;
+            try
+            {
+                items = JsonSerializer.Deserialize<List<string>>(value) ?? new List<string>();
+            }
+            catch (JsonException)
+            {
+                items = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            }
+
+            var flattened = new List<string>();
+            foreach (var item in items)
+            {
+                var trimmed = (item ?? string.Empty).Trim();
+                if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+                {
+                    try
+                    {
+                        var inner = JsonSerializer.Deserialize<List<string>>(trimmed);
+                        if (inner != null) { flattened.AddRange(inner); continue; }
+                    }
+                    catch (JsonException) { /* fall through to scrubbing below */ }
+                }
+                flattened.Add(trimmed);
+            }
+
+            var cleaned = flattened
+                .Select(v => v.Trim('[', ']', '"', ' '))
+                .Where(v => v.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            return JsonSerializer.Serialize(cleaned);
+        }
+
+        /// <summary>
         /// Maps a <see cref="SigningProfileEntity"/> and its associated cert profile IDs to a <see cref="SigningProfileDto"/>.
         /// </summary>
         private static SigningProfileDto MapToDto(SigningProfileEntity entity, List<Guid> certProfileIds) => new()
@@ -172,6 +232,8 @@ namespace ModularCA.Core.Services
             Description = entity.Description,
             AllowedAlgorithms = entity.AllowedAlgorithms,
             AllowedEKUs = entity.AllowedEKUs,
+            ExtendedKeyUsageCritical = entity.ExtendedKeyUsageCritical,
+            PolicyQualifiersJson = entity.PolicyQualifiersJson,
             IsDefault = entity.IsDefault,
             IssuerId = entity.IssuerId,
             MaxPathLength = entity.MaxPathLength,

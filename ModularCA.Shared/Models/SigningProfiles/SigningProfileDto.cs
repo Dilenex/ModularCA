@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.SigningProfiles;
+﻿namespace ModularCA.Shared.Models.SigningProfiles;
 
 /// <summary>
 /// Data transfer object for a signing profile, representing algorithm constraints,
@@ -19,6 +19,12 @@ public class SigningProfileDto
     /// JSON array of allowed extended key usage OIDs.
     /// </summary>
     public string AllowedEKUs { get; set; } = "[]";
+
+    /// <summary>Whether the ExtendedKeyUsage extension is emitted as critical.</summary>
+    public bool ExtendedKeyUsageCritical { get; set; }
+
+    /// <summary>JSON object mapping certificate policy OIDs to their qualifiers.</summary>
+    public string? PolicyQualifiersJson { get; set; }
 
     public bool IsDefault { get; set; }
 

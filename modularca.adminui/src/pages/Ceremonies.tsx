@@ -144,7 +144,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                         {approvalLog.map((entry: any, idx: number) => (
                             <div key={idx} className="flex items-center gap-3 py-1 px-2 bg-gray-100 dark:bg-gray-800 rounded text-xs">
                                 <StatusBadge status={entry.action === 'Approved' ? 'active' : entry.action === 'Rejected' ? 'revoked' : 'disabled'} label={entry.action || entry.type} />
-                                <span className="text-gray-700 dark:text-gray-300">{entry.userName || entry.user || '-'}</span>
+                                <span className="text-gray-700 dark:text-gray-300">{entry.Username || entry.userName || entry.user || '-'}</span>
                                 <span className="text-gray-600 ml-auto">{formatDate(entry.timestamp || entry.date)}</span>
                             </div>
                         ))}

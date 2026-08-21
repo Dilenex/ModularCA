@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.CertProfiles;
+﻿namespace ModularCA.Shared.Models.CertProfiles;
 
 /// <summary>
 /// Request body for creating a new certificate profile.
@@ -57,4 +57,25 @@ public class CreateCertProfileRequest
     /// When true, this profile merges with its parent profile via inheritance.
     /// </summary>
     public bool InheritanceEnabled { get; set; }
+
+    /// <summary>
+    /// Whether wildcard SAN/CN entries may be issued under this profile.
+    /// <para>
+    /// SECURITY-RELEVANT. Enforced at issuance via
+    /// <c>CertificateIssuanceService.ValidateOverridesAgainstProfile</c> and passed to the builder as
+    /// <c>allowWildcardSans</c>. The admin UI has always rendered a checkbox for it and sent the
+    /// value, but it was missing here and unmapped in the service — so an operator UNCHECKING it to
+    /// forbid wildcards saw the change accepted while the profile kept issuing them.
+    /// </para>
+    /// </summary>
+    public bool AllowWildcard { get; set; }
+
+    /// <summary>
+    /// Whether issued certificates are submitted to Certificate Transparency logs. Same story as
+    /// <see cref="AllowWildcard"/>: sent by the UI, previously dropped.
+    /// </summary>
+    public bool CtEnabled { get; set; }
+
+    /// <summary>JSON array of CT log IDs to submit to when <see cref="CtEnabled"/> is set.</summary>
+    public string? CtLogIds { get; set; }
 }

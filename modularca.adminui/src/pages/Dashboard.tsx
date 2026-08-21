@@ -7,6 +7,10 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { useToast } from '../context/ToastContext';
+import {
+    canonicalizeUsages, parseListField, ekuLabel, keyUsageLabel,
+    KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES, EKU_OPTIONS, EKU_ALIASES,
+} from './profileHelpers';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -613,8 +617,8 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Description" value={p.description} />
                             <DetailField label="Validity Min" value={p.validityPeriodMin} />
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
-                            <DetailField label="Key Usages" value={p.keyUsages} />
-                            <DetailField label="Extended Key Usages" value={p.extendedKeyUsages} />
+                            <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES).map(keyUsageLabel).join(', ')} />
+                            <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
                             <DetailField label="Allowed Algorithms" value={parseJsonSafe(p.allowedKeyAlgorithms)} />
                             <DetailField label="Allowed Sizes" value={parseJsonSafe(p.allowedKeySizes)} />
                             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />

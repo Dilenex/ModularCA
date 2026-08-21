@@ -30,6 +30,58 @@ export const EKU_LABELS: Record<string, string> = {
 
 export const ekuLabel = (v: string): string => EKU_LABELS[v] ?? v;
 
+/**
+ * Comparison key for a usage identifier: lowercase, non-alphanumerics removed.
+ * Mirrors IssuanceValidationService.NormalizeUsageKey so the UI and the issuance path agree on
+ * what counts as "the same usage".
+ */
+export const normalizeUsageKey = (v: string): string => v.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+/**
+ * Maps stored usage values onto the canonical option values, dropping anything unrecognisable.
+ *
+ * Necessary because a profile field can hold any of four things by now: the canonical value, the
+ * catalog friendly name, an old display label, or — for rows written while the CSV/JSON parse bug
+ * was live — fragments of a JSON array such as `["[]"` or `"Server Auth"`. Normalising away
+ * punctuation collapses all of those onto the same key, so the toggles show the real selection and
+ * the next save rewrites the field in canonical form. Unresolvable entries are dropped rather than
+ * shown, since they cannot be issued either.
+ */
+export const canonicalizeUsages = (
+    values: string[],
+    canonical: string[],
+    aliases: Record<string, string> = {},
+): string[] => {
+    const lookup = new Map<string, string>();
+    for (const c of canonical) lookup.set(normalizeUsageKey(c), c);
+    for (const [alias, target] of Object.entries(aliases)) lookup.set(normalizeUsageKey(alias), target);
+
+    const out: string[] = [];
+    for (const v of values) {
+        const hit = lookup.get(normalizeUsageKey(v));
+        if (hit && !out.includes(hit)) out.push(hit);
+    }
+    return out;
+};
+
+/** Catalog friendly names + display labels that should resolve to an EKU OID. */
+export const EKU_ALIASES: Record<string, string> = {
+    serverAuth: '1.3.6.1.5.5.7.3.1', 'Server Auth': '1.3.6.1.5.5.7.3.1',
+    clientAuth: '1.3.6.1.5.5.7.3.2', 'Client Auth': '1.3.6.1.5.5.7.3.2',
+    codeSigning: '1.3.6.1.5.5.7.3.3', 'Code Signing': '1.3.6.1.5.5.7.3.3',
+    emailProtection: '1.3.6.1.5.5.7.3.4', 'Email Protection': '1.3.6.1.5.5.7.3.4',
+    timeStamping: '1.3.6.1.5.5.7.3.8', 'Time Stamping': '1.3.6.1.5.5.7.3.8',
+    OCSPSigning: '1.3.6.1.5.5.7.3.9', 'OCSP Signing': '1.3.6.1.5.5.7.3.9',
+};
+
+/** Display labels that should resolve to a catalog key-usage friendly name. */
+export const KEY_USAGE_ALIASES: Record<string, string> = {
+    'Digital Signature': 'digitalSignature',
+    'Key Encipherment': 'keyEncipherment',
+    'Key Cert Sign': 'keyCertSign',
+    'CRL Sign': 'crlSign',
+};
+
 export const KEY_USAGE_LABELS: Record<string, string> = {
     digitalSignature: 'Digital Signature',
     keyEncipherment: 'Key Encipherment',

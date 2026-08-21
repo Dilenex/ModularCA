@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.CertProfiles;
+﻿namespace ModularCA.Shared.Models.CertProfiles;
 
 /// <summary>
 /// Data transfer object for a certificate profile, representing extension templates,
@@ -19,6 +19,15 @@ public class CertProfileDto
     /// Comma-separated OIDs for extended key usages.
     /// </summary>
     public string ExtendedKeyUsages { get; set; } = string.Empty;
+
+    /// <summary>Whether wildcard SAN/CN entries may be issued under this profile.</summary>
+    public bool AllowWildcard { get; set; }
+
+    /// <summary>Whether issued certificates are submitted to Certificate Transparency logs.</summary>
+    public bool CtEnabled { get; set; }
+
+    /// <summary>JSON array of CT log IDs to submit to.</summary>
+    public string? CtLogIds { get; set; }
 
     /// <summary>
     /// Resolved friendly names for the extended key usage OIDs.

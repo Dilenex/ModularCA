@@ -9,6 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
 import {
     KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
+    canonicalizeUsages, EKU_ALIASES, parseListField,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS, SSH_EXTENSION_OPTIONS,
     inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
@@ -469,7 +470,7 @@ const SigningProfilesTab: React.FC = () => {
             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
             <DetailField label="Issuer" value={authorityName(p.issuerId)} />
             <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEKUs ?? p.allowedEkus} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES).map(ekuLabel)} /></div>
             <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
             <p className="text-[11px] text-gray-500 pt-3">Open the full page for all settings or to edit.</p>
         </div>

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -57,6 +57,9 @@ namespace ModularCA.Core.Services
                 IsCaProfile = request.IsCaProfile,
                 KeyUsages = EnforceCaKeyUsages(NormalizeJsonStringArray(request.KeyUsages), request.IsCaProfile),
                 ExtendedKeyUsages = NormalizeJsonStringArray(request.ExtendedKeyUsages),
+                AllowWildcard = request.AllowWildcard,
+                CtEnabled = request.CtEnabled,
+                CtLogIds = request.CtLogIds,
                 ValidityPeriodMin = request.ValidityPeriodMin,
                 ValidityPeriodMax = request.ValidityPeriodMax,
                 AllowedKeyAlgorithms = request.AllowedKeyAlgorithms,
@@ -87,6 +90,9 @@ namespace ModularCA.Core.Services
             profile.IsCaProfile = request.IsCaProfile;
             profile.KeyUsages = EnforceCaKeyUsages(NormalizeJsonStringArray(request.KeyUsages), request.IsCaProfile);
             profile.ExtendedKeyUsages = NormalizeJsonStringArray(request.ExtendedKeyUsages);
+            profile.AllowWildcard = request.AllowWildcard;
+            profile.CtEnabled = request.CtEnabled;
+            profile.CtLogIds = request.CtLogIds;
             profile.ValidityPeriodMin = request.ValidityPeriodMin;
             profile.ValidityPeriodMax = request.ValidityPeriodMax;
             profile.AllowedKeyAlgorithms = request.AllowedKeyAlgorithms;
@@ -201,6 +207,9 @@ namespace ModularCA.Core.Services
             IsCaProfile = profile.IsCaProfile,
             KeyUsages = profile.KeyUsages,
             ExtendedKeyUsages = profile.ExtendedKeyUsages,
+            AllowWildcard = profile.AllowWildcard,
+            CtEnabled = profile.CtEnabled,
+            CtLogIds = profile.CtLogIds,
             ExtendedKeyUsageNames = ekuFriendlyNames,
             ValidityPeriodMin = profile.ValidityPeriodMin,
             ValidityPeriodMax = profile.ValidityPeriodMax,

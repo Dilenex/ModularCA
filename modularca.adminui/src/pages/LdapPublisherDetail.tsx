@@ -16,7 +16,9 @@ function formatDate(d: string | null) {
 function publishFlags(p: any): string {
     const flags: string[] = [];
     if (p.publishCaCertificate) flags.push('CA Cert');
-    if (p.publishCrl) flags.push('CRL');
+    // Wire name is publishCRL — the backend property is PublishCRL and the camelCase policy
+    // lowercases only its leading character. p.publishCrl is always undefined.
+    if (p.publishCRL ?? p.publishCrl) flags.push('CRL');
     if (p.publishDeltaCrl) flags.push('Delta');
     if (p.publishUserCertificates) flags.push('User Certs');
     return flags.length > 0 ? flags.join(', ') : 'None';
@@ -82,7 +84,7 @@ const LdapPublisherDetail: React.FC = () => {
                         name: p.name || '', host: p.host || '', port: String(p.port || 389), useSsl: p.useSsl ?? false,
                         username: p.username || '', password: '', baseDn: p.baseDn || '', userDnTemplate: p.userDnTemplate || '',
                         updateInterval: p.updateInterval || '', enabled: p.enabled ?? true,
-                        publishCaCertificate: p.publishCaCertificate ?? true, publishCrl: p.publishCrl ?? true,
+                        publishCaCertificate: p.publishCaCertificate ?? true, publishCrl: (p.publishCRL ?? p.publishCrl) ?? true,
                         publishDeltaCrl: p.publishDeltaCrl ?? false, publishUserCertificates: p.publishUserCertificates ?? false,
                     };
                     setForm(loaded);

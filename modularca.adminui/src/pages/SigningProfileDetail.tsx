@@ -10,6 +10,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import {
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
+    canonicalizeUsages, EKU_ALIASES, ekuLabel,
 } from './profileHelpers';
 
 const SIGNING_TAB = `/profiles?tab=${encodeURIComponent('Signing Profiles')}`;
@@ -76,7 +77,7 @@ const SigningProfileDetail: React.FC = () => {
                     // Wire name is `allowedEKUs`: System.Text.Json's camelCase policy lowercases only
                     // the leading char of `AllowedEKUs`. Reading `allowedEkus` gave undefined, so the
                     // toggles rendered empty and saving wrote that empty list back over the real one.
-                    allowedEkus: parseListField(p.allowedEKUs ?? p.allowedEkus),
+                    allowedEkus: canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES),
                     maxPathLength: p.maxPathLength != null ? String(p.maxPathLength) : '',
                     nameConstraintsPermitted: typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : (p.nameConstraintsPermitted || ''),
                     nameConstraintsExcluded: typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : (p.nameConstraintsExcluded || ''),
@@ -251,7 +252,7 @@ const SigningProfileDetail: React.FC = () => {
                     <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                     <DetailField label="Issuer" value={authorityName(p.issuerId)} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={p.allowedEKUs ?? p.allowedEkus} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES).map(ekuLabel)} /></div>
                     <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
                     <DetailField label="Name Constraints Permitted" value={typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : p.nameConstraintsPermitted} />
                     <DetailField label="Name Constraints Excluded" value={typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : p.nameConstraintsExcluded} />

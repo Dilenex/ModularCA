@@ -51,7 +51,8 @@ const defaultForm = {
 function publishFlags(p: LdapPublisher): string {
     const flags: string[] = [];
     if (p.publishCaCertificate) flags.push('CA Cert');
-    if (p.publishCrl) flags.push('CRL');
+    // See LdapPublisherDetail: the wire name is publishCRL, not publishCrl.
+    if ((p as any).publishCRL ?? p.publishCrl) flags.push('CRL');
     if (p.publishDeltaCrl) flags.push('Delta');
     if (p.publishUserCertificates) flags.push('User Certs');
     return flags.length > 0 ? flags.join(', ') : 'None';

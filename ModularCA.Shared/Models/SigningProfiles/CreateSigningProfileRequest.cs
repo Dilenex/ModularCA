@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.SigningProfiles;
+﻿namespace ModularCA.Shared.Models.SigningProfiles;
 
 /// <summary>
 /// Request body for creating a new signing profile.
@@ -58,4 +58,17 @@ public class CreateSigningProfileRequest
     /// When true, this profile merges with its parent profile via inheritance.
     /// </summary>
     public bool InheritanceEnabled { get; set; }
+
+    /// <summary>
+    /// When true, the ExtendedKeyUsage extension is emitted as critical (RFC 5280 §4.2.1.12).
+    /// The admin UI has always sent this, but it was absent from the request DTO, so the
+    /// "mark Extended Key Usage as critical" checkbox silently did nothing.
+    /// </summary>
+    public bool ExtendedKeyUsageCritical { get; set; }
+
+    /// <summary>
+    /// JSON object mapping certificate policy OIDs to their qualifiers. Same story as
+    /// <see cref="ExtendedKeyUsageCritical"/> — sent by the UI, previously dropped on the floor.
+    /// </summary>
+    public string? PolicyQualifiersJson { get; set; }
 }
