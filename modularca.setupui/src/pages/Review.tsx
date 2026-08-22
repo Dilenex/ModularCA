@@ -90,7 +90,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 lockoutMinutes: security.lockoutMinutes,
                 jwtExpirationMinutes: security.jwtExpirationMinutes,
                 swaggerEnabled: security.swaggerEnabled,
-                webauthnEnabled: security.webauthnEnabled,
+                webAuthnEnabled: security.webAuthnEnabled,
                 backupEnabled: security.backupEnabled,
                 backupSchedule: security.backupSchedule.trim(),
             },
@@ -257,7 +257,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 <SummaryRow label="Lockout Duration" value={`${security.lockoutMinutes} min`} />
                 <SummaryRow label="JWT Lifetime" value={`${security.jwtExpirationMinutes} min`} />
                 <SummaryRow label="Swagger UI" value={security.swaggerEnabled ? 'Enabled' : 'Disabled'} />
-                <SummaryRow label="WebAuthn" value={security.webauthnEnabled ? 'Enabled' : 'Disabled'} />
+                <SummaryRow label="WebAuthn" value={security.webAuthnEnabled ? 'Enabled' : 'Disabled'} />
                 <SummaryRow label="Backup" value={security.backupEnabled ? 'Enabled' : 'Disabled'} />
                 <SummaryRow label="Backup Schedule" value={security.backupSchedule} />
             </SummaryCard>

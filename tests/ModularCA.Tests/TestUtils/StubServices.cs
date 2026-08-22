@@ -36,3 +36,34 @@ internal class NoopNotificationService : INotificationService
     public virtual Task NotifyAsync(string eventType, string message) => Task.CompletedTask;
     public virtual Task NotifyCsrPendingApprovalAsync(string subject, string protocol) => Task.CompletedTask;
 }
+
+/// <summary>
+/// Inert <see cref="IEnrollmentTokenService"/> for tests that exercise a protocol branch which
+/// never reaches token validation — CMP protection checks, for instance. Every member throws or
+/// returns a refusal rather than a success, so a test that accidentally routes through here fails
+/// loudly instead of silently passing on a stubbed "yes".
+/// </summary>
+internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
+{
+    public Task<string> GenerateTokenAsync(Guid userId, TimeSpan expiresIn, int maxUses = 1,
+        string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
+        Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
+        Guid? certificateAuthorityId = null, Guid? tenantId = null)
+        => throw new NotSupportedException("Test stub: token generation not expected on this path.");
+
+    public Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol)
+        => Task.FromResult((false, (string?)"Test stub: no enrollment tokens configured."));
+
+    public Task<EnrollmentTokenEntity?> GetByTokenAsync(string token) => Task.FromResult<EnrollmentTokenEntity?>(null);
+    public Task<List<EnrollmentTokenEntity>> GetActiveTokensAsync() => Task.FromResult(new List<EnrollmentTokenEntity>());
+    public Task<bool> RevokeTokenAsync(Guid id) => Task.FromResult(false);
+    public Task<EnrollmentTokenEntity?> GetByIdAsync(Guid id) => Task.FromResult<EnrollmentTokenEntity?>(null);
+
+    public Task<(EnrollmentTokenEntity Entity, string PlaintextSecret)> GenerateCmpSharedSecretAsync(
+        Guid userId, string referenceValue, TimeSpan expiresIn, int maxUses,
+        Guid? certificateAuthorityId, Guid? tenantId)
+        => throw new NotSupportedException("Test stub: CMP secret generation not expected on this path.");
+
+    public Task<EnrollmentTokenEntity?> ValidateAndConsumeCmpSecretAsync(string referenceValue, byte[] sharedSecret)
+        => Task.FromResult<EnrollmentTokenEntity?>(null);
+}

@@ -11,7 +11,7 @@ export interface SecurityData {
     lockoutMinutes: number;
     jwtExpirationMinutes: number;
     swaggerEnabled: boolean;
-    webauthnEnabled: boolean;
+    webAuthnEnabled: boolean;
     backupEnabled: boolean;
     backupSchedule: string;
 }
@@ -111,8 +111,8 @@ const SecurityFeatures: React.FC<SecurityFeaturesProps> = ({ data, onChange }) =
                 <label className="flex items-center gap-3">
                     <input
                         type="checkbox"
-                        checked={data.webauthnEnabled}
-                        onChange={e => onChange({ ...data, webauthnEnabled: e.target.checked })}
+                        checked={data.webAuthnEnabled}
+                        onChange={e => onChange({ ...data, webAuthnEnabled: e.target.checked })}
                         className="w-4 h-4 text-blue-600 bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-600 rounded focus:ring-blue-500"
                     />
                     <span className="text-sm font-medium text-gray-900 dark:text-white">Enable WebAuthn / Passkey authentication</span>

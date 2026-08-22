@@ -388,3 +388,6 @@ modularca.setupui/dist/
 # Operator-specific for now — paths, ports and hostnames are environment-bound.
 # Drop this rule (or `git add -f deploy/`) to start sharing them with the repo.
 /deploy/
+
+# Local reference documents (reports, audits, notes) — not part of the product
+References/

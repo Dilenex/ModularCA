@@ -1,10 +1,11 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.Core.Services;
 
@@ -98,7 +99,8 @@ public class TenantPolicyChangeService(
             CaUserQuorums = caChanges,
         };
 
-        var parametersJson = JsonSerializer.Serialize(parameters);
+        // camelCase so the stored blob matches the casing of the API envelope it is embedded in.
+        var parametersJson = JsonSerializer.Serialize(parameters, SafeJsonOptions.Stored);
 
         var description = $"Change tenant '{tenant.Name}' ceremony / quorum policy";
 

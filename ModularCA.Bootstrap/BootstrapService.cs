@@ -133,9 +133,12 @@ public class BootstrapService
             // === Clean state — ensure fresh database schema ===
             BootstrapModularCA.DeleteArtifacts(certPath, trustPath);
 
-            // Drop and recreate DB to ensure clean schema (handles partial previous setups)
+            // Drop and recreate DB to ensure clean schema (handles partial previous setups).
+            // Unlike the migration-failure paths, this drop is deliberate: the setup wizard only
+            // runs when IsConfigured() is false, i.e. there is no install to protect. It is NOT
+            // error recovery and must not become it.
             {
-                var tempCtx = BootstrapModularCA.CreateDbContext(rootConnStr);
+                using var tempCtx = BootstrapModularCA.CreateDbContext(rootConnStr);
                 tempCtx.Database.EnsureDeleted();
                 Console.WriteLine("✓ Database cleaned for fresh setup");
             }

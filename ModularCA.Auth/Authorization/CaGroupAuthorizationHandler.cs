@@ -119,12 +119,43 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             return;
         }
 
-        // No CA ID in route — this is a listing/cross-CA endpoint (e.g. /admin/certificates,
-        // /admin/authorities). Check if the user has the required capability for ANY CA they
-        // belong to. The endpoint itself filters results by tenant/CA access.
         if (await _authService.IsSystemAdminAsync(userId.Value))
         {
             context.Succeed(requirement);
+            return;
+        }
+
+        // No CA id in the route. For a READ this is a listing/cross-CA endpoint
+        // (/admin/certificates, /admin/authorities) whose handler filters results by the caller's
+        // own tenant/CA access, so checking "holds this capability on any CA" is adequate.
+        //
+        // For a MUTATION it is not. A state-changing CA-scoped request whose target cannot be
+        // pinned to a CA is precisely the escalation this handler exists to prevent: the operator
+        // holds the capability on one small CA, the route carries no CA to check it against, and
+        // the target is then taken from the request body. POST /admin/users/{id}/reset-password is
+        // the concrete case — it is CaAdmin, its only route value is {id}, and it returns the new
+        // plaintext password in the response. A single-CA operator could reset a system
+        // administrator's password in a different tenant.
+        //
+        // Note the method split is a containment measure, not the real fix. An endpoint that is
+        // genuinely global should carry Policy = "SystemOperator"/"SystemAdmin"
+        // (CaGroupRequirement.IsSystemOnly) rather than relying on a CA-scoped policy that cannot
+        // resolve a CA. Denials here are logged at Warning with the route so those endpoints are
+        // easy to find and reclassify.
+        var method = _httpContextAccessor.HttpContext?.Request.Method;
+        var isMutation = !HttpMethods.IsGet(method ?? string.Empty)
+                      && !HttpMethods.IsHead(method ?? string.Empty)
+                      && !HttpMethods.IsOptions(method ?? string.Empty);
+
+        if (isMutation)
+        {
+            _logger.LogWarning(
+                "Denied {Method} {Path} for user {Username}: CA-scoped capability '{Capability}' " +
+                "was evaluated on a route with no resolvable CA id. If this endpoint is genuinely " +
+                "global, give it a SystemOperator/SystemAdmin policy instead of a CA-scoped one.",
+                method, _httpContextAccessor.HttpContext?.Request.Path.Value,
+                username, requirement.RequiredCapability);
+            LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
             return;
         }
 

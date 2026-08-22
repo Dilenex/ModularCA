@@ -47,15 +47,19 @@ const NotificationManagement: React.FC = () => {
     const loadConfig = async () => {
         setAlertConfigLoading(true);
         try {
+            // GET /admin/config builds its response from an anonymous object, so every key
+            // goes through the camelCase naming policy: `alert`, not `Alert`. Reading the
+            // PascalCase name made both guards below always false, so the alert panel showed
+            // "not available" and the SMTP panel never rendered at all.
             const config = await apiGet<any>('/api/v1/admin/config');
-            if (config.Alert) {
+            if (config.alert) {
                 setAlertConfig({
-                    enabled: config.Alert.Enabled ?? config.Alert.enabled ?? true,
-                    minimumSeverity: config.Alert.MinimumSeverity ?? config.Alert.minimumSeverity ?? 'Warning',
-                    cooldownMinutes: config.Alert.CooldownMinutes ?? config.Alert.cooldownMinutes ?? 5,
+                    enabled: config.alert.enabled ?? true,
+                    minimumSeverity: config.alert.minimumSeverity ?? 'Warning',
+                    cooldownMinutes: config.alert.cooldownMinutes ?? 5,
                 });
             }
-            if (config.Email) setEmailConfig(config.Email);
+            if (config.email) setEmailConfig(config.email);
         } catch { }
         setAlertConfigLoading(false);
     };
@@ -214,12 +218,12 @@ const NotificationManagement: React.FC = () => {
                         <p className="text-xs text-gray-600 mt-1">SMTP configuration used for sending notification emails.</p>
                     </div>
                     <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div><label className={labelClass}>Email Sending</label><StatusBadge status={(emailConfig.Enabled ?? emailConfig.enabled) ? 'enabled' : 'disabled'} /></div>
-                        <div><label className={labelClass}>SMTP Host</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.SmtpHost ?? emailConfig.smtpHost ?? '-'}</span></div>
-                        <div><label className={labelClass}>SMTP Port</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.SmtpPort ?? emailConfig.smtpPort ?? '-'}</span></div>
-                        <div><label className={labelClass}>TLS</label><StatusBadge status={(emailConfig.UseTls ?? emailConfig.useTls) ? 'enabled' : 'disabled'} /></div>
-                        <div><label className={labelClass}>From Address</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.FromAddress ?? emailConfig.fromAddress ?? '-'}</span></div>
-                        <div><label className={labelClass}>Admin Recipients</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.AdminRecipients ?? emailConfig.adminRecipients ?? '-'}</span></div>
+                        <div><label className={labelClass}>Email Sending</label><StatusBadge status={emailConfig.enabled ? 'enabled' : 'disabled'} /></div>
+                        <div><label className={labelClass}>SMTP Host</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.smtpHost ?? '-'}</span></div>
+                        <div><label className={labelClass}>SMTP Port</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.smtpPort ?? '-'}</span></div>
+                        <div><label className={labelClass}>TLS</label><StatusBadge status={emailConfig.useTls ? 'enabled' : 'disabled'} /></div>
+                        <div><label className={labelClass}>From Address</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.fromAddress ?? '-'}</span></div>
+                        <div><label className={labelClass}>Admin Recipients</label><span className="text-sm text-gray-900 dark:text-white">{emailConfig.adminRecipients ?? '-'}</span></div>
                     </div>
                 </div>
             )}

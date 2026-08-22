@@ -111,6 +111,15 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!createValidation.IsValid)
                 return BadRequest(new { error = string.Join("; ", createValidation.Errors.Select(e => e.ErrorMessage)) });
 
+            // Membership assigned at creation goes through the same tier gate as every other
+            // membership write. Checked BEFORE the account is created so a refusal cannot leave a
+            // half-provisioned user behind.
+            foreach (var groupId in request.GroupIds ?? new List<Guid>())
+            {
+                if (await AuthorizeGroupAssignmentAsync(groupId) is { } denied)
+                    return denied;
+            }
+
             var (success, error) = await _userService.CreateUser(request);
             if (success)
             {
@@ -315,6 +324,26 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (_currentUser.User == null) return Unauthorized();
             if (targetUserId == _currentUser.User.Id)
                 return BadRequest(new { error = "You cannot modify your own group membership. Ask a system-super admin to do it." });
+
+            return await AuthorizeGroupAssignmentAsync(groupId);
+        }
+
+        /// <summary>
+        /// The tier check itself, without the self-modification guard — that guard is meaningless
+        /// when the target user does not exist yet.
+        /// <para>
+        /// Extracted so account creation can run the same gate. <c>CreateUser</c> assigns
+        /// <c>GroupIds</c> at creation time and previously validated only that each group
+        /// <em>existed</em>, while every other membership-write path (add, remove, and both bulk
+        /// endpoints) called <see cref="AuthorizeUserGroupChangeAsync"/>. That made creation the
+        /// one way to obtain a membership the caller is not entitled to grant: a CA-scoped
+        /// operator could create an account directly in a system-tier group with a password of
+        /// their choosing, then authenticate as it.
+        /// </para>
+        /// </summary>
+        private async Task<IActionResult?> AuthorizeGroupAssignmentAsync(Guid groupId)
+        {
+            if (_currentUser.User == null) return Unauthorized();
 
             var group = await _dbContext.CaGroups.FindAsync(groupId);
             if (group == null) return NotFound(new { error = "Group not found" });

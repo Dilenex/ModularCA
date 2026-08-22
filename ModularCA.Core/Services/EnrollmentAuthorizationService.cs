@@ -105,14 +105,28 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         return await _tokenService.ValidateAndConsumeAsync(challengePassword, subject, "SCEP");
     }
 
+    /// <summary>
+    /// Authorizes a CMP enrollment. CMP carries its identity inside the PKIMessage protection,
+    /// which <c>CmpService</c> has already verified by the time this runs — so
+    /// <paramref name="isAuthenticated"/> is the signal, and it is the only one available here.
+    /// <para>
+    /// This method previously ignored <paramref name="isAuthenticated"/> entirely and branched on
+    /// <paramref name="clientCert"/>, which <c>CmpService</c> always passes as <c>null</c>. That
+    /// made CMP unusable in both directions: with <c>CmpRequireSignature = false</c> (the default)
+    /// it returned success unconditionally, including for a message with no protection at all;
+    /// with it set to <c>true</c> every request failed, even one that had just passed full
+    /// signature verification. There was no working secure configuration.
+    /// </para>
+    /// <para>
+    /// The <c>CmpRequireSignature</c> distinction between signature and PBMAC protection is
+    /// enforced in <c>CmpService</c>, where the concrete protection mode is known.
+    /// </para>
+    /// </summary>
     private static (bool, string?) ValidateCmp(
         CaProtocolConfigEntity config, X509Certificate2? clientCert, bool isAuthenticated)
     {
-        if (!config.CmpRequireSignature)
-            return (true, null); // PBMAC (shared secret) is handled at the protocol layer
-
-        if (clientCert == null)
-            return (false, "CMP signature-based protection requires a client certificate");
+        if (!isAuthenticated)
+            return (false, "CMP requires verified message protection (RFC 4210 5.1.3).");
 
         return (true, null);
     }

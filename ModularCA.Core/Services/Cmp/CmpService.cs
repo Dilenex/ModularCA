@@ -219,6 +219,38 @@ public class CmpService : ICmpService
             return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "Message protection is required but verification failed.");
         }
+        else
+        {
+            // No protectionAlg at all. Every branch above is gated on `header.ProtectionAlg != null`,
+            // so without this final else an entirely unprotected PKIMessage matched none of them and
+            // fell straight through to PersistOrCheckTransactionAsync and HandleCertRequestAsync with
+            // ProtectionMode == None. Downstream, ValidateCmp returned success whenever
+            // CmpRequireSignature was false — and it defaults to false — leaving POP as the only
+            // remaining gate, which an attacker satisfies by signing the CertRequest with their own
+            // key. The result was that an unauthenticated remote could POST an unprotected `ir` and
+            // receive a certificate. RFC 4210 §5.1.3 requires protection; reject outright.
+            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                "CMP messages must carry signature-based or password-based MAC protection (RFC 4210 5.1.3).");
+        }
+
+        // CmpRequireSignature means "signature protection specifically", not merely "protected".
+        // This is enforced here rather than in EnrollmentAuthorizationService because the concrete
+        // protection mode is only known at this layer — the authorization service receives a bare
+        // bool and a null client certificate, which is why its own check could never work.
+        if (reqCtx.ProtectionMode == CmpProtectionMode.PbMac)
+        {
+            var sigRequired = await _db.CaProtocolConfigs
+                .AsNoTracking()
+                .Where(c => c.Protocol == "CMP" && (reqCtx.CaLabel == null || c.Ca.Label == reqCtx.CaLabel))
+                .Select(c => (bool?)c.CmpRequireSignature)
+                .FirstOrDefaultAsync() ?? false;
+
+            if (sigRequired)
+            {
+                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                    "This CA requires signature-based CMP protection; PBMAC is not accepted.");
+            }
+        }
 
         // TransactionId replay protection. Reject duplicates for IR/CR/KUR.
         // Insert before dispatching so reads of existing transactions on certConf work.

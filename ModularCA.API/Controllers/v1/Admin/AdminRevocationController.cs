@@ -463,13 +463,14 @@ public class AdminRevocationController(
             return null; // Tenant does not require ceremonies.
 
         // Create a RevokeCa ceremony.
+        // camelCase so the stored blob matches the casing of the API envelope it is embedded in.
         var parametersJson = JsonSerializer.Serialize(new
         {
             CertificateId = cert.CertificateId,
             SerialNumber = cert.SerialNumber,
             Reason = reason.ToString(),
             TenantId = ca.TenantId,
-        });
+        }, ModularCA.Shared.Utils.SafeJsonOptions.Stored);
 
         var ceremony = await _ceremonySvc.InitiateAsync(
             "RevokeCa",

@@ -23,20 +23,54 @@ public class ModularCADbContext : DbContext
     // Never null — the single-arg constructor populates this with UnresolvedTenantContext.Instance.
     private readonly ITenantContext _tenantContext;
 
-    // Pre-computed bypass bool. True when the filter should allow every row through — i.e.
-    // during bootstrap, design-time tooling, background jobs, or for system-admin callers.
-    // EF Core's query filter translator binds DbContext-instance fields as SQL parameters,
-    // so capturing this as a plain bool avoids the "IReadOnlySet<Guid>.Contains is not
-    // server-translatable → client-eval → NRE" trap. The AccessibleTenantIds.Contains(id)
-    // path is only reached when _tenantFilterBypass is false, i.e. a real HTTP request from
-    // a non-admin user.
-    private readonly bool _tenantFilterBypass;
+    // True when the filter should allow every row through — i.e. during bootstrap, design-time
+    // tooling, background jobs, or for system-admin callers.
+    //
+    // This MUST stay a computed property. It was previously a readonly field assigned in the
+    // constructor, which silently disabled tenant isolation on every authenticated request:
+    // TenantResolutionMiddleware takes ModularCADbContext as a method-injected parameter, so DI
+    // constructs the scoped context BEFORE the middleware body runs — and therefore before it
+    // calls tenantContext.Set(...). At construction HasContext is still false, so the snapshot
+    // latched to true, and because AddDbContext is scoped that same bypassed instance was then
+    // handed to every downstream controller and service for the rest of the request. A tenant-A
+    // user querying CertificateAuthorities saw tenant B's rows.
+    //
+    // The ITenantContext reference is live, so reading through it here picks up the middleware's
+    // Set(...) regardless of construction order. EF Core binds DbContext-instance members as SQL
+    // parameters when it compiles each query for execution, not once at model-build time, so a
+    // property is evaluated per query — which is exactly what makes this correct.
+    private bool TenantFilterBypass => !_tenantContext.HasContext || _tenantContext.IsSystemAdmin;
 
-    // Pre-materialized HashSet<Guid> so EF can translate .Contains() on it directly —
-    // HashSet<T>.Contains has a dedicated SQL translator, unlike IReadOnlySet<T>.Contains.
-    // Empty in the bypass case so the filter's Contains() path returns 0 rows if it's
-    // ever evaluated (it shouldn't be, because _tenantFilterBypass short-circuits first).
-    private readonly HashSet<Guid> _accessibleTenantIds;
+    // Materialized HashSet<Guid> so EF can translate .Contains() on it directly — HashSet<T>
+    // .Contains has a dedicated SQL translator, unlike IReadOnlySet<T>.Contains, and the
+    // interface form falls back to client evaluation and NREs during parameter binding.
+    //
+    // Cached against the source set's identity rather than rebuilt per access: the filter is
+    // evaluated on every tenant-scoped query, and Set(...) is called at most once per request,
+    // so the cache is refreshed exactly when the underlying set is replaced. Empty in the bypass
+    // case, so the Contains() path yields 0 rows if it is ever reached (it should not be —
+    // TenantFilterBypass short-circuits first).
+    private HashSet<Guid>? _accessibleTenantIdsCache;
+    private IReadOnlySet<Guid>? _accessibleTenantIdsSource;
+
+    private HashSet<Guid> AccessibleTenantIds
+    {
+        get
+        {
+            if (TenantFilterBypass)
+                return _emptyTenantIds;
+
+            var source = _tenantContext.AccessibleTenantIds;
+            if (!ReferenceEquals(source, _accessibleTenantIdsSource))
+            {
+                _accessibleTenantIdsSource = source;
+                _accessibleTenantIdsCache = new HashSet<Guid>(source);
+            }
+            return _accessibleTenantIdsCache!;
+        }
+    }
+
+    private static readonly HashSet<Guid> _emptyTenantIds = new();
 
     /// <summary>
     /// Constructs a <see cref="ModularCADbContext"/> with an unresolved tenant context.
@@ -47,8 +81,6 @@ public class ModularCADbContext : DbContext
     public ModularCADbContext(DbContextOptions<ModularCADbContext> options) : base(options)
     {
         _tenantContext = UnresolvedTenantContext.Instance;
-        _tenantFilterBypass = true;
-        _accessibleTenantIds = new HashSet<Guid>();
     }
 
     /// <summary>
@@ -58,11 +90,9 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public ModularCADbContext(DbContextOptions<ModularCADbContext> options, ITenantContext tenantContext) : base(options)
     {
+        // Deliberately no snapshotting here — see TenantFilterBypass. The middleware populates
+        // this same ITenantContext instance after DI has already constructed us.
         _tenantContext = tenantContext ?? UnresolvedTenantContext.Instance;
-        _tenantFilterBypass = !_tenantContext.HasContext || _tenantContext.IsSystemAdmin;
-        _accessibleTenantIds = _tenantFilterBypass
-            ? new HashSet<Guid>()
-            : new HashSet<Guid>(_tenantContext.AccessibleTenantIds);
     }
 
     public DbSet<CrlEntity> Crls { get; set; }
@@ -844,16 +874,16 @@ public class ModularCADbContext : DbContext
         // design-time tooling, background jobs, and for system admins.
         modelBuilder.Entity<TenantEntity>().HasQueryFilter(t =>
             !t.IsDeleted &&
-            (_tenantFilterBypass || _accessibleTenantIds.Contains(t.Id)));
+            (TenantFilterBypass || AccessibleTenantIds.Contains(t.Id)));
 
         modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca =>
             !ca.IsDeleted &&
-            (_tenantFilterBypass || _accessibleTenantIds.Contains(ca.TenantId)));
+            (TenantFilterBypass || AccessibleTenantIds.Contains(ca.TenantId)));
 
         modelBuilder.Entity<CertProfileEntity>().HasQueryFilter(cp =>
-            _tenantFilterBypass
+            TenantFilterBypass
             || cp.TenantId == null
-            || _accessibleTenantIds.Contains(cp.TenantId.Value));
+            || AccessibleTenantIds.Contains(cp.TenantId.Value));
 
         modelBuilder.Entity<UserEntity>().HasQueryFilter(u => !u.IsDeleted);
 

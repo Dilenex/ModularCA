@@ -1,10 +1,11 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.Core.Services;
 
@@ -119,7 +120,7 @@ public class KeyCeremonyService : IKeyCeremonyService
             Decision = "Approved"
         });
 
-        ceremony.ApprovalsJson = JsonSerializer.Serialize(approvals);
+        ceremony.ApprovalsJson = JsonSerializer.Serialize(approvals, SafeJsonOptions.Stored);
         ceremony.CurrentApprovals = approvals.Count(a => a.Decision == "Approved");
 
         if (ceremony.CurrentApprovals >= ceremony.RequiredApprovals)
@@ -156,7 +157,7 @@ public class KeyCeremonyService : IKeyCeremonyService
             Decision = "Rejected"
         });
 
-        ceremony.ApprovalsJson = JsonSerializer.Serialize(approvals);
+        ceremony.ApprovalsJson = JsonSerializer.Serialize(approvals, SafeJsonOptions.Stored);
         ceremony.Status = "Rejected";
         await _db.SaveChangesAsync();
 
@@ -315,7 +316,9 @@ public class KeyCeremonyService : IKeyCeremonyService
     {
         try
         {
-            return JsonSerializer.Deserialize<List<ApprovalRecord>>(json) ?? new List<ApprovalRecord>();
+            // SafeJsonOptions.Stored is case-insensitive, so rows written before the camelCase
+            // switch (PascalCase keys) and rows written after it both deserialize.
+            return JsonSerializer.Deserialize<List<ApprovalRecord>>(json, SafeJsonOptions.Stored) ?? new List<ApprovalRecord>();
         }
         catch
         {

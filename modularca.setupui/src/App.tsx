@@ -129,7 +129,7 @@ const initialData: WizardData = {
         lockoutMinutes: 15,
         jwtExpirationMinutes: 30,
         swaggerEnabled: false,
-        webauthnEnabled: true,
+        webAuthnEnabled: true,
         backupEnabled: true,
         backupSchedule: '0 2 * * *',
     },

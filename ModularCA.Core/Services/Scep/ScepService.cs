@@ -18,6 +18,9 @@ using System.Text.Json;
 
 using CmsAttribute = Org.BouncyCastle.Asn1.Cms.Attribute;
 using PkcsOids = Org.BouncyCastle.Asn1.Pkcs.PkcsObjectIdentifiers;
+// Aliased rather than imported: this file's unqualified X509Certificate is BouncyCastle's, and
+// pulling in System.Security.Cryptography.X509Certificates would make that name ambiguous.
+using X509Loader = System.Security.Cryptography.X509Certificates.X509CertificateLoader;
 
 namespace ModularCA.Core.Services.Scep;
 
@@ -307,19 +310,60 @@ public class ScepService : IScepService
             return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
         }
 
-        // Split initial vs renewal. If the CMS signer cert was issued by
-        // this CA, treat as RFC 8894 §3.1 renewal: require signerCert.Subject == csr.Subject.
+        // Split initial vs renewal (RFC 8894 §3.2.2). A renewal is authenticated by the CMS
+        // signer certificate instead of the challenge password, so what counts as "issued by
+        // this CA" is the whole security boundary of the SCEP endpoint.
+        //
+        // This used to be a DN *string* comparison: it read cmsSignerCert.IssuerDN and looked for
+        // any CA row whose SubjectDN matched. Nothing about that proves issuance — the Issuer
+        // field is attacker-authored text in a certificate the attacker generates. Fetching the
+        // CA DN from the anonymous GetCACert endpoint, self-signing a certificate that carries it
+        // as Issuer and the victim's name as Subject, and signing the PKCSReq with that key
+        // satisfied every gate: signerInfo.Verify() passes (it is self-signed and the attacker
+        // holds the key), issuedByUs was true, and the subject-match check compared two
+        // attacker-chosen values. The challenge password was then skipped entirely, so the CA
+        // issued to an unauthenticated caller. EstService.SimpleReenrollAsync documents this same
+        // anti-pattern as closed in its own path; this is the SCEP half of that fix.
+        //
+        // A signer that fails to chain is NOT rejected outright — it falls through to initial
+        // enrollment, which requires the challenge password. That keeps legitimate first-time
+        // enrollment (self-signed signer, per RFC 8894 §2.3) working while removing the bypass.
         bool isRenewal = false;
         if (cmsSignerCert != null)
         {
             try
             {
-                var signerIssuer = cmsSignerCert.IssuerDN.ToString();
-                var issuedByUs = await _db.Certificates.AsNoTracking().AnyAsync(c =>
-                    c.IsCA && c.SubjectDN == signerIssuer && !c.Revoked);
-                if (issuedByUs)
+                using var signerCert2 = X509Loader.LoadCertificate(cmsSignerCert.GetEncoded());
+                using var anchorCert2 = X509Loader.LoadCertificate(caCert.GetEncoded());
+
+                // Revocation is checked against our own database below rather than online here:
+                // an unreachable OCSP responder must not turn a renewal into a hard failure on
+                // an enrollment path, and the DB gate is authoritative for certificates we issued.
+                if (X509ChainValidationUtil.ValidateAgainstAnchor(
+                        signerCert2, anchorCert2, requireRevocationCheck: false, out var chainErrors))
                 {
                     isRenewal = true;
+
+                    // The signer must not be revoked. Scope by the issuer we just proved, because
+                    // serial numbers are unique only within one issuer's namespace — an unscoped
+                    // lookup can land on an unrelated CA's row and either miss a revocation or
+                    // reject a healthy renewal. Rows with no IssuerCertificateId (legacy, pre-FK)
+                    // are still considered so the check fails closed for them.
+                    var signerSerial = CertificateUtil.FormatSerialNumber(cmsSignerCert.SerialNumber);
+                    var issuerCertId = context.Ca?.CertificateId;
+                    var revoked = await _db.Certificates.AsNoTracking().AnyAsync(c =>
+                        c.SerialNumber == signerSerial &&
+                        c.Revoked &&
+                        (c.IssuerCertificateId == null || c.IssuerCertificateId == issuerCertId));
+                    if (revoked)
+                    {
+                        _logger.LogWarning(
+                            "SCEP renewal rejected — signer certificate {Serial} is revoked.", signerSerial);
+                        await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                            "Renewal signer certificate is revoked.");
+                        return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                    }
+
                     var signerSubject = cmsSignerCert.SubjectDN.ToString();
                     if (!string.Equals(NormalizeDn(signerSubject), NormalizeDn(parsedCsr.SubjectName), StringComparison.OrdinalIgnoreCase))
                     {
@@ -332,13 +376,17 @@ public class ScepService : IScepService
                 }
                 else
                 {
-                    _logger.LogWarning("SCEP PKCSReq signed by self-signed or external cert (subject={Subject}) — treated as initial enrollment.",
-                        cmsSignerCert.SubjectDN.ToString());
+                    _logger.LogInformation(
+                        "SCEP PKCSReq signer (subject={Subject}) does not chain to CA '{CaSubject}' ({ChainErrors}) — treating as initial enrollment; challenge password required.",
+                        cmsSignerCert.SubjectDN.ToString(), caCert.SubjectDN.ToString(), chainErrors);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "SCEP signer cert trust-chain analysis failed");
+                // Fail closed: any failure to *prove* issuance leaves isRenewal false, so the
+                // request must satisfy the challenge password like any initial enrollment.
+                isRenewal = false;
+                _logger.LogWarning(ex, "SCEP signer certificate chain validation failed — treating as initial enrollment.");
             }
         }
 

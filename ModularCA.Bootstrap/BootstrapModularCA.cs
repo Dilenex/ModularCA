@@ -899,8 +899,18 @@ public class BootstrapModularCA
 
     /// <summary>
     /// Ensures the database schema exists by applying EF Core migrations.
-    /// If migrations fail (e.g., dirty schema from a previous EnsureCreated run),
-    /// drops the database and retries with a clean migration.
+    /// <para>
+    /// A failure is never "recovered" by dropping the database. This previously caught any
+    /// exception and responded with <c>EnsureDeleted()</c> followed by a retry, on the theory
+    /// that the failure meant a dirty schema left by a legacy <c>EnsureCreated</c> run. The catch
+    /// was unqualified, so a lock-wait timeout or a connection drop mid-migration took the same
+    /// branch — and <c>CreateDatabase</c> is reachable on every connection setup, including
+    /// re-runs against a fully populated install.
+    /// </para>
+    /// <para>
+    /// A destructive path already exists for the legacy case and is explicitly opted into by the
+    /// operator: <c>--reset --force</c>. Pointing at it is strictly better than guessing.
+    /// </para>
     /// </summary>
     public static void CreateDatabase(ModularCADbContext dbConnection)
     {
@@ -911,10 +921,11 @@ public class BootstrapModularCA
         catch (Exception ex)
         {
             Console.WriteLine($"(!) Migration failed: {ex.Message}");
-            Console.WriteLine("    Dropping database and retrying with clean migrations...");
-            dbConnection.Database.EnsureDeleted();
-            dbConnection.Database.Migrate();
-            Console.WriteLine("✓ Clean migration completed successfully.");
+            Console.WriteLine("    The database has NOT been modified.");
+            Console.WriteLine("    If this is transient (lock timeout, connection drop), retry.");
+            Console.WriteLine("    If the schema predates migrations and you intend to discard it,");
+            Console.WriteLine("    run the reset explicitly:  --reset --force --confirm-db-name <database>");
+            throw;
         }
     }
 
@@ -955,11 +966,13 @@ public class BootstrapModularCA
         }
         catch (Exception ex)
         {
+            // Same reasoning as CreateDatabase: never drop on a failure we have not diagnosed.
+            // The audit schema is evidence, so silently rebuilding it is the worst possible
+            // response to a transient fault.
             Console.WriteLine($"(!) Audit migration failed: {ex.Message}");
-            Console.WriteLine("    Dropping and retrying with clean migrations...");
-            auditDb.Database.EnsureDeleted();
-            auditDb.Database.Migrate();
-            Console.WriteLine($"✓ Audit database '{auditDbName}' clean migration completed.");
+            Console.WriteLine($"    Audit database '{auditDbName}' has NOT been modified.");
+            Console.WriteLine("    Retry if transient; discard deliberately via --reset --force if not.");
+            throw;
         }
     }
 

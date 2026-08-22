@@ -1896,19 +1896,23 @@ if (!isSetupMode)
             }
             catch (Exception migrateEx)
             {
-                // Migration failed — likely a schema created by EnsureCreated (no migration history).
-                // Drop all tables and retry with clean migrations.
-                logger.LogWarning(migrateEx, "Migration failed — attempting clean schema rebuild via migrations...");
-                try
-                {
-                    await mainDb.Database.EnsureDeletedAsync();
-                    await mainDb.Database.MigrateAsync();
-                    logger.LogInformation("Clean schema rebuild via migrations completed successfully.");
-                }
-                catch (Exception rebuildEx)
-                {
-                    logger.LogWarning(rebuildEx, "Schema rebuild also failed — setup wizard will handle initialization.");
-                }
+                // This used to "recover" by calling EnsureDeletedAsync() — an unconditional DROP
+                // of the live application schema — and then retrying. The catch was unqualified,
+                // so a lock-wait timeout, a GRANT the app user lacks for one DDL statement, or a
+                // connection drop mid-migration was indistinguishable from the dirty-schema case
+                // it was written for. A second catch then swallowed the rebuild failure and let
+                // the process continue booting on an empty database, so the first sign of trouble
+                // was an operational CA with no certificates, no revocations, and no users.
+                //
+                // Startup never destroys data. A failed migration leaves the existing schema
+                // untouched and is surfaced loudly; recovering from a genuinely dirty schema is a
+                // deliberate operator action (`--reset --force`), not something a service does to
+                // itself at 3am because a lock timed out.
+                logger.LogError(migrateEx,
+                    "Database migration failed. The existing schema has been left untouched. " +
+                    "If this is a transient fault (lock timeout, connection drop) retry the start. " +
+                    "If the schema predates migrations, run the bootstrap reset deliberately — " +
+                    "the service will not drop the database on its own.");
             }
         }
     }
