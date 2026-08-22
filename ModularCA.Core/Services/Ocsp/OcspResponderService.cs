@@ -215,12 +215,24 @@ public class OcspResponderService : IOcspService
 
             // Scope lookup by resolved issuer FK with DN
             // fallback for legacy rows where IssuerCertificateId has not been
-            // backfilled. Also exclude CA rows — OCSP is for subscriber certs.
+            // backfilled.
+            //
+            // CA rows are deliberately NOT excluded. The lookup used to carry a
+            // `.Where(c => !c.IsCA)` on the premise that "OCSP is for subscriber certs", but RFC
+            // 6960 covers every certificate an issuer has issued, and intermediates are precisely
+            // what relying parties check: a TLS client following the AIA on a leaf walks up and
+            // queries the issuing CA's status too. Excluding those rows meant the query found
+            // nothing, fell into the certEntity == null branch, and — because isOurIssuer is true
+            // for a matched signer — returned RevokedStatus(epoch, certificateHold) with the
+            // extended-revoke extension. Every unrevoked intermediate was therefore reported as
+            // revoked, and any client that checked one rejected the entire chain.
+            //
+            // Issuer scoping below already restricts answers to certificates this CA issued, so
+            // dropping the filter does not widen what the responder speaks for.
             var caIdLocal = signingCaCertId;
             var issuerDn = caCert.SubjectDN.ToString();
             var certEntity = await _db.Certificates
                 .AsNoTracking()
-                .Where(c => !c.IsCA)
                 .Where(c => c.SerialNumber == serialHex)
                 .Where(c => (caIdLocal != null && c.IssuerCertificateId == caIdLocal)
                          || (c.IssuerCertificateId == null && c.Issuer == issuerDn))

@@ -568,7 +568,14 @@ public class BootstrapService
 
             var sansJson = JsonSerializer.Serialize(webTlsRequest.Sans ?? new List<string>());
 
-            var validationService = new RequestProfileValidationService(dbContext);
+            // RequestProfileValidationService now resolves the request profile through the
+            // inheritance clamp rather than reading the raw row, so it needs the resolution
+            // service. Bootstrap has no DI container, so construct it directly.
+            var validationService = new RequestProfileValidationService(
+                dbContext,
+                new ProfileResolutionService(
+                    dbContext,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<ProfileResolutionService>.Instance));
             var (isValid, validationError, normalizedDn) = validationService
                 .ValidateAsync(webTlsRequestProfile.Id, subjectDn, sansJson)
                 .GetAwaiter()

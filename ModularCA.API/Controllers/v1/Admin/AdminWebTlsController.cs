@@ -376,14 +376,13 @@ public class AdminWebTlsController(
     /// BouncyCastle's BigInteger.ToString(16).ToUpperInvariant() — uppercase hex,
     /// no delimiters, no leading zeros.
     /// </summary>
+    /// <summary>
+    /// Delegates to <see cref="CertificateUtil.NormalizeSerialForLookup"/>. This logic was
+    /// private here while EST re-enrollment compared serials without it, so a revoked client
+    /// certificate whose serial had a leading zero nibble was never matched. One copy now.
+    /// </summary>
     private static string NormalizeSerial(string? serial)
-    {
-        if (string.IsNullOrEmpty(serial))
-            return string.Empty;
-        var cleaned = serial.Replace(":", "").Replace("-", "").Replace(" ", "").ToUpperInvariant();
-        // BouncyCastle's BigInteger.ToString(16) strips leading zeros; .NET may include them
-        return cleaned.TrimStart('0') is { Length: > 0 } trimmed ? trimmed : cleaned;
-    }
+        => ModularCA.Shared.Utils.CertificateUtil.NormalizeSerialForLookup(serial);
 
     /// <summary>
     /// Minimal subject DN parser duplicated from <c>RequestProfileValidationService.ParseSubjectDn</c>

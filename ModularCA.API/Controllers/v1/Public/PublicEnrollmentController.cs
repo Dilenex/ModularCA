@@ -25,6 +25,7 @@ public class PublicEnrollmentController(
     IEnrollmentTokenService tokenService,
     ICertificateIssuanceService issuanceService,
     RequestProfileValidationService requestProfileValidation,
+    IProfileResolutionService profileResolution,
     ModularCADbContext db,
     IAuditService audit) : ControllerBase
 {
@@ -200,8 +201,12 @@ public class PublicEnrollmentController(
             if (modifiedSubject != null)
                 subject = modifiedSubject;
 
-            var requestProfile = await db.RequestProfiles.FindAsync(entity.RequestProfileId.Value);
-            if (requestProfile?.RequireApproval == true)
+            // Read RequireApproval from the RESOLVED profile. Against the raw row, a CA-scoped
+            // child can set RequireApproval=false under a parent that requires it, and the
+            // inheritance clamp never runs — so anonymous token enrollment would issue without
+            // the approval the parent policy mandates.
+            var requestProfile = await profileResolution.ResolveRequestProfileAsync(entity.RequestProfileId.Value);
+            if (requestProfile.RequireApproval)
                 requireApproval = true;
         }
 

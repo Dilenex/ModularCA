@@ -60,11 +60,23 @@ namespace ModularCA.Core.Implementations
                 X509ExtensionUtilities.CreateAuthorityKeyIdentifier(subjectPublicKeyInfo));
 
             // Key Usage
+            //
+            // Delegates to KeyUsageFriendlyNames, which accepts every vocabulary in use and
+            // THROWS on an unrecognised name. The local parser this replaces understood only the
+            // spaced display form ("digital signature") and mapped anything else to 0. Once the
+            // bootstrap seeder was fixed to resolve usages against the OIDOptions catalog it
+            // started returning the catalog's camelCase spelling ("digitalSignature"), which that
+            // parser silently scored as zero for every entry — so the root CA was issued with a
+            // CRITICAL KeyUsage extension containing no bits at all, asserting that the CA key may
+            // do nothing. Failing loudly is the only safe behaviour for this particular extension.
             if (request.KeyUsages.Any())
             {
-                var flags = request.KeyUsages
-                    .Select(ParseKeyUsage)
-                    .Aggregate((a, b) => a | b);
+                var flags = KeyUsageFriendlyNames.ParseMany(request.KeyUsages);
+                if (flags == 0)
+                    throw new InvalidOperationException(
+                        "Key usages were requested but resolved to no KeyUsage bits: "
+                        + string.Join(", ", request.KeyUsages)
+                        + ". Refusing to emit an empty critical KeyUsage extension.");
                 certGen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(flags));
             }
 
@@ -123,23 +135,6 @@ namespace ModularCA.Core.Implementations
             return sb.ToString().TrimEnd(',', ' ');
         }
 
-        /// <summary>
-        /// Maps a human-readable key-usage name to the BouncyCastle <see cref="KeyUsage"/> bit flag.
-        /// </summary>
-        private static int ParseKeyUsage(string name) =>
-            name.Trim().ToLowerInvariant() switch
-            {
-                "digital signature" => KeyUsage.DigitalSignature,
-                "non repudiation" => KeyUsage.NonRepudiation,
-                "key encipherment" => KeyUsage.KeyEncipherment,
-                "data encipherment" => KeyUsage.DataEncipherment,
-                "key agreement" => KeyUsage.KeyAgreement,
-                "key certificate signing" => KeyUsage.KeyCertSign,
-                "crl signing" => KeyUsage.CrlSign,
-                "encipher only" => KeyUsage.EncipherOnly,
-                "decipher only" => KeyUsage.DecipherOnly,
-                _ => 0
-            };
 
         /// <summary>
         /// Parses a "type:value" SAN string (e.g. "DNS:example.com", "IP:10.0.0.1") into a BouncyCastle

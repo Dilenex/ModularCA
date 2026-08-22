@@ -67,14 +67,48 @@ public static class BootstrapProfileSeeder
     /// </summary>
     public static List<string> SetupAllowedStandardOids(string[] allowedStandardOids, ModularCADbContext db)
     {
-        var oidSet = new HashSet<string>(allowedStandardOids);
-        var allowedStandard = db.OIDOptions
+        // Resolves by friendly name OR OID, ignoring case and separators. This was an ordinal
+        // HashSet.Contains against the catalog's FriendlyName, and its callers pass display names
+        // ("Digital Signature") while the catalog stores camelCase ("digitalSignature") — zero
+        // overlap, so every call returned an empty list and the root CA was issued with no
+        // KeyUsage extension. See UsageCatalogResolver for the full history.
+        var catalog = db.OIDOptions
             .Where(o => o.KeyUsage == "Standard")
-            .Select(o => o.FriendlyName)
+            .Select(o => new { o.OID, o.FriendlyName })
             .ToList()
-            .Where(name => oidSet.Contains(name))
+            .Select(o => ((string?)o.OID, (string?)o.FriendlyName));
+
+        // The certificate builder parses friendly names for KeyUsage, so return those.
+        var lookup = UsageCatalogResolver.BuildLookup(catalog, e => e.FriendlyName!);
+
+        var resolved = allowedStandardOids
+            .Select(u => UsageCatalogResolver.Resolve(lookup, u))
+            .Where(n => n != null)
+            .Select(n => n!)
+            .Distinct()
             .ToList();
-        return allowedStandard;
+
+        WarnOnUnresolved(allowedStandardOids, lookup, "standard key usage");
+        return resolved;
+    }
+
+    /// <summary>
+    /// Bootstrap seeds the profiles a CA issues from, so a usage silently vanishing here is
+    /// permanent for the life of the installation. Say so loudly rather than seeding an empty
+    /// list — the original defect was invisible precisely because nothing complained.
+    /// </summary>
+    private static void WarnOnUnresolved(string[] requested, Dictionary<string, string> lookup, string kind)
+    {
+        var unresolved = requested
+            .Where(u => UsageCatalogResolver.Resolve(lookup, u) == null)
+            .ToList();
+        if (unresolved.Count == 0) return;
+
+        Console.WriteLine(
+            $"(!) {kind}(s) not found in the OID catalog and omitted from the seeded profile: " +
+            string.Join(", ", unresolved));
+        Console.WriteLine(
+            "    Check config/OIDSeed.yaml, or the built-in defaults in YamlOIDLoader if it is absent.");
     }
 
     /// <summary>
@@ -93,14 +127,24 @@ public static class BootstrapProfileSeeder
     /// </summary>
     public static List<string> SetupAllowedExtendedOids(string[] allowedExtendedOids, ModularCADbContext db)
     {
-        var oidSet = new HashSet<string>(allowedExtendedOids);
-        var allowedExtended = db.OIDOptions
+        var catalog = db.OIDOptions
             .Where(o => o.KeyUsage == "Extended")
+            .Select(o => new { o.OID, o.FriendlyName })
             .ToList()
-            .Where(o => oidSet.Contains(o.FriendlyName))
-            .Select(o => o.OID)
+            .Select(o => ((string?)o.OID, (string?)o.FriendlyName));
+
+        // The certificate builder emits OIDs for ExtendedKeyUsage, so return those.
+        var lookup = UsageCatalogResolver.BuildLookup(catalog, e => e.Oid!);
+
+        var resolved = allowedExtendedOids
+            .Select(u => UsageCatalogResolver.Resolve(lookup, u))
+            .Where(o => o != null)
+            .Select(o => o!)
+            .Distinct()
             .ToList();
-        return allowedExtended;
+
+        WarnOnUnresolved(allowedExtendedOids, lookup, "extended key usage");
+        return resolved;
     }
 
     /// <summary>

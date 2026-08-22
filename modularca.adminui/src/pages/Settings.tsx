@@ -820,6 +820,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)} />
                                     <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)} />
                                     <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)} />
+                                    {/* The bind password was previously not editable here at all, so it could
+                                        only be set in config.yaml. It loads as *** when one is stored; leaving
+                                        that placeholder untouched keeps the existing password. */}
+                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current" />
                                     <ConfigToggle label="Group Sync Enabled" checked={config.ldapAuth.groupSyncEnabled} onChange={(v) => update('ldapAuth', 'groupSyncEnabled', v)} />
                                     <ConfigToggle label="Auto Provision Users" checked={config.ldapAuth.autoProvisionUsers} onChange={(v) => update('ldapAuth', 'autoProvisionUsers', v)} />
                                     <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)} />

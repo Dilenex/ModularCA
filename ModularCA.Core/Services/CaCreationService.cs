@@ -241,43 +241,71 @@ public class CaCreationService(
                 ?? throw new InvalidOperationException("Default CA Certificate Profile not found. Run bootstrap to seed profiles.");
         }
 
-        // Temporarily set NameConstraints + MaxPathLength on the parent signing profile
-        // (in-memory only) so the builder applies them to the intermediate cert.
+        // The issuance pipeline reads the signing profile from the database by id, so the only
+        // way to hand it the intermediate's name constraints and pathLen is to stamp them onto
+        // the parent's profile for the duration of the call.
+        //
+        // This was described as "in-memory only", and it was not. parentSigningProfile is tracked
+        // (no AsNoTracking above), and both GenerateInfrastructureCsrAsync and
+        // IssueCertificateAsync call SaveChangesAsync on this same scoped context — so the
+        // temporary values were committed. The old restore then set the fields back in memory and
+        // marked the entry Unchanged, which tells EF there is nothing to write, so the correct
+        // values were never persisted. Creating a single intermediate therefore left the parent
+        // CA's signing profile permanently holding MaxPathLength = 0 and the intermediate's name
+        // constraints, silently changing policy for every certificate that profile signed
+        // afterwards.
+        //
+        // The restore is now in a finally block and is actually saved, so a failure part-way
+        // through issuance cannot leave the mutation behind either.
+        //
+        // A window remains: between the stamp and the restore, a concurrent request reading this
+        // profile from its own DbContext sees the temporary values. Closing that properly means
+        // threading the constraints through the issuance pipeline as explicit parameters rather
+        // than smuggling them via a shared row — worth doing, but a wider change than this fix.
         var origPermitted = parentSigningProfile.NameConstraintsPermitted;
         var origExcluded = parentSigningProfile.NameConstraintsExcluded;
         var origMaxPath = parentSigningProfile.MaxPathLength;
 
-        if (!string.IsNullOrWhiteSpace(nameConstraintsPermittedJson))
-            parentSigningProfile.NameConstraintsPermitted = nameConstraintsPermittedJson;
-        if (!string.IsNullOrWhiteSpace(nameConstraintsExcludedJson))
-            parentSigningProfile.NameConstraintsExcluded = nameConstraintsExcludedJson;
-        parentSigningProfile.MaxPathLength = 0; // pathLenConstraint=0 for intermediates
-
-        // Build subject DN
-        var subjectDnStr = BuildSubjectDN(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC).ToString();
-
-        // Generate CSR and issue through the standard pipeline
-        var (csrId, newKeyPair) = await csrService.GenerateInfrastructureCsrAsync(
-            subjectDnStr, keyAlgorithm, keySize, caCertProfile.Id, parentSigningProfile.Id);
-
-        var notBefore = DateTime.UtcNow;
-        var notAfter = notBefore.AddYears(validityYears);
-        if (notAfter > parentBcCert.NotAfter)
+        IssuanceResult result;
+        Guid csrId;
+        Org.BouncyCastle.Crypto.AsymmetricCipherKeyPair newKeyPair;
+        try
         {
-            logger.LogWarning(
-                "Intermediate CA '{Name}' requested validity until {Requested:O} but parent CA expires {ParentExpiry:O}; clamping to parent expiry.",
-                subjectCN, notAfter, parentBcCert.NotAfter);
-            notAfter = parentBcCert.NotAfter;
+            if (!string.IsNullOrWhiteSpace(nameConstraintsPermittedJson))
+                parentSigningProfile.NameConstraintsPermitted = nameConstraintsPermittedJson;
+            if (!string.IsNullOrWhiteSpace(nameConstraintsExcludedJson))
+                parentSigningProfile.NameConstraintsExcluded = nameConstraintsExcludedJson;
+            parentSigningProfile.MaxPathLength = 0; // pathLenConstraint=0 for intermediates
+
+            // Build subject DN
+            var subjectDnStr = BuildSubjectDN(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC).ToString();
+
+            // Generate CSR and issue through the standard pipeline
+            (csrId, newKeyPair) = await csrService.GenerateInfrastructureCsrAsync(
+                subjectDnStr, keyAlgorithm, keySize, caCertProfile.Id, parentSigningProfile.Id);
+
+            var notBefore = DateTime.UtcNow;
+            var notAfter = notBefore.AddYears(validityYears);
+            if (notAfter > parentBcCert.NotAfter)
+            {
+                logger.LogWarning(
+                    "Intermediate CA '{Name}' requested validity until {Requested:O} but parent CA expires {ParentExpiry:O}; clamping to parent expiry.",
+                    subjectCN, notAfter, parentBcCert.NotAfter);
+                notAfter = parentBcCert.NotAfter;
+            }
+
+            result = await issuanceService.IssueCertificateAsync(
+                csrId, notBefore, notAfter, parentBcCert, parentKeyHandle);
         }
-
-        var result = await issuanceService.IssueCertificateAsync(
-            csrId, notBefore, notAfter, parentBcCert, parentKeyHandle);
-
-        // Restore parent signing profile to original values (don't persist the temp changes)
-        parentSigningProfile.NameConstraintsPermitted = origPermitted;
-        parentSigningProfile.NameConstraintsExcluded = origExcluded;
-        parentSigningProfile.MaxPathLength = origMaxPath;
-        db.Entry(parentSigningProfile).State = Microsoft.EntityFrameworkCore.EntityState.Unchanged;
+        finally
+        {
+            // Restore AND persist. Marking the entry Unchanged (the old behaviour) discards the
+            // restore instead of writing it.
+            parentSigningProfile.NameConstraintsPermitted = origPermitted;
+            parentSigningProfile.NameConstraintsExcluded = origExcluded;
+            parentSigningProfile.MaxPathLength = origMaxPath;
+            await db.SaveChangesAsync();
+        }
 
         // Retrieve the stored cert entity via the CSR
         var csrEntity = await db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == csrId);

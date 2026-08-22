@@ -248,16 +248,27 @@ public class ProfileResolutionService : IProfileResolutionService
     {
         var sources = new Dictionary<string, string>();
 
-        // CLM-002: Enforce boolean restrictions — CA cannot weaken parent constraints.
-        // If parent says IsCaProfile=true, child cannot set it to false (weakening).
-        // If parent says AllowWildcard=false, child cannot set it to true (weakening).
+        // CLM-002: Enforce boolean restrictions — a child may narrow, never widen.
+        //
+        // The IsCaProfile clamp was inverted in both directions. It forced a child to TRUE when
+        // the parent was a CA profile and the child was not — but a leaf profile inheriting from
+        // a CA profile is narrowing, which is exactly what this model is supposed to permit, and
+        // forcing it back to true silently turned a leaf-issuing profile into one that stamps
+        // basicConstraints cA=TRUE. Meanwhile the genuine escalation — a leaf-only parent with a
+        // child claiming IsCaProfile — was not checked at all, so a tenant admin editing a
+        // CA-scoped profile that inherits from the system "TLS Server" profile could set
+        // IsCaProfile and have CertificateBuilderService emit cA=TRUE plus keyCertSign|cRLSign,
+        // minting a sub-CA from a leaf-only policy.
+        //
+        // Note AllowWildcard immediately below already had the direction right, which is the
+        // clearest evidence this was a slip rather than a deliberate asymmetry.
         var effectiveIsCaProfile = child.IsCaProfile;
-        if (parent.IsCaProfile && !child.IsCaProfile)
+        if (!parent.IsCaProfile && child.IsCaProfile)
         {
             _logger.LogWarning(
-                "CLM-002: Cert profile '{ChildId}' attempts to weaken IsCaProfile from parent '{ParentId}'. Using parent value (true).",
+                "CLM-002: Cert profile '{ChildId}' attempts to set IsCaProfile which parent '{ParentId}' does not permit. Using parent value (false).",
                 child.Id, parent.Id);
-            effectiveIsCaProfile = true;
+            effectiveIsCaProfile = false;
         }
 
         var effectiveAllowWildcard = child.AllowWildcard;
@@ -299,6 +310,20 @@ public class ProfileResolutionService : IProfileResolutionService
             MergeJsonArray(child.AllowedSignatureAlgorithms, parent.AllowedSignatureAlgorithms, nameof(EffectiveCertProfile.AllowedSignatureAlgorithms), sources),
             parent.AllowedSignatureAlgorithms, nameof(EffectiveCertProfile.AllowedSignatureAlgorithms), child.Id, parent.Id);
 
+        // KeyUsages and ExtendedKeyUsages were the two constrained lists that went straight to
+        // MergeJsonArray with no clamp, so a non-empty child list was taken verbatim and could
+        // name usages the parent never allowed — a CA-scoped child inheriting from a system
+        // profile limited to serverAuth could add codeSigning, or add the KeyUsage bits that make
+        // a certificate a signing authority. ValidateCertProfileInheritanceAsync does check the
+        // subset, but it is only reachable from an admin preview endpoint; issuance calls
+        // ResolveCertProfileAsync, which is this path.
+        var mergedKeyUsages = ClampJsonArraySubset(
+            MergeJsonArray(child.KeyUsages, parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), sources),
+            parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), child.Id, parent.Id);
+        var mergedExtendedKeyUsages = ClampJsonArraySubset(
+            MergeJsonArray(child.ExtendedKeyUsages, parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), sources),
+            parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), child.Id, parent.Id);
+
         var result = new EffectiveCertProfile
         {
             SourceProfileId = child.Id,
@@ -313,9 +338,11 @@ public class ProfileResolutionService : IProfileResolutionService
             CtEnabled = effectiveCtEnabled,
             AllowWildcard = effectiveAllowWildcard,
 
+            // JSON array fields — clamped above
+            KeyUsages = mergedKeyUsages,
+            ExtendedKeyUsages = mergedExtendedKeyUsages,
+
             // String fields: merge with fallback to parent
-            KeyUsages = MergeJsonArray(child.KeyUsages, parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), sources),
-            ExtendedKeyUsages = MergeJsonArray(child.ExtendedKeyUsages, parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), sources),
             ValidityPeriodMin = mergedValidityMin,
             ValidityPeriodMax = mergedValidityMax,
             CtLogIds = MergeNullableString(child.CtLogIds, parent.CtLogIds, nameof(EffectiveCertProfile.CtLogIds), sources),
@@ -714,6 +741,27 @@ public class ProfileResolutionService : IProfileResolutionService
                     childId, fieldName, parentId, string.Join(", ", violations));
 
                 var clamped = mergedItems.Where(item => parentSet.Contains(item)).ToList();
+
+                // A child whose list is entirely disallowed by the parent leaves nothing behind,
+                // and an empty list does NOT mean "nothing is permitted" downstream — every
+                // consumer reads it as "no restriction configured"
+                // (IssuanceValidationService gates on `validKeySizes?.Count > 0`). Serializing the
+                // empty result would therefore turn the parent's restriction into no restriction
+                // at all: parent allows only 4096, child asks for only 2048, and issuance then
+                // accepts any key size, including sizes neither profile ever listed.
+                //
+                // Fall back to the parent's list. The child asked for values it may not have, so
+                // the parent's restriction is the binding one — never wider than the parent, which
+                // is the invariant this whole method exists to hold.
+                if (clamped.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "CLM-002: Profile '{ChildId}' {Field} is disjoint from parent '{ParentId}' — no value survives the clamp. " +
+                        "Falling back to the parent's list; an empty list would read as 'no restriction'.",
+                        childId, fieldName, parentId);
+                    return parentJson;
+                }
+
                 return JsonSerializer.Serialize(clamped);
             }
         }

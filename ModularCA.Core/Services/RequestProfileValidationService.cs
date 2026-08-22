@@ -3,6 +3,7 @@ using ModularCA.Shared.Models.RequestProfiles;
 using ModularCA.Shared.Utils;
 using System.Text.Json;
 
+using ModularCA.Core.Models;
 namespace ModularCA.Core.Services
 {
     /// <summary>
@@ -13,9 +14,41 @@ namespace ModularCA.Core.Services
     {
         private readonly ModularCADbContext _db;
 
-        public RequestProfileValidationService(ModularCADbContext db)
+        private readonly IProfileResolutionService _profileResolution;
+
+        public RequestProfileValidationService(ModularCADbContext db, IProfileResolutionService profileResolution)
         {
             _db = db;
+            _profileResolution = profileResolution;
+        }
+
+        /// <summary>
+        /// Loads the request profile with inheritance applied.
+        /// <para>
+        /// Both entry points here used to read the raw <c>RequestProfileEntity</c> straight from
+        /// the database, which skipped the CLM-002 clamping in
+        /// <c>ProfileResolutionService.ResolveRequestProfileAsync</c> entirely. That method had
+        /// exactly one caller in the whole repository — an admin preview endpoint — so
+        /// <c>MergeRequestProfiles</c> was effectively dead code at runtime and the "stricter
+        /// only" guarantee did not hold on any enrollment path. A CA-scoped request profile whose
+        /// parent set <c>RequireApproval = true</c> could set it to false, and every EST, SCEP,
+        /// CMP and ACME enrollment under it issued without approval.
+        /// </para>
+        /// <para>
+        /// Returns null when the profile does not exist, matching the previous FindAsync
+        /// behaviour so callers keep their "no profile = no validation" semantics.
+        /// </para>
+        /// </summary>
+        private async Task<EffectiveRequestProfile?> LoadEffectiveAsync(Guid requestProfileId)
+        {
+            try
+            {
+                return await _profileResolution.ResolveRequestProfileAsync(requestProfileId);
+            }
+            catch (InvalidOperationException)
+            {
+                return null; // profile not found
+            }
         }
 
         /// <summary>
@@ -35,7 +68,7 @@ namespace ModularCA.Core.Services
             Guid? requestProfileDefault = null;
             if (requestProfileId != null)
             {
-                var profile = await _db.RequestProfiles.FindAsync(requestProfileId);
+                var profile = await LoadEffectiveAsync(requestProfileId.Value);
                 if (profile != null)
                 {
                     var parsed = JsonSerializer.Deserialize<List<Guid>>(profile.AllowedCertProfileIds ?? "[]");
@@ -92,7 +125,7 @@ namespace ModularCA.Core.Services
             string subjectDn,
             string? sansJson)
         {
-            var profile = await _db.RequestProfiles.FindAsync(requestProfileId);
+            var profile = await LoadEffectiveAsync(requestProfileId);
             if (profile == null)
                 return (true, null, subjectDn); // No profile = no validation
 

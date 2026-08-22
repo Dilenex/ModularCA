@@ -37,6 +37,7 @@ public class EstService : IEstService
     private readonly RequestProfileValidationService _requestProfileValidation;
     private readonly INotificationService _notifications;
     private readonly ISecurityPolicyService _securityPolicy;
+    private readonly IProfileResolutionService _profileResolution;
     private readonly ILogger<EstService> _logger;
 
     /// <summary>
@@ -55,6 +56,7 @@ public class EstService : IEstService
         RequestProfileValidationService requestProfileValidation,
         INotificationService notifications,
         ISecurityPolicyService securityPolicy,
+        IProfileResolutionService profileResolution,
         ILogger<EstService> logger)
     {
         _db = db;
@@ -66,6 +68,7 @@ public class EstService : IEstService
         _requestProfileValidation = requestProfileValidation;
         _notifications = notifications;
         _securityPolicy = securityPolicy;
+        _profileResolution = profileResolution;
         _logger = logger;
     }
 
@@ -241,9 +244,11 @@ public class EstService : IEstService
             if (modifiedSubject != null)
                 subject = modifiedSubject;
 
-            // Check if the request profile requires manual approval
-            var requestProfile = await _db.RequestProfiles.FindAsync(context.RequestProfileId.Value);
-            if (requestProfile?.RequireApproval == true)
+            // Check if the request profile requires manual approval. Read from the RESOLVED
+            // profile, not the raw row: a CA-scoped child can otherwise set RequireApproval=false
+            // against a parent that requires it, and the inheritance clamp never runs.
+            var requestProfile = await _profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
+            if (requestProfile.RequireApproval)
                 requireApproval = true;
         }
 
@@ -412,7 +417,14 @@ public class EstService : IEstService
         //    one could be passed over - an evasion - and it could also reject a healthy renewal
         //    because some other CA revoked the same serial. Rows with no IssuerCertificateId
         //    (legacy, pre-FK) are still considered so the check fails closed for them.
-        var clientSerialHex = clientCert.SerialNumber?.ToUpperInvariant();
+        //    The serial must also be normalized to the form the Certificates table stores
+        //    (CertificateUtil.FormatSerialNumber — BigInteger minimal hex). .NET renders the DER
+        //    integer octets at fixed width, so any serial whose leading nibble is zero was
+        //    compared as "0A1B2…" against a stored "A1B2…" and matched nothing. Since a miss here
+        //    means "not revoked", a revoked client certificate could renew itself — and with
+        //    SecurityPolicyEntity.RequireMtlsOcspCheck defaulting to false the chain build above
+        //    does no revocation checking either, so this was the only gate.
+        var clientSerialHex = CertificateUtil.NormalizeSerialForLookup(clientCert.SerialNumber);
         if (!string.IsNullOrEmpty(clientSerialHex))
         {
             var serialMatches = await _db.Certificates

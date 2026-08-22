@@ -178,15 +178,7 @@ namespace ModularCA.Core.Services
         /// resolve to the same catalog entry, which is what makes the profile tolerant of the three
         /// spellings that have historically been written into it.
         /// </summary>
-        private static string NormalizeUsageKey(string value)
-        {
-            Span<char> buffer = stackalloc char[value.Length];
-            var len = 0;
-            foreach (var ch in value)
-                if (char.IsLetterOrDigit(ch))
-                    buffer[len++] = char.ToLowerInvariant(ch);
-            return new string(buffer[..len]);
-        }
+        private static string NormalizeUsageKey(string value) => UsageCatalogResolver.Normalize(value);
 
         /// <summary>
         /// Resolves the effective extended key usages by intersecting the cert profile EKUs

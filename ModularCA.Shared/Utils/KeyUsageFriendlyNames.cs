@@ -65,20 +65,13 @@ namespace ModularCA.Shared.Utils
         }
 
         /// <summary>
-        /// Collapses a usage name to a comparison key: lowercase, non-alphanumerics removed.
-        /// Matches IssuanceValidationService.NormalizeUsageKey and the admin UI's
-        /// normalizeUsageKey so all three layers agree on what counts as the same usage.
+        /// Collapses a usage name to a comparison key. Delegates to
+        /// <see cref="UsageCatalogResolver.Normalize"/> — this used to be a private copy carrying
+        /// a comment claiming it "matches" the copies in IssuanceValidationService and the admin
+        /// UI. Three hand-synchronized copies is how the Bootstrap seeder came to be left behind
+        /// when the runtime ones were fixed, so there is now exactly one.
         /// </summary>
-        private static string Normalize(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return string.Empty;
-            Span<char> buffer = stackalloc char[name.Length];
-            var len = 0;
-            foreach (var ch in name)
-                if (char.IsLetterOrDigit(ch))
-                    buffer[len++] = char.ToLowerInvariant(ch);
-            return new string(buffer[..len]);
-        }
+        private static string Normalize(string name) => UsageCatalogResolver.Normalize(name);
 
         /// <summary>
         /// Combines a list of friendly names into a single OR-ed <see cref="KeyUsage"/>

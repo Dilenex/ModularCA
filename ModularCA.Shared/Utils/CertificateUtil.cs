@@ -623,6 +623,36 @@ public static class CertificateUtil
         serial.ToString(16).ToUpperInvariant();
 
     /// <summary>
+    /// Converts any serial-number spelling into the exact form
+    /// <see cref="FormatSerialNumber"/> produces, which is what the Certificates table stores.
+    /// <para>
+    /// The two representations disagree whenever the leading nibble is zero.
+    /// <c>BigInteger.ToString(16)</c> emits minimal hex, so a serial beginning <c>0x0A…</c> is
+    /// stored as <c>"A1B2…"</c>; .NET's <c>X509Certificate2.SerialNumber</c> renders the DER
+    /// integer octets at fixed width and yields <c>"0A1B2…"</c>. Comparing the two directly is a
+    /// silent miss on roughly one serial in sixteen — and where the comparison is a revocation
+    /// check, a miss means the check passes. EST re-enrollment did exactly that, so a revoked
+    /// client certificate could renew itself.
+    /// </para>
+    /// <para>
+    /// Separators (colons, dashes, spaces) that some tools emit are stripped too, so an
+    /// operator-pasted serial resolves the same way.
+    /// </para>
+    /// </summary>
+    public static string NormalizeSerialForLookup(string? serial)
+    {
+        if (string.IsNullOrWhiteSpace(serial))
+            return string.Empty;
+
+        var cleaned = serial.Replace(":", "").Replace("-", "").Replace(" ", "").ToUpperInvariant();
+        var trimmed = cleaned.TrimStart('0');
+
+        // An all-zero serial trims to nothing; BigInteger renders zero as "0", so match that
+        // rather than returning an empty string that would match every row or none.
+        return trimmed.Length > 0 ? trimmed : "0";
+    }
+
+    /// <summary>
     /// Parses all common X.509v3 extensions from a PEM-encoded certificate and returns
     /// a structured model containing Basic Constraints, Key Usage, Extended Key Usage,
     /// SANs, AIA (OCSP + CA Issuer URLs), CDP, SKI, AKI, and Certificate Policies.

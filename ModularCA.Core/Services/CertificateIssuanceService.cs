@@ -1116,7 +1116,8 @@ namespace ModularCA.Core.Services
         /// Validates that the certificate's subject DN and SANs comply with the issuing CA's
         /// name constraints extension (RFC 5280 section 4.2.1.10). DNS name constraints are
         /// enforced (block issuance on violation). Other constraint types (IP, Email, URI, DN)
-        /// are logged as warnings but do not block issuance.
+        /// are NOT implemented, and their presence now refuses issuance rather than proceeding
+        /// unconstrained — see the throw below for why a warning was the wrong response.
         /// </summary>
         /// <param name="issuerCert">The issuing CA's X.509 certificate.</param>
         /// <param name="subjectDn">The subject DN of the certificate being issued.</param>
@@ -1133,8 +1134,17 @@ namespace ModularCA.Core.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to parse NameConstraints from issuing CA — skipping validation");
-                return;
+                // Fail closed. Skipping validation here meant an issuer whose NameConstraints
+                // extension could not be parsed enforced NOTHING — the one case where the CA is
+                // demonstrably in an unknown state was also the case that issued freely. A
+                // constraint we cannot read is a constraint we cannot prove the certificate
+                // satisfies.
+                _logger.LogError(ex,
+                    "Failed to parse NameConstraints from issuing CA {CaSubject} — refusing to issue.",
+                    issuerCert.SubjectDN);
+                throw new InvalidOperationException(
+                    "The issuing CA carries a NameConstraints extension that cannot be parsed, so compliance "
+                    + "cannot be verified. Issuance is refused rather than proceeding unconstrained.", ex);
             }
 
             var permitted = nc.PermittedSubtrees;
@@ -1180,12 +1190,34 @@ namespace ModularCA.Core.Services
                 }
             }
 
-            if (hasNonDnsPermitted)
-                _logger.LogWarning("Issuing CA has non-DNS name constraints (IP, Email, URI, DN) that are not yet enforced. " +
-                    "Certificate issuance proceeds but may violate issuer permitted constraints. CA: {CaSubject}", issuerCert.SubjectDN);
-            if (hasNonDnsExcluded)
-                _logger.LogWarning("Issuing CA has non-DNS name constraints (IP, Email, URI, DN) that are not yet enforced. " +
-                    "Certificate issuance proceeds but may violate issuer excluded constraints. CA: {CaSubject}", issuerCert.SubjectDN);
+            // Non-DNS subtrees (IP, Email, URI, DirectoryName) are not implemented. They used to
+            // produce a warning and then let issuance proceed, which means a CA an operator
+            // deliberately constrained to, say, `permitted: email:@example.com` or
+            // `excluded: DN:O=Bank` issued outside those bounds with nothing but a log line — the
+            // constraint existed in the certificate, and relying parties enforce it, but this CA
+            // did not honour its own policy.
+            //
+            // Refuse instead. A name constraint this code cannot evaluate is one it cannot prove
+            // the certificate satisfies, and quietly issuing a non-compliant certificate from a
+            // constrained CA is a trust failure, not a warning.
+            //
+            // This is deliberately a hard stop rather than a configurable one: a switch to
+            // downgrade an unenforceable constraint back to a warning is the same fail-open with
+            // extra steps. Implementing RFC 5280 4.2.1.10 matching for these types is what lets
+            // such a CA issue again.
+            if (hasNonDnsPermitted || hasNonDnsExcluded)
+            {
+                var which = hasNonDnsPermitted && hasNonDnsExcluded ? "permitted and excluded"
+                          : hasNonDnsPermitted ? "permitted" : "excluded";
+                _logger.LogError(
+                    "Issuing CA {CaSubject} has non-DNS {Which} name constraints (IP, Email, URI, DirectoryName) "
+                    + "which are not implemented — refusing to issue rather than proceeding unconstrained.",
+                    issuerCert.SubjectDN, which);
+                throw new InvalidOperationException(
+                    $"The issuing CA carries non-DNS {which} name constraints (IP, Email, URI, or DirectoryName). "
+                    + "Enforcement of those types is not implemented, so compliance cannot be verified and "
+                    + "issuance is refused. Use DNS-only name constraints on this CA, or remove them.");
+            }
 
             // Validate DNS SANs against constraints
             foreach (var san in sans)

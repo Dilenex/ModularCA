@@ -76,7 +76,13 @@ public class AdminConfigController(
                 _config.LdapAuth.UseSsl,
                 _config.LdapAuth.SearchBaseDn,
                 _config.LdapAuth.SearchFilter,
-                BindDn = _config.LdapAuth.BindDn != null ? RedactSecret("LdapAuth.BindPassword") : null,
+                // The bind DN is a directory identity, not a secret — return it as-is so the UI
+                // can display and edit it. It previously received the BindPassword redaction, which
+                // is how saving the LDAP card overwrote the real DN with the string "***".
+                _config.LdapAuth.BindDn,
+                BindPassword = string.IsNullOrEmpty(_config.LdapAuth.BindPassword)
+                    ? string.Empty
+                    : RedactSecret("LdapAuth.BindPassword"),
                 _config.LdapAuth.GroupSyncEnabled,
                 _config.LdapAuth.AutoProvisionUsers,
                 _config.LdapAuth.GroupSearchBaseDn,
@@ -280,6 +286,12 @@ public class AdminConfigController(
     }
 
     [HttpPut("ldap-auth")]
+    // Step-up parity with every other security-relevant section. Omitting it here was
+    // account takeover, not merely an inconsistency: LdapAuthService re-reads this config per
+    // call so the change is live without a restart, and AuthController.Login treats a
+    // successful LDAP bind as proof of the local password. Pointing Host at an attacker-
+    // controlled directory therefore yields any user's JWT.
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update)
     {
         _config.LdapAuth.Enabled = update.Enabled;
@@ -289,7 +301,8 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.SearchBaseDn)) _config.LdapAuth.SearchBaseDn = update.SearchBaseDn;
         if (!string.IsNullOrEmpty(update.SearchFilter)) _config.LdapAuth.SearchFilter = update.SearchFilter;
         if (update.BindDn != null) _config.LdapAuth.BindDn = update.BindDn;
-        if (update.BindPassword != null) _config.LdapAuth.BindPassword = update.BindPassword;
+        if (update.BindPassword != null && !IsRedactionSentinel(update.BindPassword))
+            _config.LdapAuth.BindPassword = update.BindPassword;
         _config.LdapAuth.GroupSyncEnabled = update.GroupSyncEnabled;
         _config.LdapAuth.AutoProvisionUsers = update.AutoProvisionUsers;
         if (!string.IsNullOrEmpty(update.GroupSearchBaseDn)) _config.LdapAuth.GroupSearchBaseDn = update.GroupSearchBaseDn;
@@ -310,10 +323,10 @@ public class AdminConfigController(
         _config.Email.UseTls = update.UseTls;
         if (!string.IsNullOrEmpty(update.AuthMethod)) _config.Email.AuthMethod = update.AuthMethod;
         if (update.Username != null) _config.Email.Username = update.Username;
-        if (update.Password != null && update.Password != "***") _config.Email.Password = update.Password;
-        if (update.OAuth2AccessToken != null && update.OAuth2AccessToken != "***") _config.Email.OAuth2AccessToken = update.OAuth2AccessToken;
+        if (update.Password != null && !IsRedactionSentinel(update.Password)) _config.Email.Password = update.Password;
+        if (update.OAuth2AccessToken != null && !IsRedactionSentinel(update.OAuth2AccessToken)) _config.Email.OAuth2AccessToken = update.OAuth2AccessToken;
         if (update.OAuth2ClientId != null) _config.Email.OAuth2ClientId = update.OAuth2ClientId;
-        if (update.OAuth2ClientSecret != null && update.OAuth2ClientSecret != "***") _config.Email.OAuth2ClientSecret = update.OAuth2ClientSecret;
+        if (update.OAuth2ClientSecret != null && !IsRedactionSentinel(update.OAuth2ClientSecret)) _config.Email.OAuth2ClientSecret = update.OAuth2ClientSecret;
         if (update.OAuth2TokenUrl != null) _config.Email.OAuth2TokenUrl = update.OAuth2TokenUrl;
         if (update.OAuth2Scopes != null) _config.Email.OAuth2Scopes = update.OAuth2Scopes;
         if (!string.IsNullOrEmpty(update.FromAddress)) _config.Email.FromAddress = update.FromAddress;
@@ -668,7 +681,7 @@ public class AdminConfigController(
     public async Task<IActionResult> UpdateCertManager([FromBody] CertManagerUpdateRequest request)
     {
         _config.CertManager.Enabled = request.Enabled;
-        if (request.ApiKey != null && request.ApiKey != "***" && request.ApiKey != "(env)")
+        if (request.ApiKey != null && !IsRedactionSentinel(request.ApiKey))
             _config.CertManager.ApiKey = request.ApiKey;
         if (request.DefaultCertProfileId.HasValue) _config.CertManager.DefaultCertProfileId = request.DefaultCertProfileId;
         if (request.DefaultSigningProfileId.HasValue) _config.CertManager.DefaultSigningProfileId = request.DefaultSigningProfileId;
@@ -685,7 +698,7 @@ public class AdminConfigController(
     public async Task<IActionResult> UpdateIntegrationApi([FromBody] IntegrationApiUpdateRequest request)
     {
         _config.IntegrationApi.Enabled = request.Enabled;
-        if (request.ApiKey != null && request.ApiKey != "***" && request.ApiKey != "(env)")
+        if (request.ApiKey != null && !IsRedactionSentinel(request.ApiKey))
             _config.IntegrationApi.ApiKey = request.ApiKey;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("IntegrationApi", new { request.Enabled });
@@ -754,6 +767,20 @@ public class AdminConfigController(
     /// <summary>Returns "(env)" for env-sourced secrets, "***" otherwise.</summary>
     private string RedactSecret(string path) =>
         _envOverlay.EnvSourcedPaths.Contains(path) ? "(env)" : "***";
+
+    /// <summary>
+    /// True when a submitted value is one of the placeholders <see cref="RedactSecret"/> hands to
+    /// the browser, meaning "unchanged" rather than a real new value.
+    /// <para>
+    /// Every write of a redacted field must go through this. The UI loads a section, renders the
+    /// placeholder in the input, and PUTs the whole section back when the operator changes some
+    /// unrelated toggle — so an unguarded assignment overwrites the real secret with the literal
+    /// string "***". Guards existed but were inconsistent: two call sites checked both
+    /// placeholders, three checked only "***" (so an env-sourced secret could be destroyed by
+    /// writing back "(env)"), and the LDAP bind DN had no guard at all.
+    /// </para>
+    /// </summary>
+    private static bool IsRedactionSentinel(string? value) => value is "***" or "(env)";
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>
