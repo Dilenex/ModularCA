@@ -67,6 +67,11 @@ public static class BackupRestore
         var backupName = $"modularca-backup-{timestamp}";
         var backupDir = Path.Combine(Path.GetTempPath(), backupName);
         Directory.CreateDirectory(backupDir);
+        // Plaintext keystores and config are copied in here before the archive is encrypted.
+        // GetTempPath is /tmp on Linux, which is world-readable, so without this every local
+        // user can read the CA private keys for the duration of the backup. Hardening only the
+        // finished archive (further down) does nothing for the plaintext staged beside it.
+        FileSecurityUtil.SetDirectoryOwnerOnly(backupDir);
 
         try
         {
@@ -474,6 +479,8 @@ public static class BackupRestore
                     // Write decrypted ZIP to temp location
                     tempDecryptedZip = Path.GetTempFileName() + ".zip";
                     File.WriteAllBytes(tempDecryptedZip, plaintext);
+                    // The decrypted archive contains every CA private key in the install.
+                    FileSecurityUtil.SetOwnerOnly(tempDecryptedZip);
                     archivePath = tempDecryptedZip; // Use decrypted ZIP for rest of restore
                 }
                 finally
@@ -489,6 +496,10 @@ public static class BackupRestore
             // Every entry must resolve to a path inside restoreDir; absolute paths, ADS
             // markers, null bytes, and parent-traversal sequences are rejected.
             Directory.CreateDirectory(restoreDir);
+            // Harden BEFORE extracting: the archive is expanded in place, so from the next line
+            // onward this directory holds every CA private key in plaintext. Under a
+            // world-readable /tmp that is readable by any local user until the restore finishes.
+            FileSecurityUtil.SetDirectoryOwnerOnly(restoreDir);
             SafeExtractZip(archivePath, restoreDir);
 
             // Validate manifest
@@ -803,6 +814,15 @@ public static class BackupRestore
     /// and calls <see cref="ModularCA.Keystore.Services.KeystoreService.VerifyKeystoreFileSignature"/>
     /// for each file. Throws on any verification failure so the caller can roll back the
     /// restore before the operator reboots into a tamper-signed keystore.
+    /// <para>
+    /// The pin itself is authenticated first via
+    /// <see cref="ModularCA.Keystore.Services.KeystoreService.LoadVerifiedPinnedSpki"/>. Verifying
+    /// a file signature against a pin nobody checked only proves the file matches whatever the DB
+    /// says — which is worthless if the DB is what the attacker wrote to, and the DB here has just
+    /// been restored from an archive. When the secondary passphrase cannot be resolved the check
+    /// degrades to a warning rather than failing the restore; see
+    /// <see cref="TryLoadSecondaryPassphrase"/>.
+    /// </para>
     /// </summary>
     private static void VerifyRestoredKeystoresOrThrow(
         string keystoreDir,
@@ -834,11 +854,73 @@ public static class BackupRestore
         foreach (var path in files)
         {
             var name = Path.GetFileName(path);
-            var pinned = ModularCA.Keystore.Services.KeystoreService.GetPinnedSignerSpki(db, name);
-            // If the row has no pin, the legacy fallback in KeystoreService.FindValidSigner
+
+            // Authenticate the pin before verifying anything against it. GetPinnedSignerSpki,
+            // used here previously, returns the pin WITHOUT checking the MAC that protects it —
+            // so an attacker who could write to the app DB could swap the pin and have their own
+            // CA accepted as the keystore signer, which is precisely what this step exists to
+            // catch. The runtime loader (KeystoreService.LoadCertKeysInner) has always done the
+            // MAC check; this was the sibling that missed it.
+            var secondary = TryLoadSecondaryPassphrase(name, out var whyNot);
+            string? pinned;
+            if (secondary != null)
+            {
+                // Throws on a MAC mismatch, which the caller turns into a rollback. A mismatch
+                // means either the pin was tampered with or the secondary passphrase changed
+                // since the backup — and in the latter case the restored keystores could not
+                // have been decrypted at first boot anyway, so failing here surfaces the problem
+                // while the rollback is still available.
+                pinned = ModularCA.Keystore.Services.KeystoreService.LoadVerifiedPinnedSpki(db, name, secondary);
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"  [WARNING] Could not resolve the secondary passphrase for '{name}' ({whyNot}), " +
+                    "so its SPKI pin could not be authenticated. Signature verification proceeds " +
+                    "against an UNVERIFIED pin. Set MODULARCA_KEYSTORE_SECONDARY_PASSPHRASE or " +
+                    "restore config/keystore.yaml before re-running to close this gap.");
+                pinned = ModularCA.Keystore.Services.KeystoreService.GetPinnedSignerSpki(db, name);
+            }
+
+            // If the row has no pin at all, the legacy fallback in KeystoreService.FindValidSigner
             // still runs but emits a warning. After restoring from an install with signer pinning the
             // pin should always be present.
             ModularCA.Keystore.Services.KeystoreService.VerifyKeystoreFileSignature(path, db, pinned);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the secondary keystore passphrase for pin authentication during a restore, or
+    /// null when no source has it.
+    /// <para>
+    /// Deliberately reads the LIVE <c>config/keystore.yaml</c> rather than the archive's copy:
+    /// <see cref="BackupSecretDenylist"/> keeps <c>keystore.yaml</c> out of every backup, so the
+    /// archive has no copy to read and the on-disk file is untouched by the restore. That is also
+    /// the correct secret — the restored keystore files can only be opened with the secondary
+    /// passphrase currently in effect on this host.
+    /// </para>
+    /// <para>
+    /// Returns null rather than throwing for ANY resolution failure — absent file, missing entry,
+    /// blank value, malformed YAML. A missing file is a legitimate state part-way through a
+    /// disaster recovery, and the rest are operator problems that should not abort a restore that
+    /// would otherwise succeed. Failing open here is safe precisely because the caller falls back
+    /// to the behaviour that shipped before this check existed, and says so loudly;
+    /// <paramref name="reason"/> carries the detail into that warning.
+    /// </para>
+    /// </summary>
+    private static string? TryLoadSecondaryPassphrase(string keystoreName, out string reason)
+    {
+        try
+        {
+            var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
+            var value = ModularCA.Keystore.Config.KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
+            reason = string.Empty;
+            return value;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            return null;
         }
     }
 
@@ -1156,6 +1238,7 @@ public static class BackupRestore
         try
         {
             Directory.CreateDirectory(stagingDir);
+            FileSecurityUtil.SetDirectoryOwnerOnly(stagingDir);
             if (Directory.Exists(configDir))
                 CopyDirectory(configDir, Path.Combine(stagingDir, "config"));
             if (Directory.Exists(keystoreDir))

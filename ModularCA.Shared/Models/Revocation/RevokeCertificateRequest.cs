@@ -13,6 +13,13 @@ namespace ModularCA.Shared.Models.Revocation
     /// </summary>
     public class RevokeCertificateRequestByCertId
     {
+        /// <summary>
+        /// Legacy body copy of the certificate id. The <c>{certId}</c> route segment is
+        /// authoritative — it is what the CA-scoped authorization policy is evaluated against —
+        /// and a value here that disagrees with it is rejected with 400 rather than honoured.
+        /// Kept because existing clients send both, and dropping it would turn a redundant field
+        /// into a binding error.
+        /// </summary>
         public Guid CertificateId { get; set; }
 
         [Required]
@@ -62,6 +69,13 @@ namespace ModularCA.Shared.Models.Revocation
 
     public class HoldCertificateRequestByCertId
     {
+        /// <summary>
+        /// Legacy body copy of the certificate id. The <c>{certId}</c> route segment is
+        /// authoritative — it is what the CA-scoped authorization policy is evaluated against —
+        /// and a value here that disagrees with it is rejected with 400 rather than honoured.
+        /// Kept because existing clients send both, and dropping it would turn a redundant field
+        /// into a binding error.
+        /// </summary>
         public Guid CertificateId { get; set; }
     }
 

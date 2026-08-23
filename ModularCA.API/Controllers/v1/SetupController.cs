@@ -721,6 +721,26 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             if (string.IsNullOrWhiteSpace(request.RootCa.CommonName))
                 return BadRequest(new { error = "Root CA Common Name is required." });
 
+            // Check the administrator password against the policy BEFORE any destructive setup
+            // work begins. BootstrapService validates it too, authoritatively, against the policy
+            // row it has just seeded — but by then the databases and keystores exist, and the
+            // failure surfaces to the wizard as an opaque correlation id. Rejecting here gives
+            // the operator a message they can act on and leaves nothing half-built.
+            //
+            // setupui validates the same rule in the browser. That is a convenience, not a
+            // control: this endpoint is reachable directly with the setup token.
+            if (!string.IsNullOrWhiteSpace(request.Admin?.Password))
+            {
+                // Validated against the defaults, because SeedPasswordPolicy has not run yet —
+                // these ARE the values it is about to write. Same validator the runtime uses on
+                // every password change, so the wizard cannot accept something the system would
+                // later refuse.
+                var errors = ModularCA.Auth.Services.PasswordPolicyService.Validate(
+                    request.Admin.Password, new ModularCA.Shared.Entities.PasswordPolicyEntity());
+                if (errors.Count > 0)
+                    return BadRequest(new { error = "Administrator password: " + string.Join("; ", errors) });
+            }
+
             // Refuse to issue a Web TLS cert that won't validate against the
             // address the operator is currently using to reach the wizard. Requires at least
             // one SAN matching the current Request.Host (case-insensitive).

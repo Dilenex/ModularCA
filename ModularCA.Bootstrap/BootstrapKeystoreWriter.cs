@@ -104,20 +104,23 @@ public static class BootstrapKeystoreWriter
         var kek = ScryptKeyDeriver.DeriveFileKey(KeystorePasswordWrapping.WrapDomainTag, secondaryPass, file);
         var blob = AesGcmEncryptor.Encrypt(Encoding.UTF8.GetBytes(mainPass), kek);
         var theBlob = blob.nonce.Concat(blob.ciphertext).Concat(blob.tag).ToArray();
-        AddKeystoreEntryToDb(keystoreName, theBlob, scryptParams, mainPass, db, pinnedSigningCaSpkiHex, secondaryPass);
+        AddKeystoreEntryToDb(keystoreName, theBlob, scryptParams, db, pinnedSigningCaSpkiHex, secondaryPass);
     }
 
     /// <summary>
-    /// Inserts a keystore metadata record (name, password hash, scrypt parameters, encrypted blob)
-    /// into the database. <paramref name="pinnedSigningCaSpkiHex"/> records the
-    /// SHA-256 fingerprint of the CA that signed the keystore so runtime loads can refuse
-    /// signatures from any other CA.
+    /// Inserts a keystore metadata record (name, scrypt parameters, encrypted blob) into the
+    /// database. <paramref name="pinnedSigningCaSpkiHex"/> records the SHA-256 fingerprint of the
+    /// CA that signed the keystore so runtime loads can refuse signatures from any other CA.
+    /// <para>
+    /// The master passphrase is deliberately NOT a parameter. It used to be, solely to store an
+    /// unsalted SHA-256 of it in a column nothing read. The passphrase reaches the database only
+    /// inside <paramref name="theBlob"/>, AES-GCM encrypted under the wrapping KEK.
+    /// </para>
     /// </summary>
     public static void AddKeystoreEntryToDb(
         string keystoreName,
         byte[] theBlob,
         KeystoreSaveResult scryptParams,
-        string mainPass,
         ModularCADbContext db,
         string? pinnedSigningCaSpkiHex = null,
         string? secondaryPassForMac = null)
@@ -125,7 +128,6 @@ public static class BootstrapKeystoreWriter
         var keystoreEntry = new KeystoreEntryEntity
         {
             Name = keystoreName,
-            PassHash = CryptoUtils.HashPass(mainPass),
             Passblob = theBlob,
             Salt = Convert.ToBase64String(scryptParams.Salt),
             ScryptN = scryptParams.Params.N,

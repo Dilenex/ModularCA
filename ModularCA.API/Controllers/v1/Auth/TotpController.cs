@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Filters;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -382,7 +383,22 @@ public class TotpController : ControllerBase
         await _cache.RemoveAsync($"mfa:{request.MfaToken}");
         await _cache.RemoveAsync(failKey);
 
-        // Issue JWT token — MFA is complete
+        // MFA is complete; issue the JWT.
+        // Re-check account state at issuance. The gate ran when AuthController.Login minted the
+        // MFA token, but that was up to MfaSessionTtlSeconds ago (clamped to 900s) — long enough
+        // for an administrator to disable or lock the account while its owner is part-way through
+        // MFA. Completing the second factor must not resurrect a session the operator just took
+        // away.
+        if (AccountStateGate.IsBlocked(user, out var blockedAtIssue))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp,
+                details: new { Reason = blockedAtIssue, Flow = "totp-verify" });
+            return StatusCode(403, new { error = AccountStateGate.ClientMessage });
+        }
+
         var groups = await _db.CaGroupMembers
             .Where(gm => gm.UserId == user.Id)
             .Include(gm => gm.Group)

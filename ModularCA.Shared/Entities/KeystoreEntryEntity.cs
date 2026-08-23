@@ -14,7 +14,11 @@ public class KeystoreEntryEntity
 {
     public int Id { get; set; }
     public string Name { get; set; } = default!;
-    public string PassHash { get; set; } = default!;
+
+    // A `PassHash` column used to sit here: an unsalted, single-round SHA-256 of the keystore
+    // master passphrase. Nothing ever read it. It was a standing offline-cracking target on the
+    // one secret that unwraps every CA private key, bought nothing, and is removed by the
+    // DropKeystorePassHash migration.
 
     [Required]
     public byte[] Passblob { get; set; } = Array.Empty<byte>();

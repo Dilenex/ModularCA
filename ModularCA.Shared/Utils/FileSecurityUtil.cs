@@ -53,6 +53,93 @@ public static class FileSecurityUtil
     }
 
     /// <summary>
+    /// Sets directory permissions to owner-only (<c>chmod 700</c> on POSIX, an equivalent DACL
+    /// on Windows).
+    /// <para>
+    /// Needed because <see cref="SetOwnerOnly"/> operates on files, and the backup and restore
+    /// paths stage decrypted CA private keys inside directories under
+    /// <see cref="Path.GetTempPath"/>. On Linux that is <c>/tmp</c>, which is world-readable —
+    /// so every local user could read the keystores for the duration of a backup or a restore.
+    /// Hardening the finished archive, which the code already did, does nothing for the
+    /// plaintext staged next to it.
+    /// </para>
+    /// <para>
+    /// Call this immediately after creating the directory and before writing anything into it.
+    /// There is a brief window between creation and the mode change, but the directory is empty
+    /// throughout it, so nothing sensitive is exposed.
+    /// </para>
+    /// </summary>
+    /// <param name="directoryPath">Absolute path to the directory to tighten.</param>
+    public static void SetDirectoryOwnerOnly(string directoryPath)
+    {
+        if (!Directory.Exists(directoryPath))
+            return;
+
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                ApplyWindowsDirectoryOwnerOnlyAcl(directoryPath);
+            }
+            catch (Exception ex)
+            {
+                if (System.Threading.Interlocked.Exchange(ref _windowsAclWarningLogged, 1) == 0)
+                {
+                    Console.Error.WriteLine(
+                        $"[WARNING] FileSecurityUtil.SetDirectoryOwnerOnly: failed to harden ACL on " +
+                        $"'{directoryPath}': {ex.Message}. Staged secrets may be readable by other users.");
+                }
+            }
+            return;
+        }
+
+        try
+        {
+            // 0700 — the execute bit is required to traverse into a directory at all.
+            File.SetUnixFileMode(directoryPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        catch { /* Best effort — don't crash if permissions fail */ }
+    }
+
+    /// <summary>
+    /// Directory counterpart of <see cref="ApplyWindowsOwnerOnlyAcl"/>: replaces the DACL with
+    /// explicit Allow ACEs for the current user and local Administrators, disables inheritance,
+    /// and marks the entries inheritable so files created inside are covered too.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static void ApplyWindowsDirectoryOwnerOnlyAcl(string directoryPath)
+    {
+        var dirInfo = new DirectoryInfo(directoryPath);
+        var security = dirInfo.GetAccessControl();
+
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        var existing = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier));
+        foreach (FileSystemAccessRule rule in existing)
+            security.RemoveAccessRule(rule);
+
+        var currentUserSid = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Cannot resolve current Windows user SID.");
+        var administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+
+        // ContainerInherit | ObjectInherit so everything staged inside inherits the restriction.
+        const InheritanceFlags inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+
+        foreach (var sid in new[] { currentUserSid, administratorsSid })
+        {
+            security.AddAccessRule(new FileSystemAccessRule(
+                sid,
+                FileSystemRights.FullControl,
+                inherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+        }
+
+        dirInfo.SetAccessControl(security);
+    }
+
+    /// <summary>
     /// Replaces the file's DACL with explicit Allow ACEs for the current user and
     /// the local Administrators group, removing inheritance and any pre-existing ACEs.
     /// </summary>

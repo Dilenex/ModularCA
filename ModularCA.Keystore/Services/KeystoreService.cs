@@ -334,22 +334,42 @@ public class KeystoreService : IDisposable
     /// Shared entry-verify-and-decrypt helper. v4 uses HKDF per-entry keys and index-prefixed
     /// signatures; v3 and earlier use the flat file key + unprefixed sig. <paramref name="consume"/>
     /// is invoked once with the decrypted plaintext and gets a guarantee of zeroing afterwards.
+    /// <para>
+    /// This is the ONLY place that decides how a keystore entry is decrypted. The Unlocker used
+    /// to carry its own loop that passed the file master key straight to AES-GCM; that silently
+    /// stopped working at v4, when entries moved to per-entry HKDF keys, so the break-glass tool
+    /// could not read any keystore the product writes. Both paths now come through here.
+    /// </para>
     /// </summary>
+    /// <param name="verifySignature">
+    /// When false, the per-entry signature check is skipped and <paramref name="db"/> may be null.
+    /// Reserved for offline disaster recovery, where the app database is unavailable and the
+    /// operator has explicitly accepted that entries are decrypted unverified.
+    /// </param>
     private static void DecryptAndVerifyEntry(
         int formatVersion,
         int index,
         KeystoreFile.KeystoreEntry entry,
         byte[] fileKey,
-        ModularCADbContext db,
+        ModularCADbContext? db,
         string? pinnedSpki,
-        Action<byte[]> consume)
+        Action<byte[]> consume,
+        bool verifySignature = true)
     {
         // Verify the entry signature first so we never decrypt unverified data.
-        var sigInput = formatVersion >= 4
-            ? SerializeEntryForSig(index, entry.Nonce, entry.Ciphertext, entry.Tag)
-            : SerializeEntryWithoutSignatures(entry.Nonce, entry.Ciphertext, entry.Tag);
-        if (FindValidSigner(sigInput, entry.Signature!, db, pinnedSpki) == null)
-            throw new SecurityException($"Entry signature failed for entry {index}");
+        if (verifySignature)
+        {
+            if (db == null)
+                throw new ArgumentNullException(nameof(db), "Signature verification requires a database context.");
+            if (entry.Signature == null)
+                throw new SecurityException($"Entry {index} carries no signature.");
+
+            var sigInput = formatVersion >= 4
+                ? SerializeEntryForSig(index, entry.Nonce, entry.Ciphertext, entry.Tag)
+                : SerializeEntryWithoutSignatures(entry.Nonce, entry.Ciphertext, entry.Tag);
+            if (FindValidSigner(sigInput, entry.Signature, db, pinnedSpki) == null)
+                throw new SecurityException($"Entry signature failed for entry {index}");
+        }
 
         byte[]? entryKey = null;
         byte[]? decrypted = null;
@@ -369,6 +389,80 @@ public class KeystoreService : IDisposable
         }
     }
 
+
+    /// <summary>
+    /// Decrypts every entry of an already-parsed keystore, honouring the file's format version.
+    /// <para>
+    /// Exists so the Unlocker can reuse the runtime's decrypt path instead of reimplementing it.
+    /// The reimplementation is what broke: it applied the file master key directly to AES-GCM,
+    /// which is correct only up to v3. From v4 each entry is encrypted under
+    /// <c>HKDF-Expand(masterKey, "ModularCA:Keystore:entry" || u32be(index))</c>, so every
+    /// decryption failed the authentication tag and the tool was unusable against any keystore
+    /// the product had written.
+    /// </para>
+    /// </summary>
+    /// <param name="keystore">Parsed keystore, supplying both entries and format version.</param>
+    /// <param name="fileMasterKey">
+    /// scrypt output from <see cref="ScryptKeyDeriver.DeriveFileKey(byte[], string, KeystoreFile)"/>.
+    /// The caller retains ownership and is responsible for zeroing it.
+    /// </param>
+    /// <param name="db">App database used to resolve entry signers. May be null only when
+    /// <paramref name="verifyEntrySignatures"/> is false.</param>
+    /// <param name="pinnedSpki">Pinned signer SPKI, ideally from
+    /// <see cref="LoadVerifiedPinnedSpki"/> so the pin's own MAC has been checked.</param>
+    /// <param name="verifyEntrySignatures">
+    /// False only for explicitly-acknowledged offline recovery. Entry plaintext is then
+    /// unauthenticated beyond the AES-GCM tag, which proves the passphrases but says nothing
+    /// about who wrote the file.
+    /// </param>
+    /// <param name="consume">
+    /// Receives (entry index, plaintext) for each entry. The buffer is zeroed as soon as this
+    /// returns, so a consumer that needs the bytes afterwards must copy them.
+    /// </param>
+    public static void DecryptEntries(
+        KeystoreFile keystore,
+        byte[] fileMasterKey,
+        ModularCADbContext? db,
+        string? pinnedSpki,
+        bool verifyEntrySignatures,
+        Action<int, byte[]> consume)
+    {
+        ArgumentNullException.ThrowIfNull(keystore);
+        ArgumentNullException.ThrowIfNull(fileMasterKey);
+        ArgumentNullException.ThrowIfNull(consume);
+
+        for (int i = 0; i < keystore.Entries.Count; i++)
+        {
+            var index = i;
+            DecryptAndVerifyEntry(
+                keystore.FormatVersion,
+                index,
+                keystore.Entries[index],
+                fileMasterKey,
+                db,
+                pinnedSpki,
+                decrypted => consume(index, decrypted),
+                verifyEntrySignatures);
+        }
+    }
+
+    /// <summary>
+    /// Returns the pinned signer SPKI for a keystore only after verifying the MAC that protects
+    /// it, matching what <c>LoadCertKeysInner</c> does before trusting a pin.
+    /// <para>
+    /// <see cref="GetPinnedSignerSpki"/> skips that check. The Unlocker used it, so a
+    /// DB-write-only compromise could swap the pin and the tool would happily verify a keystore
+    /// against an attacker's CA. A legacy row with no stored MAC still warns and proceeds — the
+    /// MAC is populated on the next keystore rewrite — but a MAC that is present and wrong is a
+    /// hard failure.
+    /// </para>
+    /// </summary>
+    public static string? LoadVerifiedPinnedSpki(ModularCADbContext db, string keystoreName, string secondaryPassphrase)
+    {
+        var (pinnedSpki, pinMac) = LoadPinnedSignerSpkiWithMac(db, keystoreName);
+        VerifySpkiPinMac(pinnedSpki, pinMac, secondaryPassphrase, keystoreName);
+        return pinnedSpki;
+    }
 
     /// <summary>
     /// Returns the main passphrase as its raw UTF-8 bytes so the caller

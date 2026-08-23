@@ -154,7 +154,15 @@ const EnrollmentManagement: React.FC = () => {
                         <div>
                             <label className="text-xs text-gray-600 dark:text-gray-400">Subject Restriction (optional)</label>
                             <input type="text" value={form.subjectRestriction} onChange={e => setForm({ ...form, subjectRestriction: e.target.value })}
-                                className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-2 py-1 text-sm" placeholder="e.g., example.com" />
+                                className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-2 py-1 text-sm" placeholder="e.g., example.com or O=Acme" />
+                        </div>
+                        {/* The state field and the POST body have always carried sanRestriction; this
+                            input was simply never rendered, so the value was permanently null and the
+                            restriction unsettable from the UI. */}
+                        <div>
+                            <label className="text-xs text-gray-600 dark:text-gray-400">SAN Restriction (optional)</label>
+                            <input type="text" value={form.sanRestriction} onChange={e => setForm({ ...form, sanRestriction: e.target.value })}
+                                className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-2 py-1 text-sm" placeholder="e.g., example.com, example.org" />
                         </div>
                         <div>
                             <label className="text-xs text-gray-600 dark:text-gray-400">Protocol (optional)</label>

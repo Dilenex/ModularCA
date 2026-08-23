@@ -139,12 +139,29 @@ public class PublicEnrollmentController(
         var subject = parsedCsr.SubjectName;
         var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
 
-        // Validate subject restriction from the token
-        if (!string.IsNullOrWhiteSpace(entity.SubjectRestriction) &&
-            !string.IsNullOrWhiteSpace(subject) &&
-            !subject.Contains(entity.SubjectRestriction, StringComparison.OrdinalIgnoreCase))
+        // Enforce the token's name restrictions. Possession of the token is the ENTIRE
+        // authorization on this anonymous endpoint, so these are the only thing binding it to a
+        // set of names.
+        //
+        // The subject check used to skip itself when the CSR carried no subject — routine for a
+        // SAN-only TLS certificate, and therefore the simplest way to ignore the restriction —
+        // and matched by raw substring, so 'example.com' was satisfied by
+        // 'CN=evil-example.com.attacker.net'. SANRestriction was not enforced at all: accepted by
+        // the admin API, stored, echoed back on the token-info endpoint, read by nothing.
+        if (!EnrollmentNameRestriction.SubjectSatisfies(subject, entity.SubjectRestriction, out var subjectFailure))
         {
-            return BadRequest(new { error = $"CSR subject does not match token restriction '{entity.SubjectRestriction}'." });
+            Log.Warning(
+                "Public enrollment rejected on subject restriction. TokenId={TokenId} RemoteIp={RemoteIp} Reason={Reason}",
+                entity.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", subjectFailure);
+            return BadRequest(new { error = $"Enrollment rejected: {subjectFailure}." });
+        }
+
+        if (!EnrollmentNameRestriction.SansSatisfy(parsedCsr.SubjectAlternativeNames, entity.SANRestriction, out var sanFailure))
+        {
+            Log.Warning(
+                "Public enrollment rejected on SAN restriction. TokenId={TokenId} RemoteIp={RemoteIp} Reason={Reason}",
+                entity.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", sanFailure);
+            return BadRequest(new { error = $"Enrollment rejected: {sanFailure}." });
         }
 
         // Resolve profiles: token's explicit profiles take priority, then fall back to default CA config

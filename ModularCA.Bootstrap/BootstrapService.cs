@@ -775,6 +775,13 @@ public class BootstrapService
             Email = email ?? string.Empty,
             PasswordHash = ModularCA.Auth.Utils.PasswordUtil.HashPassword(password),
             CreatedAt = DateTime.UtcNow,
+            // The generated password is delivered by printing it to the operator's terminal —
+            // the only channel available during a headless bootstrap, but one that leaves the
+            // secret in scrollback, screen recordings and anything that captures stdout.
+            // Requiring a change on first login bounds how long that copy is worth anything.
+            // AuthController answers 403 { requirePasswordChange } and the pre-JWT
+            // /auth/change-password endpoint clears the flag.
+            PasswordChangeOnNextLogon = true,
         };
         db.Users.Add(initialUser);
         db.SaveChanges();
@@ -819,8 +826,30 @@ public class BootstrapService
     /// <summary>
     /// Creates the initial admin user with a user-provided password (from the setup wizard).
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the supplied password does not satisfy the password policy seeded moments
+    /// earlier by <c>SeedPasswordPolicy</c>.
+    /// </exception>
     private static string CreateInitialUserWithPassword(ModularCADbContext db, string username, string password, string? email = null)
     {
+        // Validate against the same policy the generated-password path loops on. Without this
+        // the wizard's admin password was checked NOWHERE on the server: setupui validates in
+        // the browser only, and anyone can POST the setup request directly. The most privileged
+        // account in the install could therefore be created with a one-character password, while
+        // every subsequent password change was policy-enforced.
+        var policy = db.PasswordPolicies.FirstOrDefault() ?? new PasswordPolicyEntity();
+        if (!BootstrapProfileSeeder.MeetsPolicy(password, policy))
+        {
+            throw new InvalidOperationException(
+                "The administrator password does not meet the configured password policy " +
+                $"(minimum length {policy.MinLength}" +
+                (policy.RequireUppercase ? ", uppercase" : string.Empty) +
+                (policy.RequireLowercase ? ", lowercase" : string.Empty) +
+                (policy.RequireDigit ? ", digit" : string.Empty) +
+                (policy.RequireSymbol ? ", symbol" : string.Empty) +
+                "). Choose a stronger password and run setup again.");
+        }
+
         var initialUser = new UserEntity
         {
             Username = username,

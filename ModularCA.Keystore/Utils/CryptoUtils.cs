@@ -1,11 +1,17 @@
 using System.Security.Cryptography;
-using System.Text;
 
 namespace ModularCA.Keystore.Utils;
 
 /// <summary>
-/// Cryptographic utility methods for salt generation and password hashing.
+/// Cryptographic utility methods for keystore salt generation.
 /// </summary>
+/// <remarks>
+/// A <c>HashPass</c> helper used to live here — <c>Base64(SHA256(passphrase))</c>, unsalted and
+/// single-round. Its only caller stored the result in <c>Keystores.PassHash</c>, which nothing
+/// ever read. Removed along with the column rather than left available: a one-line function that
+/// looks like password hashing is an invitation to use it as password hashing. Passwords go
+/// through <c>ModularCA.Auth.Utils.PasswordUtil.HashPassword</c>, which is salted and iterated.
+/// </remarks>
 public static class CryptoUtils
 {
     /// <summary>
@@ -17,14 +23,5 @@ public static class CryptoUtils
         using var rng = RandomNumberGenerator.Create();
         rng.GetBytes(salt);
         return salt;
-    }
-
-    /// <summary>
-    /// Computes a SHA-256 hash of the input string and returns it as a Base64-encoded string.
-    /// </summary>
-    public static string HashPass(string input)
-    {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToBase64String(hash);
     }
 }

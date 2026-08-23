@@ -40,6 +40,14 @@ public class ProtocolRateLimitMiddleware
         { "EST", "/api/v1/est" },
         { "SCEP", "/api/v1/scep" },
         { "CMP", "/api/v1/cmp" },
+        // The enrollment controllers also serve /est/{caLabel}, /scep/{caLabel} and
+        // /cmp/{caLabel} — the SHORT forms are the ones documented to clients and therefore the
+        // ones an attacker reaches for. Only the /api/v1 forms were bucketed, so the primary
+        // enrollment surface was unthrottled while its alias was limited. The other short
+        // prefixes below (OCSP/TSA/CRL/CA) already had this treatment; enrollment was missed.
+        { "EST_SHORT", "/est/" },
+        { "SCEP_SHORT", "/scep/" },
+        { "CMP_SHORT", "/cmp/" },
         { "ACME", "/api/v1/acme" },
         { "OCSP", "/api/v1/public/ocsp" },
         { "OCSP_SHORT", "/ocsp" },
@@ -65,6 +73,12 @@ public class ProtocolRateLimitMiddleware
         { "EST", (100, 1) },
         { "SCEP", (50, 1) },
         { "CMP", (100, 1) },
+        // Mirror the long-form caps: these are the same operations reached by a different URL,
+        // so a client that respects one should never notice the other. Not seeded into
+        // ProtocolRateLimits, so these defaults are the live values unless an operator adds rows.
+        { "EST_SHORT", (100, 1) },
+        { "SCEP_SHORT", (50, 1) },
+        { "CMP_SHORT", (100, 1) },
         { "ACME", (200, 1) },
         { "Integration", (60, 1) },
         { "CRL", (60, 1) },

@@ -128,6 +128,38 @@ public class BootstrapModularCA
                     "⚠  Proceeding without --expected-db flag. Operator is responsible for verifying target database.");
             }
 
+            // Validate database name identifiers before any SQL operations
+            if (!string.IsNullOrWhiteSpace(appDatabase))
+                BootstrapDatabaseSetup.ValidateIdentifier(appDatabase, "app database name");
+            if (!string.IsNullOrWhiteSpace(auditDatabase))
+                BootstrapDatabaseSetup.ValidateIdentifier(auditDatabase, "audit database name");
+
+            // Prove the database is reachable BEFORE deleting anything.
+            //
+            // The keystore files used to be deleted here and the connection opened afterwards.
+            // A reset against an unreachable database — wrong host, rotated credentials, server
+            // down, a stale db.yaml pointing somewhere that no longer exists — therefore
+            // destroyed every CA private key and only then failed, leaving DB rows that
+            // reference keys no longer on disk. That install can neither sign nor be cleanly
+            // reset: the operator holds certificate records for CAs whose keys are gone.
+            //
+            // The keystores are the only irreplaceable artifact in this operation. Dropped
+            // tables can be recreated; a deleted signing key cannot.
+            // Connect without a specific database first to check existence.
+            Console.WriteLine("\nVerifying database connectivity before deleting anything...");
+            using var conn = new MySqlConnection(connStr);
+            try
+            {
+                conn.Open();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Could not connect to the database: {ex.Message}");
+                Console.WriteLine("   Nothing has been deleted. Fix the connection and re-run the reset.");
+                return 1;
+            }
+            Console.WriteLine("✓ Database reachable.");
+
             // Delete keystore files
             Console.WriteLine("\nDeleting keystore files...");
             DeleteArtifacts(certPath, trustPath);
@@ -142,17 +174,8 @@ public class BootstrapModularCA
                 }
             }
 
-            // Validate database name identifiers before any SQL operations
-            if (!string.IsNullOrWhiteSpace(appDatabase))
-                BootstrapDatabaseSetup.ValidateIdentifier(appDatabase, "app database name");
-            if (!string.IsNullOrWhiteSpace(auditDatabase))
-                BootstrapDatabaseSetup.ValidateIdentifier(auditDatabase, "audit database name");
-
             // Drop all tables (not the database itself) to preserve DB users/grants
             Console.WriteLine("\nDropping all tables...");
-            // Connect without a specific database first to check existence
-            using var conn = new MySqlConnection(connStr);
-            conn.Open();
 
             // Check if app database exists before attempting to drop tables
             if (!string.IsNullOrWhiteSpace(appDatabase))
@@ -643,6 +666,21 @@ public class BootstrapModularCA
 
         BootstrapProfileSeeder.SeedPasswordPolicy(dbContext);
         BootstrapProfileSeeder.SeedSecurityPolicy(dbContext);
+
+        // === IP Whitelist defaults ===
+        // This call was missing from the CLI path while the setup wizard has always made it,
+        // and the two paths are otherwise seeded identically. The consequence was not a missing
+        // convenience: with zero rows, WhitelistService finds no matching rule for any bucket
+        // and every request resolves to NotCovered, which passes through. So a CLI-bootstrapped
+        // install exposed its admin surface to every source address, while a wizard-bootstrapped
+        // one restricted it to internal networks — same product, same version, silently
+        // different security posture depending on how it was installed.
+        //
+        // SeedWhitelists is idempotent (it returns early when any row exists), so adding it here
+        // is safe for installs that later gain rules by other means. No live reload is needed on
+        // this path the way there is in BootstrapService: the CLI exits and the app starts fresh.
+        BootstrapProfileSeeder.SeedWhitelists(dbContext);
+
         BootstrapProfileSeeder.SeedLdapPublisherPolicy(dbContext);
         BootstrapProfileSeeder.SeedProtocolRateLimits(dbContext);
         BootstrapProfileSeeder.SeedDefaultSshProfiles(dbContext);

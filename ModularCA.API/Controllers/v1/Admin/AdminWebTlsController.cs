@@ -373,13 +373,14 @@ public class AdminWebTlsController(
     /// </summary>
     /// <summary>
     /// Normalizes a certificate serial number to match the DB format produced by
-    /// BouncyCastle's BigInteger.ToString(16).ToUpperInvariant() — uppercase hex,
+    /// BouncyCastle's <c>BigInteger.ToString(16).ToUpperInvariant()</c> — uppercase hex,
     /// no delimiters, no leading zeros.
-    /// </summary>
-    /// <summary>
-    /// Delegates to <see cref="CertificateUtil.NormalizeSerialForLookup"/>. This logic was
-    /// private here while EST re-enrollment compared serials without it, so a revoked client
-    /// certificate whose serial had a leading zero nibble was never matched. One copy now.
+    /// <para>
+    /// Delegates to <see cref="ModularCA.Shared.Utils.CertificateUtil.NormalizeSerialForLookup"/>.
+    /// This logic was private here while EST re-enrollment compared serials without it, so a
+    /// revoked client certificate whose serial had a leading zero nibble was never matched.
+    /// One copy now.
+    /// </para>
     /// </summary>
     private static string NormalizeSerial(string? serial)
         => ModularCA.Shared.Utils.CertificateUtil.NormalizeSerialForLookup(serial);

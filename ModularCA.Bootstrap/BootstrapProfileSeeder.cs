@@ -1163,6 +1163,13 @@ public static class BootstrapProfileSeeder
             Username = "superadmin",
             PasswordHash = ModularCA.Auth.Utils.PasswordUtil.HashPassword(password),
             CreatedAt = DateTime.UtcNow,
+            // The generated password is delivered by printing it to the operator's terminal —
+            // the only channel available during a headless bootstrap, but one that leaves the
+            // secret in scrollback, screen recordings and anything that captures stdout.
+            // Requiring a change on first login bounds how long that copy is worth anything.
+            // AuthController answers 403 { requirePasswordChange } and the pre-JWT
+            // /auth/change-password endpoint clears the flag.
+            PasswordChangeOnNextLogon = true,
         };
         db.Users.Add(initialUser);
         db.SaveChanges();
@@ -1241,41 +1248,14 @@ public static class BootstrapProfileSeeder
 
     /// <summary>
     /// Checks whether a password meets all constraints defined by the given password policy.
-    /// Internal so BootstrapService can reuse password policy validation.
+    /// <para>
+    /// Delegates to <see cref="ModularCA.Auth.Services.PasswordPolicyService.Validate"/> rather
+    /// than reimplementing the rules. This method used to carry its own copy of length,
+    /// complexity and dictionary checking, and the duplication is how the gap arose: the
+    /// runtime enforced the full policy on every password change, while the bootstrap
+    /// wizard's admin password was validated by neither copy.
+    /// </para>
     /// </summary>
     internal static bool MeetsPolicy(string password, PasswordPolicyEntity policy)
-    {
-        if (password.Length < policy.MinLength) return false;
-        if (policy.MaxLength > 0 && password.Length > policy.MaxLength) return false;
-        if (policy.RequireUppercase && !password.Any(char.IsUpper)) return false;
-        if (policy.RequireLowercase && !password.Any(char.IsLower)) return false;
-        if (policy.RequireDigit && !password.Any(char.IsDigit)) return false;
-        if (policy.RequireSymbol && password.All(c => char.IsLetterOrDigit(c))) return false;
-        if (policy.MinUppercase > 0 && password.Count(char.IsUpper) < policy.MinUppercase) return false;
-        if (policy.MinLowercase > 0 && password.Count(char.IsLower) < policy.MinLowercase) return false;
-        if (policy.MinDigits > 0 && password.Count(char.IsDigit) < policy.MinDigits) return false;
-        if (policy.MinSpecial > 0 && password.Count(c => !char.IsLetterOrDigit(c)) < policy.MinSpecial) return false;
-
-        if (!string.IsNullOrWhiteSpace(policy.DictionaryPath) && File.Exists(policy.DictionaryPath))
-        {
-            string searchValue;
-            if (policy.DictionaryIsHashed)
-            {
-                var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(password));
-                searchValue = BitConverter.ToString(hash).Replace("-", "").ToUpperInvariant();
-            }
-            else
-            {
-                searchValue = password;
-            }
-
-            foreach (var line in File.ReadLines(policy.DictionaryPath))
-            {
-                if (string.Equals(line.Trim(), searchValue, StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
-        }
-
-        return true;
-    }
+        => ModularCA.Auth.Services.PasswordPolicyService.Validate(password, policy).Count == 0;
 }

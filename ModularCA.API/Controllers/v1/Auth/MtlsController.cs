@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Services;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -440,6 +441,15 @@ public class MtlsController : ControllerBase
     /// validates it against the user's stored mTLS credentials, and issues a full JWT on success.
     /// Accepts the temporary MFA token from the login endpoint (no JWT required).
     /// </summary>
+    /// <remarks>
+    /// <c>[AllowAnonymous]</c> is required, not optional. <c>StartModularCA</c> sets a
+    /// <c>FallbackPolicy</c> of <c>RequireAuthenticatedUser</c>, so without it this endpoint
+    /// answered 401 before the body ever ran — while its own summary promised "no JWT required",
+    /// which is the whole point of an MFA-completion step. mTLS as a second factor was therefore
+    /// unreachable. <c>TotpController.Verify</c> carries the identical summary AND the attribute;
+    /// this is the sibling that was missed.
+    /// </remarks>
+    [AllowAnonymous]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] MtlsMfaVerifyRequest request)
     {
@@ -522,8 +532,21 @@ public class MtlsController : ControllerBase
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
             details: new { Thumbprint = thumbprint, SigningCaId = credential.SigningCaId, SerialNumber = credential.SerialNumber });
 
-        // Issue JWT token -- MFA is complete
+        // MFA is complete; issue the JWT.
         var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        // Re-check account state at issuance. The gate ran when the MFA token was minted, but
+        // that was up to MfaSessionTtlSeconds ago (clamped to 900s) — long enough for an
+        // administrator to disable or lock the account while its owner is part-way through MFA.
+        if (AccountStateGate.IsBlocked(user, out var blockedAtIssue))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp,
+                details: new { Reason = blockedAtIssue, Flow = "mtls-verify" });
+            return StatusCode(403, new { error = AccountStateGate.ClientMessage });
+        }
+
         var groups = await _db.CaGroupMembers
             .Where(gm => gm.UserId == user.Id)
             .Include(gm => gm.Group)
@@ -639,6 +662,12 @@ public class MtlsController : ControllerBase
     /// path keeps the token out of referer headers, server logs, and browser history.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// <c>[AllowAnonymous]</c> for the same reason as <see cref="Verify"/>: the caller is
+    /// part-way through login and holds only a temporary MFA token, so the global
+    /// <c>RequireAuthenticatedUser</c> fallback made this endpoint answer 401 unconditionally.
+    /// </remarks>
+    [AllowAnonymous]
     [HttpGet("verify-redirect")]
     public async Task<IActionResult> VerifyRedirect([FromQuery(Name = "mfaToken")] string? mfaTokenFromQuery = null)
     {
@@ -720,6 +749,19 @@ public class MtlsController : ControllerBase
             details: new { Thumbprint = thumbprint, SigningCaId = credential.SigningCaId, SerialNumber = credential.SerialNumber, Flow = "verify-redirect" });
 
         var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        // Re-check account state at issuance. The gate ran when the MFA token was minted, but
+        // that was up to MfaSessionTtlSeconds ago (clamped to 900s) — long enough for an
+        // administrator to disable or lock the account while its owner is part-way through MFA.
+        if (AccountStateGate.IsBlocked(user, out var blockedAtIssue))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp,
+                details: new { Reason = blockedAtIssue, Flow = "mtls-verify-redirect" });
+            return Redirect($"{mainOrigin}/admin/login?error=account_locked");
+        }
+
         var groups = await _db.CaGroupMembers
             .Where(gm => gm.UserId == user.Id)
             .Include(gm => gm.Group)
@@ -811,6 +853,23 @@ public class MtlsController : ControllerBase
             await _db.Users.Where(u => u.Id == user.Id)
                 .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailedLoginAttempts, u => u.FailedLoginAttempts + 1));
             return Redirect($"{mainOrigin}/admin/login?error=cert_chain_invalid");
+        }
+
+        // Account-state gate. This is a PRIMARY login path — nothing ran AuthController.Login
+        // first — so without this a disabled or locked user holding a valid mTLS credential
+        // logged in normally, and the code below then cleared their lockout as a side effect.
+        //
+        // Placed AFTER chain validation so the outcome cannot be used to enumerate account
+        // state: a caller who cannot present a certificate chaining to the enrolled CA is turned
+        // away before reaching this point.
+        if (AccountStateGate.IsBlocked(user, out var blockedReason))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                details: new { Reason = blockedReason, Flow = "login-redirect", Thumbprint = thumbprint });
+            return Redirect($"{mainOrigin}/admin/login?error=account_locked");
         }
 
         // Check if user has other MFA methods (TOTP or WebAuthn)

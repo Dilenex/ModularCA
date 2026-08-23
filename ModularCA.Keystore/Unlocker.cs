@@ -13,19 +13,31 @@ using System.Text;
 namespace ModularCA.Keystore;
 
 /// <summary>
-/// CLI tool that decrypts and displays or exports keystore entries. Verifies
-/// the keystore's file-level signature against the pinned signing CA before decrypting any
-/// entry, and refuses to write decrypted output to disk unless the operator passes
-/// <c>--insecure-no-verify</c>. Without a DB-backed verification step, an attacker who
-/// knows the passphrases could swap <c>keystores/ca-certs.keystore</c> and use the Unlocker
-/// to extract attacker-controlled CA private keys.
+/// Break-glass CLI that decrypts and displays or exports keystore entries.
+/// <para>
+/// Verifies the keystore's file-level signature against the pinned signing CA — and the MAC
+/// protecting that pin — before decrypting any entry, verifies each entry's own signature, and
+/// refuses to write decrypted output to disk unless the operator passes
+/// <c>--insecure-no-verify</c>. Without a DB-backed verification step, an attacker who knows the
+/// passphrases could swap <c>keystores/ca-certs.keystore</c> and use the Unlocker to extract
+/// attacker-controlled CA private keys.
+/// </para>
+/// <para>
+/// Decryption goes through <see cref="KeystoreService.DecryptEntries"/> rather than a local
+/// loop. It previously had its own, which passed the file master key straight to AES-GCM. That
+/// is correct only through MCAKSTR v3; v4 gives each entry an HKDF-derived key, so the tool
+/// failed the authentication tag on every entry of every keystore the product had written. A
+/// recovery tool that only runs during a disaster is exactly the code that must not carry its
+/// own copy of a format-dependent routine.
+/// </para>
 /// </summary>
 public static class Unlocker
 {
     /// <summary>
-    /// Parses command-line arguments and decrypts keystore entries to stdout or file. The
-    /// default mode requires a DB-backed signature verification; <c>--insecure-no-verify</c>
-    /// opts out explicitly and refuses to write decrypted output unless the flag is present.
+    /// Parses command-line arguments and decrypts keystore entries to stdout (as PEM) or to
+    /// file (as DER). The default mode requires a DB-backed signature verification;
+    /// <c>--insecure-no-verify</c> opts out explicitly, and writing decrypted output to disk
+    /// requires that flag either way.
     /// </summary>
     public static void Run(string[] args)
     {
@@ -39,6 +51,21 @@ public static class Unlocker
 
         var keystore = KeystoreFileParser.Parse(path);
         var keystoreName = Path.GetFileName(path);
+        // The format version decides how entry keys are derived, so it is the first thing an
+        // operator needs when a recovery attempt misbehaves.
+        Console.WriteLine($"Keystore format: v{keystore.FormatVersion}");
+
+        // Loaded before the verification block because the SPKI pin's MAC is keyed by the
+        // secondary passphrase, so the pin cannot be validated without it.
+        var secondaryPass = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
+        string? pinnedSpki = null;
+
+        // The trust keystore holds X.509 certificates; every other keystore holds PKCS#8
+        // private keys. Both are DER on disk and indistinguishable without parsing, so the
+        // PEM label is taken from the keystore name.
+        var pemLabel = keystoreName.Equals("ca-trust.keystore", StringComparison.OrdinalIgnoreCase)
+            ? "CERTIFICATE"
+            : "PRIVATE KEY";
 
         // Verify the file-level signature against the pinned signing CA unless
         // the operator explicitly opted out. The pin comes from the Keystores row in the app
@@ -61,7 +88,10 @@ public static class Unlocker
                     return;
                 }
 
-                var pinnedSpki = KeystoreService.GetPinnedSignerSpki(db, keystoreName);
+                // Verify the pin's own MAC before trusting it. GetPinnedSignerSpki, used here
+                // previously, returns the pin unchecked — so a DB-write-only compromise could
+                // swap it and this tool would validate the keystore against the attacker's CA.
+                pinnedSpki = KeystoreService.LoadVerifiedPinnedSpki(db, keystoreName, secondaryPass);
                 try
                 {
                     KeystoreService.VerifyKeystoreFileSignature(path, db, pinnedSpki);
@@ -98,49 +128,72 @@ public static class Unlocker
                 return;
             }
 
-            var secondaryPass = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, Path.GetFileName(path));
-            var mainPass = LoadMainPassphrase();
+            var mainPassBytes = ReadMainPassphraseBytes();
 
             byte[]? key = null;
             try
             {
-                key = ScryptKeyDeriver.DeriveFileKey(mainPass, secondaryPass, keystore);
+                key = ScryptKeyDeriver.DeriveFileKey(mainPassBytes, secondaryPass, keystore);
 
-                foreach (var entry in keystore.Entries)
-                {
-                    byte[]? decrypted = null;
-                    try
+                // Decrypt through KeystoreService rather than calling AES-GCM directly. The
+                // direct call was correct only up to format v3; v4 gives every entry its own
+                // HKDF-derived key, so the old loop failed the authentication tag on every
+                // entry of every keystore the product writes.
+                KeystoreService.DecryptEntries(
+                    keystore,
+                    key,
+                    db,
+                    pinnedSpki,
+                    verifyEntrySignatures: !insecureNoVerify,
+                    (index, decrypted) =>
                     {
-                        decrypted = AesGcmDecryptor.Decrypt(entry.Nonce, entry.Ciphertext, entry.Tag, key);
-
                         if (print || string.IsNullOrWhiteSpace(outputPath))
                         {
-                            Console.WriteLine("Decrypted entry:\n");
-                            Console.WriteLine(Encoding.UTF8.GetString(decrypted));
+                            // Entries hold DER, not text. Decoding as UTF-8 produced mojibake
+                            // and, worse, looked like a decryption failure. PEM is what an
+                            // operator can actually feed to openssl or re-import.
+                            Console.WriteLine($"Entry {index}:");
+                            Console.WriteLine(ToPem(decrypted, pemLabel));
                         }
                         else
                         {
                             var outputName = outputPath!;
                             var numberedPath = keystore.Entries.Count > 1
-                                ? Path.Combine(Path.GetDirectoryName(outputName)!, $"{Path.GetFileNameWithoutExtension(outputName)}_{keystore.Entries.IndexOf(entry)}{Path.GetExtension(outputName)}")
+                                ? Path.Combine(Path.GetDirectoryName(outputName) ?? string.Empty,
+                                    $"{Path.GetFileNameWithoutExtension(outputName)}_{index}{Path.GetExtension(outputName)}")
                                 : outputName;
 
                             File.WriteAllBytes(numberedPath, decrypted);
                             FileSecurityUtil.SetOwnerOnly(numberedPath);
-                            Console.WriteLine($"Decrypted entry written to: {numberedPath}");
+                            Console.WriteLine($"Entry {index} written to: {numberedPath}");
                         }
-                    }
-                    finally
-                    {
-                        if (decrypted != null)
-                            CryptographicOperations.ZeroMemory(decrypted);
-                    }
-                }
+                    });
+
+                Console.WriteLine($"Decrypted {keystore.Entries.Count} entr" +
+                                  $"{(keystore.Entries.Count == 1 ? "y" : "ies")} successfully.");
+            }
+            catch (CryptographicException ex)
+            {
+                // An authentication-tag failure here means the derived key is wrong, which in
+                // practice is a passphrase problem — say so instead of surfacing the raw
+                // "tag mismatch", which reads like file corruption and sends operators looking
+                // in the wrong place during an incident.
+                Console.Error.WriteLine(
+                    $"[ERROR] Entry decryption failed: {ex.Message}");
+                Console.Error.WriteLine(
+                    insecureNoVerify
+                        ? "        The keystore parsed cleanly, so this is almost certainly a wrong " +
+                          "main or secondary passphrase."
+                        : "        The keystore parsed and its file signature verified, so this is " +
+                          "almost certainly a wrong main or secondary passphrase.");
+                Environment.Exit(4);
+                return;
             }
             finally
             {
                 if (key != null)
                     CryptographicOperations.ZeroMemory(key);
+                CryptographicOperations.ZeroMemory(mainPassBytes);
             }
         }
         finally
@@ -211,9 +264,74 @@ public static class Unlocker
         return index >= 0 && index < args.Length - 1 ? args[index + 1] : null;
     }
 
-    private static string LoadMainPassphrase()
+    /// <summary>
+    /// Prompts for the main passphrase without echoing it, returning raw UTF-8 bytes the caller
+    /// can zero.
+    /// <para>
+    /// This used to be <c>Console.ReadLine()</c> into a <c>string</c>: the passphrase that
+    /// protects every CA private key was echoed to the terminal — into scrollback, screen
+    /// shares and session recordings — and then pinned on the managed heap where it could not
+    /// be erased. Falls back to echoing only when stdin is redirected, where character-by-
+    /// character reading is not available; that path is announced.
+    /// </para>
+    /// </summary>
+    private static byte[] ReadMainPassphraseBytes()
     {
         Console.Write("Enter main passphrase: ");
-        return Console.ReadLine() ?? throw new Exception("Main passphrase is required");
+
+        if (Console.IsInputRedirected)
+        {
+            Console.WriteLine();
+            Console.Error.WriteLine(
+                "[WARNING] stdin is redirected; the passphrase cannot be read without echo.");
+            var piped = Console.ReadLine();
+            if (string.IsNullOrEmpty(piped))
+                throw new InvalidOperationException("Main passphrase is required.");
+            return Encoding.UTF8.GetBytes(piped);
+        }
+
+        var chars = new List<char>();
+        try
+        {
+            while (true)
+            {
+                var pressed = Console.ReadKey(intercept: true);
+                if (pressed.Key == ConsoleKey.Enter) break;
+                if (pressed.Key == ConsoleKey.Backspace)
+                {
+                    if (chars.Count > 0) chars.RemoveAt(chars.Count - 1);
+                    continue;
+                }
+                if (!char.IsControl(pressed.KeyChar)) chars.Add(pressed.KeyChar);
+            }
+            Console.WriteLine();
+
+            if (chars.Count == 0)
+                throw new InvalidOperationException("Main passphrase is required.");
+
+            return Encoding.UTF8.GetBytes(chars.ToArray());
+        }
+        finally
+        {
+            // The List<char> itself still held the secret; clear it before it reaches the GC.
+            for (int i = 0; i < chars.Count; i++) chars[i] = '\0';
+        }
+    }
+
+    /// <summary>
+    /// Wraps a DER buffer as PEM. Keystore entries hold either a PKCS#8 private key
+    /// (<c>ca-certs.keystore</c>) or an X.509 certificate (<c>ca-trust.keystore</c>); the label
+    /// is chosen from the keystore name so the output is directly usable rather than merely
+    /// readable.
+    /// </summary>
+    private static string ToPem(byte[] der, string label)
+    {
+        var body = Convert.ToBase64String(der);
+        var sb = new StringBuilder();
+        sb.Append("-----BEGIN ").Append(label).AppendLine("-----");
+        for (int i = 0; i < body.Length; i += 64)
+            sb.AppendLine(body.Substring(i, Math.Min(64, body.Length - i)));
+        sb.Append("-----END ").Append(label).AppendLine("-----");
+        return sb.ToString();
     }
 }

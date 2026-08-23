@@ -48,21 +48,33 @@ public class AdminRevocationController(
     /// the underlying revocation service throws, so SIEM can correlate failed attempts.
     /// </summary>
     [HttpPost("{certId:guid}/revoke")]
-    public async Task<IActionResult> RevokeByCertId([FromBody] RevokeCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> RevokeByCertId(Guid certId, [FromBody] RevokeCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
+        // The {certId} route segment was declared but never bound, so every one of these
+        // actions operated on request.CertificateId from the BODY. That is an authorization
+        // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
+        // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
+        // could pass one of its certificates in the path to satisfy the policy and a different
+        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
+        // this never crossed a tenant — but within one it crossed CAs freely.
+        //
+        // The route is the resource identity; a body field must not be able to redirect it.
+        if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
+            return BadRequest(new { error = "Certificate id in the request body does not match the URL." });
+
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
         // KC-06: CA cert revocation uses RevokeCa step-up op; leaf certs use RevokeCert.
         var cert = await _dbContext.Certificates.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CertificateId == request.CertificateId);
+            .FirstOrDefaultAsync(c => c.CertificateId == certId);
         if (cert == null) return NotFound(new { error = "Certificate not found." });
 
         var stepUpOp = cert.IsCA ? StepUpOps.RevokeCa : StepUpOps.RevokeCert;
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, request.CertificateId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(request.CertificateId, null);
+        var fence = await EnforceTenantFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
         // KC-06: if the cert is a CA cert, check if the tenant requires a ceremony.
@@ -76,7 +88,7 @@ public class AdminRevocationController(
         try
         {
             result = await _revocationService.RevokeCertificateAsync(
-                request.CertificateId, null, request.Reason, request.InvalidityDate);
+                certId, null, request.Reason, request.InvalidityDate);
         }
         catch (Exception ex)
         {
@@ -84,15 +96,15 @@ public class AdminRevocationController(
             // revocation uses a different action type than leaf-cert revocation so the
             // failure record matches the success-path emission on the corresponding cert
             // class (see CertificateRevocationService.cs for the success-path mapping).
-            await TryAuditRevocationFailureAsync(cert, request.CertificateId, null, request.Reason, ex);
+            await TryAuditRevocationFailureAsync(cert, certId, null, request.Reason, ex);
             throw;
         }
-        var caInfoById = await ResolveCaFromCertIdAsync(request.CertificateId);
+        var caInfoById = await ResolveCaFromCertIdAsync(certId);
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
-            "Certificate", request.CertificateId.ToString(), new { request.Reason },
+            "Certificate", certId.ToString(), new { request.Reason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoById?.CaId, tenantId: caInfoById?.TenantId);
-        _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {request.CertificateId} revoked by {_currentUser.User?.Username}", new { request.CertificateId, request.Reason });
+        _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {certId} revoked by {_currentUser.User?.Username}", new { CertificateId = certId, request.Reason });
         return Ok(new
         {
             message = "Certificate revoked.",
@@ -258,32 +270,44 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
     [HttpPost("{certId:guid}/hold")]
-    public async Task<IActionResult> HoldByCertId([FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> HoldByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
+        // The {certId} route segment was declared but never bound, so every one of these
+        // actions operated on request.CertificateId from the BODY. That is an authorization
+        // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
+        // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
+        // could pass one of its certificates in the path to satisfy the policy and a different
+        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
+        // this never crossed a tenant — but within one it crossed CAs freely.
+        //
+        // The route is the resource identity; a body field must not be able to redirect it.
+        if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
+            return BadRequest(new { error = "Certificate id in the request body does not match the URL." });
+
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, request.CertificateId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(request.CertificateId, null);
+        var fence = await EnforceTenantFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult holdResult;
         try
         {
-            holdResult = await _revocationService.HoldCertificateAsync(request.CertificateId, null);
+            holdResult = await _revocationService.HoldCertificateAsync(certId, null);
         }
         catch (Exception ex)
         {
-            await TryAuditHoldFailureAsync(AuditActionType.CertificateHeld, request.CertificateId, null, ex);
+            await TryAuditHoldFailureAsync(AuditActionType.CertificateHeld, certId, null, ex);
             throw;
         }
-        var caInfoHoldId = await ResolveCaFromCertIdAsync(request.CertificateId);
+        var caInfoHoldId = await ResolveCaFromCertIdAsync(certId);
         await _audit.LogAsync(AuditActionType.CertificateHeld, _currentUser.User?.Id, _currentUser.User?.Username,
-            "Certificate", request.CertificateId.ToString(),
+            "Certificate", certId.ToString(),
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoHoldId?.CaId, tenantId: caInfoHoldId?.TenantId);
-        _ = _alertService.RaiseAlertAsync("CertificateHold", AlertSeverity.Critical, $"Certificate {request.CertificateId} placed on hold by {_currentUser.User?.Username}", new { request.CertificateId });
+        _ = _alertService.RaiseAlertAsync("CertificateHold", AlertSeverity.Critical, $"Certificate {certId} placed on hold by {_currentUser.User?.Username}", new { CertificateId = certId });
         return Ok(new
         {
             message = "Certificate placed on hold.",
@@ -354,29 +378,41 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
     [HttpPost("{certId:guid}/unhold")]
-    public async Task<IActionResult> UnholdByCertId([FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+    public async Task<IActionResult> UnholdByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
+        // The {certId} route segment was declared but never bound, so every one of these
+        // actions operated on request.CertificateId from the BODY. That is an authorization
+        // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
+        // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
+        // could pass one of its certificates in the path to satisfy the policy and a different
+        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
+        // this never crossed a tenant — but within one it crossed CAs freely.
+        //
+        // The route is the resource identity; a body field must not be able to redirect it.
+        if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
+            return BadRequest(new { error = "Certificate id in the request body does not match the URL." });
+
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, request.CertificateId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(request.CertificateId, null);
+        var fence = await EnforceTenantFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult unholdResult;
         try
         {
-            unholdResult = await _revocationService.UnholdCertificateAsync(request.CertificateId, null);
+            unholdResult = await _revocationService.UnholdCertificateAsync(certId, null);
         }
         catch (Exception ex)
         {
-            await TryAuditHoldFailureAsync(AuditActionType.CertificateUnheld, request.CertificateId, null, ex);
+            await TryAuditHoldFailureAsync(AuditActionType.CertificateUnheld, certId, null, ex);
             throw;
         }
-        var caInfoUnholdId = await ResolveCaFromCertIdAsync(request.CertificateId);
+        var caInfoUnholdId = await ResolveCaFromCertIdAsync(certId);
         await _audit.LogAsync(AuditActionType.CertificateUnheld, _currentUser.User?.Id, _currentUser.User?.Username,
-            "Certificate", request.CertificateId.ToString(),
+            "Certificate", certId.ToString(),
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoUnholdId?.CaId, tenantId: caInfoUnholdId?.TenantId);
         return Ok(new

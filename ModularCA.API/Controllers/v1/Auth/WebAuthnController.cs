@@ -7,6 +7,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using Fido2NetLib;
 using Fido2NetLib.Objects;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -441,8 +442,23 @@ public class WebAuthnController : ControllerBase
         // Consume MFA token on success
         await _cache.RemoveAsync($"mfa:{mfaToken}");
 
-        // Issue JWT token -- 2FA is now complete
+        // 2FA is complete; issue the JWT.
         var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        // Re-check account state at issuance. The gate ran when AuthController.Login minted the
+        // MFA token, but that was up to MfaSessionTtlSeconds ago (clamped to 900s) — long enough
+        // for an administrator to disable or lock the account while its owner is part-way through
+        // MFA. Completing the second factor must not resurrect a session the operator just took
+        // away.
+        if (AccountStateGate.IsBlocked(user, out var blockedAtIssue))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp,
+                details: new { Reason = blockedAtIssue, Flow = "webauthn-verify" });
+            return StatusCode(403, new { error = AccountStateGate.ClientMessage });
+        }
+
         var groups = await _db.CaGroupMembers
             .Where(gm => gm.UserId == user.Id)
             .Include(gm => gm.Group)

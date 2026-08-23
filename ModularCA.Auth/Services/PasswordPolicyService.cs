@@ -66,7 +66,7 @@ public class PasswordPolicyService : IPasswordPolicyService
     public async Task<(bool IsValid, List<string> Errors)> ValidateAsync(string password)
     {
         var policy = await GetPolicyAsync();
-        var errors = ValidatePolicyRules(password, policy);
+        var errors = Validate(password, policy);
         return (errors.Count == 0, errors);
     }
 
@@ -74,7 +74,7 @@ public class PasswordPolicyService : IPasswordPolicyService
     public async Task<(bool IsValid, List<string> Errors)> ValidateAsync(Guid userId, string password)
     {
         var policy = await GetPolicyAsync();
-        var errors = ValidatePolicyRules(password, policy);
+        var errors = Validate(password, policy);
 
         // When HistoryCount <= 0 the deployment has opted out — preserve pre-existing
         // behavior for installs that haven't tuned the policy.
@@ -151,7 +151,22 @@ public class PasswordPolicyService : IPasswordPolicyService
         }
     }
 
-    private static List<string> ValidatePolicyRules(string password, PasswordPolicyEntity policy)
+    /// <summary>
+    /// Validates a password against a policy's length, complexity and dictionary rules and
+    /// returns one message per violation. Empty means the password is acceptable.
+    /// <para>
+    /// Public and static because it is the ONLY implementation of these rules. A second one used
+    /// to live in <c>BootstrapProfileSeeder.MeetsPolicy</c>, and the drift showed: the bootstrap
+    /// wizard's admin password — for the most privileged account in the install — was validated
+    /// by neither, because the wizard path called into the copy that its caller never invoked.
+    /// </para>
+    /// <para>
+    /// Takes the policy as a parameter rather than reading the database, so callers that run
+    /// before the database exists (the setup wizard) can validate against
+    /// <c>new PasswordPolicyEntity()</c> defaults.
+    /// </para>
+    /// </summary>
+    public static List<string> Validate(string password, PasswordPolicyEntity policy)
     {
         var errors = new List<string>();
 
