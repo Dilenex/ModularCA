@@ -875,6 +875,350 @@ public class CaCreationService(
         };
     }
 
+
+    /// <summary>
+    /// Reissues a CA's delegated OCSP responder and/or TSA certificate, repoints the CA at the
+    /// new certificate, writes the new key into the keystore, and registers the identity with the
+    /// runtime registry.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This capability was missing, and its absence turned an ordinary maintenance action into an
+    /// outage. <c>CertificateAuthorityEntity.OcspResponderCertificateId</c> and
+    /// <c>TsaCertificateId</c> were written in exactly two places — bootstrap, and CA creation —
+    /// so reissuing a responder through the GENERIC certificate-reissue flow revoked the old
+    /// certificate, issued a replacement, and left the CA still pointing at the revoked one.
+    /// </para>
+    /// <para>
+    /// The OCSP resolver loads the responder with a query that filters on <c>!c.Revoked</c>, gets
+    /// null, and returns <c>ResponderInvalid</c> — which deliberately refuses to fall back to
+    /// CA-direct signing, because a configured responder means the operator intended it to be
+    /// used. Every OCSP request for that CA then answers <c>unauthorized</c>, and a restart does
+    /// not help: the stale pointer is in the database, not in the in-memory registry.
+    /// </para>
+    /// <para>
+    /// Reissue is therefore the whole operation — issue, repoint, persist the key, register — not
+    /// just the issuance. Each of those four steps is a way this has already gone wrong.
+    /// </para>
+    /// </remarks>
+    /// <param name="caId">The CA whose infrastructure certificates should be reissued.</param>
+    /// <param name="reissueOcsp">Reissue the delegated OCSP responder.</param>
+    /// <param name="reissueTsa">Reissue the TSA signer.</param>
+    /// <param name="revokeSuperseded">
+    /// Revoke the certificate being replaced when it is still valid. Default true: two
+    /// simultaneously-valid responders for one CA is not a state worth having to reason about.
+    /// An already-revoked predecessor is left alone, because re-revoking would overwrite a real
+    /// revocation date and reason with "Superseded" and lose why it was revoked.
+    /// </param>
+    public async Task<InfrastructureReissueResult> ReissueInfrastructureCertsAsync(
+        Guid caId,
+        bool reissueOcsp,
+        bool reissueTsa,
+        bool revokeSuperseded = true)
+    {
+        if (!reissueOcsp && !reissueTsa)
+            throw new ArgumentException("Nothing to reissue: select the OCSP responder, the TSA, or both.");
+
+        var caEntity = await db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted)
+            ?? throw new InvalidOperationException("Certificate authority not found.");
+
+        if (caEntity.IsSshCa)
+            throw new InvalidOperationException("SSH CAs have no OCSP responder or TSA certificate.");
+
+        var caCertEntity = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == caEntity.CertificateId)
+            ?? throw new InvalidOperationException("CA certificate row not found.");
+        if (caCertEntity.Revoked)
+            throw new InvalidOperationException(
+                "This CA is revoked. Reissuing its responder would produce a certificate no relying party will accept.");
+
+        var caCert = CertificateUtil.ParseFromPem(caCertEntity.Pem);
+
+        // The CA's own signing key must be present in the runtime registry — the new certificates
+        // are signed with it.
+        var caKeyHandle = keystore.GetPrivateKeyFor(caCert)
+            ?? throw new InvalidOperationException(
+                "No private key is available for this CA, so it cannot sign a new responder certificate.");
+
+        // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
+        // way the creation path resolves a parent's profile.
+        var signingProfile = await db.SigningProfiles
+            .FirstOrDefaultAsync(sp => sp.IssuerId == caEntity.CertificateId)
+            ?? throw new InvalidOperationException("Signing profile for this CA not found.");
+
+        // Check the profile permits what we are about to mint BEFORE issuing or revoking
+        // anything. Reissuing into a profile that forbids the usage produced a certificate that
+        // could never work, having already revoked the one it replaced.
+        EnsureSigningProfilePermitsInfrastructureEkus(signingProfile, reissueOcsp, reissueTsa);
+
+        // Captured before IssueInfrastructureCertAsync overwrites them.
+        var previousOcspId = caEntity.OcspResponderCertificateId;
+        var previousTsaId = caEntity.TsaCertificateId;
+
+        var ksPath = Path.Combine(AppContext.BaseDirectory, "keystores");
+        var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
+        var (systemSigner, systemSignerDer) = ResolveSystemSignerForKeystoreWrite();
+
+        X509Certificate? newTsaCert = null, newOcspCert = null;
+        byte[]? tsaDer = null, ocspDer = null;
+        AsymmetricKeyParameter? tsaKey = null, ocspKey = null;
+
+        try
+        {
+            // IssueInfrastructureCertAsync uses the CA private key only to choose a matching key
+            // algorithm for the new subject key. Where the handle is exportable that is exact;
+            // where it is not (HSM), the CA certificate's public key carries the same algorithm.
+            var caKeyForAlgorithmChoice = caKeyHandle.CanExport
+                ? PrivateKeyFactory.CreateKey(caKeyHandle.ExportPrivateKeyDer()!)
+                : caCert.GetPublicKey();
+
+            if (reissueTsa)
+            {
+                (newTsaCert, tsaDer, tsaKey) = await IssueInfrastructureCertAsync(
+                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                    "TSA Certificate Profile", "TSA", logger);
+            }
+
+            if (reissueOcsp)
+            {
+                (newOcspCert, ocspDer, ocspKey) = await IssueInfrastructureCertAsync(
+                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                    "OCSP Responder Certificate Profile", "OCSP Responder", logger);
+            }
+
+            // What came out of issuance is the only thing that matters to a relying party, so
+            // check the certificate itself and not just the profile it was issued under.
+            if (newTsaCert != null) EnsureIssuedCertCarriesEku(newTsaCert, IdKpTimeStampingOid, "TSA");
+            if (newOcspCert != null) EnsureIssuedCertCarriesEku(newOcspCert, IdKpOcspSigningOid, "OCSP Responder");
+
+            // Keystore writes come after issuance so a failure above leaves no orphaned key.
+            var privateKeys = new List<byte[]>();
+            var publicCerts = new List<byte[]>();
+            if (tsaDer != null) { privateKeys.Add(tsaDer); publicCerts.Add(newTsaCert!.GetEncoded()); }
+            if (ocspDer != null) { privateKeys.Add(ocspDer); publicCerts.Add(newOcspCert!.GetEncoded()); }
+
+            KeystoreService.AppendEntries(
+                Path.Combine(ksPath, "ca-certs.keystore"), yamlPath, "ca-certs.keystore",
+                privateKeys.ToArray(), systemSigner, db);
+            KeystoreService.AppendEntries(
+                Path.Combine(ksPath, "ca-trust.keystore"), yamlPath, "ca-trust.keystore",
+                publicCerts.ToArray(), systemSigner, db);
+        }
+        finally
+        {
+            if (tsaDer != null) CryptographicOperations.ZeroMemory(tsaDer);
+            if (ocspDer != null) CryptographicOperations.ZeroMemory(ocspDer);
+            CryptographicOperations.ZeroMemory(systemSignerDer);
+        }
+
+        // Register the new identities so the responder works immediately. Without this the key is
+        // in the keystore FILE but not in the singleton the resolver consults, and OCSP answers
+        // unauthorized until a restart — the same failure CA creation had before it registered.
+        if (keystore is MultiCARegistry registry)
+        {
+            if (tsaKey != null)
+                registry.RegisterSigner(new CertificateAuthorityIdentity(newTsaCert!, new SoftwarePrivateKeyHandle(tsaKey)));
+            if (ocspKey != null)
+                registry.RegisterSigner(new CertificateAuthorityIdentity(newOcspCert!, new SoftwarePrivateKeyHandle(ocspKey)));
+        }
+        else
+        {
+            logger.LogWarning(
+                "Infrastructure certificates reissued for CA {Label}, but the keystore is not a " +
+                "MultiCARegistry so the new identities could not be registered at runtime. " +
+                "A restart is required before they take effect.",
+                caEntity.Label);
+        }
+
+        var supersededRevoked = new List<string>();
+        if (revokeSuperseded)
+        {
+            foreach (var (oldId, wasReissued) in new[] { (previousOcspId, reissueOcsp), (previousTsaId, reissueTsa) })
+            {
+                if (!wasReissued || oldId == null) continue;
+                var old = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == oldId);
+                if (old == null || old.Revoked) continue;
+                old.Revoked = true;
+                old.RevocationDate = DateTime.UtcNow;
+                old.RevocationReason = nameof(RevocationReason.Superseded);
+                supersededRevoked.Add(old.SerialNumber);
+            }
+            if (supersededRevoked.Count > 0)
+                await db.SaveChangesAsync();
+        }
+
+        logger.LogInformation(
+            "Infrastructure certificates reissued for CA {Label}: ocsp={Ocsp} tsa={Tsa} supersededRevoked={Count}",
+            caEntity.Label, reissueOcsp, reissueTsa, supersededRevoked.Count);
+
+        return new InfrastructureReissueResult(
+            caEntity.Label ?? caEntity.Name,
+            newOcspCert == null ? null : CertificateUtil.FormatSerialNumber(newOcspCert.SerialNumber),
+            newTsaCert == null ? null : CertificateUtil.FormatSerialNumber(newTsaCert.SerialNumber),
+            supersededRevoked);
+    }
+
+    /// <summary>
+    /// Resolves the exportable system signer used to re-sign the keystore files after a write,
+    /// matching the SPKI pinned for <c>ca-certs.keystore</c>.
+    /// <para>
+    /// Extracted so CA creation and infrastructure reissue select the signer identically. The
+    /// pinned signer is not necessarily <c>signers[0]</c> — that is whatever came first out of the
+    /// keystore file, usually the Root CA — and signing with the wrong one produces a keystore
+    /// whose signature no longer matches the pin.
+    /// </para>
+    /// </summary>
+    private (AsymmetricKeyParameter signer, byte[] der) ResolveSystemSignerForKeystoreWrite()
+    {
+        var signers = keystore.GetSigners();
+        if (signers.Count < 1)
+            throw new InvalidOperationException("Need at least 1 signer in registry for keystore operations");
+
+        var pinnedSpki = KeystoreService.GetPinnedSignerSpki(db, "ca-certs.keystore");
+        CertificateAuthorityIdentity? matched = null;
+        if (pinnedSpki != null)
+        {
+            foreach (var s in signers)
+            {
+                if (string.Equals(KeystoreService.ComputeSpkiSha256Hex(s.PublicCertificate), pinnedSpki,
+                                  StringComparison.OrdinalIgnoreCase))
+                {
+                    matched = s;
+                    break;
+                }
+            }
+        }
+        matched ??= signers[0];
+
+        var handle = matched.PrivateKeyHandle
+            ?? throw new InvalidOperationException("System signer private key handle is null");
+        if (!handle.CanExport)
+            throw new NotSupportedException(
+                "The system CA signer is backed by a non-exportable key handle (e.g. HSM). " +
+                "Runtime keystore writes currently require an exportable signer.");
+
+        var der = handle.ExportPrivateKeyDer()
+            ?? throw new InvalidOperationException("System signer private key DER export returned null");
+        try
+        {
+            return (PrivateKeyFactory.CreateKey(der), der);
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(der);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Outcome of <see cref="CaCreationService.ReissueInfrastructureCertsAsync"/>.
+    /// </summary>
+    /// <param name="CaLabel">The CA that was operated on.</param>
+    /// <param name="NewOcspResponderSerial">Serial of the new OCSP responder, or null if not reissued.</param>
+    /// <param name="NewTsaSerial">Serial of the new TSA certificate, or null if not reissued.</param>
+    /// <param name="SupersededSerialsRevoked">
+    /// Serials of predecessors revoked as Superseded. Excludes ones that were already revoked.
+    /// </param>
+    public record InfrastructureReissueResult(
+        string CaLabel,
+        string? NewOcspResponderSerial,
+        string? NewTsaSerial,
+        IReadOnlyList<string> SupersededSerialsRevoked);
+
+
+
+    // OIDs the infrastructure certificates are useless without.
+    private const string IdKpOcspSigningOid = "1.3.6.1.5.5.7.3.9";
+    private const string IdKpTimeStampingOid = "1.3.6.1.5.5.7.3.8";
+
+    /// <summary>
+    /// Confirms the CA's signing profile actually permits the EKU an infrastructure certificate
+    /// needs, before anything is issued or revoked.
+    /// <para>
+    /// Issuance intersects the certificate profile's EKUs with the signing profile's
+    /// <c>AllowedEKUs</c> (see <c>IssuanceValidationService.SetupAllowedExtendedOids</c>), and a
+    /// usage absent from the signing profile is silently dropped rather than refused. A CA whose
+    /// signing profile omits <c>id-kp-OCSPSigning</c> therefore yields a responder certificate
+    /// with no OCSP-signing EKU — which the OCSP resolver rejects, so the CA answers
+    /// <c>unauthorized</c> exactly as if it had no responder at all.
+    /// </para>
+    /// <para>
+    /// This check exists because reissue without it made things worse, not better: the
+    /// predecessors were revoked and replaced with a certificate that could never work. Verifying
+    /// first means a CA in this state is left exactly as it was, with a message saying what to fix.
+    /// </para>
+    /// </summary>
+    private static void EnsureSigningProfilePermitsInfrastructureEkus(
+        SigningProfileEntity signingProfile, bool needsOcsp, bool needsTsa)
+    {
+        // An empty AllowedEKUs means "no restriction" downstream, so it is not a failure here.
+        List<string> allowed;
+        try
+        {
+            allowed = JsonSerializer.Deserialize<List<string>>(
+                string.IsNullOrWhiteSpace(signingProfile.AllowedEKUs) ? "[]" : signingProfile.AllowedEKUs,
+                SafeJsonOptions.Default) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            // A profile we cannot parse is not one we can clear, and guessing here would put us
+            // back to issuing a certificate that might not work.
+            throw new InvalidOperationException(
+                "This CA's signing profile has an unreadable AllowedEKUs value, so it cannot be " +
+                "confirmed to permit the extended key usages an OCSP responder or TSA needs. " +
+                "Fix the profile before reissuing.");
+        }
+
+        if (allowed.Count == 0)
+            return;
+
+        var missing = new List<string>();
+        // Compare canonically: the same usage is stored as an OID by the seeder, as a camelCase
+        // catalog name by the UI, and as a display name by older bootstrap paths.
+        bool Permits(string oid, string friendly) =>
+            allowed.Any(a => UsageCatalogResolver.Canonicalize(a) == UsageCatalogResolver.Canonicalize(oid)
+                          || UsageCatalogResolver.Canonicalize(a) == UsageCatalogResolver.Canonicalize(friendly)
+                          || string.Equals(a.Trim(), oid, StringComparison.Ordinal));
+
+        if (needsOcsp && !Permits(IdKpOcspSigningOid, "OCSPSigning"))
+            missing.Add($"OCSP signing ({IdKpOcspSigningOid})");
+        if (needsTsa && !Permits(IdKpTimeStampingOid, "timeStamping"))
+            missing.Add($"time stamping ({IdKpTimeStampingOid})");
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"This CA's signing profile does not permit {string.Join(" or ", missing)}, so a reissued " +
+                "certificate would be issued without that extended key usage and would not work — " +
+                "OCSP would keep answering 'unauthorized'. Nothing has been changed. Add the usage to " +
+                $"the signing profile '{signingProfile.Name}' (Allowed EKUs) and reissue again. " +
+                "CAs created before this was corrected carry a narrower AllowedEKUs list than the " +
+                "bootstrap default and hit this.");
+        }
+    }
+
+    /// <summary>
+    /// Confirms a freshly issued infrastructure certificate carries the EKU it needs.
+    /// <para>
+    /// The pre-flight check above reads the signing profile; this reads the certificate that
+    /// actually came out. They are not the same assertion — issuance also consults the OIDOptions
+    /// catalog and the effective certificate profile, either of which can drop a usage — and the
+    /// only one that matters to a relying party is what is in the certificate.
+    /// </para>
+    /// </summary>
+    private static void EnsureIssuedCertCarriesEku(X509Certificate cert, string requiredOid, string certType)
+    {
+        // BouncyCastle returns IList of DerObjectIdentifier here, not strings.
+        var ekus = cert.GetExtendedKeyUsage();
+        if (ekus != null && ekus.Cast<object>().Any(o => string.Equals(o?.ToString(), requiredOid, StringComparison.Ordinal)))
+            return;
+
+        throw new InvalidOperationException(
+            $"The reissued {certType} certificate was created without the required extended key usage " +
+            $"({requiredOid}), so it would not work. The previous certificate has been left in place " +
+            "and still points at this CA. Check the signing profile's Allowed EKUs and the " +
+            $"'{certType}' certificate profile, then reissue again.");
+    }
+
     private static readonly System.Text.RegularExpressions.Regex LabelPattern =
         new(@"^[a-z0-9][a-z0-9-]{0,62}$", System.Text.RegularExpressions.RegexOptions.Compiled);
 

@@ -653,6 +653,96 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return StatusCode(500, new { error = "An unexpected error occurred while creating the root CA. Please try again." });
             }
         }
+
+        /// <summary>
+        /// Reissues a CA's delegated OCSP responder and/or TSA certificate.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Use this rather than the generic certificate-reissue flow. That flow revokes the old
+        /// certificate and issues a replacement, but nothing updates
+        /// <c>CertificateAuthorities.OcspResponderCertificateId</c> — those pointers were only
+        /// ever written by bootstrap and by CA creation. The CA is left pointing at a revoked
+        /// certificate, the OCSP resolver filters revoked certificates out, finds nothing, and
+        /// refuses to fall back to CA-direct signing because a responder was configured. Every
+        /// request to that CA then answers <c>unauthorized</c>, and restarting does not help
+        /// because the stale pointer is in the database.
+        /// </para>
+        /// <para>
+        /// This action performs the whole operation: issue, repoint, write the key to the
+        /// keystore, register the identity in the runtime registry, and revoke the predecessor as
+        /// Superseded. It also repairs a CA already left in the broken state, which is its most
+        /// likely first use.
+        /// </para>
+        /// </remarks>
+        /// <param name="caId">The CA to operate on.</param>
+        /// <param name="request">Which certificates to reissue.</param>
+        [HttpPost("{caId:guid}/reissue-infrastructure")]
+        [Authorize(Policy = "SystemOperator")]
+        [RequireStepUp(StepUpOps.ReissueInfrastructureCerts, "caId")]
+        public async Task<IActionResult> ReissueInfrastructure(Guid caId, [FromBody] ReissueInfrastructureRequest request)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (_currentUser.User == null) return Unauthorized();
+
+            var ca = await _db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted);
+            if (ca == null) return NotFound(new { error = "Certificate authority not found." });
+
+            // CA-scoped authorization: reissuing a CA's responder is a change to that CA.
+            if (!await _groupAuth.HasCaCapabilityAsync(_currentUser.User.Id, ca.Id, ModularCA.Shared.Authorization.Capabilities.CaManage))
+                return StatusCode(403, new { error = "You are not authorized to manage this certificate authority." });
+
+            if (!request.ReissueOcspResponder && !request.ReissueTsa)
+                return BadRequest(new { error = "Select the OCSP responder, the TSA, or both." });
+
+            try
+            {
+                var result = await _caCreation.ReissueInfrastructureCertsAsync(
+                    caId,
+                    request.ReissueOcspResponder,
+                    request.ReissueTsa,
+                    request.RevokeSuperseded);
+
+                await _audit.LogAsync(
+                    AuditActionType.CertificateReissued,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "CertificateAuthority", caId.ToString(),
+                    new
+                    {
+                        Action = "ReissueInfrastructureCerts",
+                        result.CaLabel,
+                        result.NewOcspResponderSerial,
+                        result.NewTsaSerial,
+                        SupersededRevoked = result.SupersededSerialsRevoked,
+                    },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+
+                return Ok(new
+                {
+                    message = "Infrastructure certificates reissued. The responder is live immediately — no restart required.",
+                    caLabel = result.CaLabel,
+                    newOcspResponderSerial = result.NewOcspResponderSerial,
+                    newTsaSerial = result.NewTsaSerial,
+                    supersededRevoked = result.SupersededSerialsRevoked,
+                });
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or NotSupportedException)
+            {
+                // These carry operator-actionable messages (CA revoked, no private key available,
+                // HSM-backed signer). Surface them rather than collapsing to a correlation id.
+                await _audit.LogAsync(
+                    AuditActionType.CertificateReissued,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "CertificateAuthority", caId.ToString(),
+                    new { Action = "ReissueInfrastructureCerts", Success = false, Error = ex.Message },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+
     }
 
     /// <summary>
@@ -789,4 +879,24 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// </summary>
         public List<string>? NameConstraintsExcluded { get; set; }
     }
+
+    /// <summary>
+    /// Body for <c>POST /api/v1/admin/authorities/{caId}/reissue-infrastructure</c>.
+    /// </summary>
+    public class ReissueInfrastructureRequest
+    {
+        /// <summary>Reissue the delegated OCSP responder certificate.</summary>
+        public bool ReissueOcspResponder { get; set; } = true;
+
+        /// <summary>Reissue the TSA signer certificate.</summary>
+        public bool ReissueTsa { get; set; }
+
+        /// <summary>
+        /// Revoke the certificate being replaced when it is still valid. Leave true unless you
+        /// have a reason to keep two valid responders for one CA. A predecessor that is already
+        /// revoked is untouched either way.
+        /// </summary>
+        public bool RevokeSuperseded { get; set; } = true;
+    }
+
 }

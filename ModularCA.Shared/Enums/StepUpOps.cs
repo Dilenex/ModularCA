@@ -81,6 +81,13 @@ public static class StepUpOps
     public const string UpdateCa = "update-ca";
     public const string RevokeCa = "revoke-ca";
 
+    /// <summary>
+    /// Reissuing a CA's delegated OCSP responder or TSA certificate. Gated because it mints a new
+    /// signing identity for the CA and repoints the CA at it — get it wrong and the CA's OCSP
+    /// answers unauthorized for every request, which is exactly how this operation came to exist.
+    /// </summary>
+    public const string ReissueInfrastructureCerts = "reissue-infrastructure-certs";
+
     // Profile management
     public const string UpdateSigningProfile = "update-signing-profile";
     public const string DeleteSigningProfile = "delete-signing-profile";
@@ -223,7 +230,7 @@ public static class StepUpOps
         AssignRole, UnassignRole,
         ResetPassword, ResetMfa, ChangePassword, ChangeEmail,
         CreateBackup, RestoreBackup, SetBackupPassword, ChangeBackupEncryptionMode,
-        CreateCa, UpdateCa, RevokeCa, CreateSshCa, DisableSshCa,
+        CreateCa, UpdateCa, RevokeCa, ReissueInfrastructureCerts, CreateSshCa, DisableSshCa,
         UpdateSigningProfile, DeleteSigningProfile,
         UpdateCertProfile, DeleteCertProfile,
         UpdateRequestProfile, DeleteRequestProfile,

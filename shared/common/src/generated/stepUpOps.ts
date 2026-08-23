@@ -49,6 +49,7 @@ export const StepUpOps = {
     CreateCa: 'create-ca',
     UpdateCa: 'update-ca',
     RevokeCa: 'revoke-ca',
+    ReissueInfrastructureCerts: 'reissue-infrastructure-certs',
     UpdateSigningProfile: 'update-signing-profile',
     DeleteSigningProfile: 'delete-signing-profile',
     UpdateCertProfile: 'update-cert-profile',

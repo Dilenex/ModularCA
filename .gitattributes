@@ -61,3 +61,12 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Shell scripts MUST keep LF regardless of platform. This repo is developed on Windows with
+# core.autocrlf=true, which would otherwise check them out with CRLF — and a CRLF shebang fails
+# on Linux with the singularly unhelpful "bad interpreter: /usr/bin/env bash^M". That applies to
+# packaging/install.sh, which runs on the deployment target, and to scripts/build-linux-dist.sh.
+*.sh text eol=lf
+
+# Same reasoning for the systemd unit and the nginx/nftables templates: they are parsed on Linux.
+*.service text eol=lf

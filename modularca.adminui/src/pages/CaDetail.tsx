@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { apiGet } from '../api/client';
+import { apiGet, apiPostWithMfa } from '../api/client';
+import { useStepUp } from '../components/StepUpMfaContext';
+import { StepUpOps } from '@shared/generated';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
@@ -37,9 +39,44 @@ const CaDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
 
+    const { requireStepUp } = useStepUp();
+
     const [ca, setCa] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+
+    // Infrastructure certificate reissue. OCSP defaults on because a broken responder is the
+    // reason to be here; TSA defaults off because reissuing it is rarer and not free.
+    const [reissueOcsp, setReissueOcsp] = useState(true);
+    const [reissueTsa, setReissueTsa] = useState(false);
+    const [revokeSuperseded, setRevokeSuperseded] = useState(true);
+    const [reissuing, setReissuing] = useState(false);
+    const [reissueResult, setReissueResult] = useState<any | null>(null);
+    const [reissueError, setReissueError] = useState<string | null>(null);
+
+    const handleReissueInfrastructure = async () => {
+        if (!ca) return;
+        setReissuing(true);
+        setReissueResult(null);
+        setReissueError(null);
+        try {
+            const res = await apiPostWithMfa<any>(
+                `/api/v1/admin/authorities/${caKey(ca)}/reissue-infrastructure`,
+                { reissueOcspResponder: reissueOcsp, reissueTsa, revokeSuperseded },
+                requireStepUp,
+                StepUpOps.ReissueInfrastructureCerts,
+                caKey(ca),
+            );
+            setReissueResult(res);
+        } catch (err: any) {
+            // Cancelling the step-up prompt is a deliberate choice, not a failure to report.
+            if (err?.message !== 'Step-up MFA cancelled') {
+                setReissueError(err?.message || 'Reissue failed');
+            }
+        } finally {
+            setReissuing(false);
+        }
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -161,6 +198,80 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Signing Cert" value={ca.ocspResponder.signingCertSubject} />
                     </DetailSection>
                 )}
+
+                {/* Infrastructure certificates.
+                    Placed next to the OCSP Responder section because that is where an operator
+                    looks when OCSP is answering "unauthorized" — which is the state this repairs. */}
+                <DetailSection title="Infrastructure Certificates">
+                    <div className="space-y-3">
+                        <p className="text-xs text-gray-600 dark:text-gray-400 max-w-3xl">
+                            Reissues this CA's delegated OCSP responder and/or TSA certificate, repoints
+                            the CA at the new certificate, and registers it with the running service.
+                            The responder is live immediately — no restart.
+                        </p>
+                        <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
+                            <p className="text-xs text-amber-900 dark:text-amber-300">
+                                <strong>Use this rather than the generic certificate Reissue action.</strong> That
+                                action revokes the old certificate and issues a replacement, but it does not
+                                update which certificate this CA points at — leaving the CA referencing a revoked
+                                responder, which makes every OCSP request for it answer <code>unauthorized</code>.
+                                Restarting does not fix that. This action does.
+                            </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4">
+                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                                <input type="checkbox" checked={reissueOcsp} onChange={(e) => setReissueOcsp(e.target.checked)} />
+                                OCSP responder
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                                <input type="checkbox" checked={reissueTsa} onChange={(e) => setReissueTsa(e.target.checked)} />
+                                TSA signer
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                                <input type="checkbox" checked={revokeSuperseded} onChange={(e) => setRevokeSuperseded(e.target.checked)} />
+                                <span title="Leave on unless you have a reason to keep two valid responders for this CA. A predecessor that is already revoked is untouched either way.">
+                                    Revoke the replaced certificate
+                                </span>
+                            </label>
+                        </div>
+
+                        <button
+                            onClick={handleReissueInfrastructure}
+                            disabled={reissuing || (!reissueOcsp && !reissueTsa)}
+                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                            {reissuing ? 'Reissuing…' : 'Reissue Infrastructure Certificates'}
+                        </button>
+
+                        {reissueResult && (
+                            <div className="rounded border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-900/30 p-3 max-w-3xl space-y-1">
+                                <p className="text-xs text-green-900 dark:text-green-300">{reissueResult.message}</p>
+                                {reissueResult.newOcspResponderSerial && (
+                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                        New OCSP responder: {reissueResult.newOcspResponderSerial}
+                                    </p>
+                                )}
+                                {reissueResult.newTsaSerial && (
+                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                        New TSA: {reissueResult.newTsaSerial}
+                                    </p>
+                                )}
+                                {reissueResult.supersededRevoked?.length > 0 && (
+                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                        Revoked as superseded: {reissueResult.supersededRevoked.join(', ')}
+                                    </p>
+                                )}
+                            </div>
+                        )}
+
+                        {reissueError && (
+                            <div className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-3 max-w-3xl">
+                                <p className="text-xs text-red-900 dark:text-red-300">{reissueError}</p>
+                            </div>
+                        )}
+                    </div>
+                </DetailSection>
+
 
                 <DetailSection title="Quick Links">
                     <Link to={`/distribution?tab=ldap&caId=${caKey(ca)}`}
