@@ -1,6 +1,14 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
-type Theme = 'light' | 'dark';
+/**
+ * Light/dark theme, persisted to localStorage and following the OS preference until the user
+ * makes an explicit choice.
+ *
+ * Shared because all five SPAs carried this file byte-for-byte identical, and they must agree:
+ * the localStorage key `theme` and the `dark` class on <html> are the contract Tailwind reads,
+ * so a divergence in any one of them shows up as a SPA that ignores the user's setting.
+ */
+export type Theme = 'light' | 'dark';
 
 interface ThemeContextValue {
     theme: Theme;

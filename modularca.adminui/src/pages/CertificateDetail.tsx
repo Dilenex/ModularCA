@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -115,7 +116,7 @@ const CertificateDetail: React.FC = () => {
     const setAccess = async (userId: string, level: 'View' | 'Manage') => {
         setAclBusy(true);
         try {
-            await apiPostWithMfa(`/api/v1/admin/manage/cert-permissions/serial/${serial}/set`, { userId, accessLevel: level }, requireStepUp, 'update-cert-acl', serial!);
+            await apiPostWithMfa(`/api/v1/admin/manage/cert-permissions/serial/${serial}/set`, { userId, accessLevel: level }, requireStepUp, StepUpOps.UpdateCertAcl, serial!);
             loadAcl();
         } catch (err: any) { if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to set access'); }
         finally { setAclBusy(false); }
@@ -123,7 +124,7 @@ const CertificateDetail: React.FC = () => {
     const revokeAccess = async (userId: string) => {
         setAclBusy(true);
         try {
-            await apiPostWithMfa(`/api/v1/admin/manage/cert-permissions/serial/${serial}/revoke-user`, { userId }, requireStepUp, 'update-cert-acl', serial!);
+            await apiPostWithMfa(`/api/v1/admin/manage/cert-permissions/serial/${serial}/revoke-user`, { userId }, requireStepUp, StepUpOps.UpdateCertAcl, serial!);
             loadAcl();
         } catch (err: any) { if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to remove access'); }
         finally { setAclBusy(false); }

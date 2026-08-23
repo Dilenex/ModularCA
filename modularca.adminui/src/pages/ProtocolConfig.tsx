@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
+import { StepUpOps } from '@shared/generated';
 
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
@@ -84,7 +85,7 @@ const ProtocolConfig: React.FC = () => {
     const handleSave = async (protocol: string, updates: any) => {
         setSaving(protocol);
         try {
-            await apiPutWithMfa(`/api/v1/admin/protocol-configs/${selectedCaId}/${protocol}`, updates, requireStepUp, 'update-protocol-config', selectedCaId);
+            await apiPutWithMfa(`/api/v1/admin/protocol-configs/${selectedCaId}/${protocol}`, updates, requireStepUp, StepUpOps.UpdateProtocolConfig, selectedCaId);
             const data = await apiGet<any>(`/api/v1/admin/protocol-configs/${selectedCaId}`);
             setProtocolConfigs(Array.isArray(data) ? data : []);
         } catch (err: any) {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost } from '../api/client';
 import DetailField from '../components/cards/DetailField';
 import { validateAgainstProfileClient } from '../validation/profileValidation';
+import { looksLikeHostname } from '@shared/hostname';
 
 // --- Types ---
 
@@ -243,6 +244,30 @@ const RequestCertificate: React.FC = () => {
     const selectedProfileObj = requestProfiles.find(p => p.id === selectedRequestProfile);
     const getRuleForField = (field: string) => selectedProfileObj?.subjectDnRules?.find(r => r.field === field);
 
+
+    const cnValue = (subjectFields['CN'] ?? '').trim();
+
+    const cnAlreadyASan = sanList.some(
+        s => s.type === 'DNS' && s.value.trim().toLowerCase() === cnValue.toLowerCase());
+
+    // Never offer an action the profile forbids — that would be a one-click route to a
+    // validation failure.
+    const profileAllowsDnsSan = (() => {
+        const allowed = selectedProfileObj?.sanRules?.allowedTypes;
+        if (!allowed) return true;
+        return allowed.some(t => t.toUpperCase() === 'DNS');
+    })();
+
+    const canAddCnAsSan = looksLikeHostname(cnValue) && !cnAlreadyASan && profileAllowsDnsSan;
+
+    const addCnAsSan = () => {
+        if (!canAddCnAsSan) return;
+        // Reuse a blank DNS row rather than leaving an empty one behind to fail validation.
+        const blankIdx = sanList.findIndex(s => s.type === 'DNS' && !s.value.trim());
+        if (blankIdx >= 0) updateSan(blankIdx, 'value', cnValue);
+        else setSanList([...sanList, { type: 'DNS', value: cnValue }]);
+    };
+
     // --- Submit ---
     const hasValidationErrors = validationResult && !validationResult.valid;
 
@@ -269,7 +294,7 @@ const RequestCertificate: React.FC = () => {
                     return;
                 }
 
-                const result = await apiPost<any>('/api/v1/user/requests/request-with-key', {
+                await apiPost<any>('/api/v1/user/requests/request-with-key', {
                     subject: subjectOverrides,
                     sans: sanOverrides,
                     keyAlgorithm,
@@ -549,8 +574,25 @@ const RequestCertificate: React.FC = () => {
                                         </div>
                                     );
                                 })}
-                                <button onClick={addSan} className="px-3 py-1.5 text-xs text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900/30 transition-colors">+ Add SAN</button>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button onClick={addSan} className="px-3 py-1.5 text-xs text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900/30 transition-colors">+ Add SAN</button>
+                                    {canAddCnAsSan && (
+                                        <button onClick={addCnAsSan}
+                                            title={`Add ${cnValue} as a DNS Subject Alternative Name`}
+                                            className="px-3 py-1.5 text-xs text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900/30 transition-colors">
+                                            + Use CN as DNS SAN
+                                            <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
+                                        </button>
+                                    )}
+                                </div>
                             </div>
+                            {canAddCnAsSan && (
+                                <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">
+                                    <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
+                                    Clients ignore the Common Name for hostname verification, so this
+                                    certificate would not validate for that name.
+                                </p>
+                            )}
                             {selectedProfileObj?.sanRules && (
                                 <p className="text-xs text-gray-600 mt-2">
                                     Allowed types: {selectedProfileObj.sanRules.allowedTypes?.join(', ') || 'Any'}

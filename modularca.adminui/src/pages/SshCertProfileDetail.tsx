@@ -7,6 +7,7 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { SSH_EXTENSION_OPTIONS, inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
+import { StepUpOps } from '@shared/generated';
 
 const SSH_CERT_TAB = `/profiles?tab=${encodeURIComponent('SSH Cert')}`;
 
@@ -76,7 +77,7 @@ const SshCertProfileDetail: React.FC = () => {
                 allowedExtensions: JSON.stringify(editForm.allowedExtensions),
                 requiredExtensions: JSON.stringify(editForm.requiredExtensions),
                 maxValidityHours: parseInt(editForm.maxValidityHours) || 720,
-            }, requireStepUp, 'update-ssh-profile', id!);
+            }, requireStepUp, StepUpOps.UpdateSshProfile, id!);
             showToast('success', 'SSH cert profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -90,7 +91,7 @@ const SshCertProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${id}`, requireStepUp, 'delete-ssh-profile', id);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${id}`, requireStepUp, StepUpOps.DeleteSshProfile, id);
             showToast('success', 'SSH cert profile deleted');
             navigate(SSH_CERT_TAB);
         } catch (err: any) {

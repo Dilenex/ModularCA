@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet } from '../api/client';
 import { useToast } from '../context/ToastContext';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 
 function formatDate(d: string | null) {
     if (!d) return '-';

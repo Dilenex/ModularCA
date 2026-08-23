@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 function templateLabel(t: string | null): string { return t || 'Custom'; }
 function templateStatus(t: string | null): 'revoked' | 'held' | 'pending' | 'active' {
@@ -81,7 +82,7 @@ const GroupDetail: React.FC = () => {
             await apiPutWithMfa(`/api/v1/admin/groups/${id}`, {
                 displayName: form.displayName,
                 mtlsSigningCaId: form.mtlsSigningCaId || null,
-            }, requireStepUp, 'update-group', id!);
+            }, requireStepUp, StepUpOps.UpdateGroup, id!);
             showToast('success', 'Group updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -101,7 +102,7 @@ const GroupDetail: React.FC = () => {
     const addMembers = async () => {
         if (selectedUserIds.length === 0) return;
         try {
-            const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk`, { userIds: selectedUserIds }, requireStepUp, 'add-group-member', id!);
+            const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk`, { userIds: selectedUserIds }, requireStepUp, StepUpOps.AddGroupMember, id!);
             setSelectedUserIds([]);
             setRefresh((r) => r + 1);
             const added = res?.added ?? 0, ceremonies = res?.ceremonies ?? 0, skipped = res?.skipped ?? 0;
@@ -126,7 +127,7 @@ const GroupDetail: React.FC = () => {
             title: 'Remove Members',
             message: `Remove ${n} member${n === 1 ? '' : 's'} from this group? Privileged users will each require a controlled-user ceremony.`,
             action: async () => {
-                const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk-remove`, { userIds: selectedMemberIds }, requireStepUp, 'remove-group-member', id!);
+                const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk-remove`, { userIds: selectedMemberIds }, requireStepUp, StepUpOps.RemoveGroupMember, id!);
                 setSelectedMemberIds([]);
                 setRefresh((r) => r + 1);
                 const removed = res?.removed ?? 0, ceremonies = res?.ceremonies ?? 0, refused = res?.refused ?? 0, skipped = res?.skipped ?? 0;
@@ -148,7 +149,7 @@ const GroupDetail: React.FC = () => {
         setConfirm({
             title: 'Delete Group',
             message: `Delete "${group.displayName || group.name}"? This cannot be undone.`,
-            action: async () => { await apiDeleteWithMfa(`/api/v1/admin/groups/${id}`, requireStepUp, 'delete-group', id!); navigate('/groups'); },
+            action: async () => { await apiDeleteWithMfa(`/api/v1/admin/groups/${id}`, requireStepUp, StepUpOps.DeleteGroup, id!); navigate('/groups'); },
         });
     };
 

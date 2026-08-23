@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
+import { StepUpOps } from '@shared/generated';
 
 interface WebTlsCertStatusResponse {
     serialNumber: string;
@@ -263,7 +264,7 @@ const ReissueCard: React.FC<{
                 '/api/v1/admin/webtls/reissue',
                 body,
                 requireStepUp,
-                'reissue-cert',
+                StepUpOps.ReissueCert,
                 'webtls',
             );
             setSuccess(result.message || `Reissued. New serial: ${result.newSerialNumber ?? 'unknown'}`);

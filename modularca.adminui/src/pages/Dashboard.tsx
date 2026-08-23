@@ -7,9 +7,10 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { useToast } from '../context/ToastContext';
+import { StepUpOps } from '@shared/generated';
 import {
     canonicalizeUsages, parseListField, ekuLabel, keyUsageLabel,
-    KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES, EKU_OPTIONS, EKU_ALIASES,
+    KEY_USAGE_OPTIONS, EKU_OPTIONS, EKU_ALIASES,
 } from './profileHelpers';
 
 function formatDate(d: string | null) {
@@ -174,9 +175,12 @@ const Dashboard: React.FC = () => {
                         if (notAfter <= soon) stats.expiringSoon++;
                     }
 
-                    // Count certs per issuer
-                    const issuerKey = cert.issuer || cert.issuingCaId || 'Unknown';
-                    caCount[issuerKey] = (caCount[issuerKey] || 0) + 1;
+                    // Count certs per issuer, keyed BOTH ways. The CA list identifies a CA by
+                    // its certificate's subject DN, while a certificate identifies its issuer by
+                    // the same DN string — but some rows only carry the issuing CA's id, so index
+                    // both and let the lookup below try each.
+                    if (cert.issuer) caCount[cert.issuer] = (caCount[cert.issuer] || 0) + 1;
+                    if (cert.issuingCaId) caCount[cert.issuingCaId] = (caCount[cert.issuingCaId] || 0) + 1;
                 }
 
                 setCertStats(stats);
@@ -373,9 +377,17 @@ const Dashboard: React.FC = () => {
                         {!caLoading && !caError && caList.map((ca) => {
                             const caKey = ca.id || ca.serialNumber || ca.certificateId;
                             const isEnabled = ca.isEnabled !== false;
-                            // Try to match cert count by CA name/subject
-                            const matchKey = ca.subjectDN || ca.name || ca.label || '';
-                            const count = certsByCa[matchKey] || certsByCa[ca.id] || 0;
+                            // GET /admin/authorities projects the CA's certificate subject as
+                            // `certificateSubjectDN`, not `subjectDN`. Reading the latter yielded
+                            // undefined, fell back to `ca.name` ("Test CA Root CA"), and compared
+                            // it against a count map keyed by full issuer DN
+                            // ("CN=Test CA Root CA,O=Test CA") — which can never match, so every
+                            // CA displayed "0 certs" while the page reported 14 total.
+                            const count =
+                                certsByCa[ca.certificateSubjectDN] ??
+                                certsByCa[ca.subjectDN] ??
+                                certsByCa[ca.id] ??
+                                0;
 
                             return (
                                 <div
@@ -482,7 +494,7 @@ const Dashboard: React.FC = () => {
                     actions={(cert: any) => [
                         ...(certStatus(cert) === 'active' ? [{
                             label: 'Revoke',
-                            onClick: () => apiPostWithMfa(`/api/v1/admin/certificates/${cert.certificateId}/revoke`, { certificateId: cert.certificateId, reason: 'Unspecified' }, requireStepUp, 'revoke-cert', cert.certificateId),
+                            onClick: () => apiPostWithMfa(`/api/v1/admin/certificates/${cert.certificateId}/revoke`, { certificateId: cert.certificateId, reason: 'Unspecified' }, requireStepUp, StepUpOps.RevokeCert, cert.certificateId),
                             variant: 'danger' as const,
                             confirm: 'This will permanently revoke the certificate'
                         }] : []),
@@ -617,7 +629,7 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Description" value={p.description} />
                             <DetailField label="Validity Min" value={p.validityPeriodMin} />
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
-                            <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES).map(keyUsageLabel).join(', ')} />
+                            <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                             <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
                             <DetailField label="Allowed Algorithms" value={parseJsonSafe(p.allowedKeyAlgorithms)} />
                             <DetailField label="Allowed Sizes" value={parseJsonSafe(p.allowedKeySizes)} />

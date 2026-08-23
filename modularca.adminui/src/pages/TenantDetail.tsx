@@ -9,6 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/UserQuorumPanel';
 import { Tenant, CaQuotaRow, formatDate, numInput, labelCls } from './TenantsAndQuotas';
+import { StepUpOps } from '@shared/generated';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));
 
@@ -133,7 +134,7 @@ const TenantDetail: React.FC = () => {
                 })),
             };
             // 202 + ceremonyId when a key-ceremony downgrade is gated behind a tenant policy ceremony.
-            const result = await apiPutWithMfa<any>(`/api/v1/admin/tenants/${t.id}/settings`, body, requireStepUp, 'update-tenant-settings', t.id);
+            const result = await apiPutWithMfa<any>(`/api/v1/admin/tenants/${t.id}/settings`, body, requireStepUp, StepUpOps.UpdateTenantSettings, t.id);
             if (result?.ceremonyId) showToast('info', 'Policy change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
             else showToast('success', 'Changes saved');
             load();
@@ -153,8 +154,8 @@ const TenantDetail: React.FC = () => {
                 ? 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors'
                 : 'px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors',
             action: async () => {
-                if (enabling) await apiPutWithMfa(`/api/v1/admin/tenants/${t.id}`, { isEnabled: true }, requireStepUp, 'enable-tenant', t.id);
-                else await apiDeleteWithMfa(`/api/v1/admin/tenants/${t.id}`, requireStepUp, 'disable-tenant', t.id);
+                if (enabling) await apiPutWithMfa(`/api/v1/admin/tenants/${t.id}`, { isEnabled: true }, requireStepUp, StepUpOps.EnableTenant, t.id);
+                else await apiDeleteWithMfa(`/api/v1/admin/tenants/${t.id}`, requireStepUp, StepUpOps.DisableTenant, t.id);
                 load();
             },
         });
@@ -166,7 +167,7 @@ const TenantDetail: React.FC = () => {
         confirmLabel: 'Soft Delete',
         confirmClass: 'px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors',
         action: async () => {
-            await apiDeleteWithMfa(`/api/v1/admin/tenants/${t.id}`, requireStepUp, 'disable-tenant', t.id);
+            await apiDeleteWithMfa(`/api/v1/admin/tenants/${t.id}`, requireStepUp, StepUpOps.DisableTenant, t.id);
             load();
         },
     });

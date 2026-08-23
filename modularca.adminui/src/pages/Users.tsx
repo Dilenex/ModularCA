@@ -5,6 +5,7 @@ import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { DataTable, DataTableColumn } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -86,7 +87,7 @@ const Users: React.FC = () => {
             await apiPostWithMfa<any>('/api/v1/admin/users', {
                 username: createForm.username, email: createForm.email, password: createForm.password,
                 firstName: createForm.firstName, lastName: createForm.lastName, groupIds: createForm.groupIds,
-            }, requireStepUp, 'create-user');
+            }, requireStepUp, StepUpOps.CreateUser);
             setShowCreate(false);
             setCreateForm({ username: '', email: '', password: '', firstName: '', lastName: '', groupIds: [] });
             setRefreshTrigger((t) => t + 1);

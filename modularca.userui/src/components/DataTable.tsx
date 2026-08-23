@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../hooks/useTablePrefs';
-import Chevron from './Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import Drawer from './Drawer';
 
 /* ── public API ───────────────────────────────────────────────────────────── */

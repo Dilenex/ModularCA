@@ -6,6 +6,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 /// <summary>
 /// Returns the display category for a capability string.
@@ -138,7 +139,7 @@ const RoleManagement: React.FC = () => {
             await apiPostWithMfa('/api/v1/admin/roles', {
                 name: createForm.name,
                 description: createForm.description,
-            }, requireStepUp, 'create-role');
+            }, requireStepUp, StepUpOps.CreateRole);
             setShowCreate(false);
             setCreateForm({ name: '', description: '' });
             setRefreshTrigger((t) => t + 1);
@@ -156,7 +157,7 @@ const RoleManagement: React.FC = () => {
         try {
             for (const r of confirmBulk) {
                 if (r.isBuiltIn) continue;
-                try { await apiDeleteWithMfa(`/api/v1/admin/roles/${r.id}`, requireStepUp, 'delete-role', r.id); ok++; } catch { failed++; }
+                try { await apiDeleteWithMfa(`/api/v1/admin/roles/${r.id}`, requireStepUp, StepUpOps.DeleteRole, r.id); ok++; } catch { failed++; }
             }
             if (ok) showToast('success', `Deleted ${ok} role${ok !== 1 ? 's' : ''}.`);
             if (failed) showToast('error', `${failed} failed to delete.`);

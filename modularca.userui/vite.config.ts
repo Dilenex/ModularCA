@@ -21,14 +21,34 @@ function versionDefine(): Record<string, string> {
 }
 
 // https://vitejs.dev/config/
+// Shared code lives above this project root (see ../shared/README.md). The bundler needs
+// the alias; the dev server additionally needs fs.allow, because Vite refuses to serve
+// files outside the project root unless told to.
+const sharedCommon = resolve(process.cwd(), '..', 'shared', 'common', 'src');
+
 export default defineConfig({
     plugins: [plugin()],
+    resolve: {
+        alias: {
+            '@shared': sharedCommon,
+            // shared/common sits outside this package, so resolution from a file inside it walks up
+            // to the repo root and finds no node_modules. Point React and the router at THIS app's
+            // copies. That also guarantees a single React instance in the bundle - two copies break
+            // hooks in ways that are painful to diagnose.
+            react: resolve(process.cwd(), 'node_modules', 'react'),
+            'react-dom': resolve(process.cwd(), 'node_modules', 'react-dom'),
+            'react-router-dom': resolve(process.cwd(), 'node_modules', 'react-router-dom'),
+        },
+    },
     base: '/user/',
     define: versionDefine(),
     build: {
         sourcemap: false,
     },
     server: {
+        // Vite refuses to serve files above the project root unless told to; shared/common
+        // sits one level up.
+        fs: { allow: ['..'] },
         port: 53013,
     }
 })

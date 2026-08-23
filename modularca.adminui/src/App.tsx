@@ -4,11 +4,11 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
-import { ThemeProvider } from './context/ThemeContext';
+import { ThemeProvider } from '@shared/context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import { TenantProvider } from './context/TenantContext';
 import { AuthProvider } from './context/AuthContext';
-import ScrollToTop from './components/ScrollToTop';
+import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)

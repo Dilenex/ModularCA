@@ -1,18 +1,29 @@
 import React from 'react';
+import { KEY_USAGE_NAMES, canonicalizeUsage } from '@shared/generated';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
-export const KEY_USAGE_OPTIONS = [
-    'digitalSignature', 'keyEncipherment', 'keyCertSign', 'crlSign',
-];
 /**
- * Certificate-profile usage option values.
+ * Every key usage the issuance path can emit a bit for, generated from
+ * `KeyUsageFriendlyNames.Parse`.
  *
- * These are the values PERSISTED into CertProfile.KeyUsages / ExtendedKeyUsages, so they must be the
- * canonical forms the issuance path resolves against OIDOptions — EKUs as OIDs, key usages as the
- * catalog's friendly names. They previously held display labels ('Server Auth', 'Digital Signature'),
- * which matched no catalog row, so any cert profile edited in the admin UI was issued with NO
- * ExtendedKeyUsage and NO KeyUsage extension. Use the *_LABELS maps for presentation only.
+ * This was a hand-written list of four. Because `canonicalizeUsages` DROPS a stored value that
+ * matches no option, a profile carrying any of the other five — keyAgreement, nonRepudiation,
+ * dataEncipherment, encipherOnly, decipherOnly, all of which the server accepts and issues — lost
+ * that usage the moment someone opened the profile and saved it. Deriving the list from the
+ * server's own switch statement is what makes the two sets equal by construction.
+ */
+export const KEY_USAGE_OPTIONS: readonly string[] = KEY_USAGE_NAMES;
+
+/**
+ * Extended-key-usage option values for a certificate profile.
+ *
+ * Both this list and KEY_USAGE_OPTIONS above are PERSISTED into
+ * CertProfile.ExtendedKeyUsages / KeyUsages, so they must be the canonical forms the issuance
+ * path resolves against OIDOptions — EKUs as OIDs, key usages as the catalog's friendly names.
+ * They once held display labels ('Server Auth', 'Digital Signature'), which matched no catalog
+ * row, so any cert profile edited in the admin UI was issued with NO ExtendedKeyUsage and NO
+ * KeyUsage extension. Use the *_LABELS maps for presentation only.
  */
 export const EKU_OPTIONS = [
     '1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.3',
@@ -31,62 +42,85 @@ export const EKU_LABELS: Record<string, string> = {
 export const ekuLabel = (v: string): string => EKU_LABELS[v] ?? v;
 
 /**
- * Comparison key for a usage identifier: lowercase, non-alphanumerics removed.
- * Mirrors IssuanceValidationService.NormalizeUsageKey so the UI and the issuance path agree on
- * what counts as "the same usage".
+ * Comparison key for a usage identifier.
+ *
+ * Re-exported from the generated port of `UsageCatalogResolver` rather than reimplemented. It
+ * used to be a local one-liner whose comment claimed to mirror `IssuanceValidationService`;
+ * that class no longer has its own copy, and hand-synchronised copies of this comparison are
+ * exactly how a bootstrapped root CA once ended up with no KeyUsage extension at all.
+ *
+ * Note this folds word-level synonyms too, which plain normalisation cannot: "Key Certificate
+ * Signing", "Key Cert Sign" and "keyCertSign" all reduce to the same key, as do "OCSP Signer"
+ * and "OCSPSigning".
  */
-export const normalizeUsageKey = (v: string): string => v.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+export const normalizeUsageKey = canonicalizeUsage;
 
 /**
  * Maps stored usage values onto the canonical option values, dropping anything unrecognisable.
  *
  * Necessary because a profile field can hold any of four things by now: the canonical value, the
  * catalog friendly name, an old display label, or — for rows written while the CSV/JSON parse bug
- * was live — fragments of a JSON array such as `["[]"` or `"Server Auth"`. Normalising away
- * punctuation collapses all of those onto the same key, so the toggles show the real selection and
- * the next save rewrites the field in canonical form. Unresolvable entries are dropped rather than
- * shown, since they cannot be issued either.
+ * was live — fragments of a JSON array such as `["[]"` or `"Server Auth"`. Canonicalising
+ * collapses all of those onto the same key, so the toggles show the real selection and the next
+ * save rewrites the field in canonical form.
+ *
+ * Dropping the unresolvable is only safe while this function's vocabulary matches the server's,
+ * because the result is written straight back on save — a value dropped here is a value REMOVED
+ * from the profile. That is why both the option lists and the comparison now come from generated
+ * code instead of hand-written tables.
  */
 export const canonicalizeUsages = (
     values: string[],
-    canonical: string[],
+    canonical: readonly string[],
     aliases: Record<string, string> = {},
 ): string[] => {
     const lookup = new Map<string, string>();
-    for (const c of canonical) lookup.set(normalizeUsageKey(c), c);
-    for (const [alias, target] of Object.entries(aliases)) lookup.set(normalizeUsageKey(alias), target);
+    for (const c of canonical) lookup.set(canonicalizeUsage(c), c);
+    for (const [alias, target] of Object.entries(aliases)) lookup.set(canonicalizeUsage(alias), target);
 
     const out: string[] = [];
     for (const v of values) {
-        const hit = lookup.get(normalizeUsageKey(v));
+        const hit = lookup.get(canonicalizeUsage(v));
         if (hit && !out.includes(hit)) out.push(hit);
     }
     return out;
 };
 
-/** Catalog friendly names + display labels that should resolve to an EKU OID. */
+/**
+ * Names that should resolve to an EKU OID.
+ *
+ * Still hand-written because this maps a NAME onto an OID, and the profile fields store OIDs —
+ * `canonicalizeUsage` alone cannot bridge that. But it needs only one entry per OID now: the
+ * lookup is keyed by the canonical form, which already folds every spelling of a given usage
+ * together. The previous table carried two spellings per OID and still missed the two the
+ * bootstrap seeder uses — "Server Authentication" and "OCSP Signer" — because neither is a
+ * punctuation variant of "Server Auth" or "OCSP Signing"; they differ in words.
+ */
 export const EKU_ALIASES: Record<string, string> = {
-    serverAuth: '1.3.6.1.5.5.7.3.1', 'Server Auth': '1.3.6.1.5.5.7.3.1',
-    clientAuth: '1.3.6.1.5.5.7.3.2', 'Client Auth': '1.3.6.1.5.5.7.3.2',
-    codeSigning: '1.3.6.1.5.5.7.3.3', 'Code Signing': '1.3.6.1.5.5.7.3.3',
-    emailProtection: '1.3.6.1.5.5.7.3.4', 'Email Protection': '1.3.6.1.5.5.7.3.4',
-    timeStamping: '1.3.6.1.5.5.7.3.8', 'Time Stamping': '1.3.6.1.5.5.7.3.8',
-    OCSPSigning: '1.3.6.1.5.5.7.3.9', 'OCSP Signing': '1.3.6.1.5.5.7.3.9',
+    serverAuth: '1.3.6.1.5.5.7.3.1',
+    clientAuth: '1.3.6.1.5.5.7.3.2',
+    codeSigning: '1.3.6.1.5.5.7.3.3',
+    emailProtection: '1.3.6.1.5.5.7.3.4',
+    timeStamping: '1.3.6.1.5.5.7.3.8',
+    ocspSigning: '1.3.6.1.5.5.7.3.9',
 };
 
-/** Display labels that should resolve to a catalog key-usage friendly name. */
-export const KEY_USAGE_ALIASES: Record<string, string> = {
-    'Digital Signature': 'digitalSignature',
-    'Key Encipherment': 'keyEncipherment',
-    'Key Cert Sign': 'keyCertSign',
-    'CRL Sign': 'crlSign',
-};
-
+/**
+ * Display labels for the nine key usages.
+ *
+ * Presentation only — never persist these. `canonicalizeUsage` maps every one of them back onto
+ * its canonical value, so a profile written with a label by an older build still resolves.
+ */
 export const KEY_USAGE_LABELS: Record<string, string> = {
     digitalSignature: 'Digital Signature',
+    nonRepudiation: 'Non Repudiation',
     keyEncipherment: 'Key Encipherment',
+    dataEncipherment: 'Data Encipherment',
+    keyAgreement: 'Key Agreement',
     keyCertSign: 'Key Cert Sign',
     crlSign: 'CRL Sign',
+    encipherOnly: 'Encipher Only',
+    decipherOnly: 'Decipher Only',
 };
 
 export const keyUsageLabel = (v: string): string => KEY_USAGE_LABELS[v] ?? v;
@@ -178,7 +212,7 @@ export const BadgeList: React.FC<{ items: any }> = ({ items }) => {
 
 /** Multi-select toggle buttons for an array field */
 export const MultiToggle: React.FC<{
-    options: string[];
+    options: readonly string[];
     selected: string[];
     onChange: (next: string[]) => void;
     formatLabel?: (opt: string) => string;

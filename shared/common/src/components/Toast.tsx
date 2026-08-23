@@ -1,8 +1,15 @@
 import React from 'react';
 
+/**
+ * Shared because the four copies had already begun to diverge: two spelled the status icons as
+ * literal glyphs and two as escapes. That difference was harmless, but it is the same drift
+ * that turned api/client.ts into four incompatible clients, and the styles here encode the
+ * dark-mode contrast convention that every SPA is supposed to follow.
+ */
+
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
-interface ToastProps {
+export interface ToastProps {
     id: string;
     type: ToastType;
     message: string;
@@ -23,12 +30,10 @@ const typeIcons: Record<ToastType, string> = {
     info: '\u2139',
 };
 
-const Toast: React.FC<ToastProps> = ({ id, type, message, onDismiss }) => (
+export const Toast: React.FC<ToastProps> = ({ id, type, message, onDismiss }) => (
     <div className={`flex items-start gap-3 px-4 py-3 rounded-lg border-l-4 shadow-lg animate-slide-in ${typeStyles[type]}`}>
         <span className="text-lg font-bold flex-shrink-0">{typeIcons[type]}</span>
         <p className="text-sm flex-1">{message}</p>
         <button onClick={() => onDismiss(id)} className="text-current opacity-50 hover:opacity-100 flex-shrink-0">&times;</button>
     </div>
 );
-
-export default Toast;

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
-import { useTheme } from '../context/ThemeContext';
-import Chevron from './Chevron';
+import { useTheme } from '@shared/context/ThemeContext';
+import { Chevron } from '@shared/components/Chevron';
 
 interface NavSection {
     title: string;

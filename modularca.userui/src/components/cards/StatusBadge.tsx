@@ -1,5 +1,3 @@
-import React from 'react';
-
 interface StatusBadgeProps {
     status: 'active' | 'revoked' | 'expired' | 'held' | 'pending' | 'locked' | 'disabled' | 'enabled';
     label?: string;

@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiPut, apiDelete, apiPostWithMfa, getToken } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { APP_VERSION } from '../version';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -387,7 +388,7 @@ const DrStatusCard: React.FC = () => {
         setCreatingBackup(true);
         setBackupMsg(null);
         try {
-            const result = await apiPostWithMfa('/api/v1/admin/backup', {}, requireStepUp, 'create-backup');
+            const result = await apiPostWithMfa('/api/v1/admin/backup', {}, requireStepUp, StepUpOps.CreateBackup);
             setBackupMsg(result.message || 'Backup created successfully');
             fetchDrStatus();
         } catch (err: any) {

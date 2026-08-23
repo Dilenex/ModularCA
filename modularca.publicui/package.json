@@ -9,7 +9,7 @@
         "preview": "vite preview",
         "start": "node server.js",
         "start:prod": "node server.js",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc -b --force"
     },
     "dependencies": {
         "react": "19.2.4",

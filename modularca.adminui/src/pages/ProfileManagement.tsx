@@ -16,6 +16,7 @@ import {
 } from './profileHelpers';
 
 import RequestProfilesTab from './RequestProfiles';
+import { StepUpOps } from '@shared/generated';
 
 const TABS = ['Certificate Profiles', 'Signing Profiles', 'Request Profiles', 'SSH Signing', 'SSH Cert', 'SSH Request'] as const;
 type Tab = typeof TABS[number];
@@ -118,7 +119,7 @@ const CertProfilesTab: React.FC = () => {
         setDeleting(true);
         const profileId = confirmDelete.id || confirmDelete.certProfileId;
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/cert-profiles/${profileId}`, requireStepUp, 'delete-cert-profile', profileId);
+            await apiDeleteWithMfa(`/api/v1/admin/cert-profiles/${profileId}`, requireStepUp, StepUpOps.DeleteCertProfile, profileId);
             showToast('success', 'Certificate profile deleted');
             load();
         } catch (err: any) {
@@ -410,7 +411,7 @@ const SigningProfilesTab: React.FC = () => {
             // Link allowed cert profiles via the join endpoint
             if (form.allowedCertProfileIds.length > 0 && created?.id) {
                 await apiPutWithMfa(`/api/v1/admin/signing-profiles/${created.id}/allowed-cert-profiles`,
-                    form.allowedCertProfileIds, requireStepUp, 'update-signing-profile', created.id);
+                    form.allowedCertProfileIds, requireStepUp, StepUpOps.UpdateSigningProfile, created.id);
             }
             setShowCreate(false);
             resetForm();
@@ -427,7 +428,7 @@ const SigningProfilesTab: React.FC = () => {
         setDeleting(true);
         const profileId = confirmDelete.id || confirmDelete.signingProfileId;
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/signing-profiles/${profileId}`, requireStepUp, 'delete-signing-profile', profileId);
+            await apiDeleteWithMfa(`/api/v1/admin/signing-profiles/${profileId}`, requireStepUp, StepUpOps.DeleteSigningProfile, profileId);
             showToast('success', 'Signing profile deleted');
             load();
         } catch (err: any) {
@@ -713,7 +714,7 @@ const SshSigningProfilesTab: React.FC = () => {
                 forceCommand: form.forceCommand || undefined,
                 sourceAddressRestrictions: JSON.stringify(form.sourceAddressRestrictions ? form.sourceAddressRestrictions.split(',').map(s => s.trim()).filter(Boolean) : []),
                 defaultExtensions: JSON.stringify(form.defaultExtensions),
-            }, requireStepUp, 'create-ssh-profile');
+            }, requireStepUp, StepUpOps.CreateSshProfile);
             setShowCreate(false);
             resetForm();
             load();
@@ -728,7 +729,7 @@ const SshSigningProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/signing/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/signing/${confirmDelete.id}`, requireStepUp, StepUpOps.DeleteSshProfile, confirmDelete.id);
             showToast('success', 'SSH signing profile deleted');
             load();
         } catch (err: any) {
@@ -923,7 +924,7 @@ const SshCertProfilesTab: React.FC = () => {
                 allowedExtensions: JSON.stringify(form.allowedExtensions),
                 requiredExtensions: JSON.stringify(form.requiredExtensions),
                 maxValidityHours: parseInt(form.maxValidityHours) || 720,
-            }, requireStepUp, 'create-ssh-profile');
+            }, requireStepUp, StepUpOps.CreateSshProfile);
             setShowCreate(false);
             resetForm();
             load();
@@ -938,7 +939,7 @@ const SshCertProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${confirmDelete.id}`, requireStepUp, StepUpOps.DeleteSshProfile, confirmDelete.id);
             showToast('success', 'SSH cert profile deleted');
             load();
         } catch (err: any) {
@@ -1118,7 +1119,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 requireApproval: form.requireApproval,
                 maxValidityHours: parseInt(form.maxValidityHours) || 720,
                 certificateAuthorityId: form.certificateAuthorityId || undefined,
-            }, requireStepUp, 'create-ssh-profile');
+            }, requireStepUp, StepUpOps.CreateSshProfile);
             setShowCreate(false);
             resetForm();
             load();
@@ -1133,7 +1134,7 @@ const SshRequestProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/request/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/request/${confirmDelete.id}`, requireStepUp, StepUpOps.DeleteSshProfile, confirmDelete.id);
             showToast('success', 'SSH request profile deleted');
             load();
         } catch (err: any) {

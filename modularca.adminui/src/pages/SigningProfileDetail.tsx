@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 import {
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
@@ -137,7 +138,7 @@ const SigningProfileDetail: React.FC = () => {
                 // Folded into the one step-up-gated update so the whole save is a single MFA prompt.
                 allowedCertProfileIds: editForm.allowedCertProfileIds,
             };
-            await apiPutWithMfa(`/api/v1/admin/signing-profiles/${id}`, body, requireStepUp, 'update-signing-profile', id!);
+            await apiPutWithMfa(`/api/v1/admin/signing-profiles/${id}`, body, requireStepUp, StepUpOps.UpdateSigningProfile, id!);
             showToast('success', 'Signing profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -149,7 +150,7 @@ const SigningProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/signing-profiles/${id}`, requireStepUp, 'delete-signing-profile', id!);
+            await apiDeleteWithMfa(`/api/v1/admin/signing-profiles/${id}`, requireStepUp, StepUpOps.DeleteSigningProfile, id!);
             showToast('success', 'Signing profile deleted');
             navigate(SIGNING_TAB);
         } catch (err: any) {

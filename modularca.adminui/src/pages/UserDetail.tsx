@@ -9,6 +9,7 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { groupChipClass } from './Users';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -70,7 +71,7 @@ const UserDetail: React.FC = () => {
         if (pendingAdd.length === 0 && pendingRemove.length === 0) return;
         setGroupBusy(true);
         try {
-            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/groups/bulk`, { addGroupIds: pendingAdd, removeGroupIds: pendingRemove }, requireStepUp, 'update-user-groups', id!);
+            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/groups/bulk`, { addGroupIds: pendingAdd, removeGroupIds: pendingRemove }, requireStepUp, StepUpOps.UpdateUserGroups, id!);
             const added = res?.added ?? 0, removed = res?.removed ?? 0, ceremonies = res?.ceremonies ?? 0, skipped = res?.skipped ?? 0;
             const parts = [
                 added ? `${added} added` : '',
@@ -91,7 +92,7 @@ const UserDetail: React.FC = () => {
 
     const resetPassword = () => setConfirm({
         title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"?`, confirmLabel: 'Reset Password',
-        action: async () => { await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, 'reset-password', id!); showToast('success', 'Password reset initiated'); },
+        action: async () => { await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, StepUpOps.ResetPassword, id!); showToast('success', 'Password reset initiated'); },
     });
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
@@ -117,19 +118,19 @@ const UserDetail: React.FC = () => {
         const superWarning = isSuperGroup ? ' WARNING: This is a super admin account. Once disabled, it can ONLY be re-enabled via direct database access.' : '';
         setConfirm({
             title: 'Disable Account', message: `Disable user "${user.username}"? They will not be able to log in.${superWarning}`, confirmLabel: 'Disable',
-            action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, 'update-user', id!); setRefresh((r) => r + 1); },
+            action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
         });
     };
     const enableAccount = () => setConfirm({
         title: 'Enable Account', message: `Re-enable user "${user.username}"? They will be able to log in again.`, confirmLabel: 'Enable',
-        action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, 'update-user', id!); setRefresh((r) => r + 1); },
+        action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
     });
     const deleteUser = () => {
         if (isSelf) { showToast('warning', 'You cannot delete your own account.'); return; }
         setConfirm({
             title: 'Delete User', message: `Permanently delete user "${user.username}"? If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
             action: async () => {
-                const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, 'delete-user', id!);
+                const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, StepUpOps.DeleteUser, id!);
                 if (res?.requiresCeremony) { showToast('info', res.message || 'A controlled-user ceremony was started — approve it on the Ceremonies page.'); setRefresh((r) => r + 1); }
                 else { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
             },

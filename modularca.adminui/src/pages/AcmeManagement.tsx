@@ -5,6 +5,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -78,7 +79,7 @@ const EabKeyManagementSection: React.FC = () => {
         setActionError(null);
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/acme/eab-keys/${id}`, requireStepUp, 'delete-eab-key', id);
+            await apiDeleteWithMfa(`/api/v1/admin/acme/eab-keys/${id}`, requireStepUp, StepUpOps.DeleteEabKey, id);
             loadKeys();
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') setActionError(err.message);

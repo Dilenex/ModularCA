@@ -6,6 +6,7 @@ import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { DataTable, type DataTableColumn } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in
 // sync with UserCertificateController.SelfRevokeAllowedReasons on the backend — CA-level reasons
@@ -136,7 +137,7 @@ const MyCertificates: React.FC = () => {
             } catch (err: any) {
                 // Handle step-up MFA requirement
                 if (err.requiresStepUp) {
-                    const mfaToken = await requireStepUp('export-cert', pfxTarget.serialNumber);
+                    const mfaToken = await requireStepUp(StepUpOps.ExportCert, pfxTarget.serialNumber);
                     resp = await doExport({ 'X-MFA-Token': mfaToken });
                 } else {
                     throw err;
@@ -164,7 +165,7 @@ const MyCertificates: React.FC = () => {
                 `/api/v1/user/certificates/${serial}/revoke`,
                 { reason: revokeReason },
                 requireStepUp,
-                'revoke-self-cert',
+                StepUpOps.RevokeSelfCert,
                 serial,
             );
 

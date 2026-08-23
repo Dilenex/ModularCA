@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';

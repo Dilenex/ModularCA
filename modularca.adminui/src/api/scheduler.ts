@@ -11,6 +11,7 @@ import {
     apiPutWithMfa,
     apiDeleteWithMfa,
 } from './client';
+import { StepUpOps } from '@shared/generated';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,7 +134,7 @@ export function updateSchedulerJob(
         `${BASE}/jobs/${encodeURIComponent(name)}`,
         body,
         stepUp,
-        'update-scheduler-job',
+        StepUpOps.UpdateSchedulerJob,
         name,
     );
 }
@@ -144,7 +145,7 @@ export function runSchedulerJob(name: string, stepUp: StepUpFn): Promise<void> {
         `${BASE}/jobs/${encodeURIComponent(name)}/run`,
         undefined,
         stepUp,
-        'run-scheduler-job',
+        StepUpOps.RunSchedulerJob,
         name,
     );
 }
@@ -155,7 +156,7 @@ export function runCrlSchedule(taskId: string, stepUp: StepUpFn): Promise<void> 
         `${BASE}/schedules/crl/${encodeURIComponent(taskId)}/run`,
         undefined,
         stepUp,
-        'run-scheduler-schedule',
+        StepUpOps.RunSchedulerSchedule,
         taskId,
     );
 }
@@ -166,7 +167,7 @@ export function runLdapSchedule(id: string, stepUp: StepUpFn): Promise<void> {
         `${BASE}/schedules/ldap/${encodeURIComponent(id)}/run`,
         undefined,
         stepUp,
-        'run-scheduler-schedule',
+        StepUpOps.RunSchedulerSchedule,
         id,
     );
 }
@@ -180,7 +181,7 @@ export function updateSchedulerConfig(
         `${BASE}/config`,
         body,
         stepUp,
-        'update-scheduler-config',
+        StepUpOps.UpdateSchedulerConfig,
     );
 }
 
@@ -198,7 +199,7 @@ export function updateCrlSchedule(
         `/api/v1/admin/crl-schedules/${encodeURIComponent(taskId)}`,
         body,
         stepUp,
-        'update-crl-schedule',
+        StepUpOps.UpdateCrlSchedule,
         taskId,
     );
 }
@@ -208,7 +209,7 @@ export function deleteCrlSchedule(taskId: string, stepUp: StepUpFn): Promise<voi
     return apiDeleteWithMfa(
         `/api/v1/admin/crl-schedules/${encodeURIComponent(taskId)}`,
         stepUp,
-        'delete-crl-schedule',
+        StepUpOps.DeleteCrlSchedule,
         taskId,
     );
 }
@@ -223,7 +224,7 @@ export function updateLdapPublisher(
         `/api/v1/admin/ldap-publishers/${encodeURIComponent(id)}`,
         body,
         stepUp,
-        'update-ldap-publisher',
+        StepUpOps.UpdateLdapPublisher,
         id,
     );
 }
@@ -233,7 +234,7 @@ export function deleteLdapPublisher(id: string, stepUp: StepUpFn): Promise<void>
     return apiDeleteWithMfa(
         `/api/v1/admin/ldap-publishers/${encodeURIComponent(id)}`,
         stepUp,
-        'delete-ldap-publisher',
+        StepUpOps.DeleteLdapPublisher,
         id,
     );
 }
@@ -247,7 +248,7 @@ export function setSchedulerJobEnabled(name: string, enabled: boolean, stepUp: S
         `/api/v1/admin/scheduler/jobs/${encodeURIComponent(name)}/enabled`,
         { enabled },
         stepUp,
-        'update-scheduler-job',
+        StepUpOps.UpdateSchedulerJob,
         name,
     );
 }

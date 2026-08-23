@@ -6,9 +6,10 @@ import { useToast } from '../context/ToastContext';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 import {
     KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
-    canonicalizeUsages, EKU_ALIASES, KEY_USAGE_ALIASES,
+    canonicalizeUsages, EKU_ALIASES,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
     FieldSourceBadge, SourceBorderedField,
@@ -76,7 +77,7 @@ const CertProfileDetail: React.FC = () => {
                     // Canonicalised, not just parsed: rows written while the CSV/JSON parse bug was
                     // live hold fragments like '["[]"' or '"Server Auth"'. Normalising punctuation away
                     // recovers the real selection, and the next save rewrites the field cleanly.
-                    keyUsages: canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES),
+                    keyUsages: canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS),
                     extendedKeyUsages: canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES),
                     allowedKeyAlgorithms: parseJsonArray(p.allowedKeyAlgorithms),
                     allowedKeySizes: parseJsonArray(p.allowedKeySizes),
@@ -133,7 +134,7 @@ const CertProfileDetail: React.FC = () => {
                 certificateAuthorityId: editForm.certificateAuthorityId || undefined,
                 allowWildcard: editForm.allowWildcard,
             };
-            await apiPutWithMfa(`/api/v1/admin/cert-profiles/${id}`, body, requireStepUp, 'update-cert-profile', id!);
+            await apiPutWithMfa(`/api/v1/admin/cert-profiles/${id}`, body, requireStepUp, StepUpOps.UpdateCertProfile, id!);
             showToast('success', 'Certificate profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -149,7 +150,7 @@ const CertProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/cert-profiles/${id}`, requireStepUp, 'delete-cert-profile', id!);
+            await apiDeleteWithMfa(`/api/v1/admin/cert-profiles/${id}`, requireStepUp, StepUpOps.DeleteCertProfile, id!);
             showToast('success', 'Certificate profile deleted');
             navigate(CERT_TAB);
         } catch (err: any) {
@@ -228,7 +229,7 @@ const CertProfileDetail: React.FC = () => {
                     <DetailField label="Name" value={p.name} />
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
-                    <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES).map(keyUsageLabel).join(', ')} />
+                    <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                     <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><BadgeList items={p.allowedKeyAlgorithms} /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><BadgeList items={p.allowedKeySizes} /></div>
@@ -262,7 +263,7 @@ const CertProfileDetail: React.FC = () => {
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.Name} label="Name" value={resolvedProfile.name} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.Description} label="Description" value={resolvedProfile.description} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.IsCaProfile} label="CA Profile" value={resolvedProfile.isCaProfile ? 'Yes' : 'No'} />
-                                <SourceBorderedField source={resolvedProfile.fieldSources?.KeyUsages} label="Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.keyUsages), KEY_USAGE_OPTIONS, KEY_USAGE_ALIASES).map(keyUsageLabel).join(', ')} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.KeyUsages} label="Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ExtendedKeyUsages} label="Extended Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMin} label="Validity Period Min" value={resolvedProfile.validityPeriodMin} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={resolvedProfile.validityPeriodMax} />

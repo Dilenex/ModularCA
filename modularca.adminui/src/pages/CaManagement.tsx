@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { DataTable, DataTableColumn } from '../components/DataTable';
 import { caKey } from './CaDetail';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -203,7 +204,7 @@ const CaManagement: React.FC = () => {
                 body.parentCaId = formParentCa;
             }
 
-            const result = await apiPostWithMfa<any>(endpoint, body, requireStepUp, 'create-ca');
+            const result = await apiPostWithMfa<any>(endpoint, body, requireStepUp, StepUpOps.CreateCa);
 
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'A key ceremony has been created and requires approval before execution.');

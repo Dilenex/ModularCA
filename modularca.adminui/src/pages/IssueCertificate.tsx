@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost } from '../api/client';
 import DetailField from '../components/cards/DetailField';
 import { validateAgainstProfileClient } from '../validation/profileValidation';
+import { looksLikeHostname } from '@shared/hostname';
 
 // --- Types ---
 
@@ -278,6 +279,8 @@ const IssueCertificate: React.FC = () => {
 
     // --- SAN helpers ---
     const addSan = () => setSanList([...sanList, { type: 'DNS', value: '' }]);
+
+
     const removeSan = (idx: number) => setSanList(sanList.filter((_, i) => i !== idx));
     const updateSan = (idx: number, field: 'type' | 'value', val: string) => {
         const updated = [...sanList];
@@ -412,6 +415,34 @@ const IssueCertificate: React.FC = () => {
 
     // Find the selected profile for tooltip info
     const selectedProfileObj = requestProfiles.find(p => p.id === selectedRequestProfile);
+
+    const cnValue = (subjectFields['CN'] ?? '').trim();
+
+    // Offer the action only when it would actually change something: the CN is hostname-shaped
+    // and is not already present as a DNS SAN (case-insensitive, since DNS is).
+    const cnAlreadyASan = sanList.some(
+        s => s.type === 'DNS' && s.value.trim().toLowerCase() === cnValue.toLowerCase());
+    // Respect the request profile. Offering to add a DNS SAN to a profile that forbids SANs —
+    // or permits only Email/IP — would hand the operator a one-click way to fail validation.
+    const profileAllowsDnsSan = (() => {
+        const allowed = selectedProfileObj?.sanRules?.allowedTypes;
+        if (!allowed) return true;                 // no rules configured means no restriction
+        return allowed.some(t => t.toUpperCase() === 'DNS');
+    })();
+
+    const canAddCnAsSan = looksLikeHostname(cnValue) && !cnAlreadyASan && profileAllowsDnsSan;
+
+    const addCnAsSan = () => {
+        if (!canAddCnAsSan) return;
+        // Reuse a blank DNS row if the operator already added one, rather than leaving an empty
+        // row behind that will fail validation.
+        const blankIdx = sanList.findIndex(s => s.type === 'DNS' && !s.value.trim());
+        if (blankIdx >= 0) {
+            updateSan(blankIdx, 'value', cnValue);
+        } else {
+            setSanList([...sanList, { type: 'DNS', value: cnValue }]);
+        }
+    };
 
     const getRuleForField = (field: string): SubjectDnFieldRule | undefined => {
         return selectedProfileObj?.subjectDnRules?.find(r => r.field === field);
@@ -753,13 +784,38 @@ const IssueCertificate: React.FC = () => {
                                         </div>
                                     );
                                 })}
-                                <button
-                                    onClick={addSan}
-                                    className="px-3 py-1.5 text-xs text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900/30 transition-colors"
-                                >
-                                    + Add SAN
-                                </button>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        onClick={addSan}
+                                        className="px-3 py-1.5 text-xs text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900/30 transition-colors"
+                                    >
+                                        + Add SAN
+                                    </button>
+                                    {canAddCnAsSan && (
+                                        <button
+                                            onClick={addCnAsSan}
+                                            title={`Add ${cnValue} as a DNS Subject Alternative Name`}
+                                            className="px-3 py-1.5 text-xs text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900/30 transition-colors"
+                                        >
+                                            + Use CN as DNS SAN
+                                            <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
+                                        </button>
+                                    )}
+                                </div>
                             </div>
+
+                            {/* Clients have not used the CN for hostname verification since RFC 2818
+                                was deprecated, and the CA/Browser Forum requires the name in a SAN.
+                                A certificate with a hostname CN and no matching DNS SAN therefore
+                                looks correct here and is rejected by every browser. Say so before
+                                it is issued, not after. */}
+                            {canAddCnAsSan && (
+                                <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">
+                                    <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
+                                    Clients ignore the Common Name for hostname verification, so this
+                                    certificate would not validate for that name.
+                                </p>
+                            )}
                             {/* SAN rules hint */}
                             {selectedProfileObj?.sanRules && (
                                 <p className="text-xs text-gray-600 mt-2">

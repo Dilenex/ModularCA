@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import Chevron from '../Chevron';
+import { Chevron } from '@shared/components/Chevron';
 
 interface Action {
     label: string;

@@ -6,6 +6,7 @@ import { useToast } from '../context/ToastContext';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
 const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
@@ -143,7 +144,7 @@ const RequestProfileDetail: React.FC = () => {
             certificateAuthorityId: editForm.certificateAuthorityId || undefined,
         };
         try {
-            await apiPutWithMfa(`/api/v1/admin/request-profiles/${id}`, body, requireStepUp, 'update-request-profile', id!);
+            await apiPutWithMfa(`/api/v1/admin/request-profiles/${id}`, body, requireStepUp, StepUpOps.UpdateRequestProfile, id!);
             showToast('success', 'Request profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -159,7 +160,7 @@ const RequestProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/request-profiles/${id}`, requireStepUp, 'delete-request-profile', id!);
+            await apiDeleteWithMfa(`/api/v1/admin/request-profiles/${id}`, requireStepUp, StepUpOps.DeleteRequestProfile, id!);
             showToast('success', 'Request profile deleted');
             navigate(REQUEST_TAB);
         } catch (err: any) {

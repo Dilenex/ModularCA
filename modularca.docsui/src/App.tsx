@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
-import ScrollToTop from './components/ScrollToTop';
+import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 import ErrorBoundary from './components/ErrorBoundary';
-import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { ThemeProvider, useTheme } from '@shared/context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import Overview from './pages/Overview';
 import SetupGuide from './pages/SetupGuide';

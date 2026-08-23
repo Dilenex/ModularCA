@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
+import { looksLikeHostname } from '@shared/hostname';
+import { StepUpOps } from '@shared/generated';
 
 /// Properties for the shared CertificateReissueModal.
 export interface CertificateReissueModalProps {
@@ -116,6 +118,26 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
         setForm((prev) => ({ ...prev, [field]: value }));
     };
 
+
+
+    const cnValue = form.CN.trim();
+
+    // Entries are "DNS:host" here, but the server also accepts a bare host line, so check both
+    // spellings before offering to add what would be a duplicate.
+    const cnAlreadyASan = form.sansText
+        .split(/\r?\n/)
+        .map((l) => l.trim().toLowerCase())
+        .some((l) => l === 'dns:' + cnValue.toLowerCase() || l === cnValue.toLowerCase());
+
+    const canAddCnAsSan = looksLikeHostname(cnValue) && !cnAlreadyASan;
+
+    const addCnAsSan = () => {
+        if (!canAddCnAsSan) return;
+        const kept = form.sansText.split(/\r?\n/).filter((l) => l.trim());
+        kept.push('DNS:' + cnValue);
+        updateField('sansText', kept.join(String.fromCharCode(10)));
+    };
+
     const handleClose = () => {
         if (submitting) return;
         onClose();
@@ -129,10 +151,18 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
             const body: any = { serialNumber: cert.serialNumber };
             const newDn = buildSubjectDn(form);
             if (newDn && newDn !== cert.subjectDN) body.newSubjectDn = newDn;
-            if (form.sansText) {
-                const newSans = form.sansText.split('\n').map((s) => s.trim()).filter(Boolean);
-                body.newSans = newSans;
-            }
+            // Send whenever the list CHANGED, including when it was cleared. This was
+            // `if (form.sansText)`, which is falsy for an empty textarea — so emptying the box
+            // omitted newSans entirely, the server's `if (newSans != null)` never fired, and the
+            // reissued certificate silently kept its original SANs. The operator saw a success
+            // toast for a removal that did not happen. An empty array is meaningful here: the
+            // server serializes it to "[]", which correctly means "no SANs".
+            const originalSans = (cert.sans ?? []).map((s) => s.trim()).filter(Boolean);
+            const editedSans = form.sansText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+            const sansChanged =
+                editedSans.length !== originalSans.length ||
+                editedSans.some((v, i) => v !== originalSans[i]);
+            if (sansChanged) body.newSans = editedSans;
             if (form.notBefore) body.notBefore = new Date(form.notBefore).toISOString();
             if (form.notAfter) body.notAfter = new Date(form.notAfter).toISOString();
 
@@ -140,7 +170,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                 `/api/v1/admin/certificates/serial/${cert.serialNumber}/reissue`,
                 body,
                 requireStepUp,
-                'reissue-cert',
+                StepUpOps.ReissueCert,
                 cert.serialNumber,
             );
             const warnings = result?.warnings as string[] | undefined;
@@ -181,7 +211,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                         className="text-gray-600 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-50"
                     >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                         </svg>
                     </button>
                 </div>
@@ -300,6 +330,24 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                             placeholder={'DNS:example.com\nDNS:www.example.com\nIP:10.0.0.1'}
                             className={`${inputClass} resize-none font-mono`}
                         />
+                        {canAddCnAsSan && (
+                            <div className="mt-2">
+                                <button
+                                    type="button"
+                                    onClick={addCnAsSan}
+                                    title={"Add " + cnValue + " as a DNS Subject Alternative Name"}
+                                    className="px-3 py-1.5 text-xs text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900/30 transition-colors"
+                                >
+                                    + Use CN as DNS SAN
+                                    <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
+                                </button>
+                                <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">
+                                    <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
+                                    Clients ignore the Common Name for hostname verification, so this
+                                    certificate would not validate for that name.
+                                </p>
+                            </div>
+                        )}
                         <div className={helperClass}>
                             One per line. Prefix with <span className="font-mono">DNS:</span>, <span className="font-mono">IP:</span>,{' '}
                             <span className="font-mono">email:</span>, or <span className="font-mono">URI:</span> to indicate the SAN type.

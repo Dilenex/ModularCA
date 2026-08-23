@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ThemeProvider } from './context/ThemeContext';
+import { ThemeProvider } from '@shared/context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
@@ -8,7 +8,7 @@ import CaCertificates from './pages/CaCertificates';
 import CrlDownload from './pages/CrlDownload';
 import AcmeDirectory from './pages/AcmeDirectory';
 import NotFound from './pages/NotFound';
-import ScrollToTop from './components/ScrollToTop';
+import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 
 function App() {

@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -107,7 +108,7 @@ const LdapPublisherDetail: React.FC = () => {
                 userDnTemplate: form.userDnTemplate || undefined, updateInterval: form.updateInterval || undefined,
                 enabled: form.enabled, publishCaCertificate: form.publishCaCertificate, publishCrl: form.publishCrl,
                 publishDeltaCrl: form.publishDeltaCrl, publishUserCertificates: form.publishUserCertificates,
-            }, requireStepUp, 'update-ldap-publisher', id);
+            }, requireStepUp, StepUpOps.UpdateLdapPublisher, id);
             showToast('success', 'LDAP publisher updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -138,7 +139,7 @@ const LdapPublisherDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`${basePath}/${id}`, requireStepUp, 'delete-ldap-publisher', id);
+            await apiDeleteWithMfa(`${basePath}/${id}`, requireStepUp, StepUpOps.DeleteLdapPublisher, id);
             showToast('success', 'LDAP publisher deleted');
             navigate(`/distribution?tab=ldap${caId ? `&caId=${caId}` : ''}`);
         } catch (err: any) {

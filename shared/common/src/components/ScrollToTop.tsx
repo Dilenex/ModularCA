@@ -1,7 +1,16 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
-const ScrollToTop: React.FC = () => {
+/**
+ * Resets scroll position and focus on every route change.
+ *
+ * Shared because it is a router-level accessibility behaviour, not a per-app decision: four
+ * SPAs each mounted a byte-identical copy, so a fix to the focus reset would silently apply to
+ * whichever one the author happened to be editing. setupui does not use it — it is a single
+ * linear wizard with no route changes to reset.
+ */
+
+export const ScrollToTop: React.FC = () => {
     const { pathname } = useLocation();
     useEffect(() => {
         const main = document.querySelector('main');
@@ -13,5 +22,3 @@ const ScrollToTop: React.FC = () => {
     }, [pathname]);
     return null;
 };
-
-export default ScrollToTop;

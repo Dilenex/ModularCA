@@ -3,9 +3,9 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
-import { ThemeProvider } from './context/ThemeContext';
+import { ThemeProvider } from '@shared/context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
-import ScrollToTop from './components/ScrollToTop';
+import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)

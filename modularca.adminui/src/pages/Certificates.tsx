@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import { DataTable, DataTableColumn } from '../components/DataTable';
 import { REVOCATION_REASONS } from './CertificateDetail';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -167,7 +168,7 @@ const Certificates: React.FC = () => {
         setRevokeBusy(true);
         try {
             const res: any = await apiPostWithMfa('/api/v1/admin/certificates/bulk-revoke',
-                { serialNumbers: serials, reason: revokeReason }, requireStepUp, 'revoke-cert');
+                { serialNumbers: serials, reason: revokeReason }, requireStepUp, StepUpOps.RevokeCert);
             const revoked = res?.revoked ?? 0, skipped = res?.skipped ?? 0, failed = res?.failed ?? 0;
             if (revoked > 0) showToast('success', `Revoked ${revoked} certificate${revoked === 1 ? '' : 's'}`);
             if (skipped > 0) showToast('warning', `${skipped} skipped (already revoked, CA cert, or not permitted)`);

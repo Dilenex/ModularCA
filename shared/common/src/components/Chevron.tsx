@@ -1,5 +1,10 @@
 import React from 'react';
 
+/**
+ * Shared because all three consuming SPAs rendered the identical component and any change to
+ * the glyph — the reason it exists at all — had to be made three times to stay consistent.
+ */
+
 export type ChevronDirection = 'right' | 'down' | 'up' | 'left';
 
 const ROTATION: Record<ChevronDirection, string> = {
@@ -33,5 +38,3 @@ export const Chevron: React.FC<ChevronProps> = ({ direction, open, className = '
         </svg>
     );
 };
-
-export default Chevron;

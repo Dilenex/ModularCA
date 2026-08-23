@@ -5,6 +5,7 @@ import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import { StepUpOps } from '@shared/generated';
 
 const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
 const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
@@ -109,7 +110,7 @@ const X509TemplatesTab: React.FC = () => {
                 signingProfileId: form.signingProfileId, isEnabled: form.isEnabled,
             };
             if (form.requestProfileId) body.requestProfileId = form.requestProfileId;
-            await apiPostWithMfa('/api/v1/admin/templates', body, requireStepUp, 'create-certificate-template');
+            await apiPostWithMfa('/api/v1/admin/templates', body, requireStepUp, StepUpOps.CreateCertificateTemplate);
             setShowCreate(false);
             resetForm();
             load();
@@ -128,7 +129,7 @@ const X509TemplatesTab: React.FC = () => {
             title: 'Delete Template',
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
-                await apiDeleteWithMfa(`/api/v1/admin/templates/${template.id}`, requireStepUp, 'delete-certificate-template', template.id);
+                await apiDeleteWithMfa(`/api/v1/admin/templates/${template.id}`, requireStepUp, StepUpOps.DeleteCertificateTemplate, template.id);
                 if (selectedTemplate?.id === template.id) setSelectedTemplate(null);
                 load();
             },

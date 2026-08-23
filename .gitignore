@@ -391,3 +391,8 @@ modularca.setupui/dist/
 
 # Local reference documents (reports, audits, notes) — not part of the product
 References/
+
+# TypeScript incremental build state, emitted by `tsc -b` (the typecheck the UI
+# build now runs). Machine-local; the standalone tsconfigs write it beside the
+# config rather than into node_modules/.tmp.
+*.tsbuildinfo

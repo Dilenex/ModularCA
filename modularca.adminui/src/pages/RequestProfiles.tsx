@@ -6,6 +6,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 const DN_FIELD_OPTIONS = ['CN', 'O', 'OU', 'L', 'ST', 'C', 'DC'];
 const REQUIREMENT_OPTIONS = ['Required', 'Optional', 'Forbidden'];
@@ -144,7 +145,7 @@ const RequestProfiles: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/request-profiles/${confirmDelete.id}`, requireStepUp, 'delete-request-profile', confirmDelete.id);
+            await apiDeleteWithMfa(`/api/v1/admin/request-profiles/${confirmDelete.id}`, requireStepUp, StepUpOps.DeleteRequestProfile, confirmDelete.id);
             showToast('success', 'Request profile deleted');
             load();
         } catch (err: any) {

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiPostWithMfa, api, apiBlobWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { generateQrSvg } from '../utils/qrcode';
+import { StepUpOps } from '@shared/generated';
 
 interface TotpStatus { enrolled: boolean; deviceName?: string; registeredAt?: string; lastUsedAt?: string; }
 interface WebAuthnCred { id: string; deviceName?: string; registeredAt: string; lastUsedAt?: string; }
@@ -13,7 +13,6 @@ interface AllowedCa { caId: string; caName: string; caLabel: string; }
 const MAX_WEBAUTHN_KEYS = 3;
 
 const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
-    const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
     const [mfa, setMfa] = useState<MfaStatus | null>(null);
     const [allowedCas, setAllowedCas] = useState<AllowedCa[]>([]);
@@ -103,7 +102,7 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
                 '/auth/totp/setup',
                 { deviceName: totpDeviceName || undefined },
                 requireStepUp,
-                'totp-setup'
+                StepUpOps.TotpSetup
             );
             setTotpSecret(data.secret);
             setProvisioningUri(data.provisioningUri);
@@ -123,7 +122,7 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
                 '/auth/totp/verify-setup',
                 { code: totpCode },
                 requireStepUp,
-                'totp-verify-setup'
+                StepUpOps.TotpVerifySetup
             );
             showMsg('Authenticator app enrolled successfully');
             setTotpSetupActive(false);
@@ -181,7 +180,7 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
                     clientExtensionResults: credential.getClientExtensionResults(),
                 },
                 requireStepUp,
-                'webauthn-register'
+                StepUpOps.WebAuthnRegister
             );
 
             showMsg('Security key registered');
@@ -219,7 +218,7 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
                     body: JSON.stringify({ caId: mtlsSelectedCa, deviceName: mtlsDeviceName || undefined }),
                 },
                 requireStepUp,
-                'mtls-enroll'
+                StepUpOps.MtlsEnroll
             );
             const password = resp.headers.get('X-Pkcs12-Password');
             setMtlsPassword(password);
@@ -501,7 +500,7 @@ const ChangePasswordSection: React.FC<{
                 oldPassword,
                 newPassword,
                 confirmNewPassword: confirmPassword,
-            }, requireStepUp, 'change-password');
+            }, requireStepUp, StepUpOps.ChangePassword);
             showMsg('Password changed successfully');
             setOpen(false);
             setOldPassword('');

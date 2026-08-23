@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import Chevron from '../components/Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { Link } from 'react-router-dom';
 import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -261,7 +262,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const handleSaveSecurityPolicy = async () => {
         setSecurityPolicySaving(true);
         try {
-            await apiPutWithMfa('/api/v1/admin/security-policy', securityPolicy, requireStepUp, 'update-config');
+            await apiPutWithMfa('/api/v1/admin/security-policy', securityPolicy, requireStepUp, StepUpOps.UpdateConfig);
             showToast('success', 'Security policy updated');
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save security policy');
@@ -282,7 +283,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             for (const row of rateLimits) {
                 payload[row.protocol] = { maxRequests: row.maxRequests, windowMinutes: row.windowMinutes };
             }
-            await apiPutWithMfa('/api/v1/admin/rate-limit-policy', payload, requireStepUp, 'update-config');
+            await apiPutWithMfa('/api/v1/admin/rate-limit-policy', payload, requireStepUp, StepUpOps.UpdateConfig);
             showToast('success', 'Rate limit policy updated');
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save rate limits');
@@ -444,7 +445,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     if (!window.confirm('Restart the ModularCA server? Active connections will be dropped.')) return;
                                     setRestarting(true);
                                     try {
-                                        await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, 'restart');
+                                        await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, StepUpOps.Restart);
                                         setSuccessMsg('Restart initiated. Reconnecting...');
                                         const poll = setInterval(async () => {
                                             try {
@@ -1073,7 +1074,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         onClick={async () => {
                                             setSaving('policySyncNow');
                                             try {
-                                                const result = await apiPostWithMfa('/api/v1/admin/policy/sync', {}, requireStepUp, 'policy-sync');
+                                                const result = await apiPostWithMfa('/api/v1/admin/policy/sync', {}, requireStepUp, StepUpOps.PolicySync);
                                                 setSuccessMsg(result.message || 'Policy sync triggered');
                                             } catch (err: any) {
                                                 if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to trigger sync');
@@ -1207,7 +1208,7 @@ const FeatureFlagsTab: React.FC = () => {
     const handleToggle = async (feature: any) => {
         try {
             await apiPutWithMfa(`/api/v1/admin/features/${feature.name}`,
-                { enabled: !feature.enabled }, requireStepUp, 'update-feature-flag', feature.name);
+                { enabled: !feature.enabled }, requireStepUp, StepUpOps.UpdateFeatureFlag, feature.name);
             load();
         } catch (err: any) {
             showToast('error', err.message || 'Failed to update feature flag');

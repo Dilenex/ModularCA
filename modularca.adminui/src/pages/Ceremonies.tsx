@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -198,7 +199,7 @@ const Ceremonies: React.FC = () => {
 
     const handleApprove = async (ceremony: any) => {
         try {
-            await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/approve`, {}, requireStepUp, 'approve-ceremony', ceremony.id);
+            await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/approve`, {}, requireStepUp, StepUpOps.ApproveCeremony, ceremony.id);
             showToast('success', 'Ceremony approved.');
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {
@@ -212,7 +213,7 @@ const Ceremonies: React.FC = () => {
             message: `Reject "${ceremony.description || ceremony.operationType}"? This is permanent.`,
             confirmLabel: 'Reject',
             action: async () => {
-                await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/reject`, {}, requireStepUp, 'reject-ceremony', ceremony.id);
+                await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/reject`, {}, requireStepUp, StepUpOps.RejectCeremony, ceremony.id);
                 showToast('success', 'Ceremony rejected.');
                 setRefreshTrigger((t) => t + 1);
             },
@@ -225,7 +226,7 @@ const Ceremonies: React.FC = () => {
             message: `Cancel "${ceremony.description || ceremony.operationType}"? This cannot be undone.`,
             confirmLabel: 'Cancel Ceremony',
             action: async () => {
-                await apiDeleteWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}`, requireStepUp, 'cancel-ceremony', ceremony.id);
+                await apiDeleteWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}`, requireStepUp, StepUpOps.CancelCeremony, ceremony.id);
                 showToast('success', 'Ceremony cancelled.');
                 setRefreshTrigger((t) => t + 1);
             },
@@ -234,7 +235,7 @@ const Ceremonies: React.FC = () => {
 
     const handleExecute = async (ceremony: any) => {
         try {
-            const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, 'execute-ceremony', ceremony.id);
+            const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, StepUpOps.ExecuteCeremony, ceremony.id);
             showToast('success', result?.message || 'Ceremony executed successfully.');
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {

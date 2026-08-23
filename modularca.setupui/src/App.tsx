@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { ThemeProvider, useTheme } from '@shared/context/ThemeContext';
 import ErrorBoundary from './ErrorBoundary';
 import Welcome, { type WelcomeResult } from './pages/Welcome';
 import DatabaseConfig, { type DatabaseData } from './pages/DatabaseConfig';

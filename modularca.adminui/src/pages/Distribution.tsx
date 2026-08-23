@@ -9,6 +9,7 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
 import { LdapPublisherManager } from './LdapPublishers';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -73,7 +74,7 @@ const CrlSchedulesSection: React.FC = () => {
     const handleCreate = async () => {
         setCreating(true);
         try {
-            await apiPostWithMfa('/api/v1/admin/crl-schedules', form, requireStepUp, 'create-crl-schedule');
+            await apiPostWithMfa('/api/v1/admin/crl-schedules', form, requireStepUp, StepUpOps.CreateCrlSchedule);
             setShowCreate(false);
             setForm({ name: '', cronExpression: '', caId: '', overlapPeriod: '' });
             load();
@@ -93,7 +94,7 @@ const CrlSchedulesSection: React.FC = () => {
             .map((s) => ({ id: crlId(s), action: enabled ? 'enable' : 'disable' }));
         if (actions.length === 0) { showToast('info', `All selected schedules already ${enabled ? 'enabled' : 'disabled'}.`); return; }
         try {
-            const res: any = await apiPostWithMfa('/api/v1/admin/crl-schedules/bulk', { actions }, requireStepUp, 'bulk-crl-schedule');
+            const res: any = await apiPostWithMfa('/api/v1/admin/crl-schedules/bulk', { actions }, requireStepUp, StepUpOps.BulkCrlSchedule);
             const okCount = res?.ok ?? 0, skipped = res?.skipped ?? 0, failed = res?.failed ?? 0;
             if (okCount) showToast('success', `${enabled ? 'Enabled' : 'Disabled'} ${okCount} schedule${okCount !== 1 ? 's' : ''}.`);
             if (skipped) showToast('warning', `${skipped} skipped (not found or not permitted).`);
@@ -110,7 +111,7 @@ const CrlSchedulesSection: React.FC = () => {
         setConfirmLoading(true);
         const actions = confirmBulk.map((s) => ({ id: crlId(s), action: 'delete' }));
         try {
-            const res: any = await apiPostWithMfa('/api/v1/admin/crl-schedules/bulk', { actions }, requireStepUp, 'bulk-crl-schedule');
+            const res: any = await apiPostWithMfa('/api/v1/admin/crl-schedules/bulk', { actions }, requireStepUp, StepUpOps.BulkCrlSchedule);
             const okCount = res?.ok ?? 0, skipped = res?.skipped ?? 0, failed = res?.failed ?? 0;
             if (okCount) showToast('success', `Deleted ${okCount} schedule${okCount !== 1 ? 's' : ''}.`);
             if (skipped) showToast('warning', `${skipped} skipped (not found or not permitted).`);
@@ -353,7 +354,7 @@ const ServiceUrlsTab: React.FC = () => {
         try {
             // Mutating a CA's public base URL is step-up-gated (update-ca-service-url) — it can
             // silently redirect CDP/AIA/OCSP lookups, so the write requires MFA re-verification.
-            await apiPutWithMfa(`/api/v1/admin/ca-service-urls/${row.caCertId}`, { publicBaseUrl: row.publicBaseUrl || null }, requireStepUp, 'update-ca-service-url', row.caCertId);
+            await apiPutWithMfa(`/api/v1/admin/ca-service-urls/${row.caCertId}`, { publicBaseUrl: row.publicBaseUrl || null }, requireStepUp, StepUpOps.UpdateCaServiceUrl, row.caCertId);
             showToast('success', 'Public base URL saved');
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save public base URL');

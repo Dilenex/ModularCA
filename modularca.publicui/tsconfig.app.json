@@ -9,6 +9,19 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    /* Mirrors the vite alias so tsc and editors resolve @shared the same way.
+       No baseUrl — deprecated in TS 6; paths resolve relative to this file. */
+    "paths": {
+      "@shared/*": ["../shared/common/src/*"],
+      /* shared/common lives outside this package, so Node resolution from a file in it walks up
+         to the repo root and finds no node_modules. These map React and the router back onto THIS
+         app's copies, which is also the guarantee we want: a shared component is typechecked
+         against the exact React the consuming app bundles. */
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-router-dom": ["./node_modules/react-router-dom"]
+    },
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",
@@ -22,5 +35,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src", "../shared/common/src"]
 }

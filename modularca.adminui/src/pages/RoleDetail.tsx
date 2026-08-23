@@ -9,6 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { capabilityCategory, categoryStatus } from './RoleManagement';
 import type { RoleDetail as RoleDetailModel, RoleCapability } from './RoleManagement';
+import { StepUpOps } from '@shared/generated';
 
 const ALL_CAPABILITIES = [
     'cert.request', 'cert.view', 'cert.revoke', 'cert.reissue', 'cert.approve',
@@ -85,7 +86,7 @@ const RoleDetail: React.FC = () => {
                 name: form.name,
                 description: form.description,
                 capabilities: capsEdit.map((c) => ({ capability: c.capability, resourceType: c.resourceType || undefined, resourceId: c.resourceId || undefined })),
-            }, requireStepUp, 'update-role', id!);
+            }, requireStepUp, StepUpOps.UpdateRole, id!);
             showToast('success', 'Role updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -124,7 +125,7 @@ const RoleDetail: React.FC = () => {
         setConfirm({
             title: 'Delete Role',
             message: `Delete "${role.name}"? This cannot be undone.`,
-            action: async () => { await apiDeleteWithMfa(`/api/v1/admin/roles/${id}`, requireStepUp, 'delete-role', id!); navigate('/roles'); },
+            action: async () => { await apiDeleteWithMfa(`/api/v1/admin/roles/${id}`, requireStepUp, StepUpOps.DeleteRole, id!); navigate('/roles'); },
         });
     };
 

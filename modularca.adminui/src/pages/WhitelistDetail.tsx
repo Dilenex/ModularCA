@@ -6,6 +6,7 @@ import { useToast } from '../context/ToastContext';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 interface Whitelist {
     id: string;
@@ -93,7 +94,7 @@ const WhitelistDetail: React.FC = () => {
         try {
             await apiPutWithMfa(`/api/v1/admin/whitelists/${id}`,
                 { name: form.name.trim(), description: form.description.trim() || null, cidrs, isEnabled: form.isEnabled },
-                requireStepUp, 'update-whitelist', id!);
+                requireStepUp, StepUpOps.UpdateWhitelist, id!);
             showToast('success', 'Whitelist updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -107,7 +108,7 @@ const WhitelistDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/whitelists/${id}`, requireStepUp, 'delete-whitelist', id!);
+            await apiDeleteWithMfa(`/api/v1/admin/whitelists/${id}`, requireStepUp, StepUpOps.DeleteWhitelist, id!);
             showToast('success', 'Whitelist deleted');
             navigate('/whitelists');
         } catch (err: any) {

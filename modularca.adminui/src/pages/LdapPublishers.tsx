@@ -6,6 +6,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -176,7 +177,7 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
         // prompting once per publisher.
         const actions = confirmBulk.map((p) => ({ id: p.id, action: 'delete' }));
         try {
-            const res: any = await apiPostWithMfa(`${basePath}/bulk`, { actions }, requireStepUp, 'bulk-ldap-publisher', caId);
+            const res: any = await apiPostWithMfa(`${basePath}/bulk`, { actions }, requireStepUp, StepUpOps.BulkLdapPublisher, caId);
             const okCount = res?.ok ?? 0, skipped = res?.skipped ?? 0, failed = res?.failed ?? 0;
             if (okCount) showToast('success', `Deleted ${okCount} publisher${okCount !== 1 ? 's' : ''}.`);
             if (skipped) showToast('warning', `${skipped} skipped (not found).`);

@@ -6,6 +6,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -77,7 +78,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 isHostCa: genForm.isHostCa,
                 maxValidityHours: parseInt(genForm.maxValidityHours) || 720,
                 tenantId: genForm.tenantId || undefined,
-            }, requireStepUp, 'create-ssh-ca');
+            }, requireStepUp, StepUpOps.CreateSshCa);
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'Key ceremony created for approval.');
                 setShowGenForm(false);
@@ -103,7 +104,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             action: async () => {
                 const result: any = await apiDeleteWithMfa(
                     `/api/v1/admin/ssh/ca-keys/${keyId}`,
-                    requireStepUp, 'disable-ssh-ca', keyId);
+                    requireStepUp, StepUpOps.DisableSshCa, keyId);
                 if (result?.requiresCeremony) {
                     showToast('info', result.message || 'Key ceremony created for approval.');
                 } else {

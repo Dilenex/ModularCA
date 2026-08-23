@@ -7,6 +7,7 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { useStepUp } from '../components/StepUpMfaContext';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -76,7 +77,7 @@ const CrlScheduleDetail: React.FC = () => {
                 deltaInterval: form.deltaInterval,
                 description: form.description,
                 isDelta: schedule.isDelta ?? false,
-            }, requireStepUp, 'update-crl-schedule', crlId(schedule));
+            }, requireStepUp, StepUpOps.UpdateCrlSchedule, crlId(schedule));
             showToast('success', 'CRL schedule updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -92,7 +93,7 @@ const CrlScheduleDetail: React.FC = () => {
     const toggle = async () => {
         if (!schedule) return;
         try {
-            await apiPutWithMfa(`/api/v1/admin/crl-schedules/${crlId(schedule)}/status`, { enabled: !schedule.enabled }, requireStepUp, 'toggle-crl-schedule', crlId(schedule));
+            await apiPutWithMfa(`/api/v1/admin/crl-schedules/${crlId(schedule)}/status`, { enabled: !schedule.enabled }, requireStepUp, StepUpOps.ToggleCrlSchedule, crlId(schedule));
             setRefresh((r) => r + 1);
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to update status');
@@ -103,7 +104,7 @@ const CrlScheduleDetail: React.FC = () => {
         if (!schedule) return;
         setDeleting(true);
         try {
-            await apiDeleteWithMfa(`/api/v1/admin/crl-schedules/${crlId(schedule)}`, requireStepUp, 'delete-crl-schedule', crlId(schedule));
+            await apiDeleteWithMfa(`/api/v1/admin/crl-schedules/${crlId(schedule)}`, requireStepUp, StepUpOps.DeleteCrlSchedule, crlId(schedule));
             showToast('success', 'CRL schedule deleted');
             navigate('/distribution?tab=crl');
         } catch (err: any) {

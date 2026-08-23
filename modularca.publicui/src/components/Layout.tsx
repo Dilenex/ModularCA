@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, Outlet } from 'react-router-dom';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme } from '@shared/context/ThemeContext';
 
 const navItems = [
     { name: 'Home', path: '/' },

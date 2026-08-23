@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import Chevron from './Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { apiGet } from '../api/client';
 import { useTablePrefs } from '../hooks/useTablePrefs';
 

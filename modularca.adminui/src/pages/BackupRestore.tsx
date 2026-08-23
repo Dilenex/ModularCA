@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPostWithMfa, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -36,7 +37,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
                 '/api/v1/admin/backup',
                 {},
                 requireStepUp,
-                'create-backup',
+                StepUpOps.CreateBackup,
             );
             setStatus(`Backup created successfully: ${result.fileName}`);
             onBackupCreated();
@@ -139,7 +140,7 @@ const BackupEncryptionSection: React.FC = () => {
                 '/api/v1/admin/backup/encryption/set-password',
                 { password: newPassword },
                 requireStepUp,
-                'set-backup-password',
+                StepUpOps.SetBackupPassword,
                 undefined,
             );
             setActionSuccess('Backup encryption switched to StoredPassword mode. The derived KEK has been written to the password file. New backups will use the new password.');
@@ -173,7 +174,7 @@ const BackupEncryptionSection: React.FC = () => {
                 '/api/v1/admin/backup/encryption/revert-to-random-key',
                 {},
                 requireStepUp,
-                'change-backup-encryption-mode',
+                StepUpOps.ChangeBackupEncryptionMode,
                 undefined,
             );
             setActionSuccess('Reverted to RandomKey mode. Password file deleted.');
@@ -387,7 +388,7 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                     password: recoveryPassword ? recoveryPassword : undefined,
                 },
                 requireStepUp,
-                'restore-backup',
+                StepUpOps.RestoreBackup,
                 selectedFile,
             );
             setStatus(result.message || 'Restore complete. Restart the application to apply changes.');

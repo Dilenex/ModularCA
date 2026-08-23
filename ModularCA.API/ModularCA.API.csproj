@@ -44,34 +44,42 @@
     <Message Text="Syncing UI package.json versions from VERSION..." Importance="high" />
     <Exec Command="node scripts/sync-package-versions.mjs" WorkingDirectory="$(ProjectDir).." />
 
+    <!-- Regenerate shared/common/src/generated/ from the C# DTOs, enums, StepUpOps and usage
+         vocabulary. Must run BEFORE any SPA typechecks, so a backend contract change surfaces as
+         a TypeScript error in this same build rather than as a runtime 400 later. Write mode
+         rather than check mode, so the build is self-healing; stale checked-in output then shows
+         up as a git diff instead of a failed build. -->
+    <Message Text="Generating shared TypeScript from C# contracts..." Importance="high" />
+    <Exec Command="node scripts/generate-shared-types.mjs" WorkingDirectory="$(ProjectDir).." />
+
     <!-- Admin UI -->
     <Message Text="Building Admin UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
-    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
+    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
 
     <!-- Public UI -->
     <Message Text="Building Public UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
-    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
+    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
 
     <!-- User UI -->
     <Message Text="Building User UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.userui" />
-    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.userui" />
+    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.userui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.userui" />
 
     <!-- Setup UI -->
     <Message Text="Building Setup UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
-    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
+    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
 
     <!-- Docs UI -->
     <Message Text="Building Docs UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
-    <Exec Command="node_modules/.bin/tsc --noEmit" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
+    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
     <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
   </Target>
 

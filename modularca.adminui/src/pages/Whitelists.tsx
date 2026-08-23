@@ -4,6 +4,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StepUpOps } from '@shared/generated';
 
 /// <summary>
 /// Represents a single whitelist rule returned by the admin whitelist API.
@@ -144,7 +145,7 @@ const Whitelists: React.FC = () => {
                 // scope/CA/protocol are create-only (unique composite index); only mutable fields on PUT.
                 await apiPutWithMfa(`/api/v1/admin/whitelists/${editingId}`,
                     { name: form.name.trim(), description: form.description.trim() || null, cidrs, isEnabled: form.isEnabled },
-                    requireStepUp, 'update-whitelist', editingId);
+                    requireStepUp, StepUpOps.UpdateWhitelist, editingId);
                 showToast('success', 'Whitelist updated');
             } else {
                 await apiPostWithMfa('/api/v1/admin/whitelists', {
@@ -155,7 +156,7 @@ const Whitelists: React.FC = () => {
                         : form.scope === 'Protocol' && form.certificateAuthorityId ? form.certificateAuthorityId : null,
                     protocol: form.scope === 'Protocol' ? form.protocol : null,
                     cidrs, isEnabled: form.isEnabled,
-                }, requireStepUp, 'create-whitelist');
+                }, requireStepUp, StepUpOps.CreateWhitelist);
                 showToast('success', 'Whitelist created');
             }
             closeModal();
@@ -177,7 +178,7 @@ const Whitelists: React.FC = () => {
         try {
             // Single step-up authorization covers the whole batch (one MFA prompt).
             const ids = targets.map((wl) => wl.id);
-            const res = await apiPostWithMfa<any>('/api/v1/admin/whitelists/bulk-set-enabled', { ids, enabled }, requireStepUp, 'update-whitelist');
+            const res = await apiPostWithMfa<any>('/api/v1/admin/whitelists/bulk-set-enabled', { ids, enabled }, requireStepUp, StepUpOps.UpdateWhitelist);
             const updated = res?.updated ?? ids.length;
             showToast('success', `${enabled ? 'Enabled' : 'Disabled'} ${updated} rule${updated !== 1 ? 's' : ''}.`);
         } catch (err: any) {
@@ -194,7 +195,7 @@ const Whitelists: React.FC = () => {
             // bulk-delete endpoint. System-default rules are filtered here and skipped server-side.
             const ids = confirmBulk.filter((w) => !w.isSystemDefault).map((w) => w.id);
             if (ids.length === 0) { showToast('info', 'Only system-default rules selected — nothing to delete.'); return; }
-            const res = await apiPostWithMfa<any>('/api/v1/admin/whitelists/bulk-delete', { ids }, requireStepUp, 'delete-whitelist');
+            const res = await apiPostWithMfa<any>('/api/v1/admin/whitelists/bulk-delete', { ids }, requireStepUp, StepUpOps.DeleteWhitelist);
             const deleted = res?.deleted ?? ids.length;
             showToast('success', `Deleted ${deleted} whitelist${deleted !== 1 ? 's' : ''}.`);
             setRefreshTrigger((t) => t + 1);

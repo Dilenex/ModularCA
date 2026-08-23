@@ -10,10 +10,16 @@ Role creation hit this in a live session. It is not a one-off — the same shape
 page was written against `apiPost`/`apiPut`/`apiDelete` instead of the `*WithMfa` variants, and
 nothing in the type system distinguishes them.
 
-Also reports the inverse: a `requireStepUp` operation string the client sends that the server's
+Also reports the inverse: a `requireStepUp` operation the client sends that the server's
 StepUpOps allow-list does not contain, which MfaStepUpController rejects up front with
 `400 invalid_step_up_operation` — so the modal appears, the user completes MFA, and the request
 still fails.
+
+Since those operations became generated constants (`shared/common/src/generated/stepUpOps.ts`,
+built from `StepUpOps.All`), naming an unregistered one no longer compiles. Two checks remain
+worth running: a constant the generated file no longer defines means the checked-in output is
+stale, and a bare string literal means a call site escaped the migration and is back to failing
+at runtime instead of at build time. Both are reported.
 
 Usage:  python scripts/stepup_contract.py
 Exit 1 if any mismatch is found.
@@ -78,31 +84,43 @@ def server_stepup_routes() -> dict[str, tuple[str, str]]:
     return routes
 
 
-def allowed_op_values() -> set[str]:
-    """The literal strings StepUpOps.All accepts."""
+def allowed_ops() -> dict[str, str]:
+    """Constant name -> wire value, for every member of StepUpOps.All."""
     text = STEPUP_OPS.read_text(encoding="utf-8", errors="replace")
     consts = dict(OPS_CONST_RE.findall(text))
     all_block = re.search(r"All\s*=\s*(?:new\[\]\s*)?\{(.*?)\}", text, re.S)
     if not all_block:
-        return set(consts.values())
+        return consts
     named = re.findall(r"\b(\w+)\b", all_block.group(1))
-    return {consts[n] for n in named if n in consts}
+    return {n: consts[n] for n in named if n in consts}
 
 
 UI_CALL_RE = re.compile(
-    r"api(Post|Put|Delete)(WithMfa)?\(\s*[`'\"]([^`'\"]+)[`'\"]"
+    r"api(Post|Put|Delete)(WithMfa)?(?:<[^()]*?>)?\(\s*[`'\"]([^`'\"]+)[`'\"]"
 )
-UI_OP_RE = re.compile(r"requireStepUp\s*,\s*'([^']+)'")
+
+# Operations are now passed as generated constants (StepUpOps.RevokeCert), not literals. The
+# constant form cannot name an operation the server rejects — shared/common/src/generated is
+# built from StepUpOps.All, so an unregistered name does not exist to import. Both forms are
+# still matched: the constant so a stale generated file is caught, the literal so a hand-written
+# string that slipped back in is reported rather than silently trusted.
+UI_OP_CONST_RE = re.compile(r"requireStepUp\s*,\s*StepUpOps\.(\w+)")
+UI_OP_LITERAL_RE = re.compile(r"requireStepUp\s*,\s*'([^']+)'")
 
 
 def main() -> int:
     stepup_routes = server_stepup_routes()
-    allowed = allowed_op_values()
+    allowed = allowed_ops()
 
     unguarded: list[str] = []
     bad_ops: list[str] = []
+    literals: list[str] = []
+    checked_ops = 0
 
-    for f in ADMIN_UI.rglob("*.tsx"):
+    # .ts as well as .tsx: src/api/scheduler.ts holds ten step-up call sites and was invisible to
+    # this auditor while it only globbed components.
+    sources = sorted(set(ADMIN_UI.rglob("*.tsx")) | set(ADMIN_UI.rglob("*.ts")))
+    for f in sources:
         if SKIP_PARTS & set(f.parts):
             continue
         text = f.read_text(encoding="utf-8", errors="replace")
@@ -122,14 +140,37 @@ def main() -> int:
                     f"      requires StepUpOps.{op}  ({where})"
                 )
 
-        for m in UI_OP_RE.finditer(text):
+        for m in UI_OP_CONST_RE.finditer(text):
+            checked_ops += 1
             if m.group(1) not in allowed:
                 line = text.count("\n", 0, m.start()) + 1
+                bad_ops.append(
+                    f"  {rel}:{line}  StepUpOps.{m.group(1)} is not in the C# StepUpOps.All "
+                    f"(regenerate: node scripts/generate-shared-types.mjs)"
+                )
+
+        for m in UI_OP_LITERAL_RE.finditer(text):
+            checked_ops += 1
+            line = text.count("\n", 0, m.start()) + 1
+            if m.group(1) not in allowed.values():
                 bad_ops.append(f"  {rel}:{line}  '{m.group(1)}' is not in StepUpOps.All")
+            else:
+                literals.append(
+                    f"  {rel}:{line}  '{m.group(1)}' - use the generated StepUpOps constant"
+                )
 
     print(f"step-up endpoints  : {len(stepup_routes)}")
     print(f"allowed operations : {len(allowed)}")
+    print(f"client op usages   : {checked_ops}")
     print()
+
+    # A zero here means the extraction stopped matching, not that the code is clean. The op
+    # argument changed shape once already (literal -> StepUpOps constant) and silently emptied
+    # this check; say so rather than printing a reassuring pass.
+    if checked_ops == 0:
+        print("No client step-up operations matched — the call shape has changed and this")
+        print("auditor is no longer inspecting anything. Fix the extraction, not this message.")
+        return 1
 
     if unguarded:
         print(f"{len(unguarded)} mutating call(s) on a step-up endpoint using a NON-MFA helper:")
@@ -143,7 +184,13 @@ def main() -> int:
         print("\n".join(bad_ops))
         print()
 
-    if not unguarded and not bad_ops:
+    if literals:
+        print(f"{len(literals)} step-up operation(s) still passed as a bare string literal:")
+        print("  (valid today, but a typo here is a runtime 400 instead of a build error)\n")
+        print("\n".join(literals))
+        print()
+
+    if not unguarded and not bad_ops and not literals:
         print("No step-up contract mismatches found.")
         return 0
     return 1

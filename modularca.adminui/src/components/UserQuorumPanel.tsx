@@ -3,6 +3,7 @@ import { apiGet, apiPutWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+import { StepUpOps } from '@shared/generated';
 
 export interface CaQ { id: string; name: string; label?: string; override: number | null; effective: number; }
 export interface TenantQ { id: string; name: string; override: number | null; effective: number; cas: CaQ[]; }
@@ -83,7 +84,7 @@ export const SystemQuorumCard: React.FC = () => {
         if (!changed || parsed == null) return;
         setSaving(true);
         try {
-            await apiPutWithMfa('/api/v1/admin/security-policy', { userQuorum: parsed }, requireStepUp, 'update-config');
+            await apiPutWithMfa('/api/v1/admin/security-policy', { userQuorum: parsed }, requireStepUp, StepUpOps.UpdateConfig);
             showToast('success', 'System quorum updated'); load();
         } catch (err: any) { if (err?.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed'); }
         finally { setSaving(false); }

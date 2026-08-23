@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import { isAuthenticated, isMfaSetupRequired, setMfaSetupRequired } from '../components/auth';
 import { apiGet, apiPost, apiLogout, API_BASE } from '../api/client';
 import { generateQrSvg } from '../utils/qrcode';
@@ -11,7 +11,6 @@ interface AllowedCa {
 }
 
 const MfaSetup: React.FC = () => {
-    const navigate = useNavigate();
 
     // TOTP state
     const [totpSecret, setTotpSecret] = useState<string | null>(null);

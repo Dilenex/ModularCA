@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import Chevron from './Chevron';
+import { Chevron } from '@shared/components/Chevron';
 import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import LogPanel from './LogPanel';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';

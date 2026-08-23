@@ -7,6 +7,7 @@ import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -76,7 +77,7 @@ const SshCaKeyDetail: React.FC = () => {
     const doDisable = async () => {
         setDisabling(true);
         try {
-            const result: any = await apiDeleteWithMfa(`/api/v1/admin/ssh/ca-keys/${id}`, requireStepUp, 'disable-ssh-ca', id!);
+            const result: any = await apiDeleteWithMfa(`/api/v1/admin/ssh/ca-keys/${id}`, requireStepUp, StepUpOps.DisableSshCa, id!);
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'Key ceremony created for approval.');
                 setRefresh((r) => r + 1);
