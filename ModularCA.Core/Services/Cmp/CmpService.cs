@@ -370,10 +370,14 @@ public class CmpService : ICmpService
                     reqCtx.PbmReferenceValue = header.SenderKID?.GetOctets();
                     reqCtx.CallerPrincipal = $"cmp-pbmac:{principal}";
 
-                    if (token != null && token.MaxUses > 0)
+                    // Atomic consume — see EnrollmentTokenService.TryConsumeUseAsync. A losing
+                    // race here means another request already spent the token's last use, so the
+                    // PBMAC that just verified must not authorize an issuance.
+                    if (token != null &&
+                        !await EnrollmentTokenService.TryConsumeUseAsync(_db, token))
                     {
-                        token.UsesRemaining--;
-                        await _db.SaveChangesAsync();
+                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(dk);
+                        return false;
                     }
                     return true;
                 }

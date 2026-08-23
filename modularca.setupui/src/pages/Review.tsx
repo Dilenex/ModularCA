@@ -16,6 +16,7 @@ interface DatabaseConfig {
     auditDatabase: string;
     auditUsername: string;
     sslMode: string;
+    wipeAuditDatabase: boolean;
 }
 
 interface ReviewProps {
@@ -138,6 +139,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 auditDatabase: database.auditDatabase,
                 auditUsername: database.auditUsername,
                 sslMode: database.sslMode,
+                wipeAuditDatabase: database.wipeAuditDatabase,
             },
         };
 

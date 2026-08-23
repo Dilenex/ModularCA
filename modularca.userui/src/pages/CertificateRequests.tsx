@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiGet } from '../api/client';
 import StatusBadge from '../components/cards/StatusBadge';
 import { DataTable, type DataTableColumn } from '../components/DataTable';
+import { Link } from 'react-router-dom';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -89,9 +90,9 @@ const CertificateRequests: React.FC = () => {
                 <div className="pt-2 border-t border-gray-300 dark:border-gray-700">
                     <span className="text-xs text-gray-600">Issued Certificate</span>
                     <p className="font-mono text-xs text-green-800 dark:text-green-400 break-all">{req.issuedCertificateSerial}</p>
-                    <a href="/certificates" className="text-xs text-blue-800 dark:text-blue-400 hover:underline mt-1 inline-block">
+                    <Link to="/certificates" className="text-xs text-blue-800 dark:text-blue-400 hover:underline mt-1 inline-block">
                         View in My Certificates
-                    </a>
+                    </Link>
                 </div>
             )}
             {req.status?.toLowerCase() === 'rejected' && (
@@ -106,9 +107,9 @@ const CertificateRequests: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Requests</h1>
-                <a href="/request" className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                <Link to="/request" className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
                     New Request
-                </a>
+                </Link>
             </div>
 
             <DataTable<CertRequest>

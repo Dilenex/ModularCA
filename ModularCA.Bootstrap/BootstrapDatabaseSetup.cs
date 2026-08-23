@@ -44,9 +44,26 @@ public static class BootstrapDatabaseSetup
     /// Guards against accidentally dropping/recreating the root admin user.
     /// Returns the generated passwords for both users.
     /// </summary>
+    /// <param name="wipeAuditDatabase">
+    /// When true, the audit database is dropped and recreated. Default false, which preserves it.
+    /// <para>
+    /// This used to be unconditional, and it made three separate operator-facing statements
+    /// false: the comment below saying "audit schema survives --reset --force", the
+    /// <c>--reset</c> usage text, and the reset banner's "Historical audit rows will persist
+    /// into the next install." Technically <c>--reset</c> never dropped it — the next bootstrap
+    /// did, from here, three lines above the comment promising otherwise. Withholding DROP from
+    /// the audit user achieves nothing when this pass runs as root.
+    /// </para>
+    /// <para>
+    /// An audit trail that a reinstall silently erases is not tamper-evidence. Preserving it by
+    /// default is what the rest of the system already claims; wiping is now something an
+    /// operator has to ask for.
+    /// </para>
+    /// </param>
     public static (string appPassword, string auditPassword) CreateDatabaseUsers(
         YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig,
-        YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
+        YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
+        bool wipeAuditDatabase = false)
     {
         var appPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
         var auditPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
@@ -97,10 +114,22 @@ public static class BootstrapDatabaseSetup
         using var conn = new MySqlConnection(serverConnBuilder.ConnectionString);
         conn.Open();
 
-        // Drop and recreate audit database
-        ExecuteSql(conn, $"DROP DATABASE IF EXISTS `{auditDbName}`");
-        ExecuteSql(conn, $"CREATE DATABASE `{auditDbName}`");
-        Console.WriteLine($"✓ Audit database '{auditDbName}' dropped and recreated.");
+        // Audit database: preserved unless the operator explicitly asked for a wipe.
+        if (wipeAuditDatabase)
+        {
+            Console.WriteLine($"⚠  Wiping audit database '{auditDbName}' — every historical audit row is being destroyed.");
+            ExecuteSql(conn, $"DROP DATABASE IF EXISTS `{auditDbName}`");
+            ExecuteSql(conn, $"CREATE DATABASE `{auditDbName}`");
+            Console.WriteLine($"✓ Audit database '{auditDbName}' dropped and recreated.");
+        }
+        else
+        {
+            // IF NOT EXISTS so a first install still creates it. An existing audit database is
+            // left untouched; StartModularCA migrates it forward on the next start, so a schema
+            // from an earlier version is brought up to date rather than discarded.
+            ExecuteSql(conn, $"CREATE DATABASE IF NOT EXISTS `{auditDbName}`");
+            Console.WriteLine($"✓ Audit database '{auditDbName}' ready (existing rows preserved — pass --wipe-audit to discard).");
+        }
 
         // Create app user with full app DB permissions
         ExecuteSql(conn, $"DROP USER IF EXISTS '{appUser}'@'{appHost}'");
@@ -110,7 +139,10 @@ public static class BootstrapDatabaseSetup
 
         // Create audit user with append-mostly permissions. DELETE is granted so the
         // AuditRetentionJob can prune old rows per the configured retention window.
-        // DROP TABLE is intentionally NOT granted — audit schema survives --reset --force.
+        // DROP TABLE is intentionally NOT granted so the running application cannot discard
+        // audit history. That is necessary but was never sufficient: this setup pass runs as
+        // root and used to drop the whole audit database a few lines above, which is why the
+        // "survives --reset --force" guarantee this comment used to assert was false.
         ExecuteSql(conn, $"DROP USER IF EXISTS '{auditUser}'@'{auditHost}'");
         ExecuteSql(conn, $"CREATE USER '{auditUser}'@'{auditHost}' IDENTIFIED BY '{EscapeSql(auditPassword)}'");
         ExecuteSql(conn, $"GRANT SELECT, INSERT, DELETE, CREATE, ALTER, INDEX, LOCK TABLES, SHOW VIEW ON `{auditDbName}`.* TO '{auditUser}'@'{auditHost}'");

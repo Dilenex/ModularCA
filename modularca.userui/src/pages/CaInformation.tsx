@@ -54,8 +54,13 @@ const CaInformation: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        apiGet<CaCertificate[]>('/api/v1/user/authorities')
-            .then((data) => setAuthorities(Array.isArray(data) ? data : []))
+        // The endpoint returns a pagination envelope — { total, page, pageSize, totalPages,
+        // items } — not a bare array. The old `Array.isArray(data) ? data : []` therefore always
+        // took the empty branch, so the Trusted CAs page rendered permanently blank with no
+        // error to explain it. MyCertificates in this same app reads `data.items` correctly;
+        // this is the sibling that did not.
+        apiGet<{ items?: CaCertificate[] } | CaCertificate[]>('/api/v1/user/authorities')
+            .then((data) => setAuthorities(Array.isArray(data) ? data : (data?.items ?? [])))
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
     }, []);

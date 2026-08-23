@@ -1,13 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { apiPost } from '../api/client';
-import { useAuth } from '../context/AuthContext';
 
-interface StepUpMfaModalProps {
+/**
+ * Step-up MFA prompt, shared by adminui and userui.
+ *
+ * userui's copy was TOTP-only: 140 lines against adminui's 256, with no WebAuthn path at
+ * all. A user whose only second factor is a security key could therefore not complete ANY
+ * step-up-gated action in the user portal — not revoke their own certificate, not change
+ * their email. The prompt appeared and there was nothing they could do with it.
+ *
+ * `apiPost` and `factors` are injected rather than imported so this file stays free of
+ * app-local modules: each app binds its own client, and adminui already knows the user's
+ * factors from its AuthContext while userui resolves them from /api/v1/me.
+ */
+
+/** Which second factors the user has enrolled. */
+export interface MfaFactors {
+    totp: boolean;
+    webauthn: boolean;
+}
+
+export interface StepUpMfaModalProps {
     isOpen: boolean;
     operation: string;
     targetId?: string;
     onSuccess: (mfaToken: string) => void;
     onCancel: () => void;
+    /** The host app's authenticated POST. */
+    apiPost: <T = any>(path: string, body?: object) => Promise<T>;
+    /**
+     * Enrolled factors. When omitted the modal offers TOTP only — the safe default, since
+     * attempting a WebAuthn ceremony for a user with no credential produces a browser error
+     * rather than a useful prompt.
+     */
+    factors?: MfaFactors;
 }
 
 function base64urlToBuffer(base64url: string): ArrayBuffer {
@@ -26,8 +51,9 @@ function bufferToBase64url(buffer: ArrayBuffer): string {
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({ isOpen, operation, targetId, onSuccess, onCancel }) => {
-    const { user } = useAuth();
+export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
+    isOpen, operation, targetId, onSuccess, onCancel, apiPost, factors,
+}) => {
     const [code, setCode] = useState('');
     const [loading, setLoading] = useState(false);
     const [webauthnLoading, setWebauthnLoading] = useState(false);
@@ -35,8 +61,9 @@ const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({ isOpen, operation, targ
     const abortRef = useRef<AbortController | null>(null);
     const settledRef = useRef(false);
 
-    const hasTotp = user?.mfa?.totp ?? false;
-    const hasWebauthn = user?.mfa?.webauthn ?? false;
+    // Default to TOTP-only when the caller could not resolve the factors.
+    const hasTotp = factors?.totp ?? true;
+    const hasWebauthn = factors?.webauthn ?? false;
 
     useEffect(() => {
         if (!isOpen) {
@@ -252,5 +279,3 @@ const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({ isOpen, operation, targ
         </div>
     );
 };
-
-export default StepUpMfaModal;

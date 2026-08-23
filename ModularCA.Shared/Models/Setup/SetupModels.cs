@@ -178,6 +178,17 @@ public class SetupDatabase
     /// <c>"Required"</c> to use encrypted transport on fresh installs.
     /// </summary>
     public string SslMode { get; set; } = "Required";
+
+    /// <summary>
+    /// When true, the audit database is dropped and recreated during setup, discarding any
+    /// history from a previous install. Defaults to false: audit rows survive a reinstall,
+    /// which is what makes them tamper-evidence rather than a log the next install erases.
+    /// <para>
+    /// Only meaningful when re-running setup over a host that already holds an audit database —
+    /// on a genuinely fresh machine there is nothing to preserve either way.
+    /// </para>
+    /// </summary>
+    public bool WipeAuditDatabase { get; set; }
 }
 
 /// <summary>

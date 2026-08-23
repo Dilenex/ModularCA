@@ -12,6 +12,12 @@ export interface DatabaseData {
     auditUsername: string;
     /** MySQL TLS mode. Round-trips to setup-database.yaml then to db.yaml. */
     sslMode: string;
+    /**
+     * Discard any existing audit history instead of preserving it. Defaults to false: audit
+     * rows survive a reinstall, which is what makes them tamper-evidence rather than a log the
+     * next install erases. Only has an effect when an audit database already exists on the host.
+     */
+    wipeAuditDatabase: boolean;
 }
 
 interface DatabaseConfigProps {
@@ -329,6 +335,21 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                 <input type="text" value={data.auditUsername}
                                     onChange={e => onChange({ ...data, auditUsername: e.target.value })}
                                     className={inputClass} />
+                            </div>
+                            <div className="sm:col-span-2">
+                                <label className="flex items-start gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={data.wipeAuditDatabase}
+                                        onChange={e => onChange({ ...data, wipeAuditDatabase: e.target.checked })}
+                                        className="mt-1" />
+                                    <span>
+                                        <span className="text-sm text-gray-900 dark:text-white">Erase existing audit history</span>
+                                        <span className="block text-xs text-gray-600 dark:text-gray-400">
+                                            Leave unchecked to keep audit records from a previous install on this host.
+                                            Preserved history is what makes the audit trail tamper-evident across a
+                                            reinstall; checking this destroys it permanently.
+                                        </span>
+                                    </span>
+                                </label>
                             </div>
                         </div>
                     </details>

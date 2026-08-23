@@ -12,7 +12,7 @@ security-key users out of every step-up action.
 | Module | Alias | Consumed by | Contents |
 |---|---|---|---|
 | `shared/common` | `@shared/*` | **all five** SPAs | Pure utilities, presentational primitives, and generated backend contracts. No auth, no API client, no session state. |
-| `shared/authenticated` | `@shared-auth/*` | `adminui`, `userui` **only** | Auth-aware code: API client, step-up MFA, session handling. Not yet created — see Roadmap. |
+| `shared/authenticated` | `@shared-auth/*` | `adminui`, `userui` **only** | Auth-aware code: the API client factory, DPoP proofs, and the step-up MFA prompt. |
 
 Inside `shared/common/src`:
 
@@ -83,10 +83,27 @@ catch a key that is simply absent rather than miscased.
 Phase 3 (done) — the React primitives above, plus the step-up call sites migrated from bare
 string literals to the generated `StepUpOps` constants.
 
-Phase 4 — create `shared/authenticated` and reconcile `api/client.ts` and `StepUpMfaModal.tsx`.
-Sharing those *is* the fix for the two findings at the top of this file, but it needs real
-design: `publicui` is anonymous and legitimately different, so the client needs a capability flag
-rather than one shape for everyone.
+Phase 4 (done) — `shared/authenticated`, holding the API client, DPoP, and the step-up MFA
+prompt. This *was* the fix for the two findings at the top of this file.
+
+No capability flag was needed in the end. The anonymous SPAs simply do not get the alias, so the
+question of what an unauthenticated client should do never arises inside this module — it only
+ever serves apps that have a logged-in user. The client is a factory rather than a set of free
+functions because exactly one thing differs between adminui and userui: the route basename.
+
+The step-up prompt takes `apiPost` and `factors` as props instead of importing an API client and
+an auth context. adminui supplies factors from its `AuthContext`; userui has no auth context at
+all, so the provider resolves them from `/api/v1/me` the first time a step-up is requested.
+
+### Verifying the boundary
+
+The claim that `@shared-auth` cannot be imported from an anonymous SPA is checkable, and worth
+re-checking after any tooling change:
+
+    # from an anonymous SPA, this must fail to resolve
+    echo "import { createAuthClient } from '@shared-auth/api/createClient';"       > modularca.docsui/src/_probe.ts
+    (cd modularca.docsui && node_modules/.bin/tsc -b --force)   # expect TS2307
+    rm modularca.docsui/src/_probe.ts
 
 ## Generated code
 

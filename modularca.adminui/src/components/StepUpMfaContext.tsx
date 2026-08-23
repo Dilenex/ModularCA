@@ -1,62 +1,28 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import StepUpMfaModal from './StepUpMfaModal';
+import React from 'react';
+import { StepUpMfaProvider as SharedProvider, useStepUp } from '@shared-auth/components/StepUpMfaContext';
+import { apiGet, apiPost } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 
-/// <summary>
-/// React context provider for step-up MFA verification.
-/// Provides a requireStepUp function that shows the MFA modal and returns
-/// a Promise resolving to the MFA token on successful verification.
-/// </summary>
-interface StepUpContext {
-    requireStepUp: (operation: string, targetId?: string) => Promise<string>;
-}
-
-const StepUpCtx = createContext<StepUpContext>({
-    requireStepUp: () => Promise.reject(new Error('No StepUpMfaProvider')),
-});
-
-export const useStepUp = () => useContext(StepUpCtx);
-
+/**
+ * Binds the shared step-up provider to this app's API client.
+ *
+ * The provider and its modal now live in `@shared-auth/components` and are shared with
+ * modularca.userui, whose copy was TOTP-only — a user with only a security key could not
+ * complete any step-up-gated action there.
+ *
+ * This app passes its own factors from AuthContext, so no extra /api/v1/me call is made.
+ */
 export const StepUpMfaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [isOpen, setIsOpen] = useState(false);
-    const [operation, setOperation] = useState('');
-    const [targetId, setTargetId] = useState<string | undefined>();
-    const resolveRef = useRef<((token: string) => void) | null>(null);
-    const rejectRef = useRef<((err: Error) => void) | null>(null);
-
-    const requireStepUp = useCallback((op: string, tid?: string): Promise<string> => {
-        setOperation(op);
-        setTargetId(tid);
-        setIsOpen(true);
-        return new Promise<string>((resolve, reject) => {
-            resolveRef.current = resolve;
-            rejectRef.current = reject;
-        });
-    }, []);
-
-    const handleSuccess = (mfaToken: string) => {
-        setIsOpen(false);
-        resolveRef.current?.(mfaToken);
-        resolveRef.current = null;
-        rejectRef.current = null;
-    };
-
-    const handleCancel = () => {
-        setIsOpen(false);
-        rejectRef.current?.(new Error('Step-up MFA cancelled'));
-        resolveRef.current = null;
-        rejectRef.current = null;
-    };
-
+    const { user } = useAuth();
     return (
-        <StepUpCtx.Provider value={{ requireStepUp }}>
+        <SharedProvider
+            apiPost={apiPost}
+            apiGet={apiGet}
+            factors={user?.mfa ? { totp: !!user.mfa.totp, webauthn: !!user.mfa.webauthn } : undefined}
+        >
             {children}
-            <StepUpMfaModal
-                isOpen={isOpen}
-                operation={operation}
-                targetId={targetId}
-                onSuccess={handleSuccess}
-                onCancel={handleCancel}
-            />
-        </StepUpCtx.Provider>
+        </SharedProvider>
     );
 };
+
+export { useStepUp };

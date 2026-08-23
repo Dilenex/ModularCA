@@ -58,9 +58,9 @@ if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
         Console.WriteLine("WARNING: This will destroy ALL data (databases, keystores, config).");
         Console.WriteLine("         After reset, run normally to access the web setup wizard.");
         Console.WriteLine();
-        Console.WriteLine("NOTE: The audit database is NOT dropped by --reset — its contents survive");
-        Console.WriteLine("      resets by design (modularca_audit lacks DROP privilege). Historical");
-        Console.WriteLine("      audit rows will remain visible after the next bootstrap.");
+        Console.WriteLine("NOTE: The audit database is NOT dropped — by --reset or by the bootstrap that");
+        Console.WriteLine("      follows it. Historical audit rows remain visible after the next install.");
+        Console.WriteLine("      To discard them deliberately, add --wipe-audit to the bootstrap run.");
         Environment.Exit(1);
     }
 
@@ -94,8 +94,9 @@ if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
     Console.WriteLine("================================================================");
     Console.WriteLine("FACTORY RESET — Destroying all data...");
     Console.WriteLine();
-    Console.WriteLine("  (i) Audit database is NOT dropped by --reset (retention by design).");
-    Console.WriteLine("      Historical audit rows will persist into the next install.");
+    Console.WriteLine("  (i) Audit database is NOT dropped, by this reset or by the bootstrap that");
+    Console.WriteLine("      follows. Historical audit rows persist into the next install.");
+    Console.WriteLine("      Discard them deliberately with: --bootstrap --wipe-audit");
     Console.WriteLine("  (i) config/backup.key will be renamed to backup.key.pre-reset-<ts>");
     Console.WriteLine("      so backups taken before this reset remain decryptable.");
     Console.WriteLine("================================================================");
@@ -123,7 +124,18 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
 {
     Log.Information("Operator triggered CA bootstrap procedure (--bootstrap)");
     Console.WriteLine("Running CA bootstrap procedure...\n");
-    var exitCode = BootstrapModularCA.Run();
+
+    // Audit history is preserved across a reinstall unless the operator asks otherwise.
+    // The drop used to happen here unconditionally, which made the --reset banner's promise
+    // that "historical audit rows will persist into the next install" false.
+    var wipeAudit = args.Contains("--wipe-audit", StringComparer.OrdinalIgnoreCase);
+    if (wipeAudit)
+    {
+        Log.Warning("Operator passed --wipe-audit; the audit database will be dropped and recreated");
+        Console.WriteLine("⚠  --wipe-audit: existing audit history will be DESTROYED, not preserved.\n");
+    }
+
+    var exitCode = BootstrapModularCA.Run(wipeAudit);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))

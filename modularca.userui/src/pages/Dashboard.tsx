@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet } from '../api/client';
 import StatusBadge from '../components/cards/StatusBadge';
+import { Link } from 'react-router-dom';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -96,18 +97,18 @@ const Dashboard: React.FC = () => {
 
             {/* Quick Actions */}
             <div className="flex flex-wrap gap-3">
-                <a
-                    href="/request"
+                <Link
+                    to="/request"
                     className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
                     Request Certificate
-                </a>
-                <a
-                    href="/certificates"
+                </Link>
+                <Link
+                    to="/certificates"
                     className="px-4 py-2 text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
                 >
                     View My Certificates
-                </a>
+                </Link>
             </div>
 
             {/* Statistics Cards */}
@@ -168,7 +169,7 @@ const Dashboard: React.FC = () => {
             <div>
                 <div className="flex items-center justify-between mb-3">
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Recent Requests</h2>
-                    <a href="/requests" className="text-xs text-blue-800 dark:text-blue-400 hover:underline">View all</a>
+                    <Link to="/requests" className="text-xs text-blue-800 dark:text-blue-400 hover:underline">View all</Link>
                 </div>
 
                 {loadingRequests && <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>}
@@ -177,9 +178,9 @@ const Dashboard: React.FC = () => {
                 {!loadingRequests && !errorRequests && recentRequests.length === 0 && (
                     <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
                         <p className="text-gray-600">No certificate requests yet.</p>
-                        <a href="/request" className="text-blue-800 dark:text-blue-400 text-sm hover:underline mt-2 inline-block">
+                        <Link to="/request" className="text-blue-800 dark:text-blue-400 text-sm hover:underline mt-2 inline-block">
                             Submit your first request
-                        </a>
+                        </Link>
                     </div>
                 )}
 

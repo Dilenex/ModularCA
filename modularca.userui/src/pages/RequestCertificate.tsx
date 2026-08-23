@@ -3,6 +3,7 @@ import { apiGet, apiPost } from '../api/client';
 import DetailField from '../components/cards/DetailField';
 import { validateAgainstProfileClient } from '../validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
+import { Link } from 'react-router-dom';
 
 // --- Types ---
 
@@ -43,7 +44,9 @@ interface RequestProfile {
     description?: string | null;
     subjectDnRules: SubjectDnFieldRule[];
     sanRules: SanRulesObj;
-    allowedCertProfileIds: string[];
+    /** JSON array STRING as stored on RequestProfileEntity, e.g. '["guid","guid"]' —
+     *  not an array. Read it through parseIdList below. */
+    allowedCertProfileIds: string | string[];
     defaultCertProfileId?: string | null;
     requireApproval: boolean;
     maxValidityPeriod?: string | null;
@@ -71,6 +74,22 @@ function parseSanRules(raw: any): SanRulesObj {
 }
 
 // --- Component ---
+
+/**
+ * Reads a field that may arrive as a real array or as a JSON array string. Entity columns that
+ * store JSON come back as strings; a few endpoints deserialize them first. Returning [] for
+ * anything unparseable is safe here — the caller falls back to no explicit profile.
+ */
+function parseIdList(value: string | string[] | undefined | null): string[] {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string' || !value.trim()) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
 
 const RequestCertificate: React.FC = () => {
     // CSR input
@@ -283,8 +302,13 @@ const RequestCertificate: React.FC = () => {
 
             const sanOverrides = sanList.filter(s => s.value.trim()).map(s => ({ type: s.type, value: s.value.trim() }));
 
-            const certProfileId = selectedProfileObj?.defaultCertProfileId
-                || (selectedProfileObj?.allowedCertProfileIds?.length ? selectedProfileObj.allowedCertProfileIds[0] : undefined);
+            // allowedCertProfileIds arrives as a JSON array STRING, because
+            // RequestProfileEntity.AllowedCertProfileIds is a string column defaulting to "[]".
+            // Indexing it as an array took the first CHARACTER: '[' was sent as certProfileId
+            // and rejected as a malformed Guid, so any request profile without an explicit
+            // default cert profile simply could not be used.
+            const allowedIds = parseIdList(selectedProfileObj?.allowedCertProfileIds);
+            const certProfileId = selectedProfileObj?.defaultCertProfileId || allowedIds[0];
             const signingProfileId = signingProfiles.find(s => s.isDefault)?.id || signingProfiles[0]?.id;
 
             if (tab === 'generate') {
@@ -621,7 +645,7 @@ const RequestCertificate: React.FC = () => {
                     <p className={`text-sm font-semibold ${success.requiresApproval ? 'text-yellow-800 dark:text-yellow-300' : 'text-green-800 dark:text-green-300'}`}>{success.message}</p>
                     {success.requiresApproval && <DetailField label="Approvals Required" value={String(selectedProfileObj?.requiredApprovalCount || 1)} />}
                     <div className="flex gap-3 pt-2">
-                        <a href="/requests" className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">View My Requests</a>
+                        <Link to="/requests" className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">View My Requests</Link>
                         <button onClick={() => { setSuccess(null); setSelectedRequestProfile(''); }}
                             className="px-4 py-2 text-sm text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900/30 transition-colors">Submit Another</button>
                     </div>

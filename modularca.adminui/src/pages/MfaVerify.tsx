@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { API_BASE } from '../api/client';
-import { createDpopProof } from '../api/dpop';
+import { createDpopProof } from '@shared-auth/api/dpop';
 import { useAuth } from '../context/AuthContext';
 
 interface MfaVerifyState {

@@ -600,7 +600,9 @@ public class BootstrapService
             var pendingValidityDays = webTlsRequest.ValidityDays;
 
             // === Create dedicated MySQL users and generate config.yaml ===
-            var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(rootConfig, setupDbConfig);
+            // Preserve audit history unless the operator ticked the wipe box in the wizard.
+            var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(
+                rootConfig, setupDbConfig, request.Database?.WipeAuditDatabase ?? false);
 
             // === Apply audit database migrations using root credentials ===
             BootstrapModularCA.CreateAuditDatabase(rootConfig, setupDbConfig.SqlAudit.Database);

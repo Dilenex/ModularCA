@@ -15,6 +15,7 @@
        No baseUrl — deprecated in TS 6; paths resolve relative to this file. */
     "paths": {
       "@shared/*": ["../shared/common/src/*"],
+      "@shared-auth/*": ["../shared/authenticated/src/*"],
       /* shared/common lives outside this package, so Node resolution from a file in it walks up
          to the repo root and finds no node_modules. These map React and the router back onto THIS
          app's copies, which is also the guarantee we want: a shared component is typechecked
@@ -29,5 +30,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "../shared/common/src"]
+  "include": ["src", "../shared/common/src", "../shared/authenticated/src"]
 }

@@ -282,7 +282,12 @@ public class BootstrapModularCA
         }
     }
 
-    public static int Run()
+    /// <param name="wipeAuditDatabase">
+    /// Passed through to <see cref="BootstrapDatabaseSetup.CreateDatabaseUsers"/>. False by
+    /// default, so historical audit rows survive a reinstall — which is what the reset banner
+    /// has always told operators, and what this code did not previously do.
+    /// </param>
+    public static int Run(bool wipeAuditDatabase = false)
     {
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
         var keystoreDir = Path.Combine(AppContext.BaseDirectory, "keystores");
@@ -335,7 +340,7 @@ public class BootstrapModularCA
 
         if (hasArtifacts)
         {
-            if (!ConfirmDelete(true, certPath, trustPath, dbContext, dbConnection, setupDbConfig))
+            if (!ConfirmDelete(true, certPath, trustPath, dbContext, dbConnection, setupDbConfig, wipeAuditDatabase))
                 return 1;
         }
         else
@@ -343,7 +348,7 @@ public class BootstrapModularCA
             // No existing artifacts — still ensure clean state (drop DBs/users if partially created)
             Console.WriteLine("(i) No existing artifacts found. Ensuring clean state...");
             DeleteArtifacts(certPath, trustPath);
-            ReconstructDatabase(dbContext, dbConnection, setupDbConfig);
+            ReconstructDatabase(dbContext, dbConnection, setupDbConfig, wipeAuditDatabase);
         }
 
         // === Tenants (must precede CA and group creation) ===
@@ -717,7 +722,7 @@ public class BootstrapModularCA
         var pendingValidityDays = httpsApi.ValidityDays;
 
         // === Create dedicated MySQL users and generate config.yaml ===
-        var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(rootConfig, setupDbConfig);
+        var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(rootConfig, setupDbConfig, wipeAuditDatabase);
         BootstrapDatabaseSetup.WriteConfigFile(configDir, rootConfig, setupDbConfig, bootstrapConfig, appUserPassword, auditUserPassword,
             pfxPassword: "", // No PFX yet — Stage 2 generates it
             httpsPort: bootstrapConfig.HttpsApi.Port,
@@ -1081,7 +1086,7 @@ public class BootstrapModularCA
     /// Returns true if bootstrap should proceed, false if the user aborted.
     /// Prompts the user three times to confirm destruction of existing artifacts.
     /// </summary>
-    public static bool ConfirmDelete(bool needsConfirm, string certPath, string trustPath, ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
+    public static bool ConfirmDelete(bool needsConfirm, string certPath, string trustPath, ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
     {
         if (!needsConfirm)
             return true;
@@ -1105,7 +1110,7 @@ public class BootstrapModularCA
         }
         Console.WriteLine("✅ Destruction confirmed. Proceeding...\n");
         DeleteArtifacts(certPath, trustPath);
-        ReconstructDatabase(db, conn, setupDbConfig);
+        ReconstructDatabase(db, conn, setupDbConfig, wipeAuditDatabase);
         return true;
     }
 
@@ -1133,7 +1138,17 @@ public class BootstrapModularCA
     /// Drops and recreates both app and audit databases, and drops existing DB users
     /// so they can be cleanly recreated during bootstrap.
     /// </summary>
-    public static void ReconstructDatabase(ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
+    /// <param name="wipeAuditDatabase">
+    /// When true the audit database is dropped along with the app database. Default false.
+    /// <para>
+    /// This drop used to be unconditional, and it is the one that actually destroyed audit
+    /// history on the CLI path — <c>Run</c> calls this before it ever reaches
+    /// <c>CreateDatabaseUsers</c>, so making only that method conditional would have preserved
+    /// nothing here. The point of a tamper-evident audit trail is that it outlives someone
+    /// destroying the install, which is precisely what this method does.
+    /// </para>
+    /// </param>
+    public static void ReconstructDatabase(ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
     {
         // Validate all identifiers before any DROP/CREATE SQL
         BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlApp.Database, "app database name");
@@ -1156,11 +1171,15 @@ public class BootstrapModularCA
             Console.WriteLine($"(!) Failed to drop app database: {ex.Message}");
         }
 
-        // Drop audit database
+        // Drop audit database — only when the operator explicitly asked to.
         try
         {
             var auditDbName = setupDbConfig.SqlAudit.Database;
-            if (!string.IsNullOrWhiteSpace(auditDbName))
+            if (!wipeAuditDatabase)
+            {
+                Console.WriteLine($"(i) Audit database '{auditDbName}' preserved (pass --wipe-audit to discard).");
+            }
+            else if (!string.IsNullOrWhiteSpace(auditDbName))
             {
                 using var dropAuditCmd = new MySqlCommand($"DROP DATABASE IF EXISTS `{auditDbName}`", conn);
                 dropAuditCmd.ExecuteNonQuery();

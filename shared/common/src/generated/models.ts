@@ -1023,6 +1023,7 @@ export interface SetupDatabase {
     auditDatabase: string;
     auditUsername: string;
     sslMode: string;
+    wipeAuditDatabase: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */

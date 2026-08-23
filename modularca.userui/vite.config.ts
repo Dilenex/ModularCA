@@ -25,12 +25,17 @@ function versionDefine(): Record<string, string> {
 // the alias; the dev server additionally needs fs.allow, because Vite refuses to serve
 // files outside the project root unless told to.
 const sharedCommon = resolve(process.cwd(), '..', 'shared', 'common', 'src');
+// Auth-aware code. Aliased ONLY in adminui and userui — setupui runs before
+// authentication exists and docsui/publicui are anonymous, so for them the specifier
+// simply does not resolve. The boundary is enforced by wiring, not by convention.
+const sharedAuth = resolve(process.cwd(), '..', 'shared', 'authenticated', 'src');
 
 export default defineConfig({
     plugins: [plugin()],
     resolve: {
         alias: {
             '@shared': sharedCommon,
+        '@shared-auth': sharedAuth,
             // shared/common sits outside this package, so resolution from a file inside it walks up
             // to the repo root and finds no node_modules. Point React and the router at THIS app's
             // copies. That also guarantees a single React instance in the bundle - two copies break

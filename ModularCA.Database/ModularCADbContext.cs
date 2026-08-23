@@ -233,6 +233,20 @@ public class ModularCADbContext : DbContext
                   .HasForeignKey(e => e.CertificateAuthorityId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
+        // Deliberately GLOBAL, not per-tenant — and knowingly so.
+        //
+        // CertProfiles, CaGroups and Roles all carry a TenantId, so a per-tenant unique name
+        // would be the natural multi-tenant shape (and CertificateAuthorityEntity was moved to
+        // it). They are left global because the CODE still resolves them by bare name:
+        //   CaCreationService: CertProfiles.FirstOrDefault(cp => cp.Name == "Main CA Certificate Profile")
+        //   BootstrapProfileSeeder / BootstrapService: CaGroups.First(g => g.Name == "system-super")
+        //   RoleAssignmentHelper: Roles.FirstOrDefault(r => r.Name == templateName && r.IsBuiltIn)
+        //
+        // The unique index is what makes those lookups deterministic. Relaxing it without
+        // rewriting every one of them would turn "two tenants cannot reuse a profile name" —
+        // an inconvenience — into "a CA creation silently picked up another tenant's profile",
+        // which is a cross-tenant correctness bug. The index is not the defect here; the
+        // tenant-blind lookups are, and they have to move first.
         modelBuilder.Entity<CertProfileEntity>().HasIndex(c => c.Name).IsUnique();
         modelBuilder.Entity<CertProfileEntity>(entity =>
         {
@@ -326,6 +340,31 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<FeatureFlagEntity>().HasIndex(f => f.Name).IsUnique();
         modelBuilder.Entity<CrlConfigurationEntity>().HasIndex(c => c.Name).IsUnique();
 
+        // CRL history must not be deletable as a side effect.
+        //
+        // Neither of these relationships was configured, so EF's convention for a required FK
+        // applied: Cascade. Deleting one CA certificate therefore removed its CrlConfigurations,
+        // which removed every Crl generated under them. That is worse than losing records — the
+        // configuration row carries LastCrlNumber, and RFC 5280 §5.2.3 requires CRL numbers to
+        // increase monotonically for an issuer. Recreating the configuration restarts the counter
+        // at 0, so the next CRL published reuses numbers already in circulation, and relying
+        // parties holding a cached higher-numbered CRL can reasonably ignore it.
+        //
+        // Restrict makes the delete fail instead, so an operator removing a CA has to deal with
+        // its CRL configuration deliberately. LdapConfigurationEntity above already takes this
+        // approach for its CA foreign key.
+        modelBuilder.Entity<CrlConfigurationEntity>()
+            .HasOne(c => c.CaCertificate)
+            .WithMany()
+            .HasForeignKey(c => c.CaCertificateId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CrlEntity>()
+            .HasOne(c => c.Task)
+            .WithMany()
+            .HasForeignKey(c => c.TaskId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         modelBuilder.Entity<CertificateAccessListEntity>()
             .HasIndex(x => new { x.UserId, x.CertificateId })
             .IsUnique();
@@ -394,7 +433,16 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<CertificateAuthorityEntity>(entity =>
         {
-            entity.HasIndex(e => e.Name).IsUnique();
+            // Name is per-tenant for the same reason Label is, below. This entity was only half
+            // migrated: Label was made composite and Name was left global, so two tenants could
+            // each have an "issuing-ca" label but not both call a CA "Issuing CA". Beyond the
+            // inconvenience, a global unique name is a cross-tenant oracle — a tenant learns
+            // whether another tenant already uses a name by trying to take it.
+            //
+            // Safe to relax because nothing resolves a CA by bare Name: lookups go through Label
+            // or Id. That is NOT true of CertProfiles, CaGroups or Roles, which are still
+            // globally unique here deliberately — see the note further down.
+            entity.HasIndex(e => new { e.TenantId, e.Name }).IsUnique();
             // Label uniqueness is per-tenant, not global. Two tenants may each
             // have a CA labeled "issuing-ca" without collision. The composite unique index
             // also replaces the old global one so existing queries targeting Label get a
@@ -550,7 +598,15 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<TrustAnchorEntity>(entity =>
         {
-            entity.HasIndex(t => t.SerialNumber).IsUnique();
+            // Unique per ISSUER, not globally. A serial number is only unique within the CA that
+            // assigned it — X.509 says nothing about serials being unique across issuers, and
+            // small values are commonplace (a self-signed root is very often serial 1). A global
+            // unique index therefore made importing two unrelated roots fail with a constraint
+            // violation that reads like a duplicate-import error rather than what it is.
+            //
+            // The Certificates table already gets this right — see its
+            // HasIndex(new { SerialNumber, Issuer }) above. This is the sibling that did not.
+            entity.HasIndex(t => new { t.SerialNumber, t.Issuer }).IsUnique();
         });
 
         // FIDO2/WebAuthn credentials

@@ -97,6 +97,7 @@ const initialData: WizardData = {
         auditDatabase: 'modularca-audit',
         auditUsername: 'modularca_audit',
         sslMode: 'Required',
+        wipeAuditDatabase: false,
     },
     organization: {
         orgName: '',

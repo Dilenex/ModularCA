@@ -1,3 +1,4 @@
+using ModularCA.Shared.Utils;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -20,7 +21,12 @@ public interface IEnrollmentTokenService
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
         Guid? certificateAuthorityId = null, Guid? tenantId = null);
-    Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol);
+    /// <param name="sans">
+    /// SAN entries in <c>CertificateUtil.ParseCsr</c>'s <c>TYPE:value</c> form. Optional so
+    /// callers that have not parsed them yet keep compiling; when supplied, the token's
+    /// SANRestriction is enforced against them.
+    /// </param>
+    Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null);
     /// <summary>
     /// Retrieves a valid (non-revoked, non-expired, uses remaining) enrollment token by its token string.
     /// Returns null if the token is invalid or exhausted.
@@ -117,7 +123,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         return entity;
     }
 
-    public async Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol)
+    public async Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null)
     {
         var entity = await _db.EnrollmentTokens
             .FirstOrDefaultAsync(t => t.Token == token && !t.IsRevoked);
@@ -136,18 +142,61 @@ public class EnrollmentTokenService : IEnrollmentTokenService
             !string.Equals(entity.Protocol, protocol, StringComparison.OrdinalIgnoreCase))
             return (false, $"Enrollment token is restricted to protocol '{entity.Protocol}'");
 
-        // Subject restriction (simple contains match)
-        if (!string.IsNullOrWhiteSpace(entity.SubjectRestriction) &&
-            !string.IsNullOrWhiteSpace(subject) &&
-            !subject.Contains(entity.SubjectRestriction, StringComparison.OrdinalIgnoreCase))
-            return (false, $"CSR subject does not match token restriction '{entity.SubjectRestriction}'");
+        // Name restrictions, through the shared resolver. This was a raw substring test against
+        // the whole DN that also skipped itself when the subject was empty — the same pair of
+        // holes fixed on the public QR path, still live here. It matters more here: this method
+        // is what the SCEP challenge-password path (EnrollmentAuthorizationService) relies on,
+        // where it is the ONLY name check.
+        if (!EnrollmentNameRestriction.SubjectSatisfies(subject, entity.SubjectRestriction, out var subjectFailure))
+            return (false, subjectFailure);
 
-        // Consume a use
-        if (entity.MaxUses > 0)
-            entity.UsesRemaining--;
+        if (sans != null &&
+            !EnrollmentNameRestriction.SansSatisfy(sans, entity.SANRestriction, out var sanFailure))
+            return (false, sanFailure);
 
-        await _db.SaveChangesAsync();
+        // Consume a use LAST, atomically, and only if every other check passed.
+        if (!await TryConsumeUseAsync(_db, entity))
+            return (false, "Enrollment token has been used the maximum number of times");
+
         return (true, null);
+    }
+
+    /// <summary>
+    /// Consumes one use of an enrollment token, atomically. Returns false when the token was
+    /// already exhausted — including when a concurrent request took the last use.
+    /// <para>
+    /// The three call sites that decrement a token used to read <c>UsesRemaining</c>, compare it,
+    /// decrement in memory and save — one of them under a comment reading "Atomically decrement
+    /// remaining uses". Two concurrent enrollments presenting the same single-use token both read
+    /// 1, both pass the check, both write 0, and both get a certificate. On an anonymous
+    /// enrollment endpoint that is a duplicate-issuance vector, and the window is exactly the
+    /// round trip between the read and the write.
+    /// </para>
+    /// <para>
+    /// This is a single <c>UPDATE ... WHERE UsesRemaining &gt; 0</c>; the database decides the
+    /// winner and rows-affected reports it. No <c>RowVersion</c> column and no retry loop: there
+    /// is nothing to retry, since losing the race means the token is genuinely spent.
+    /// </para>
+    /// </summary>
+    /// <param name="db">Context to issue the update on.</param>
+    /// <param name="token">
+    /// The token being consumed. Its <c>MaxUses</c> is read locally — that value never changes
+    /// for a token's lifetime, so it is not part of the race.
+    /// </param>
+    public static async Task<bool> TryConsumeUseAsync(ModularCADbContext db, EnrollmentTokenEntity token)
+    {
+        // MaxUses <= 0 means unlimited: nothing to consume, nothing to race on.
+        if (token.MaxUses <= 0)
+            return true;
+
+        var affected = await db.EnrollmentTokens
+            .Where(t => t.Id == token.Id && t.UsesRemaining > 0)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(t => t.UsesRemaining, t => t.UsesRemaining - 1));
+
+        // The tracked copy is deliberately NOT updated. ExecuteUpdateAsync bypasses the change
+        // tracker, so writing to the entity here would make a later SaveChanges re-issue a stale
+        // absolute value and undo the atomicity this method exists to provide.
+        return affected == 1;
     }
 
     public async Task<List<EnrollmentTokenEntity>> GetActiveTokensAsync()
@@ -259,10 +308,11 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         CryptographicOperations.ZeroMemory(computed);
         if (!matches) return null;
 
-        // Atomically decrement remaining uses.
-        if (entity.MaxUses > 0)
-            entity.UsesRemaining--;
-        await _db.SaveChangesAsync();
+        // Consume atomically. The comment here used to promise this while the code below it did
+        // a read-modify-write, which is the shape that let two concurrent CMP requests spend the
+        // same single-use shared secret.
+        if (!await TryConsumeUseAsync(_db, entity))
+            return null;
         return entity;
     }
 }
