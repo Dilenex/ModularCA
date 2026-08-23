@@ -52,6 +52,7 @@ export interface AcmeChallengeDto {
 export interface AcmeConfig {
     cleanupSchedule: string;
     externalAccountRequired: boolean;
+    termsOfServiceUrl: string;
     enforceCaa: boolean;
     nonceLifetimeSeconds: number;
     http01: AcmeHttp01Config;
@@ -61,6 +62,7 @@ export interface AcmeConfig {
 
 /** From `ModularCA.Shared/Models/Acme/AcmeDirectoryResponse.cs`. */
 export interface AcmeDirectoryMeta {
+    termsOfService?: string | null;
     externalAccountRequired?: boolean | null;
 }
 
@@ -806,6 +808,7 @@ export interface LoggingConfig {
     retentionDays: number;
     maxFileSizeMb: number;
     verboseErrors: boolean;
+    consoleFormat?: string | null;
     syslog: SyslogConfig;
     eventLog: EventLogConfig;
     network: NetworkLogConfig;

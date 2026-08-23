@@ -1045,13 +1045,19 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* ACME Policies */}
                     <div className={cardClass}>
                         <SectionHeader title="ACME Policies" expanded={expanded === 'acme'} onToggle={() => toggle('acme')}
-                            description={`EAB: ${config.acme?.externalAccountRequired ? 'Required' : 'Off'}, CAA: ${config.acme?.enforceCaa ? 'On' : 'Off'}`} tag="live" />
+                            description={`EAB: ${config.acme?.externalAccountRequired ? 'Required' : 'Off'}, CAA: ${config.acme?.enforceCaa ? 'On' : 'Off'}, ToS: ${config.acme?.termsOfServiceUrl ? 'Published' : 'None'}`} tag="live" />
                         {expanded === 'acme' && (
                             <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="External Account Required" checked={config.acme?.externalAccountRequired ?? false} onChange={(v) => update('acme', 'externalAccountRequired', v)} />
                                     <ConfigToggle label="Enforce CAA" checked={config.acme?.enforceCaa ?? false} onChange={(v) => update('acme', 'enforceCaa', v)} />
                                 </div>
+                                <ConfigInput label="Terms of Service URL" value={config.acme?.termsOfServiceUrl} onChange={(v) => update('acme', 'termsOfServiceUrl', v)} placeholder="https://ca.example.com/terms (leave empty to publish none)" />
+                                <p className="text-xs text-gray-600 dark:text-gray-400">
+                                    Setting this advertises the URL in the ACME directory <em>and</em> makes account
+                                    registration require agreement. Leave it empty and clients register without agreeing —
+                                    per RFC 8555 a server may only demand agreement to terms it actually publishes.
+                                </p>
                                 <SaveButton saving={saving === 'acme'} onClick={() => saveSection('acme-policies', config.acme, 'acme')} />
                             </div>
                         )}
@@ -1143,9 +1149,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigInput label="File Path" value={config.logging.filePath} onChange={(v) => update('logging', 'filePath', v)} />
                                     <ConfigNumber label="Retention Days" value={config.logging.retentionDays} onChange={(v) => update('logging', 'retentionDays', v)} fallback={30} />
                                     <ConfigNumber label="Max File Size (MB)" value={config.logging.maxFileSizeMb ?? 100} onChange={(v) => update('logging', 'maxFileSizeMb', v)} fallback={100} />
+                                    <ConfigSelect label="Console Format" value={config.logging.consoleFormat || 'Auto'} options={['Auto', 'Systemd', 'Json', 'Text']} onChange={(v) => update('logging', 'consoleFormat', v)} />
                                 </div>
                                 <div className="text-xs text-gray-600">
                                     Log files roll daily and when they reach the max file size. Old files are deleted after the retention period.
+                                </div>
+                                <div className="text-xs text-gray-600 dark:text-gray-400">
+                                    <span className="font-medium">Console Format</span> controls stdout only &mdash; the log file is always JSON.
+                                    <span className="font-medium"> Auto</span> picks by what is reading stdout: under systemd, one
+                                    priority-prefixed line per event so <code>journalctl -p err</code> filters correctly; in a container,
+                                    CLEF JSON for your log shipper; otherwise the readable template. Override only if something other than
+                                    the obvious consumer is reading stdout.
                                 </div>
                                 <SaveButton saving={saving === 'logStorage'} onClick={() => saveSection('logging', config.logging, 'logStorage')} />
                             </div>

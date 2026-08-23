@@ -9,6 +9,10 @@ public class AcmeChallengeDto
     public string Url { get; set; } = string.Empty;
     public string Token { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    // Omitted when null rather than emitted as JSON null. RFC 8555 marks these optional,
+    // and clients treat optional as "may be absent" — certbot crashed outright on a
+    // present-but-null directory `meta`. Same shape, same guard.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? ValidatedAt { get; set; }
 
     /// <summary>

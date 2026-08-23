@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
@@ -90,9 +90,7 @@ public class AcmeDirectoryController(IAcmeNonceService nonceService, SystemConfi
             NewOrder = $"{acmeBase}/new-order",
             RevokeCert = $"{acmeBase}/revoke-cert",
             KeyChange = $"{acmeBase}/key-change",
-            Meta = _config.Acme.ExternalAccountRequired
-                ? new AcmeDirectoryMeta { ExternalAccountRequired = true }
-                : null
+            Meta = AcmeDirectoryMeta.For(_config.Acme)
         };
         return Ok(directory);
     }

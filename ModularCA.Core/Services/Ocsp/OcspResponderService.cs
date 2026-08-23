@@ -113,7 +113,7 @@ public class OcspResponderService : IOcspService
         }
 
         // Reject duplicate or oversized nonce extensions.
-        if (!TryValidateNonce(ocspReq, out var nonceOctets, out var nonceReason))
+        if (!TryValidateNonce(ocspReq, out var nonceOctets, out var nonceExtValue, out var nonceReason))
         {
             _logger.LogWarning("OCSP: nonce validation failed ({Reason})", nonceReason);
             return BuildStatusResponse(OcspRespStatus.MalformedRequest, result);
@@ -291,9 +291,20 @@ public class OcspResponderService : IOcspService
         // RFC 6960 §4.4.1 nonce echo + §4.4.8 extended-revoke response
         // extensions.
         var responseExts = new Dictionary<DerObjectIdentifier, X509Extension>();
-        if (nonceOctets != null)
+        if (nonceExtValue != null)
         {
-            responseExts[IdPkixOcspNonce] = new X509Extension(false, new DerOctetString(nonceOctets));
+            // Echo the request's extension value verbatim. RFC 6960 §4.4.1 requires the response
+            // nonce to equal the request's, and clients compare the extension values byte for
+            // byte — OpenSSL's OCSP_check_nonce does exactly that.
+            //
+            // This used to rebuild the extension as `new DerOctetString(nonceOctets)` from the
+            // UNWRAPPED nonce. The extension value is an OCTET STRING wrapping the DER encoding
+            // of another OCTET STRING, so rebuilding from the inner bytes emitted one layer too
+            // few: a request nonce of 0410CF03… came back as CF03… . Every client that sends a
+            // nonce and verifies the response — which is the default for `openssl ocsp` — got
+            // "Nonce Verify error" and treated the response as untrustworthy. Only clients
+            // passing -no_nonce saw it work, which is why it survived earlier testing.
+            responseExts[IdPkixOcspNonce] = new X509Extension(false, nonceExtValue);
         }
         if (anyExtendedRevoke)
         {
@@ -340,9 +351,11 @@ public class OcspResponderService : IOcspService
     /// extensions, reject oversized nonces (RFC 8954 §3 caps at 32 octets),
     /// return the inner OCTET STRING content when present.
     /// </summary>
-    private static bool TryValidateNonce(OcspReq ocspReq, out byte[]? nonceOctets, out string? reason)
+    private static bool TryValidateNonce(
+        OcspReq ocspReq, out byte[]? nonceOctets, out Asn1OctetString? nonceExtValue, out string? reason)
     {
         nonceOctets = null;
+        nonceExtValue = null;
         reason = null;
         var exts = ocspReq.RequestExtensions;
         if (exts == null) return true;
@@ -392,6 +405,10 @@ public class OcspResponderService : IOcspService
             return false;
         }
         nonceOctets = raw;
+        // Kept so the response can echo the request's extension value BYTE FOR BYTE.
+        // `raw` above is the unwrapped nonce, which is the right thing to length-check and
+        // the wrong thing to echo: rebuilding the extension from it drops a DER layer.
+        nonceExtValue = ext.Value;
         return true;
     }
 

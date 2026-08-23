@@ -1,5 +1,6 @@
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
@@ -109,6 +110,31 @@ internal sealed class TestCaMaterial
     /// <summary>
     /// Builds a DER-encoded OCSPRequest asking this CA about <paramref name="serial"/>.
     /// </summary>
+    /// <summary>
+    /// Builds an OCSP request carrying an RFC 6960 §4.4.1 nonce, and hands back the exact
+    /// extension value so a test can assert the response echoes it byte for byte.
+    /// </summary>
+    public byte[] BuildOcspRequestWithNonce(BigInteger serial, byte[] nonce, out Asn1OctetString requestNonceExtValue)
+    {
+#pragma warning disable CS0618
+        var certId = new CertificateID(CertificateID.HashSha1, Certificate, serial);
+#pragma warning restore CS0618
+        var gen = new OcspReqGenerator();
+        gen.AddRequest(certId);
+
+        // The extension value is an OCTET STRING wrapping the DER encoding of another OCTET
+        // STRING — the shape a real client sends, and the layering the responder got wrong.
+        var inner = new DerOctetString(nonce);
+        var extValue = new DerOctetString(inner.GetEncoded());
+        gen.SetRequestExtensions(new X509Extensions(new Dictionary<DerObjectIdentifier, X509Extension>
+        {
+            [Org.BouncyCastle.Asn1.Ocsp.OcspObjectIdentifiers.PkixOcspNonce] = new X509Extension(false, extValue),
+        }));
+
+        requestNonceExtValue = extValue;
+        return gen.Generate().GetEncoded();
+    }
+
     public byte[] BuildOcspRequest(BigInteger serial)
     {
 #pragma warning disable CS0618 // No non-deprecated CertificateID overload exists; the responder uses the same one.

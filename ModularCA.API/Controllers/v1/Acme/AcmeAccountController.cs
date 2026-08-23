@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -116,10 +116,16 @@ public class AcmeAccountController(
                 "Account does not exist and onlyReturnExisting was set.");
         }
 
-        if (!payload.TermsOfServiceAgreed)
+        // Only demand agreement to terms this server actually publishes. RFC 8555 §7.3.3 makes
+        // the requirement conditional on advertising meta.termsOfService in the directory, and
+        // conforming clients set termsOfServiceAgreed only when they saw a URL to agree to.
+        // Rejecting unconditionally (as this did) locked every client out of registration with
+        // no way to comply.
+        var termsUrl = _config.Acme.PublishedTermsOfServiceUrl;
+        if (termsUrl != null && !payload.TermsOfServiceAgreed)
         {
             return AcmeError(400, "urn:ietf:params:acme:error:malformed",
-                "Must agree to terms of service.");
+                $"Must agree to the terms of service at {termsUrl}.");
         }
 
         var jwkJson = jws.Jwk?.GetRawText()

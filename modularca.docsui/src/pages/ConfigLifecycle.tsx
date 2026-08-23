@@ -158,6 +158,11 @@ JWT:
 
 Logging:
   MinLevel: "Information"
+  ConsoleFormat: "Auto"         # Auto | Systemd | Json | Text -- stdout rendering.
+                                # Auto: journald gets one <priority>-prefixed line per
+                                # event (so "journalctl -p err" works), a container gets
+                                # CLEF JSON, a terminal gets the readable template.
+                                # The file sink is always JSON regardless.
   FilePath: "logs/modularca-.log"
   RetentionDays: 30
   MaxFileSizeMb: 100
@@ -192,6 +197,7 @@ Email:
 Acme:
   ExternalAccountRequired: false
   EnforceCaa: false
+  TermsOfServiceUrl: ""         # empty = publish no terms, and don't require agreement
   NonceLifetimeSeconds: 300
 CertPolicy:
   Enabled: true

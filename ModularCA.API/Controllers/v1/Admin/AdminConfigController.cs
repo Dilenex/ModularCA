@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Hosting;
@@ -153,7 +153,19 @@ public class AdminConfigController(
         if (update.RetentionDays < 1)
             return BadRequest(new { error = "RetentionDays must be >= 1." });
 
+        // Reject an unrecognised console format at the API boundary. The runtime resolver
+        // falls back to Auto for a hand-edited config.yaml so a typo can never stop the CA
+        // booting — but a value arriving through the admin UI should be told it is wrong
+        // rather than quietly ignored.
+        if (update.ConsoleFormat != null &&
+            !Enum.TryParse<ModularCA.Core.Logging.ConsoleLogFormat>(update.ConsoleFormat, ignoreCase: true, out _) &&
+            !string.Equals(update.ConsoleFormat, "Auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { error = "ConsoleFormat must be one of Auto, Systemd, Json, Text." });
+        }
+
         _config.Logging.MinLevel = update.MinLevel ?? _config.Logging.MinLevel;
+        _config.Logging.ConsoleFormat = update.ConsoleFormat ?? _config.Logging.ConsoleFormat;
         _config.Logging.FilePath = update.FilePath ?? _config.Logging.FilePath;
         if (update.RetentionDays > 0) _config.Logging.RetentionDays = update.RetentionDays;
         if (update.MaxFileSizeMb > 0) _config.Logging.MaxFileSizeMb = update.MaxFileSizeMb;
@@ -172,8 +184,8 @@ public class AdminConfigController(
 
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Logging", update);
-        var restartNote = update.FilePath != null || update.RetentionDays > 0 || update.MaxFileSizeMb > 0
-            ? " File/retention/size changes require restart." : "";
+        var restartNote = update.FilePath != null || update.RetentionDays > 0 || update.MaxFileSizeMb > 0 || update.ConsoleFormat != null
+            ? " File/retention/size/console-format changes require restart." : "";
         return Ok(new { message = $"Logging config updated. Min level applied immediately.{restartNote}", config = _config.Logging });
     }
 
@@ -610,10 +622,22 @@ public class AdminConfigController(
     [HttpPut("acme-policies")]
     public async Task<IActionResult> UpdateAcmePolicies([FromBody] AcmePoliciesUpdateRequest request)
     {
+        // A malformed terms-of-service URL is worse than none: it gets advertised in the ACME
+        // directory, clients surface it to the operator, and new-account starts demanding
+        // agreement to something unreachable. Validate before it can be published.
+        var termsUrl = request.TermsOfServiceUrl?.Trim() ?? string.Empty;
+        if (termsUrl.Length > 0 &&
+            !(Uri.TryCreate(termsUrl, UriKind.Absolute, out var termsUri) &&
+              (termsUri.Scheme == Uri.UriSchemeHttps || termsUri.Scheme == Uri.UriSchemeHttp)))
+        {
+            return BadRequest(new { error = "TermsOfServiceUrl must be an absolute http(s) URL, or empty to publish no terms." });
+        }
+
         _config.Acme.ExternalAccountRequired = request.ExternalAccountRequired;
         _config.Acme.EnforceCaa = request.EnforceCaa;
+        _config.Acme.TermsOfServiceUrl = termsUrl;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("Acme", new { request.ExternalAccountRequired, request.EnforceCaa });
+        await AuditConfigChange("Acme", new { request.ExternalAccountRequired, request.EnforceCaa, TermsOfServiceUrl = termsUrl });
         return Ok(new { message = "ACME policies updated", config = _config.Acme });
     }
 
@@ -821,6 +845,13 @@ public class AcmePoliciesUpdateRequest
 {
     public bool ExternalAccountRequired { get; set; }
     public bool EnforceCaa { get; set; }
+
+    /// <summary>
+    /// Absolute http(s) URL of the terms of service, or empty to publish none. Setting this
+    /// both advertises <c>meta.termsOfService</c> in the ACME directory and makes
+    /// <c>new-account</c> require <c>termsOfServiceAgreed</c> (RFC 8555 §7.3.3).
+    /// </summary>
+    public string? TermsOfServiceUrl { get; set; }
 }
 
 /// <summary>Request body for PUT /config/alert.</summary>

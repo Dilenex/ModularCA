@@ -279,4 +279,63 @@ public class OcspResponderTests
             Assert.NotEqual(OcspRespStatus.Successful, new OcspResp(responseDer).Status);
         }
     }
+
+    // ── Nonce echo ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The response nonce must equal the request nonce BYTE FOR BYTE.
+    /// <para>
+    /// RFC 6960 §4.4.1 binds a response to its request with the nonce, and clients compare the
+    /// extension values directly — OpenSSL's <c>OCSP_check_nonce</c> does exactly that. The
+    /// responder used to rebuild the extension from the UNWRAPPED nonce, emitting one DER layer
+    /// too few: a request nonce of <c>0410CF03…</c> came back as <c>CF03…</c>. Every client that
+    /// sends a nonce and verifies the response — the default for <c>openssl ocsp</c> — got
+    /// "Nonce Verify error" and treated a perfectly good response as untrustworthy.
+    /// </para>
+    /// <para>
+    /// It survived earlier testing because <c>-noverify</c> skips the nonce check, and the harness
+    /// sent no nonce at all. Asserting on the raw extension value is the point: comparing the
+    /// unwrapped bytes would have passed against the broken code.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Response_echoes_the_request_nonce_byte_for_byte()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caId) =>
+            d.Certificates.Add(Row(ca, caId, LeafSerial, "CN=leaf.example.test", isCa: false)));
+        using (db)
+        {
+            var nonce = Enumerable.Range(0, 16).Select(i => (byte)(0xC0 + i)).ToArray();
+            var der = ca.BuildOcspRequestWithNonce(LeafSerial, nonce, out var requestExtValue);
+
+            var responseDer = await service.ProcessOcspRequestAsync(der, "test-ca", new OcspProcessingResult());
+            var basic = (BasicOcspResp)new OcspResp(responseDer).GetResponseObject();
+
+            var responseExtValue = basic.ResponseExtensions?.GetExtension(
+                Org.BouncyCastle.Asn1.Ocsp.OcspObjectIdentifiers.PkixOcspNonce)?.Value;
+
+            Assert.NotNull(responseExtValue);
+            Assert.Equal(requestExtValue.GetOctets(), responseExtValue!.GetOctets());
+        }
+    }
+
+    /// <summary>A request without a nonce must not gain one in the response.</summary>
+    [Fact]
+    public async Task Response_carries_no_nonce_when_the_request_had_none()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caId) =>
+            d.Certificates.Add(Row(ca, caId, LeafSerial, "CN=leaf.example.test", isCa: false)));
+        using (db)
+        {
+            var responseDer = await service.ProcessOcspRequestAsync(
+                ca.BuildOcspRequest(LeafSerial), "test-ca", new OcspProcessingResult());
+            var basic = (BasicOcspResp)new OcspResp(responseDer).GetResponseObject();
+
+            Assert.Null(basic.ResponseExtensions?.GetExtension(
+                Org.BouncyCastle.Asn1.Ocsp.OcspObjectIdentifiers.PkixOcspNonce));
+        }
+    }
+
 }

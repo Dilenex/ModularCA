@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
+using System.Text.Json.Serialization;
 
 namespace ModularCA.Shared.Models.Config
 {
@@ -231,6 +232,20 @@ namespace ModularCA.Shared.Models.Config
         /// <c>MODULARCA_VERBOSE_ERRORS</c> environment variable.
         /// </summary>
         public bool VerboseErrors { get; set; } = false;
+
+        /// <summary>
+        /// How events are rendered to stdout: <c>"Auto"</c> (default), <c>"Systemd"</c>,
+        /// <c>"Json"</c>, or <c>"Text"</c>.
+        /// </summary>
+        /// <remarks>
+        /// Auto picks by what is consuming stdout — journald gets one priority-prefixed line
+        /// per event so <c>journalctl -p err</c> works, a container gets CLEF JSON for its log
+        /// shipper, and an interactive terminal gets the readable template. Override only when
+        /// something other than the obvious consumer is reading stdout — e.g. a systemd unit
+        /// whose journal is scraped into Loki, which wants <c>"Json"</c>. The file sink is
+        /// always CLEF JSON regardless of this setting.
+        /// </remarks>
+        public string? ConsoleFormat { get; set; } = "Auto";
 
         public SyslogConfig Syslog { get; set; } = new();
         public EventLogConfig EventLog { get; set; } = new();
@@ -876,6 +891,32 @@ namespace ModularCA.Shared.Models.Config
         /// field signed with a pre-shared HMAC key (RFC 8555 section 7.3.4).
         /// </summary>
         public bool ExternalAccountRequired { get; set; } = false;
+
+        /// <summary>
+        /// Absolute URL of the terms of service ACME clients must accept before registering.
+        /// Empty (the default) means this CA publishes no terms and account registration does
+        /// not require agreement.
+        /// </summary>
+        /// <remarks>
+        /// This knob drives BOTH halves of RFC 8555 §7.3.3, which are only correct together:
+        /// the URL is advertised as <c>meta.termsOfService</c> in the directory, and
+        /// <c>new-account</c> rejects registrations whose <c>termsOfServiceAgreed</c> is not
+        /// <c>true</c>. Requiring agreement without publishing a URL — which is what this
+        /// server used to do — deadlocks every conforming client: they only set the flag when
+        /// they see terms to agree to, so registration failed with "Must agree to terms of
+        /// service." and no way to comply.
+        /// </remarks>
+        public string TermsOfServiceUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The trimmed terms-of-service URL, or <c>null</c> when this CA publishes no terms.
+        /// Both the directory's <c>meta.termsOfService</c> and the <c>new-account</c> agreement
+        /// check read this one property, so the advertisement and the requirement cannot drift
+        /// apart — which is the failure RFC 8555 §7.3.3 exists to prevent.
+        /// </summary>
+        [JsonIgnore]
+        public string? PublishedTermsOfServiceUrl =>
+            string.IsNullOrWhiteSpace(TermsOfServiceUrl) ? null : TermsOfServiceUrl.Trim();
 
         /// <summary>Whether to enforce CAA DNS record checking before ACME certificate issuance.</summary>
         public bool EnforceCaa { get; set; } = false;

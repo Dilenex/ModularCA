@@ -1,4 +1,4 @@
-using FluentValidation;
+﻿using FluentValidation;
 using Fido2NetLib;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -32,15 +32,37 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
+using ModularCA.Core.Logging;
 using System.Text;
 
 // ── Serilog bootstrap logger ─────────────────────────
 // Initialized before CLI flag handling so that operator-triggered destructive
 // operations (--reset, --bootstrap, --backup, --restore) leave evidence in the
 // log sinks (console + file). Replaced by the full host-wired logger later on.
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+// Console rendering is chosen the same way here as for the host logger below, so the startup
+// window is not a blind spot: under systemd these lines carry the <N> priority prefix and
+// `journalctl -p err` surfaces a failed --restore or a refused boot. config.yaml is not loaded
+// yet, so this resolves from the environment alone.
+var bootstrapConsoleFormat = ConsoleLogFormatResolver.Resolve(
+    configured: null,
+    underSystemd: SystemdHelpers.IsSystemdService(),
+    inContainer: string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase));
+
+var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
+switch (bootstrapConsoleFormat)
+{
+    case ConsoleLogFormat.Systemd:
+        bootstrapConfig.WriteTo.Console(new SystemdTextFormatter());
+        break;
+    case ConsoleLogFormat.Json:
+        bootstrapConfig.WriteTo.Console(new CompactJsonFormatter());
+        break;
+    default:
+        bootstrapConfig.WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+        break;
+}
+
+Log.Logger = bootstrapConfig
     .WriteTo.File(new CompactJsonFormatter(),
         Path.Combine(AppContext.BaseDirectory, "logs", "modularca-bootstrap-.log"),
         rollingInterval: RollingInterval.Day,
@@ -508,7 +530,8 @@ Serilog.Debugging.SelfLog.Enable(msg =>
 var runningInContainer = string.Equals(
     Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase);
 var runningUnderSystemd = SystemdHelpers.IsSystemdService();
-var useConsoleJson = runningInContainer || runningUnderSystemd;
+var consoleLogFormat = ConsoleLogFormatResolver.Resolve(
+    config.Logging.ConsoleFormat, runningUnderSystemd, runningInContainer);
 
 // Resolve VerboseErrors: env var overrides config.yaml.
 // When false (production default), EF Core and ASP.NET framework errors are clamped to
@@ -539,15 +562,21 @@ builder.Host.UseSerilog((context, services, configuration) =>
         .Enrich.FromLogContext()
         .Enrich.WithProperty("Application", "ModularCA");
 
-    // Console sink — human template for interactive, JSON for containers/systemd.
-    if (useConsoleJson)
+    // Console sink — one line per event with a syslog priority prefix under systemd, CLEF
+    // JSON for a container's log shipper, readable template for a terminal. See
+    // ConsoleLogFormatResolver for why systemd and container are no longer the same case.
+    switch (consoleLogFormat)
     {
-        configuration.WriteTo.Console(new CompactJsonFormatter());
-    }
-    else
-    {
-        configuration.WriteTo.Console(outputTemplate:
-            "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}  {Message:lj}{NewLine}{Exception}");
+        case ConsoleLogFormat.Systemd:
+            configuration.WriteTo.Console(new SystemdTextFormatter());
+            break;
+        case ConsoleLogFormat.Json:
+            configuration.WriteTo.Console(new CompactJsonFormatter());
+            break;
+        default:
+            configuration.WriteTo.Console(outputTemplate:
+                "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}  {Message:lj}{NewLine}{Exception}");
+            break;
     }
 
     // File sink (always JSON) — capped at persistentSinkMinLevel so Debug does not
