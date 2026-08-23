@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { apiGet, apiPost, apiDelete } from '../api/client';
+import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '../context/ToastContext';
+import { useStepUp } from '../components/StepUpMfaContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
@@ -95,6 +96,10 @@ const RoleDrawer: React.FC<{ role: RoleSummary }> = ({ role }) => {
 /// </summary>
 const RoleManagement: React.FC = () => {
     const { showToast } = useToast();
+    // These endpoints carry [RequireStepUp]; the plain api helpers never attach
+    // X-MFA-Token and never retry, so role create/delete always 403'd with an MFA error
+    // and no modal to satisfy it.
+    const { requireStepUp } = useStepUp();
     const [roles, setRoles] = useState<RoleSummary[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -130,10 +135,10 @@ const RoleManagement: React.FC = () => {
         e.preventDefault();
         setCreating(true);
         try {
-            await apiPost('/api/v1/admin/roles', {
+            await apiPostWithMfa('/api/v1/admin/roles', {
                 name: createForm.name,
                 description: createForm.description,
-            });
+            }, requireStepUp, 'create-role');
             setShowCreate(false);
             setCreateForm({ name: '', description: '' });
             setRefreshTrigger((t) => t + 1);
@@ -151,7 +156,7 @@ const RoleManagement: React.FC = () => {
         try {
             for (const r of confirmBulk) {
                 if (r.isBuiltIn) continue;
-                try { await apiDelete(`/api/v1/admin/roles/${r.id}`); ok++; } catch { failed++; }
+                try { await apiDeleteWithMfa(`/api/v1/admin/roles/${r.id}`, requireStepUp, 'delete-role', r.id); ok++; } catch { failed++; }
             }
             if (ok) showToast('success', `Deleted ${ok} role${ok !== 1 ? 's' : ''}.`);
             if (failed) showToast('error', `${failed} failed to delete.`);

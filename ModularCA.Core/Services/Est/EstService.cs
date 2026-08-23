@@ -284,7 +284,7 @@ public class EstService : IEstService
         }
 
         var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var notAfter = notBefore.Add(maxValidity);
 
         var issuanceResult = await _issuanceService.IssueCertificateAsync(

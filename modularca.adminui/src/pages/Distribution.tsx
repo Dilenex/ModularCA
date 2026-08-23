@@ -73,7 +73,7 @@ const CrlSchedulesSection: React.FC = () => {
     const handleCreate = async () => {
         setCreating(true);
         try {
-            await apiPost('/api/v1/admin/crl-schedules', form);
+            await apiPostWithMfa('/api/v1/admin/crl-schedules', form, requireStepUp, 'create-crl-schedule');
             setShowCreate(false);
             setForm({ name: '', cronExpression: '', caId: '', overlapPeriod: '' });
             load();

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { apiGet, apiPost, apiDelete } from '../api/client';
+import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
@@ -35,6 +36,8 @@ interface DropdownOption {
 /* ─── X.509 CA Templates Tab ─── */
 const X509TemplatesTab: React.FC = () => {
     const { showToast } = useToast();
+    // These endpoints carry [RequireStepUp]; the plain helpers never attach X-MFA-Token.
+    const { requireStepUp } = useStepUp();
     const [templates, setTemplates] = useState<CertificateTemplate[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -106,7 +109,7 @@ const X509TemplatesTab: React.FC = () => {
                 signingProfileId: form.signingProfileId, isEnabled: form.isEnabled,
             };
             if (form.requestProfileId) body.requestProfileId = form.requestProfileId;
-            await apiPost('/api/v1/admin/templates', body);
+            await apiPostWithMfa('/api/v1/admin/templates', body, requireStepUp, 'create-certificate-template');
             setShowCreate(false);
             resetForm();
             load();
@@ -125,7 +128,7 @@ const X509TemplatesTab: React.FC = () => {
             title: 'Delete Template',
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
-                await apiDelete(`/api/v1/admin/templates/${template.id}`);
+                await apiDeleteWithMfa(`/api/v1/admin/templates/${template.id}`, requireStepUp, 'delete-certificate-template', template.id);
                 if (selectedTemplate?.id === template.id) setSelectedTemplate(null);
                 load();
             },

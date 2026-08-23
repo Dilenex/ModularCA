@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.API.Filters;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -102,6 +103,7 @@ public class AdminAcmeEabController(
     /// Deletes an EAB key by its database ID. Used keys can also be deleted.
     /// </summary>
     [HttpDelete("{id:guid}")]
+    [RequireStepUp(StepUpOps.DeleteEabKey, "id")]
     public async Task<IActionResult> DeleteEabKey(Guid id)
     {
         var key = await _db.AcmeEabKeys.FindAsync(id);

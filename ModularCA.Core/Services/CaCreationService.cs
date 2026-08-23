@@ -141,7 +141,7 @@ public class CaCreationService(
         serialBytes[0] = 0x00;
         RandomNumberGenerator.Fill(serialBytes.AsSpan(1));
         var serial = new BigInteger(1, serialBytes);
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var notAfter = DateTime.UtcNow.AddYears(validityYears);
 
         var certGen = new X509V3CertificateGenerator();
@@ -284,7 +284,7 @@ public class CaCreationService(
             (csrId, newKeyPair) = await csrService.GenerateInfrastructureCsrAsync(
                 subjectDnStr, keyAlgorithm, keySize, caCertProfile.Id, parentSigningProfile.Id);
 
-            var notBefore = DateTime.UtcNow;
+            var notBefore = CertificateValidityUtil.DefaultNotBefore();
             var notAfter = notBefore.AddYears(validityYears);
             if (notAfter > parentBcCert.NotAfter)
             {
@@ -447,6 +447,8 @@ public class CaCreationService(
         byte[]? tsaPrivKeyDer = null;
         X509Certificate ocspCertForKeystore;
         byte[]? ocspPrivKeyDer = null;
+        AsymmetricKeyParameter? tsaPrivKey = null;
+        AsymmetricKeyParameter? ocspPrivKey = null;
 
         // Wrap every DB write in a single transaction so a mid-flight failure
         // leaves no orphan rows. Keystore writes must remain OUTSIDE the transaction (file
@@ -475,7 +477,32 @@ public class CaCreationService(
                 Description = $"Default signing profile for {name}",
                 IssuerId = certEntity.CertificateId,
                 AllowedAlgorithms = JsonSerializer.Serialize(new[] { "RSA", "ECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" }),
-                AllowedEKUs = JsonSerializer.Serialize(new[] { "1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2" }), // ServerAuth, ClientAuth
+                // ServerAuth, ClientAuth — plus the two EKUs this CA needs to issue its OWN
+                // infrastructure certificates.
+                //
+                // IssueInfrastructureCertAsync issues this CA's OCSP responder and TSA
+                // certificates through this very signing profile, and issuance intersects the
+                // cert profile's requested EKU against this allow-list. With only ServerAuth and
+                // ClientAuth here, the intersection for "OCSP Responder Certificate Profile"
+                // (which asks for OCSPSigning) was empty, the EKU was silently dropped, and the
+                // CA issued itself a responder certificate lacking id-kp-OCSPSigning — which
+                // OcspResponderService then refuses to use. Every CA created at runtime answered
+                // OCSP with "unauthorized" as a result. Bootstrap-created CAs were unaffected
+                // because their signing profile is seeded from the full EKU list.
+                // Matches the six EKUs the bootstrap seeder grants its root
+                // (BootstrapModularCA.cs: allowedRootCaExtendedOids). A CA created through the
+                // admin UI should be able to issue exactly what a bootstrap-created CA can —
+                // anything narrower silently drops usages the cert profile asked for, which the
+                // operator only discovers when a certificate turns out to lack them.
+                AllowedEKUs = JsonSerializer.Serialize(new[]
+                {
+                    "1.3.6.1.5.5.7.3.1",  // serverAuth
+                    "1.3.6.1.5.5.7.3.2",  // clientAuth
+                    "1.3.6.1.5.5.7.3.3",  // codeSigning
+                    "1.3.6.1.5.5.7.3.4",  // emailProtection
+                    "1.3.6.1.5.5.7.3.8",  // timeStamping   — also this CA's own TSA certificate
+                    "1.3.6.1.5.5.7.3.9",  // OCSPSigning    — also this CA's own OCSP responder
+                }),
                 NameConstraintsPermitted = string.IsNullOrWhiteSpace(nameConstraintsPermittedJson) ? null : nameConstraintsPermittedJson,
                 NameConstraintsExcluded = string.IsNullOrWhiteSpace(nameConstraintsExcludedJson) ? null : nameConstraintsExcludedJson,
                 IsDefault = true,
@@ -594,11 +621,11 @@ public class CaCreationService(
             // Uses the CA-override issuance overload since the CA isn't in the keystore yet.
             var caKeyHandle = new SoftwarePrivateKeyHandle(newKeyPair.Private);
 
-            (tsaCertForKeystore, tsaPrivKeyDer) = await IssueInfrastructureCertAsync(
+            (tsaCertForKeystore, tsaPrivKeyDer, tsaPrivKey) = await IssueInfrastructureCertAsync(
                 newCaCert, newKeyPair.Private, caKeyHandle, caEntity, signingProfile,
                 "TSA Certificate Profile", "TSA", logger);
 
-            (ocspCertForKeystore, ocspPrivKeyDer) = await IssueInfrastructureCertAsync(
+            (ocspCertForKeystore, ocspPrivKeyDer, ocspPrivKey) = await IssueInfrastructureCertAsync(
                 newCaCert, newKeyPair.Private, caKeyHandle, caEntity, signingProfile,
                 "OCSP Responder Certificate Profile", "OCSP Responder", logger);
 
@@ -744,7 +771,23 @@ public class CaCreationService(
         var privKeyHandle = new SoftwarePrivateKeyHandle(newKeyPair.Private);
         var identity = new CertificateAuthorityIdentity(newCaCert, privKeyHandle);
         if (keystore is MultiCARegistry registry)
+        {
             registry.RegisterSigner(identity);
+
+            // Register the infrastructure identities too. Their private keys were just written to
+            // the keystore FILE, but IKeystoreCertificates is a singleton populated at startup and
+            // AppendEntries has no way to refresh it — so without this the OCSP responder resolves
+            // its own certificate, fails GetPrivateKeyFor, and answers every request with
+            // "unauthorized" until someone restarts the service. The TSA fails the same way, more
+            // quietly. Verified end to end: OCSP for a UI-created CA returned unauthorized before
+            // a restart and a correct extended-revoke response after one.
+            if (tsaPrivKey != null)
+                registry.RegisterSigner(new CertificateAuthorityIdentity(
+                    tsaCertForKeystore, new SoftwarePrivateKeyHandle(tsaPrivKey)));
+            if (ocspPrivKey != null)
+                registry.RegisterSigner(new CertificateAuthorityIdentity(
+                    ocspCertForKeystore, new SoftwarePrivateKeyHandle(ocspPrivKey)));
+        }
 
         // Generate the initial CRL now that the CA key is in the registry.
         try
@@ -1010,7 +1053,7 @@ public class CaCreationService(
     /// Returns the signed cert (for keystore) and the DER-encoded private key.
     /// Also links the issued cert to the CA entity via TsaCertificateId or OcspResponderCertificateId.
     /// </summary>
-    private async Task<(X509Certificate cert, byte[] privKeyDer)> IssueInfrastructureCertAsync(
+    private async Task<(X509Certificate cert, byte[] privKeyDer, AsymmetricKeyParameter privKey)> IssueInfrastructureCertAsync(
         X509Certificate caCert,
         AsymmetricKeyParameter caPrivKey,
         IPrivateKeyHandle caKeyHandle,
@@ -1046,7 +1089,7 @@ public class CaCreationService(
             subjectDn, alg, sizeOrCurve, certProfile.Id, signingProfile.Id);
 
         // Issue through the standard pipeline with pre-resolved CA
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var notAfter = notBefore.AddYears(10);
         if (notAfter > caCert.NotAfter)
             notAfter = caCert.NotAfter;
@@ -1074,7 +1117,10 @@ public class CaCreationService(
             certType, caEntity.Name, issuedCert.SubjectDN);
 
         var privKeyDer = PrivateKeyInfoFactory.CreatePrivateKeyInfo(keyPair.Private).GetDerEncoded();
-        return (issuedCert, privKeyDer);
+        // The key itself is returned too, not just its DER: the DER buffer is zeroed by the
+        // caller's finally block, but the runtime registry needs a live handle so the TSA and
+        // OCSP responder work without waiting for a restart.
+        return (issuedCert, privKeyDer, keyPair.Private);
     }
 
     /// <summary>

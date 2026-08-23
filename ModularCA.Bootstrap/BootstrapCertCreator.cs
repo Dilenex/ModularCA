@@ -313,7 +313,7 @@ public static class BootstrapCertCreator
         var subjectDN = new X509Name($"CN={parentCn} TSA");
 
         // Cap TSA validity at the parent CA's notAfter.
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var requested = notBefore.AddYears(10);
         var notAfter = requested > caCert.NotAfter ? caCert.NotAfter : requested;
         if (notAfter <= notBefore) notAfter = caCert.NotAfter;
@@ -396,7 +396,7 @@ public static class BootstrapCertCreator
         }
         var subjectDN = new X509Name($"CN={parentCn} OCSP Responder");
 
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var requested = notBefore.AddYears(10);
         var notAfter = requested > caCert.NotAfter ? caCert.NotAfter : requested;
         if (notAfter <= notBefore) notAfter = caCert.NotAfter;

@@ -238,7 +238,9 @@ namespace ModularCA.Core.Services
             var now = DateTime.UtcNow;
             var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
 
-            var validFrom = notBefore ?? now;
+            // Backdate an auto-generated start time so the certificate is valid on verifiers whose
+            // clocks trail ours. An explicitly requested notBefore is honoured as given.
+            var validFrom = notBefore ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = notAfter ?? timeMax;
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin
@@ -265,8 +267,19 @@ namespace ModularCA.Core.Services
                 }
             }
 
-            if (validFrom < caMatch.NotBefore)
-                throw new InvalidOperationException($"Certificate NotBefore ({validFrom:O}) precedes issuing CA NotBefore ({caMatch.NotBefore:O}). Increase NotBefore date.");
+            // Raise to the issuer's start rather than refusing. A leaf cannot be valid before its
+            // issuer, so the issuer's notBefore is the correct earliest value — and this is what
+            // makes backdating safe against CAs whose own notBefore was not backdated, including
+            // every CA created before that change. Consistent with how the notAfter clamp above
+            // adjusts and warns instead of throwing.
+            validFrom = CertificateValidityUtil.ClampToIssuer(validFrom, caMatch.NotBefore, out var startClamped);
+            if (startClamped)
+            {
+                var startMsg = $"Certificate NotBefore raised to the issuing CA's start date ({caMatch.NotBefore:O}); "
+                             + "a certificate cannot be valid before its issuer.";
+                _logger.LogWarning(startMsg);
+                issuanceWarnings.Add(startMsg);
+            }
 
             // Generate 128-bit random serial number (CA/BF BR §7.1
             // requires ≥64 bits from CSPRNG). Use 17 bytes with a forced 0x00
@@ -589,7 +602,9 @@ namespace ModularCA.Core.Services
             var now = DateTime.UtcNow;
             var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
 
-            var validFrom = notBefore ?? now;
+            // Backdate an auto-generated start time so the certificate is valid on verifiers whose
+            // clocks trail ours. An explicitly requested notBefore is honoured as given.
+            var validFrom = notBefore ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = notAfter ?? timeMax;
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin.
@@ -613,8 +628,19 @@ namespace ModularCA.Core.Services
                 }
             }
 
-            if (validFrom < caMatch.NotBefore)
-                throw new InvalidOperationException($"Certificate NotBefore ({validFrom:O}) precedes issuing CA NotBefore ({caMatch.NotBefore:O}). Increase NotBefore date.");
+            // Raise to the issuer's start rather than refusing. A leaf cannot be valid before its
+            // issuer, so the issuer's notBefore is the correct earliest value — and this is what
+            // makes backdating safe against CAs whose own notBefore was not backdated, including
+            // every CA created before that change. Consistent with how the notAfter clamp above
+            // adjusts and warns instead of throwing.
+            validFrom = CertificateValidityUtil.ClampToIssuer(validFrom, caMatch.NotBefore, out var startClamped);
+            if (startClamped)
+            {
+                var startMsg = $"Certificate NotBefore raised to the issuing CA's start date ({caMatch.NotBefore:O}); "
+                             + "a certificate cannot be valid before its issuer.";
+                _logger.LogWarning(startMsg);
+                issuanceWarnings.Add(startMsg);
+            }
 
             // 17 bytes with leading 0x00 → 128 bits of random magnitude, positive.
             var reissueSerialBytes = new byte[17];

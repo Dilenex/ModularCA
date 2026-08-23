@@ -810,7 +810,7 @@ public class CmpService : ICmpService
         await _db.SaveChangesAsync();
 
         // Determine validity from template or defaults
-        var notBefore = DateTime.UtcNow;
+        var notBefore = CertificateValidityUtil.DefaultNotBefore();
         var notAfter = notBefore.Add(Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y"));
 
         if (certTemplate.Validity != null)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiPut, apiDelete, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPost, apiPostWithMfa, apiPut, apiDelete, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
@@ -409,7 +409,8 @@ const SigningProfilesTab: React.FC = () => {
             const created = await apiPost<any>('/api/v1/admin/signing-profiles', body);
             // Link allowed cert profiles via the join endpoint
             if (form.allowedCertProfileIds.length > 0 && created?.id) {
-                await apiPut(`/api/v1/admin/signing-profiles/${created.id}/allowed-cert-profiles`, form.allowedCertProfileIds);
+                await apiPutWithMfa(`/api/v1/admin/signing-profiles/${created.id}/allowed-cert-profiles`,
+                    form.allowedCertProfileIds, requireStepUp, 'update-signing-profile', created.id);
             }
             setShowCreate(false);
             resetForm();
@@ -702,7 +703,7 @@ const SshSigningProfilesTab: React.FC = () => {
     const handleCreate = async () => {
         setCreating(true);
         try {
-            await apiPost('/api/v1/admin/ssh/profiles/signing', {
+            await apiPostWithMfa('/api/v1/admin/ssh/profiles/signing', {
                 name: form.name,
                 description: form.description || undefined,
                 sshCaKeyId: form.sshCaKeyId,
@@ -712,7 +713,7 @@ const SshSigningProfilesTab: React.FC = () => {
                 forceCommand: form.forceCommand || undefined,
                 sourceAddressRestrictions: JSON.stringify(form.sourceAddressRestrictions ? form.sourceAddressRestrictions.split(',').map(s => s.trim()).filter(Boolean) : []),
                 defaultExtensions: JSON.stringify(form.defaultExtensions),
-            });
+            }, requireStepUp, 'create-ssh-profile');
             setShowCreate(false);
             resetForm();
             load();
@@ -727,7 +728,7 @@ const SshSigningProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/signing/${confirmDelete.id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/signing/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
             showToast('success', 'SSH signing profile deleted');
             load();
         } catch (err: any) {
@@ -914,7 +915,7 @@ const SshCertProfilesTab: React.FC = () => {
             const patterns = form.allowedPrincipalPatterns.trim()
                 ? form.allowedPrincipalPatterns.split('\n').map(s => s.trim()).filter(Boolean)
                 : [];
-            await apiPost('/api/v1/admin/ssh/profiles/cert', {
+            await apiPostWithMfa('/api/v1/admin/ssh/profiles/cert', {
                 name: form.name,
                 description: form.description || undefined,
                 allowedPrincipalPatterns: JSON.stringify(patterns),
@@ -922,7 +923,7 @@ const SshCertProfilesTab: React.FC = () => {
                 allowedExtensions: JSON.stringify(form.allowedExtensions),
                 requiredExtensions: JSON.stringify(form.requiredExtensions),
                 maxValidityHours: parseInt(form.maxValidityHours) || 720,
-            });
+            }, requireStepUp, 'create-ssh-profile');
             setShowCreate(false);
             resetForm();
             load();
@@ -937,7 +938,7 @@ const SshCertProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/cert/${confirmDelete.id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
             showToast('success', 'SSH cert profile deleted');
             load();
         } catch (err: any) {
@@ -1109,7 +1110,7 @@ const SshRequestProfilesTab: React.FC = () => {
     const handleCreate = async () => {
         setCreating(true);
         try {
-            await apiPost('/api/v1/admin/ssh/profiles/request', {
+            await apiPostWithMfa('/api/v1/admin/ssh/profiles/request', {
                 name: form.name,
                 description: form.description || undefined,
                 allowedSshSigningProfileIds: JSON.stringify(form.allowedSshSigningProfileIds),
@@ -1117,7 +1118,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 requireApproval: form.requireApproval,
                 maxValidityHours: parseInt(form.maxValidityHours) || 720,
                 certificateAuthorityId: form.certificateAuthorityId || undefined,
-            });
+            }, requireStepUp, 'create-ssh-profile');
             setShowCreate(false);
             resetForm();
             load();
@@ -1132,7 +1133,7 @@ const SshRequestProfilesTab: React.FC = () => {
         if (!confirmDelete) return;
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/request/${confirmDelete.id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/request/${confirmDelete.id}`, requireStepUp, 'delete-ssh-profile', confirmDelete.id);
             showToast('success', 'SSH request profile deleted');
             load();
         } catch (err: any) {

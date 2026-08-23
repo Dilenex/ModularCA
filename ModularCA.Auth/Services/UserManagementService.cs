@@ -144,7 +144,17 @@ namespace ModularCA.Auth.Services
             user.Email = request.Email ?? user.Email;
             user.FirstName = request.FirstName ?? user.FirstName;
             user.LastName = request.LastName ?? user.LastName;
-            user.DisplayName = request.DisplayName ?? (request.FirstName + " " + request.LastName) ?? user.DisplayName;
+            // String concatenation never yields null, so `(request.FirstName + " " + request.LastName)`
+            // evaluates to the single space " " when both are omitted — which made the
+            // `?? user.DisplayName` fallback unreachable and blanked the display name on EVERY
+            // partial update. Toggling a user's active state from the admin UI (which PUTs only
+            // {"isActive": false}) wiped their name. Only derive a name when a name part was
+            // actually supplied.
+            user.DisplayName = request.DisplayName
+                ?? (request.FirstName != null || request.LastName != null
+                        ? $"{request.FirstName ?? user.FirstName} {request.LastName ?? user.LastName}".Trim()
+                        : null)
+                ?? user.DisplayName;
             user.IsActive = request.IsActive ?? user.IsActive;
             user.IsLocked = request.IsLocked ?? user.IsLocked;
 

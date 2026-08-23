@@ -29,11 +29,33 @@ public sealed class IpNetwork
     /// </summary>
     /// <param name="network">Network base address (IPv4 or IPv6).</param>
     /// <param name="prefixLength">CIDR prefix length in bits.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="prefixLength"/> is outside 0..32 (IPv4) or 0..128 (IPv6).
+    /// <para>
+    /// This was unvalidated, and a NEGATIVE prefix was not merely wrong — it was allow-all.
+    /// CreateMask walks the address bytes with <c>if (prefixLength &gt;= 8) … else if
+    /// (prefixLength &gt; 0) …</c>, so a negative value matched neither branch, every mask byte
+    /// stayed zero, and Contains() then returned true for every address on the internet. The only
+    /// validation of operator-supplied CIDRs is whether ParseNetworks accepted the entry, so
+    /// <c>10.0.0.0/-1</c> — or a fat-fingered <c>/-25</c> — was stored, displayed in the admin UI
+    /// as a private range, and silently matched everything. Applied to the Admin or Api whitelist
+    /// scope that exposes the admin surface to any source address.
+    /// </para>
+    /// </exception>
     public IpNetwork(IPAddress network, int prefixLength)
     {
         _network = network;
-        _prefixLength = prefixLength;
         _networkBytes = network.GetAddressBytes();
+
+        var maxPrefix = _networkBytes.Length * 8;
+        if (prefixLength < 0 || prefixLength > maxPrefix)
+        {
+            throw new ArgumentOutOfRangeException(nameof(prefixLength), prefixLength,
+                $"CIDR prefix length must be between 0 and {maxPrefix} for "
+                + $"{(_networkBytes.Length == 4 ? "IPv4" : "IPv6")}.");
+        }
+
+        _prefixLength = prefixLength;
         _mask = CreateMask(_networkBytes.Length, prefixLength);
     }
 

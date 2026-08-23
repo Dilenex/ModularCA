@@ -169,6 +169,15 @@ public static class StepUpOps
     // step-up MFA on top of the SystemOperator policy.
     public const string UpdateFeatureFlag = "update-feature-flag";
 
+    /// <summary>
+    /// Deleting an ACME External Account Binding key. The admin UI has always requested step-up
+    /// for this, but the operation was missing here and the endpoint carried no attribute — so
+    /// MfaStepUpController rejected the request with 400 invalid_step_up_operation and the key
+    /// could not be deleted at all. An EAB key authorizes ACME account binding, so it gets the
+    /// same protection as every other destructive admin action.
+    /// </summary>
+    public const string DeleteEabKey = "delete-eab-key";
+
     // SSH profile catalog (signing / cert / request profiles all bind to the same
     // SSH CA key catalog). Reused across all three profile types because they
     // converge on the same signing material.
@@ -232,6 +241,7 @@ public static class StepUpOps
         CreateCertificateTemplate, UpdateCertificateTemplate, DeleteCertificateTemplate,
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
+        DeleteEabKey,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,

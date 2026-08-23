@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPutWithMfa, apiDelete } from '../api/client';
+import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
@@ -89,7 +89,7 @@ const SshRequestProfileDetail: React.FC = () => {
                 requireApproval: editForm.requireApproval,
                 maxValidityHours: parseInt(editForm.maxValidityHours) || 720,
                 certificateAuthorityId: editForm.certificateAuthorityId || undefined,
-            }, requireStepUp, 'update-ssh-request-profile', id!);
+            }, requireStepUp, 'update-ssh-profile', id!);
             showToast('success', 'SSH request profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -103,7 +103,7 @@ const SshRequestProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/request/${id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/request/${id}`, requireStepUp, 'delete-ssh-profile', id);
             showToast('success', 'SSH request profile deleted');
             navigate(SSH_REQUEST_TAB);
         } catch (err: any) {

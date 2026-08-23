@@ -1186,6 +1186,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
 /* --- Feature Flags Tab --- */
 const FeatureFlagsTab: React.FC = () => {
+    // PUT /admin/features/{name} carries [RequireStepUp]; this tab is a separate component
+    // from the one holding the hook above, so it needs its own.
+    const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
     const [features, setFeatures] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1203,7 +1206,8 @@ const FeatureFlagsTab: React.FC = () => {
 
     const handleToggle = async (feature: any) => {
         try {
-            await apiPut(`/api/v1/admin/features/${feature.name}`, { enabled: !feature.enabled });
+            await apiPutWithMfa(`/api/v1/admin/features/${feature.name}`,
+                { enabled: !feature.enabled }, requireStepUp, 'update-feature-flag', feature.name);
             load();
         } catch (err: any) {
             showToast('error', err.message || 'Failed to update feature flag');

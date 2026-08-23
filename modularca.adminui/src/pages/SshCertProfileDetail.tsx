@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPutWithMfa, apiDelete } from '../api/client';
+import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import DetailField from '../components/cards/DetailField';
@@ -76,7 +76,7 @@ const SshCertProfileDetail: React.FC = () => {
                 allowedExtensions: JSON.stringify(editForm.allowedExtensions),
                 requiredExtensions: JSON.stringify(editForm.requiredExtensions),
                 maxValidityHours: parseInt(editForm.maxValidityHours) || 720,
-            }, requireStepUp, 'update-ssh-cert-profile', id!);
+            }, requireStepUp, 'update-ssh-profile', id!);
             showToast('success', 'SSH cert profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -90,7 +90,7 @@ const SshCertProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/cert/${id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/cert/${id}`, requireStepUp, 'delete-ssh-profile', id);
             showToast('success', 'SSH cert profile deleted');
             navigate(SSH_CERT_TAB);
         } catch (err: any) {

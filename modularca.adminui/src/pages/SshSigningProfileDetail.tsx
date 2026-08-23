@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPutWithMfa, apiDelete } from '../api/client';
+import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
@@ -80,7 +80,7 @@ const SshSigningProfileDetail: React.FC = () => {
                 forceCommand: editForm.forceCommand || undefined,
                 sourceAddressRestrictions: JSON.stringify(editForm.sourceAddressRestrictions ? editForm.sourceAddressRestrictions.split(',').map((s) => s.trim()).filter(Boolean) : []),
                 defaultExtensions: JSON.stringify(editForm.defaultExtensions),
-            }, requireStepUp, 'update-ssh-signing-profile', id!);
+            }, requireStepUp, 'update-ssh-profile', id!);
             showToast('success', 'SSH signing profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -94,7 +94,7 @@ const SshSigningProfileDetail: React.FC = () => {
     const doDelete = async () => {
         setDeleting(true);
         try {
-            await apiDelete(`/api/v1/admin/ssh/profiles/signing/${id}`);
+            await apiDeleteWithMfa(`/api/v1/admin/ssh/profiles/signing/${id}`, requireStepUp, 'delete-ssh-profile', id);
             showToast('success', 'SSH signing profile deleted');
             navigate(SSH_SIGNING_TAB);
         } catch (err: any) {
