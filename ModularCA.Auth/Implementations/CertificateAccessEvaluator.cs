@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
@@ -121,6 +121,22 @@ namespace ModularCA.Auth.Implementations
             if (HasCapabilityForCa(userId, Capabilities.SystemManage, caId, tenantId))
                 return true;
             if (HasCapabilityForCa(userId, Capabilities.CertRevoke, caId, tenantId))
+                return true;
+
+            // The original requestor gets self-service over the certificate they asked for:
+            // export the key the CA generated for them, renew it, revoke it. CanViewCertificate
+            // has always had this clause and this one did not, which left a user able to SEE a
+            // server-generated certificate but never to export its key — making the key
+            // permanently unreachable to the only person who needs it — and unable to revoke
+            // their own certificate through an endpoint named RevokeOwnCertificate.
+            //
+            // Two exclusions, because "I requested it" must not confer control over the CA's
+            // own machinery: CA certificates, and infrastructure certificates (OCSP/TSA
+            // responders), where a revoke would take out the CA's responder.
+            if (!cert.IsCA && _db.CertificateRequests.Any(r =>
+                    r.IssuedCertificateId == certificateId
+                    && r.RequestorUserId == userId
+                    && !r.IsInfrastructureCert))
                 return true;
 
             // Explicit ACL

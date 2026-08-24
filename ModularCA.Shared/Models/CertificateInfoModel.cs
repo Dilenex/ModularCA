@@ -1,4 +1,6 @@
-﻿namespace ModularCA.Shared.Models
+﻿using System.Text.Json.Serialization;
+
+namespace ModularCA.Shared.Models
 {
     public class CertificateInfoModel
     {
@@ -22,9 +24,29 @@
         public string KeySize { get; set; } = string.Empty;
         public string SignatureAlgorithm { get; set; } = string.Empty;
 
+        // Wrapped key material. Carried on this model only so the store can persist it on the
+        // way IN; the read paths never populate it. JsonIgnore makes that structural rather than
+        // incidental — this model is returned directly by API endpoints, and a future mapper
+        // that filled these in would otherwise ship wrapped private keys to every browser that
+        // lists certificates.
+        [JsonIgnore]
         public byte[]? Iv { get; set; }
+        [JsonIgnore]
         public byte[]? EncryptedAesKey { get; set; }
+        [JsonIgnore]
         public byte[]? EncryptedPrivateKey { get; set; }
+
+        /// <summary>
+        /// Whether an exportable private key is stored for this certificate.
+        /// </summary>
+        /// <remarks>
+        /// The user portal gated its "Export PFX" button on <c>encryptedPrivateKey</c> being
+        /// present in the response — but the read mappings never populate that field (correctly:
+        /// key material must not be sent to a browser), so the button rendered for nobody and
+        /// PFX export was unreachable through the UI. This boolean is the safe answer to the
+        /// question the UI was actually asking.
+        /// </remarks>
+        public bool HasPrivateKey { get; set; }
 
         /// <summary>Serial number of the certificate whose public key was used to encrypt EncryptedPrivateKey.</summary>
         public string? EncryptionCertSerialNumber { get; set; }

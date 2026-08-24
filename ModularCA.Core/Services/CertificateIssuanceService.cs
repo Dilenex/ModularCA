@@ -334,7 +334,18 @@ namespace ModularCA.Core.Services
             if (csrEntity.EncryptedPrivateKey != null && csrEntity.AesKeyEncryptionIv != null && csrEntity.EncryptedAesForPrivateKey != null && csrEntity.EncryptionCertSerialNumber != null)
             {
                 var decryptedCsrPrivKey = DecryptPrivateKeyFromSerial(csrEntity.AesKeyEncryptionIv, csrEntity.EncryptedAesForPrivateKey, csrEntity.EncryptedPrivateKey, csrEntity.EncryptionCertSerialNumber, _db, _keystore, _passphraseProvider);
-                (certIv, certEncryptedAes, certEncryptedPrivKey) = KeyEncryptionUtil.EncryptPrivateKey(caMatch.GetPublicKey(), decryptedCsrPrivKey, _passphraseProvider.GetPassphrase());
+                // Assign BY NAME. EncryptPrivateKey returns (aesKeyEncrypted, iv, encryptedPrivateKey),
+                // and this used to deconstruct it positionally into (certIv, certEncryptedAes, ...) --
+                // so the wrapped AES key was stored in the IV column and the 12-byte IV in the AES
+                // key column. Tuple element names do not protect a positional deconstruction, and
+                // nothing failed at issuance time: the swap only surfaced later, as an
+                // ArgumentOutOfRangeException deep inside the unwrap, the first time anyone tried
+                // to export a PFX. Every other caller assigns by name; this was the one that did not.
+                var encryptedForCert = KeyEncryptionUtil.EncryptPrivateKey(
+                    caMatch.GetPublicKey(), decryptedCsrPrivKey, _passphraseProvider.GetPassphrase());
+                certIv = encryptedForCert.iv;
+                certEncryptedAes = encryptedForCert.aesKeyEncrypted;
+                certEncryptedPrivKey = encryptedForCert.encryptedPrivateKey;
             }
 
             // Track which CA certificate was used to encrypt the private key

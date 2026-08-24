@@ -265,9 +265,7 @@ export interface CertificateInfoModel {
     keyAlgorithm: string;
     keySize: string;
     signatureAlgorithm: string;
-    iv?: string | null;
-    encryptedAesKey?: string | null;
-    encryptedPrivateKey?: string | null;
+    hasPrivateKey: boolean;
     encryptionCertSerialNumber?: string | null;
     revoked: boolean;
     revocationReason: string;

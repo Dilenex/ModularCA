@@ -255,7 +255,11 @@ const MyCertificates: React.FC = () => {
     const renderExpanded = (cert: any) => {
         const serial = cert.serialNumber;
         const status = certStatus(cert);
-        const hasPrivateKey = cert.encryptedPrivateKey && cert.encryptedPrivateKey.length > 0;
+        // The API reports this as a boolean and never sends key material to the browser. The
+        // old check looked for `encryptedPrivateKey` in the response, which no read path
+        // populates, so Export PFX was hidden for every certificate -- including ones the CA
+        // holds an exportable key for.
+        const hasPrivateKey = cert.hasPrivateKey === true;
         return (
             <div className="space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">

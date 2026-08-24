@@ -96,3 +96,22 @@ public class CertificateEntity
     public virtual CertificateAuthorityEntity? CertificateAuthority { get; set; }
 
 }
+
+/// <summary>Predicates over <see cref="CertificateEntity"/> that must not drift between callers.</summary>
+public static class CertificateEntityExtensions
+{
+    /// <summary>
+    /// True when this certificate has a stored private key that can be unwrapped and exported
+    /// as PKCS#12. All three wrapping components must be present; a partial set is unusable.
+    /// </summary>
+    /// <remarks>
+    /// This is the single definition of "PFX export will work". The admin UI's Export PFX button
+    /// and <c>CertificateExportService.ExportPfxAsync</c> both consult it, so the button cannot
+    /// offer an export the service will refuse — or, as happened, be hidden for a certificate
+    /// that could in fact be exported.
+    /// </remarks>
+    public static bool HasExportablePrivateKey(this CertificateEntity entity) =>
+        entity.EncryptedPrivateKey != null
+        && entity.AesKeyEncryptionIv != null
+        && entity.EncryptedAesForPrivateKey != null;
+}

@@ -92,6 +92,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = entity.NotAfter,
             Thumbprints = entity.Thumbprints,
             IsCA = entity.IsCA,
+            HasPrivateKey = entity.HasExportablePrivateKey(),
 
 
             Revoked = entity.Revoked,
@@ -129,6 +130,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
                 NotAfter = c.NotAfter,
                 Thumbprints = c.Thumbprints,
                 IsCA = c.IsCA,
+                HasPrivateKey = c.HasExportablePrivateKey(),
 
 
                 Revoked = c.Revoked,
@@ -198,6 +200,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = entity.NotAfter,
             Thumbprints = entity.Thumbprints,
             IsCA = entity.IsCA,
+            HasPrivateKey = entity.HasExportablePrivateKey(),
 
 
             Revoked = entity.Revoked,
@@ -221,6 +224,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = c.NotAfter,
             Thumbprints = c.Thumbprints,
             IsCA = c.IsCA,
+            HasPrivateKey = c.HasExportablePrivateKey(),
             Revoked = c.Revoked,
             RevocationReason = c.RevocationReason ?? string.Empty,
             RevocationDate = c.RevocationDate,
@@ -270,6 +274,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = entity.NotAfter,
             Thumbprints = entity.Thumbprints,
             IsCA = entity.IsCA,
+            HasPrivateKey = entity.HasExportablePrivateKey(),
 
 
             Revoked = entity.Revoked,

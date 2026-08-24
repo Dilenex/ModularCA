@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
+using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Crypto;
@@ -47,7 +48,7 @@ public class CertificateExportService : ICertificateExportService
 
         // Decrypt private key if available
         AsymmetricKeyParameter? privKey = null;
-        if (certEntity.EncryptedPrivateKey != null && certEntity.AesKeyEncryptionIv != null && certEntity.EncryptedAesForPrivateKey != null)
+        if (certEntity.HasExportablePrivateKey())
         {
             privKey = DecryptPrivateKey(certEntity);
         }
