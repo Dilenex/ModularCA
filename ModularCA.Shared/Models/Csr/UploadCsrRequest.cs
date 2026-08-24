@@ -26,6 +26,15 @@ namespace ModularCA.Shared.Models.Csr
         /// Optional SAN overrides. When provided, these replace the CSR's original SANs at issuance time.
         /// </summary>
         public List<SanOverride>? SanOverrides { get; set; }
+
+        /// <summary>
+        /// Optional requested validity window, stored on the request and used at issuance
+        /// unless the issuer overrides it. Null leaves the choice to the certificate profile.
+        /// </summary>
+        public DateTime? NotBefore { get; set; }
+
+        /// <inheritdoc cref="NotBefore"/>
+        public DateTime? NotAfter { get; set; }
     }
 
     /// <summary>

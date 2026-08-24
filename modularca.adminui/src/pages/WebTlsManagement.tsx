@@ -235,7 +235,7 @@ const ReissueCard: React.FC<{
                 validityDays: 397,
                 signingProfileId: status.signingProfileId ?? '',
                 keyAlgorithm: status.keyAlgorithm ?? 'ECDSA',
-                keySize: status.keySize || fallbackKeySize,
+                keySize: normalizeKeySize(status.keySize) || fallbackKeySize,
             });
         }
     }, [status]);
@@ -243,6 +243,18 @@ const ReissueCard: React.FC<{
     const handleReissue = async () => {
         setError(null);
         setSuccess(null);
+
+        // Never guess a key size. Falling back to 256 on an unparseable value is what turned a
+        // P-384 reissue into a P-256 certificate without telling anyone. Ed25519 has no size.
+        let keySize = 0;
+        if (form.keyAlgorithm !== 'Ed25519') {
+            keySize = parseInt(form.keySize, 10);
+            if (!Number.isFinite(keySize) || keySize <= 0) {
+                setError(`Unrecognised key size "${form.keySize}" for ${form.keyAlgorithm}. Pick one from the Key Size list.`);
+                return;
+            }
+        }
+
         setSubmitting(true);
         try {
             const body = {
@@ -258,7 +270,7 @@ const ReissueCard: React.FC<{
                 validityDays: form.validityDays || undefined,
                 signingProfileId: form.signingProfileId || undefined,
                 keyAlgorithm: form.keyAlgorithm,
-                keySize: parseInt(form.keySize, 10) || 256,
+                keySize: form.keyAlgorithm === 'Ed25519' ? undefined : keySize,
             };
             const result = await apiPostWithMfa<any>(
                 '/api/v1/admin/webtls/reissue',
@@ -505,6 +517,21 @@ const ReissueCard: React.FC<{
 };
 
 /* ─── Web TLS Management Page ─── */
+/**
+ * Maps a stored key-size string onto the vocabulary of the Key Size select.
+ *
+ * CSR records store ECDSA sizes as curve names — KeyAlgorithmPolicy.FormatKeySizeForProfile
+ * turns 384 into "P-384" — but the select's options are the bare numbers. Loading a P-384
+ * certificate therefore left the select with no matching option, and submit computed
+ * parseInt("P-384") = NaN, fell through `|| 256`, and silently reissued the site's TLS
+ * certificate with a WEAKER key than the one it replaced.
+ */
+function normalizeKeySize(stored: string | null | undefined): string {
+    if (!stored) return '';
+    const curve = stored.match(/^P-(\d+)$/i);
+    return curve ? curve[1] : stored;
+}
+
 const WebTlsManagement: React.FC = () => {
     const [status, setStatus] = useState<WebTlsCertStatusResponse | null>(null);
     const [loading, setLoading] = useState(true);

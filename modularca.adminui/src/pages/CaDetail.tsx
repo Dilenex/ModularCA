@@ -103,7 +103,9 @@ const CaDetail: React.FC = () => {
     );
 
     const typeBadge = caTypeBadge(ca);
-    const enabled = ca.enabled !== false;
+    // Wire name is `isEnabled`; `ca.enabled` was always undefined, so a disabled CA
+    // presented as enabled here and in CaManagement.
+    const enabled = !!ca.isEnabled;
     const cert = ca.certificate;
 
     let thumbprintDisplay = cert?.thumbprints;

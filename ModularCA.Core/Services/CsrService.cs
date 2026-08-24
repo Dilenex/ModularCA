@@ -304,7 +304,8 @@ public class CsrService : ICsrService
     /// CSR entity in the database with override metadata for use during issuance.
     /// </summary>
     public async Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
-        Dictionary<string, string>? subjectOverrides, List<Shared.Models.Csr.SanOverride>? sanOverrides)
+        Dictionary<string, string>? subjectOverrides, List<Shared.Models.Csr.SanOverride>? sanOverrides,
+        DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null)
     {
         // Load cert and signing profiles
         var certProfile = await _dbContext.CertProfiles.FindAsync(certProfileId);
@@ -356,7 +357,9 @@ public class CsrService : ICsrService
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
             RequestorUserId = user.Id,
-            RequestorUser = user
+            RequestorUser = user,
+            RequestedNotBefore = requestedNotBefore,
+            RequestedNotAfter = requestedNotAfter
         };
 
         // Store overrides if provided
@@ -391,22 +394,22 @@ public class CsrService : ICsrService
 
         // Check if all parameters are present in the profile
         if (!validKeyAlgorithms.Contains(algorithm, StringComparer.OrdinalIgnoreCase))
-            throw new Exception("Key algorithm \"" + algorithm + "\" not found in signing profile.");
+            throw new ProfileValidationException("Key algorithm", algorithm, validKeyAlgorithms, "signing profile");
 
         // keySize validation only applies to RSA and ECDSA; EdDSA/PQC ignore it
         if (!IsKeySizeIgnored(algorithm) && !validKeySizes.Contains(keySize))
-            throw new Exception("Key size \"" + keySize + "\" not found in certificate profile.");
+            throw new ProfileValidationException("Key size", keySize, validKeySizes, "certificate profile");
 
         if (!validSignatureAlgorithms.Contains(signatureAlgorithm, StringComparer.OrdinalIgnoreCase))
-            throw new Exception("Signature algorithm \"" + signatureAlgorithm + "\" not found in certificate profile.");
+            throw new ProfileValidationException("Signature algorithm", signatureAlgorithm, validSignatureAlgorithms, "certificate profile");
 
         // Compatibility: for hash-then-sign (RSA/ECDSA) sig alg contains key alg name.
         // For EdDSA/PQC the signature algorithm IS the key algorithm.
         if (!IsSignatureAlgorithmCompatible(algorithm, signatureAlgorithm))
-            throw new Exception("Signature algorithm \"" + signatureAlgorithm + "\" is not compatible with key algorithm \"" + algorithm + "\".");
+            throw new ProfileValidationException("Signature algorithm", signatureAlgorithm, [algorithm], "key algorithm it must match");
 
         if (!IsKeyAlgorithmAndSizeCompatible(algorithm, keySize))
-            throw new Exception("Key algorithm \"" + algorithm + "\" and size \"" + keySize + "\" are not compatible.");
+            throw new ProfileValidationException("Key size", keySize, [algorithm], "key algorithm it must match");
 
         return true;
     }
@@ -519,6 +522,8 @@ public class CsrService : ICsrService
                 KeySize = pendingRequest.KeySize,
                 Status = pendingRequest.Status,
                 SubmittedAt = pendingRequest.SubmittedAt,
+                RequestedNotBefore = pendingRequest.RequestedNotBefore,
+                RequestedNotAfter = pendingRequest.RequestedNotAfter,
                 SigningProfileId = pendingRequest.SigningProfileId ?? Guid.Empty,
                 CertificateProfileId = pendingRequest.CertProfileId ?? Guid.Empty,
                 RequestorUserId = pendingRequest.RequestorUserId ?? Guid.Empty,

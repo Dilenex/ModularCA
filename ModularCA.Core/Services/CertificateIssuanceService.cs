@@ -1133,8 +1133,11 @@ namespace ModularCA.Core.Services
 
             if (errors.Count > 0)
             {
-                var errorDetails = string.Join("; ", errors.Select(e => $"[{e.Rule}] {e.Message}"));
-                throw new InvalidOperationException($"Certificate policy violation(s): {errorDetails}");
+                // Typed so the API layer can answer 400. A policy ceiling being hit is a normal
+                // answer to an over-reaching request — it was surfacing as a 500 with a full
+                // stack trace, which is indistinguishable in the journal from the CA breaking.
+                throw new CertificatePolicyViolationException(
+                    errors.Select(e => $"[{e.Rule}] {e.Message}").ToList());
             }
         }
 

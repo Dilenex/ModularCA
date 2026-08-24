@@ -104,4 +104,19 @@ public class CertRequestEntity
     /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
     [Timestamp]
     public byte[]? RowVersion { get; set; }
+
+    /// <summary>
+    /// Validity window requested when the CSR was submitted, or null to let the profile decide.
+    /// </summary>
+    /// <remarks>
+    /// The Request Certificate page lets an operator pick Not Before / Not After, but neither
+    /// submission path had anywhere to put them: the request creates a CSR, and issuance happens
+    /// later from the Requests page. The values were accepted by the DTO and dropped on the
+    /// floor, so the certificate came out with the profile default and nothing said otherwise.
+    /// Issuance now falls back to these when the issuer does not specify a window explicitly.
+    /// </remarks>
+    public DateTime? RequestedNotBefore { get; set; }
+
+    /// <inheritdoc cref="RequestedNotBefore"/>
+    public DateTime? RequestedNotAfter { get; set; }
 }

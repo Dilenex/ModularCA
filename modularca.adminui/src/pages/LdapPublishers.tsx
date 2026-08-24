@@ -24,10 +24,10 @@ interface LdapPublisher {
     userDnTemplate: string;
     updateInterval: string;
     enabled: boolean;
-    publishCaCertificate: boolean;
-    publishCrl: boolean;
-    publishDeltaCrl: boolean;
-    publishUserCertificates: boolean;
+    publishCACert: boolean;
+    publishCRL: boolean;
+    publishDelta: boolean;
+    publishUserCerts: boolean;
     lastUpdated: string | null;
     nextUpdate: string | null;
 }
@@ -43,19 +43,18 @@ const defaultForm = {
     userDnTemplate: '',
     updateInterval: '',
     enabled: true,
-    publishCaCertificate: true,
-    publishCrl: true,
-    publishDeltaCrl: false,
-    publishUserCertificates: false,
+    publishCACert: true,
+    publishCRL: true,
+    publishDelta: false,
+    publishUserCerts: false,
 };
 
 function publishFlags(p: LdapPublisher): string {
     const flags: string[] = [];
-    if (p.publishCaCertificate) flags.push('CA Cert');
-    // See LdapPublisherDetail: the wire name is publishCRL, not publishCrl.
-    if ((p as any).publishCRL ?? p.publishCrl) flags.push('CRL');
-    if (p.publishDeltaCrl) flags.push('Delta');
-    if (p.publishUserCertificates) flags.push('User Certs');
+    if (p.publishCACert) flags.push('CA Cert');
+    if (p.publishCRL) flags.push('CRL');
+    if (p.publishDelta) flags.push('Delta');
+    if (p.publishUserCerts) flags.push('User Certs');
     return flags.length > 0 ? flags.join(', ') : 'None';
 }
 
@@ -138,10 +137,10 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
                 userDnTemplate: form.userDnTemplate || undefined,
                 updateInterval: form.updateInterval || undefined,
                 enabled: form.enabled,
-                publishCaCertificate: form.publishCaCertificate,
-                publishCrl: form.publishCrl,
-                publishDeltaCrl: form.publishDeltaCrl,
-                publishUserCertificates: form.publishUserCertificates,
+                publishCACert: form.publishCACert,
+                publishCRL: form.publishCRL,
+                publishDelta: form.publishDelta,
+                publishUserCerts: form.publishUserCerts,
             });
             showToast('success', 'LDAP publisher created');
             setShowCreate(false);
@@ -265,22 +264,22 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
                 <span className={`${labelClass} mb-2`}>Publish Options</span>
                 <div className="flex flex-wrap gap-4">
                     <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                        <input type="checkbox" checked={f.publishCaCertificate} onChange={(e) => setF({ ...f, publishCaCertificate: e.target.checked })}
+                        <input type="checkbox" checked={f.publishCACert} onChange={(e) => setF({ ...f, publishCACert: e.target.checked })}
                             className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
                         CA Certificate
                     </label>
                     <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                        <input type="checkbox" checked={f.publishCrl} onChange={(e) => setF({ ...f, publishCrl: e.target.checked })}
+                        <input type="checkbox" checked={f.publishCRL} onChange={(e) => setF({ ...f, publishCRL: e.target.checked })}
                             className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
                         CRL
                     </label>
                     <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                        <input type="checkbox" checked={f.publishDeltaCrl} onChange={(e) => setF({ ...f, publishDeltaCrl: e.target.checked })}
+                        <input type="checkbox" checked={f.publishDelta} onChange={(e) => setF({ ...f, publishDelta: e.target.checked })}
                             className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
                         Delta CRL
                     </label>
                     <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                        <input type="checkbox" checked={f.publishUserCertificates} onChange={(e) => setF({ ...f, publishUserCertificates: e.target.checked })}
+                        <input type="checkbox" checked={f.publishUserCerts} onChange={(e) => setF({ ...f, publishUserCerts: e.target.checked })}
                             className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
                         User Certificates
                     </label>

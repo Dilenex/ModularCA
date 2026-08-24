@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -63,6 +63,10 @@ public class AdminProtocolConfigController(
                 SigningProfileName = c.SigningProfile != null ? c.SigningProfile.Name : null,
                 c.CertProfileId,
                 CertProfileName = c.CertProfile != null ? c.CertProfile.Name : null,
+                // Consumed by PublicCaCertController when deciding what to advertise. It was
+                // absent from this projection, so the admin UI's "Show on Public Portal"
+                // toggle read undefined, defaulted to on, and could never be turned off.
+                c.IsPublicVisible,
                 // EST
                 c.EstRequireClientCert,
                 c.EstHttpAuthEnabled,
@@ -122,6 +126,7 @@ public class AdminProtocolConfigController(
         config.IsEnabled = request.Enabled;
         config.SigningProfileId = request.SigningProfileId ?? config.SigningProfileId;
         config.CertProfileId = request.CertProfileId ?? config.CertProfileId;
+        config.IsPublicVisible = request.IsPublicVisible ?? config.IsPublicVisible;
 
         // Protocol-specific fields
         // Capture the prior EST auth state so we can detect when an admin is turning OFF the
@@ -187,6 +192,12 @@ public class ProtocolConfigUpdateRequest
     public bool Enabled { get; set; }
     public Guid? SigningProfileId { get; set; }
     public Guid? CertProfileId { get; set; }
+
+    /// <summary>
+    /// Whether this protocol endpoint is advertised on the public portal. Null leaves the
+    /// stored value alone.
+    /// </summary>
+    public bool? IsPublicVisible { get; set; }
     // EST
     public bool? EstRequireClientCert { get; set; }
     public bool? EstHttpAuthEnabled { get; set; }

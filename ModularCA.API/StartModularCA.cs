@@ -2213,6 +2213,7 @@ app.UseMiddleware<ModularCA.API.Middleware.SecurityHeadersMiddleware>();
 app.UseMiddleware<ModularCA.API.Middleware.PlainHttpBodyLimitMiddleware>(); // 256 KB body cap on plain-HTTP listener
 app.UseMiddleware<ModularCA.API.Middleware.AuditFailClosedMiddleware>(); // Translate AuditWriteFailedException → 503
 app.UseMiddleware<ModularCA.API.Middleware.ConcurrencyConflictMiddleware>(); // Translate DbUpdateConcurrencyException → 409
+app.UseMiddleware<ModularCA.API.Middleware.RequestValidationMiddleware>();   // Translate RequestValidationException → 400
 app.UseMiddleware<ModularCA.API.Middleware.HttpSchemeEnforcementMiddleware>(); // HTTP→HTTPS for non-PKI paths on the plain-HTTP listener
 // Honour inbound traceparent / X-Correlation-Id headers and echo
 // them back on the response so multi-hop requests can be followed end-to-end.

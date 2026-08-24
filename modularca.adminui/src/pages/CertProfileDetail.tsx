@@ -10,7 +10,7 @@ import { StepUpOps } from '@shared/generated';
 import {
     KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
     canonicalizeUsages, EKU_ALIASES,
-    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
+    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
     FieldSourceBadge, SourceBorderedField,
 } from './profileHelpers';
@@ -221,7 +221,7 @@ const CertProfileDetail: React.FC = () => {
                         <div><label className={labelClass}>Extended Key Usages</label><MultiToggle options={EKU_OPTIONS} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuLabel} /></div>
                         <div><label className={labelClass}>Allowed Key Algorithms</label><MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={editForm.allowedKeyAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedKeyAlgorithms: next })} /></div>
                         <div><label className={labelClass}>Allowed Key Sizes</label><MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={editForm.allowedKeySizes} onChange={(next) => setEditForm({ ...editForm, allowedKeySizes: next })} formatLabel={formatKeySizeLabel} /></div>
-                        <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} /></div>
+                        <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} /></div>
                     </div>
                 </DetailSection>
             ) : (<>

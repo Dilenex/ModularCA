@@ -38,10 +38,13 @@ namespace ModularCA.Shared.Interfaces
         Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId);
 
         /// <summary>
-        /// Uploads an externally generated PEM-encoded CSR with optional subject and SAN overrides.
+        /// Uploads an externally generated PEM-encoded CSR with optional subject and SAN
+        /// overrides, and an optional requested validity window that issuance falls back to
+        /// when the issuer does not specify one.
         /// </summary>
         Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
-            Dictionary<string, string>? subjectOverrides, List<SanOverride>? sanOverrides);
+            Dictionary<string, string>? subjectOverrides, List<SanOverride>? sanOverrides,
+            DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null);
     }
 
 }

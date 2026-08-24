@@ -122,9 +122,20 @@ public class UserCertificateController(
             }
         }
 
+        // Order before paging. CertificateStore.ListAsync issues an unordered query, so
+        // "page 1" was whatever order MySQL happened to return -- typically insertion order,
+        // which puts the NEWEST certificates last. A user with more than pageSize visible
+        // certificates therefore never saw a certificate they had just been issued, and rows
+        // could repeat or vanish between pages because the underlying order was not stable.
+        // Newest first, with the serial as a tie-break so the sequence is total.
+        var ordered = allowedCerts
+            .OrderByDescending(c => c.NotBefore)
+            .ThenBy(c => c.SerialNumber, StringComparer.Ordinal)
+            .ToList();
+
         // Apply pagination after access control filtering
-        var total = allowedCerts.Count;
-        var pagedItems = allowedCerts
+        var total = ordered.Count;
+        var pagedItems = ordered
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToList();

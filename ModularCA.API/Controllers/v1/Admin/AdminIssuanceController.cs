@@ -133,7 +133,18 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (profileCheck != null)
                 return profileCheck;
 
-            var result = await _certificateIssuanceService.IssueCertificateAsync(req.CsrId, req.NotBefore, req.NotAfter);
+            // Fall back to the window recorded when the request was submitted. An issuer who
+            // passes an explicit window still wins; this only fills in what was asked for.
+            var requested = await _dbContext.CertificateRequests
+                .AsNoTracking()
+                .Where(c => c.Id == req.CsrId)
+                .Select(c => new { c.RequestedNotBefore, c.RequestedNotAfter })
+                .FirstOrDefaultAsync();
+
+            var result = await _certificateIssuanceService.IssueCertificateAsync(
+                req.CsrId,
+                req.NotBefore ?? requested?.RequestedNotBefore,
+                req.NotAfter ?? requested?.RequestedNotAfter);
             var cert = result.Pem;
             var certDer = CertificateUtil.ParseFromPem(cert);
             var certName = CertificateUtil.ParseCnFromPem(cert);
@@ -282,7 +293,12 @@ namespace ModularCA.API.Controllers.v1.Admin
                 req.SigningProfileId,
                 _currentUser.User.Id,
                 req.Subject,
-                sanOverrides);
+                sanOverrides,
+                // Carry the requested validity window onto the request. Issuance happens later
+                // from the Requests page, so without persisting these the operator's Not Before
+                // / Not After choices were accepted by the DTO and then discarded.
+                req.NotBefore,
+                req.NotAfter);
 
             // Find the CSR entity that was just created
             var csrEntity = await _dbContext.CertificateRequests

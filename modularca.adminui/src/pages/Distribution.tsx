@@ -72,9 +72,24 @@ const CrlSchedulesSection: React.FC = () => {
     }, []);
 
     const handleCreate = async () => {
+        // The form's field names are not the API's. CreateCrlConfigurationRequest declares
+        // Name / UpdateInterval / OverlapPeriod / CaCertificateId, so posting the form object
+        // verbatim sent `cronExpression` and `caId` to fields that do not exist: UpdateInterval
+        // arrived empty (and is [Required]) and CaCertificateId arrived as Guid.Empty. The form
+        // could never succeed, whatever was typed into it.
+        const overlapPeriod = toTimeSpan(form.overlapPeriod);
+        if (overlapPeriod === null) {
+            showToast('error', "Overlap period must look like '1h', '30m', '1h30m', or 'hh:mm:ss'.");
+            return;
+        }
         setCreating(true);
         try {
-            await apiPostWithMfa('/api/v1/admin/crl-schedules', form, requireStepUp, StepUpOps.CreateCrlSchedule);
+            await apiPostWithMfa('/api/v1/admin/crl-schedules', {
+                name: form.name,
+                updateInterval: form.cronExpression,
+                caCertificateId: form.caId,
+                overlapPeriod,
+            }, requireStepUp, StepUpOps.CreateCrlSchedule);
             setShowCreate(false);
             setForm({ name: '', cronExpression: '', caId: '', overlapPeriod: '' });
             load();
@@ -169,18 +184,21 @@ const CrlSchedulesSection: React.FC = () => {
                             <select value={form.caId} onChange={(e) => setForm({ ...form, caId: e.target.value })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                                 <option value="">Select CA...</option>
-                                {cas.map((ca) => (
-                                    <option key={ca.id || ca.caId} value={ca.id || ca.caId}>{ca.name || ca.subjectDN}</option>
+                                {/* value is the CA's CERTIFICATE id — CrlConfiguration keys on
+                                    CaCertificateId, not on the authority's own id. A CA that has
+                                    not issued its certificate yet cannot carry a CRL schedule. */}
+                                {cas.filter((ca) => ca.certificateId).map((ca) => (
+                                    <option key={ca.certificateId} value={ca.certificateId}>{ca.name || ca.subjectDN}</option>
                                 ))}
                             </select>
                         </div>
                         <div>
                             <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Overlap Period</label>
-                            <input type="text" placeholder="e.g. 1h, 30m" value={form.overlapPeriod} onChange={(e) => setForm({ ...form, overlapPeriod: e.target.value })}
+                            <input type="text" placeholder="e.g. 1h, 30m, 1h30m" value={form.overlapPeriod} onChange={(e) => setForm({ ...form, overlapPeriod: e.target.value })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
                         </div>
                     </div>
-                    <button onClick={handleCreate} disabled={creating || !form.name || !form.cronExpression}
+                    <button onClick={handleCreate} disabled={creating || !form.name || !form.cronExpression || !form.caId}
                         className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
@@ -398,6 +416,30 @@ const ServiceUrlsTab: React.FC = () => {
         </div>
     );
 };
+
+/**
+ * Converts a friendly overlap duration into the `hh:mm:ss` form System.Text.Json binds to a
+ * TimeSpan. Accepts `90s`, `30m`, `1h`, `1h30m`, a bare number (minutes), or an already
+ * well-formed `hh:mm:ss`. Empty means no overlap. Returns null when the text is unparseable,
+ * so the caller can say so instead of posting something the API rejects with a 400.
+ */
+function toTimeSpan(text: string): string | null {
+    const trimmed = text.trim();
+    if (trimmed === '') return '00:00:00';
+    if (/^\d{1,3}:[0-5]?\d:[0-5]?\d$/.test(trimmed)) return trimmed;
+
+    let seconds: number;
+    if (/^\d+$/.test(trimmed)) {
+        seconds = parseInt(trimmed, 10) * 60;
+    } else {
+        const parts = trimmed.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+        if (!parts || (!parts[1] && !parts[2] && !parts[3])) return null;
+        seconds = Number(parts[1] ?? 0) * 3600 + Number(parts[2] ?? 0) * 60 + Number(parts[3] ?? 0);
+    }
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(Math.floor(seconds / 3600))}:${pad(Math.floor((seconds % 3600) / 60))}:${pad(seconds % 60)}`;
+}
 
 /* ─── CA Distribution Page ─── */
 const Distribution: React.FC = () => {

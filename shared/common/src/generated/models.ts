@@ -380,6 +380,8 @@ export interface CertRequestDto {
     requestorUsername?: string | null;
     rejectionReason?: string | null;
     issuedCertificateId?: string | null;
+    requestedNotBefore?: string | null;
+    requestedNotAfter?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -812,6 +814,16 @@ export interface LoggingConfig {
     syslog: SyslogConfig;
     eventLog: EventLogConfig;
     network: NetworkLogConfig;
+}
+
+/** From `ModularCA.Shared/Models/Config/LoggingUpdateRequest.cs`. */
+export interface LoggingUpdateRequest {
+    minLevel?: string | null;
+    consoleFormat?: string | null;
+    filePath?: string | null;
+    retentionDays?: number | null;
+    maxFileSizeMb?: number | null;
+    verboseErrors?: boolean | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1333,6 +1345,8 @@ export interface UploadCsrRequest {
     requestorUserId: string;
     subjectOverrides?: Record<string, string> | null;
     sanOverrides?: SanOverride[] | null;
+    notBefore?: string | null;
+    notAfter?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Management/UserEntityDto.cs`. */

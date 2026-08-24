@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -131,6 +131,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             await _currentUser.EnsureLoadedAsync();
 
+            // UpdateInterval is a cron expression, and CrlConfigurationService parses it with
+            // NCrontab before any validation runs. A typo therefore surfaced as an unhandled
+            // CrontabException — a 500 with no indication of which field was wrong.
+            if (!IsValidCronExpression(request.UpdateInterval))
+                return BadRequest(new { error = "UpdateInterval must be a valid cron expression, e.g. '0 */6 * * *'." });
+
             var fence = await ResolveAndFenceByCaCertificateAsync(request.CaCertificateId);
             if (fence == null)
             {
@@ -184,6 +190,9 @@ namespace ModularCA.API.Controllers.v1.Admin
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCrlConfigurationRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
+
+            if (!IsValidCronExpression(request.UpdateInterval))
+                return BadRequest(new { error = "UpdateInterval must be a valid cron expression, e.g. '0 */6 * * *'." });
 
             var fence = await ResolveAndFenceScheduleAsync(id);
             if (fence == null)
@@ -306,6 +315,15 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// not failed) and the batch never aborts on a single error; a per-id summary is returned.
         /// Requires <c>CaOperator</c>.
         /// </summary>
+        /// <summary>
+        /// True when <paramref name="expression"/> is a cron expression NCrontab can parse.
+        /// Used to reject a bad schedule at the API boundary rather than letting it throw out
+        /// of the service layer as an unhandled 500.
+        /// </summary>
+        private static bool IsValidCronExpression(string? expression) =>
+            !string.IsNullOrWhiteSpace(expression)
+            && NCrontab.CrontabSchedule.TryParse(expression) != null;
+
         [HttpPost("bulk")]
         [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> BulkUpdate([FromBody] BulkCrlScheduleRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

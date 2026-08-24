@@ -16,19 +16,17 @@ function formatDate(d: string | null) {
 
 function publishFlags(p: any): string {
     const flags: string[] = [];
-    if (p.publishCaCertificate) flags.push('CA Cert');
-    // Wire name is publishCRL — the backend property is PublishCRL and the camelCase policy
-    // lowercases only its leading character. p.publishCrl is always undefined.
-    if (p.publishCRL ?? p.publishCrl) flags.push('CRL');
-    if (p.publishDeltaCrl) flags.push('Delta');
-    if (p.publishUserCertificates) flags.push('User Certs');
+    if (p.publishCACert) flags.push('CA Cert');
+    if (p.publishCRL) flags.push('CRL');
+    if (p.publishDelta) flags.push('Delta');
+    if (p.publishUserCerts) flags.push('User Certs');
     return flags.length > 0 ? flags.join(', ') : 'None';
 }
 
 const emptyForm = {
     name: '', host: '', port: '389', useSsl: false, username: '', password: '',
     baseDn: '', userDnTemplate: '', updateInterval: '', enabled: true,
-    publishCaCertificate: true, publishCrl: true, publishDeltaCrl: false, publishUserCertificates: false,
+    publishCACert: true, publishCRL: true, publishDelta: false, publishUserCerts: false,
 };
 
 const inputCls = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
@@ -85,8 +83,8 @@ const LdapPublisherDetail: React.FC = () => {
                         name: p.name || '', host: p.host || '', port: String(p.port || 389), useSsl: p.useSsl ?? false,
                         username: p.username || '', password: '', baseDn: p.baseDn || '', userDnTemplate: p.userDnTemplate || '',
                         updateInterval: p.updateInterval || '', enabled: p.enabled ?? true,
-                        publishCaCertificate: p.publishCaCertificate ?? true, publishCrl: (p.publishCRL ?? p.publishCrl) ?? true,
-                        publishDeltaCrl: p.publishDeltaCrl ?? false, publishUserCertificates: p.publishUserCertificates ?? false,
+                        publishCACert: p.publishCACert ?? true, publishCRL: p.publishCRL ?? true,
+                        publishDelta: p.publishDelta ?? false, publishUserCerts: p.publishUserCerts ?? false,
                     };
                     setForm(loaded);
                     setInitialForm(loaded);
@@ -106,8 +104,8 @@ const LdapPublisherDetail: React.FC = () => {
                 name: form.name, host: form.host, port: parseInt(form.port, 10) || 389, useSsl: form.useSsl,
                 username: form.username || undefined, password: form.password || undefined, baseDn: form.baseDn,
                 userDnTemplate: form.userDnTemplate || undefined, updateInterval: form.updateInterval || undefined,
-                enabled: form.enabled, publishCaCertificate: form.publishCaCertificate, publishCrl: form.publishCrl,
-                publishDeltaCrl: form.publishDeltaCrl, publishUserCertificates: form.publishUserCertificates,
+                enabled: form.enabled, publishCACert: form.publishCACert, publishCRL: form.publishCRL,
+                publishDelta: form.publishDelta, publishUserCerts: form.publishUserCerts,
             }, requireStepUp, StepUpOps.UpdateLdapPublisher, id);
             showToast('success', 'LDAP publisher updated');
             setRefresh((r) => r + 1);
@@ -221,10 +219,10 @@ const LdapPublisherDetail: React.FC = () => {
                             <div>
                                 <span className={`${labelCls} mb-2`}>Publish Options</span>
                                 <div className="flex flex-wrap gap-4">
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCaCertificate} onChange={(e) => setForm({ ...form, publishCaCertificate: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CA Certificate</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCrl} onChange={(e) => setForm({ ...form, publishCrl: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CRL</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishDeltaCrl} onChange={(e) => setForm({ ...form, publishDeltaCrl: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />Delta CRL</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishUserCertificates} onChange={(e) => setForm({ ...form, publishUserCertificates: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />User Certificates</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCACert} onChange={(e) => setForm({ ...form, publishCACert: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CA Certificate</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCRL} onChange={(e) => setForm({ ...form, publishCRL: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CRL</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishDelta} onChange={(e) => setForm({ ...form, publishDelta: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />Delta CRL</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishUserCerts} onChange={(e) => setForm({ ...form, publishUserCerts: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />User Certificates</label>
                                 </div>
                             </div>
                         </div>

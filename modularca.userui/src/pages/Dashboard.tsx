@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { apiGet } from '../api/client';
+import { apiGet, apiGetAllPages } from '../api/client';
 import StatusBadge from '../components/cards/StatusBadge';
 import { Link } from 'react-router-dom';
 
@@ -60,8 +60,8 @@ const Dashboard: React.FC = () => {
             })
             .catch(() => { /* keep the JWT username fallback */ });
 
-        apiGet<any>('/api/v1/user/certificates')
-            .then((data) => setCertificates(Array.isArray(data) ? data : (data.items || [])))
+        apiGetAllPages<any>('/api/v1/user/certificates')
+            .then(({ items }) => setCertificates(items))
             .catch((err) => setErrorCerts(err.message))
             .finally(() => setLoadingCerts(false));
 

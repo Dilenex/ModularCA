@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Authorization;
@@ -389,7 +389,8 @@ public class AdminCertSignRequestController(
             return Unauthorized();
         var pem = await _csrService.UploadCsrAsync(
             request.Pem, request.CertificateProfileId, request.SigningProfileId,
-            _currentUser.User.Id, request.SubjectOverrides, request.SanOverrides);
+            _currentUser.User.Id, request.SubjectOverrides, request.SanOverrides,
+            request.NotBefore, request.NotAfter);
         if (pem == null)
             return BadRequest(new { error = "Failed to upload CSR" });
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,

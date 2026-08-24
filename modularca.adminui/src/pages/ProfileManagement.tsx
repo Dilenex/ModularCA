@@ -10,7 +10,7 @@ import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/D
 import {
     KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
     canonicalizeUsages, EKU_ALIASES, parseListField,
-    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS,
+    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS, SSH_EXTENSION_OPTIONS,
     inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
 } from './profileHelpers';
@@ -274,7 +274,7 @@ const CertProfilesTab: React.FC = () => {
                     <div>
                         <label className={labelClass}>Allowed Signature Algorithms</label>
                         <MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={form.allowedSignatureAlgorithms}
-                            onChange={(next) => setForm({ ...form, allowedSignatureAlgorithms: next })} />
+                            onChange={(next) => setForm({ ...form, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} />
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">

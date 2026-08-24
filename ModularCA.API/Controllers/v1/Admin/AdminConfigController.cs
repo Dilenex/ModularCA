@@ -147,11 +147,15 @@ public class AdminConfigController(
     /// the Serilog LoggingLevelSwitch. File path, retention, and size changes require a restart.
     /// </summary>
     [HttpPut("logging")]
-    public async Task<IActionResult> UpdateLogging([FromBody] LoggingConfig update)
+    public async Task<IActionResult> UpdateLogging([FromBody] LoggingUpdateRequest update)
     {
-        // ICF-09: bounds validation
-        if (update.RetentionDays < 1)
+        // ICF-09: bounds validation. Only for values that were actually sent — null means the
+        // caller did not touch this setting, and rejecting the whole request over a field the
+        // client never mentioned would make the log-level control unusable.
+        if (update.RetentionDays is < 1)
             return BadRequest(new { error = "RetentionDays must be >= 1." });
+        if (update.MaxFileSizeMb is < 1)
+            return BadRequest(new { error = "MaxFileSizeMb must be >= 1." });
 
         // Reject an unrecognised console format at the API boundary. The runtime resolver
         // falls back to Auto for a hand-edited config.yaml so a typo can never stop the CA
@@ -164,11 +168,16 @@ public class AdminConfigController(
             return BadRequest(new { error = "ConsoleFormat must be one of Auto, Systemd, Json, Text." });
         }
 
-        _config.Logging.MinLevel = update.MinLevel ?? _config.Logging.MinLevel;
-        _config.Logging.ConsoleFormat = update.ConsoleFormat ?? _config.Logging.ConsoleFormat;
-        _config.Logging.FilePath = update.FilePath ?? _config.Logging.FilePath;
-        if (update.RetentionDays > 0) _config.Logging.RetentionDays = update.RetentionDays;
-        if (update.MaxFileSizeMb > 0) _config.Logging.MaxFileSizeMb = update.MaxFileSizeMb;
+        // Apply only what was sent. See LoggingUpdateRequest for why this endpoint must not
+        // bind LoggingConfig directly: an omitted field there arrives as a constructor default,
+        // not null, so saving the log level alone used to reset the file path, retention, and
+        // size to values the operator never chose.
+        if (update.MinLevel != null) _config.Logging.MinLevel = update.MinLevel;
+        if (update.ConsoleFormat != null) _config.Logging.ConsoleFormat = update.ConsoleFormat;
+        if (update.FilePath != null) _config.Logging.FilePath = update.FilePath;
+        if (update.RetentionDays is { } retentionDays) _config.Logging.RetentionDays = retentionDays;
+        if (update.MaxFileSizeMb is { } maxFileSizeMb) _config.Logging.MaxFileSizeMb = maxFileSizeMb;
+        if (update.VerboseErrors is { } verboseErrors) _config.Logging.VerboseErrors = verboseErrors;
 
         // Apply log level change immediately at runtime
         if (!string.IsNullOrEmpty(update.MinLevel))
@@ -184,7 +193,9 @@ public class AdminConfigController(
 
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Logging", update);
-        var restartNote = update.FilePath != null || update.RetentionDays > 0 || update.MaxFileSizeMb > 0 || update.ConsoleFormat != null
+        var restartNote = update.FilePath != null || update.RetentionDays != null
+                       || update.MaxFileSizeMb != null || update.ConsoleFormat != null
+                       || update.VerboseErrors != null
             ? " File/retention/size/console-format changes require restart." : "";
         return Ok(new { message = $"Logging config updated. Min level applied immediately.{restartNote}", config = _config.Logging });
     }

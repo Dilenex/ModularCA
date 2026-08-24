@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { apiGet, apiPost, apiBlob, apiPostWithMfa } from '../api/client';
+import { apiPost, apiBlob, apiPostWithMfa, apiGetAllPages } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
@@ -65,8 +65,10 @@ const MyCertificates: React.FC = () => {
     const [renewLoading, setRenewLoading] = useState(false);
 
     useEffect(() => {
-        apiGet<any>('/api/v1/user/certificates')
-            .then((data) => setCertificates(Array.isArray(data) ? data : (data.items || [])))
+        // Every page, not just the first: the endpoint pages at 25 by default and the table
+        // below does its own client-side paging, so a plain apiGet capped the whole view at 25.
+        apiGetAllPages<any>('/api/v1/user/certificates')
+            .then(({ items }) => setCertificates(items))
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
     }, []);

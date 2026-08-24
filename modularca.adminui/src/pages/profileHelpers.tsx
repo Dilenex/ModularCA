@@ -131,12 +131,23 @@ export const ALLOWED_KEY_ALGORITHM_OPTIONS = [
 export const ALLOWED_KEY_SIZE_OPTIONS = [
     '2048', '3072', '4096', '7680', '8192', 'P-256', 'P-384', 'P-521',
 ];
+// The ...andMGF1 entries are RSASSA-PSS. They are NOT optional extras: CertPolicy
+// .RsaSignaturePadding defaults to "PSS", so KeyAlgorithmPolicy signs RSA requests as
+// SHA-n-withRSAandMGF1. Omitting them here meant a cert profile created through this UI could
+// never permit the signatures the server actually produces, and every RSA issuance against
+// such a profile failed. The seeded profiles and BootstrapModularCA always included them —
+// only this picker did not.
 export const ALLOWED_SIGNATURE_ALGORITHM_OPTIONS = [
     'SHA256withRSA', 'SHA384withRSA', 'SHA512withRSA',
+    'SHA256withRSAandMGF1', 'SHA384withRSAandMGF1', 'SHA512withRSAandMGF1',
     'SHA256withECDSA', 'SHA384withECDSA', 'SHA512withECDSA',
     'Ed25519', 'Ed448',
     'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F',
 ];
+
+/** Labels the RSASSA-PSS entries so an author picking algorithms knows what MGF1 means. */
+export const formatSignatureAlgorithmLabel = (alg: string) =>
+    alg.endsWith('andMGF1') ? `${alg.replace('andMGF1', '')} (RSA-PSS)` : alg;
 
 export const SIGNING_ALLOWED_ALGORITHM_OPTIONS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
 

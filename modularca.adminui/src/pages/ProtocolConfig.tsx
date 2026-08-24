@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -200,14 +201,12 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         signingProfileId: '',
         certProfileId: '',
         isPublicVisible: true,
-        allowedIpRanges: '',
         // EST
         estRequireClientCert: false,
         estHttpAuthEnabled: false,
         // SCEP
         scepChallengeRequired: true,
         // CMP
-        cmpSharedSecret: '',
         cmpRequireSignature: false,
         // ACME
         acmeRequireEab: false,
@@ -217,21 +216,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         ocspSignResponses: true,
     });
 
-    const parseIpRangesForDisplay = (value: any): string => {
-        if (!value) return '';
-        if (Array.isArray(value)) return value.join(', ');
-        if (typeof value === 'string') {
-            try {
-                const parsed = JSON.parse(value);
-                if (Array.isArray(parsed)) return parsed.join(', ');
-            } catch {
-                // already comma-separated or plain string
-            }
-            return value;
-        }
-        return '';
-    };
-
     useEffect(() => {
         if (config) {
             setForm({
@@ -239,11 +223,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 signingProfileId: config.signingProfileId || '',
                 certProfileId: config.certProfileId || '',
                 isPublicVisible: config.isPublicVisible ?? true,
-                allowedIpRanges: parseIpRangesForDisplay(config.allowedIpRanges),
                 estRequireClientCert: config.estRequireClientCert ?? false,
                 estHttpAuthEnabled: config.estHttpAuthEnabled ?? false,
                 scepChallengeRequired: config.scepChallengeRequired ?? true,
-                cmpSharedSecret: config.cmpSharedSecret || '',
                 cmpRequireSignature: config.cmpRequireSignature ?? false,
                 acmeRequireEab: config.acmeRequireEab ?? false,
                 acmeAllowedChallengeTypes: config.acmeAllowedChallengeTypes || '',
@@ -253,10 +235,10 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         } else {
             setForm({
                 enabled: false, signingProfileId: '', certProfileId: '',
-                isPublicVisible: true, allowedIpRanges: '',
+                isPublicVisible: true,
                 estRequireClientCert: false, estHttpAuthEnabled: false,
                 scepChallengeRequired: true,
-                cmpSharedSecret: '', cmpRequireSignature: false,
+                cmpRequireSignature: false,
                 acmeRequireEab: false, acmeAllowedChallengeTypes: '',
                 acmeAllowPrivateAddressValidation: false,
                 ocspSignResponses: true,
@@ -264,20 +246,12 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         }
     }, [config]);
 
-    const serializeIpRanges = (value: string): string | null => {
-        const trimmed = value.trim();
-        if (!trimmed) return null;
-        const parts = trimmed.split(',').map((s) => s.trim()).filter(Boolean);
-        return JSON.stringify(parts);
-    };
-
     const handleSubmit = () => {
         const base: Record<string, any> = {
             enabled: form.enabled,
             signingProfileId: form.signingProfileId || null,
             certProfileId: form.certProfileId || null,
             isPublicVisible: form.isPublicVisible,
-            allowedIpRanges: serializeIpRanges(form.allowedIpRanges),
         };
         if (protocol === 'EST') {
             base.estRequireClientCert = form.estRequireClientCert;
@@ -285,7 +259,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         } else if (protocol === 'SCEP') {
             base.scepChallengeRequired = form.scepChallengeRequired;
         } else if (protocol === 'CMP') {
-            base.cmpSharedSecret = form.cmpSharedSecret || null;
             base.cmpRequireSignature = form.cmpRequireSignature;
         } else if (protocol === 'ACME') {
             base.acmeRequireEab = form.acmeRequireEab;
@@ -365,17 +338,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                 onChange={(v) => setForm({ ...form, isPublicVisible: v })}
                                 selectClass={selectClass}
                             />
-                            <div>
-                                <label className={labelClass}>IP Whitelist Override (CIDR, comma-separated)</label>
-                                <input
-                                    type="text"
-                                    value={form.allowedIpRanges}
-                                    onChange={(e) => setForm({ ...form, allowedIpRanges: e.target.value })}
-                                    placeholder="Leave empty to use system default"
-                                    className={selectClass}
-                                />
-                                <p className="text-[10px] text-gray-600 mt-1">Restrict access to specific IP ranges. Example: 10.0.0.0/8, 192.168.1.0/24</p>
-                            </div>
                         </div>
                     </div>
 
@@ -399,11 +361,11 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'CMP' && (
                             <div className="space-y-3">
                                 <ToggleField label="Require Signature Protection" description="When enabled, only signature-based protection is accepted (client cert required). When disabled, PBMAC (shared secret) is also accepted." checked={form.cmpRequireSignature} onChange={(v) => setForm({ ...form, cmpRequireSignature: v })} selectClass={selectClass} />
-                                <div>
-                                    <label className={labelClass}>Shared Secret (PBMAC)</label>
-                                    <input type="password" value={form.cmpSharedSecret} onChange={(e) => setForm({ ...form, cmpSharedSecret: e.target.value })} placeholder="(not set)" className={selectClass} />
-                                    <p className="text-[10px] text-gray-600 mt-1">Used for password-based MAC protection (RFC 4210). Leave empty to disable PBMAC.</p>
-                                </div>
+                                <p className="text-[10px] text-gray-600 mt-1">
+                                    PBMAC shared secrets are issued per client from{' '}
+                                    <Link to="/enrollment" className="text-blue-600 dark:text-blue-400 hover:underline">Enrollment Management</Link>,
+                                    which replaced the old single per-CA secret. Generate one there rather than sharing a CA-wide password.
+                                </p>
                             </div>
                         )}
 

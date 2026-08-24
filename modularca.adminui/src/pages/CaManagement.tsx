@@ -29,7 +29,7 @@ const CaDrawer: React.FC<{ ca: any }> = ({ ca }) => {
             <DetailField label="Name" value={ca.name || ca.subjectDN} />
             <DetailField label="Label" value={ca.label} mono />
             <DetailField label="Type" value={caTypeBadge(ca).label} />
-            <DetailField label="Status" value={ca.enabled !== false ? 'Enabled' : 'Disabled'} />
+            <DetailField label="Status" value={ca.isEnabled ? 'Enabled' : 'Disabled'} />
             {ca.tenantName && <DetailField label="Tenant" value={ca.tenantName} />}
             <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
             {cert && <DetailField label="Serial" value={cert.serialNumber} mono />}
@@ -238,7 +238,9 @@ const CaManagement: React.FC = () => {
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <StatusBadge status={b.status} label={b.label} />; } },
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (ca) => ca.name || ca.subjectDN, render: (ca) => <span className="text-gray-900 dark:text-white truncate">{ca.name || ca.subjectDN}</span> },
         { key: 'tenant', header: 'Tenant', defaultWidth: 140, exportValue: (ca) => ca.tenantName || '', render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{ca.tenantName || '-'}</span> },
-        { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (ca) => (ca.enabled !== false ? 'Enabled' : 'Disabled'), render: (ca) => <StatusBadge status={ca.enabled !== false ? 'enabled' : 'disabled'} label={ca.enabled !== false ? 'Enabled' : 'Disabled'} /> },
+        // Wire name is `isEnabled` (AdminCaController projects ca.IsEnabled). Reading `ca.enabled`
+        // meant `undefined !== false` — every CA, including disabled ones, rendered as Enabled.
+        { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (ca) => (ca.isEnabled ? 'Enabled' : 'Disabled'), render: (ca) => <StatusBadge status={ca.isEnabled ? 'enabled' : 'disabled'} label={ca.isEnabled ? 'Enabled' : 'Disabled'} /> },
         { key: 'children', header: 'Children', defaultWidth: 90, exportValue: (ca) => (ca.children?.length || 0), render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400">{ca.children?.length || 0}</span> },
         { key: 'expires', header: 'Expires', defaultWidth: 160, exportValue: (ca) => formatDate(ca.certificate?.notAfter || ca.notAfter), render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(ca.certificate?.notAfter || ca.notAfter)}</span> },
     ];

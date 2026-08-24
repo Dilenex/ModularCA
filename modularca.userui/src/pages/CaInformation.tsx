@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { apiGet, API_BASE } from '../api/client';
+import { API_BASE, apiGetAllPages } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import StatusBadge from '../components/cards/StatusBadge';
 import DetailField from '../components/cards/DetailField';
@@ -59,8 +59,9 @@ const CaInformation: React.FC = () => {
         // took the empty branch, so the Trusted CAs page rendered permanently blank with no
         // error to explain it. MyCertificates in this same app reads `data.items` correctly;
         // this is the sibling that did not.
-        apiGet<{ items?: CaCertificate[] } | CaCertificate[]>('/api/v1/user/authorities')
-            .then((data) => setAuthorities(Array.isArray(data) ? data : (data?.items ?? [])))
+        // ...and it pages at 25, so taking only the first response also capped the list.
+        apiGetAllPages<CaCertificate>('/api/v1/user/authorities')
+            .then(({ items }) => setAuthorities(items))
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
     }, []);

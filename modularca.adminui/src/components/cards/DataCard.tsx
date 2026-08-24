@@ -50,6 +50,11 @@ export default function DataCard<T>({
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
     const [modalItem, setModalItem] = useState<T | null>(null);
     const [actionLoading, setActionLoading] = useState(false);
+    // Two-click confirmation for the modal's action buttons, matching ExpandableRow. Without
+    // it the modal ignored Action.confirm entirely, and since every DataCard in the app uses
+    // detailMode="modal" the confirm path was dead everywhere — the Dashboard's "Revoke"
+    // button revoked a certificate on a single click, with no prompt.
+    const [confirmingAction, setConfirmingAction] = useState<string | null>(null);
     const [actionError, setActionError] = useState<string | null>(null);
 
     const reload = () => {
@@ -98,6 +103,12 @@ export default function DataCard<T>({
     };
 
     const handleModalAction = async (action: Action) => {
+        if (action.confirm && confirmingAction !== action.label) {
+            setConfirmingAction(action.label);
+            setTimeout(() => setConfirmingAction(null), 3000);
+            return;
+        }
+        setConfirmingAction(null);
         setActionLoading(true);
         setActionError(null);
         try {
@@ -184,7 +195,7 @@ export default function DataCard<T>({
             {detailMode === 'modal' && modalItem && (
                 <div
                     className="fixed inset-0 bg-black/25 dark:bg-black/60 flex items-center justify-center z-50"
-                    onClick={() => !actionLoading && setModalItem(null)}
+                    onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
                 >
                     <div
                         className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto"
@@ -205,7 +216,7 @@ export default function DataCard<T>({
                                     </button>
                                 )}
                                 <button
-                                    onClick={() => !actionLoading && setModalItem(null)}
+                                    onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
                                     className="text-gray-600 hover:text-gray-900 dark:hover:text-white text-lg transition-colors"
                                 >
                                     ✕
@@ -226,9 +237,19 @@ export default function DataCard<T>({
                                         {actionError}
                                     </div>
                                 )}
+                                {/* The confirm string is a warning written for the operator; show
+                                    it rather than relying on the button label alone. */}
+                                {confirmingAction && (() => {
+                                    const pending = actions?.(modalItem)?.find((a) => a.label === confirmingAction);
+                                    return pending?.confirm ? (
+                                        <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded px-3 py-2">
+                                            {pending.confirm} — click again to continue.
+                                        </div>
+                                    ) : null;
+                                })()}
                                 <div className="flex gap-2 justify-end">
                                     <button
-                                        onClick={() => !actionLoading && setModalItem(null)}
+                                        onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
                                         className="px-4 py-2 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
                                         disabled={actionLoading}
                                     >
@@ -241,7 +262,7 @@ export default function DataCard<T>({
                                             disabled={actionLoading}
                                             className={`px-4 py-2 text-xs rounded transition-colors disabled:opacity-50 ${variantClasses[action.variant || 'default']}`}
                                         >
-                                            {actionLoading ? 'Working...' : action.label}
+                                            {actionLoading ? 'Working...' : (confirmingAction === action.label ? `Confirm ${action.label}?` : action.label)}
                                         </button>
                                     ))}
                                 </div>

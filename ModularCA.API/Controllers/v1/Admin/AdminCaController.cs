@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -65,6 +65,11 @@ namespace ModularCA.API.Controllers.v1.Admin
                 ca.IsDefault,
                 ca.IsEnabled,
                 ca.ParentCaId,
+                // The CA's certificate id, not just its serial. CRL schedules and several other
+                // resources key on CaCertificateId, and without this the admin UI had no way to
+                // resolve one from an authority — the Create CRL Schedule form was posting the
+                // CA's own id into a CaCertificateId field and always 404ing.
+                ca.CertificateId,
                 CertificateSerial = ca.Certificate?.SerialNumber,
                 CertificateSubjectDN = ca.Certificate?.SubjectDN,
                 CertificateNotAfter = ca.Certificate?.NotAfter,

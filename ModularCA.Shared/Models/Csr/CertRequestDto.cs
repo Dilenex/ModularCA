@@ -16,5 +16,15 @@
         public string? RequestorUsername { get; set; }
         public string? RejectionReason { get; set; }
         public Guid? IssuedCertificateId { get; set; }
+
+        /// <summary>
+        /// Validity window the submitter asked for, or null to let the profile decide. Surfaced
+        /// so an issuer can see what will be applied before approving, since issuance falls back
+        /// to these when no explicit window is given.
+        /// </summary>
+        public DateTime? RequestedNotBefore { get; set; }
+
+        /// <inheritdoc cref="RequestedNotBefore"/>
+        public DateTime? RequestedNotAfter { get; set; }
     }
 }

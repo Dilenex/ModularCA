@@ -55,9 +55,18 @@ namespace ModularCA.API.Controllers.v1.User
                 caCerts = caCerts.Where(c => accessibleCertIdSet.Contains(c.CertificateId)).ToList();
             }
 
+            // Order before paging, for the same reason as UserCertificateController: the
+            // underlying store query is unordered, so page boundaries were not stable and rows
+            // could repeat or disappear between pages. Alphabetical by subject is the useful
+            // order for a trust list; the serial makes the sequence total.
+            var ordered = caCerts
+                .OrderBy(c => c.SubjectDN, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(c => c.SerialNumber, StringComparer.Ordinal)
+                .ToList();
+
             // Apply pagination after filtering
-            var total = caCerts.Count;
-            var pagedItems = caCerts
+            var total = ordered.Count;
+            var pagedItems = ordered
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToList();

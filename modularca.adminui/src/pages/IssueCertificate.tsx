@@ -372,6 +372,8 @@ const IssueCertificate: React.FC = () => {
                     certificateProfileId: selectedCertProfile,
                     subjectOverrides: Object.keys(subjectOverrides).length > 0 ? subjectOverrides : undefined,
                     sanOverrides: sanOverrides.length > 0 ? sanOverrides : undefined,
+                    notBefore: notBefore ? new Date(notBefore).toISOString() : undefined,
+                    notAfter: notAfter ? new Date(notAfter).toISOString() : undefined,
                 });
 
                 setSuccess({ serial: 'CSR uploaded successfully' });
