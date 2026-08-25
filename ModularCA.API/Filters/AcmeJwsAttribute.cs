@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using ModularCA.Shared.Interfaces;
@@ -14,6 +14,19 @@ namespace ModularCA.API.Filters;
 public class AcmeJwsAttribute : Attribute, IFilterFactory
 {
     public bool AllowNewAccount { get; set; }
+
+    /// <summary>
+    /// Whether this endpoint accepts a JWS signed with an inline <c>jwk</c> rather than the
+    /// account's <c>kid</c>.
+    /// </summary>
+    /// <remarks>
+    /// RFC 8555 §6.2 permits <c>jwk</c> only on newAccount and revokeCert; every other request
+    /// must identify the account by key id. The filter used to resolve an account from an inline
+    /// jwk on ANY endpoint, so a caller holding the account key could bypass kid entirely —
+    /// which, before nonces were required on jwk-signed requests, also meant those requests were
+    /// replayable. <see cref="AllowNewAccount"/> implies this.
+    /// </remarks>
+    public bool AllowJwk { get; set; }
     public bool IsReusable => false;
 
     public IFilterMetadata CreateInstance(IServiceProvider serviceProvider)
@@ -23,7 +36,8 @@ public class AcmeJwsAttribute : Attribute, IFilterFactory
             serviceProvider.GetRequiredService<IAcmeNonceService>(),
             serviceProvider.GetRequiredService<IAcmeAccountService>(),
             serviceProvider.GetRequiredService<SystemConfig>(),
-            AllowNewAccount);
+            AllowNewAccount,
+            AllowJwk);
     }
 }
 
@@ -39,7 +53,8 @@ public class AcmeJwsActionFilter(
     IAcmeNonceService nonceService,
     IAcmeAccountService accountService,
     SystemConfig config,
-    bool allowNewAccount) : IAsyncActionFilter
+    bool allowNewAccount,
+    bool allowJwk) : IAsyncActionFilter
 {
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
@@ -84,6 +99,14 @@ public class AcmeJwsActionFilter(
         {
             var (type, detail) = MapAcmeProblem(ex.Message);
             context.Result = AcmeError(400, type, detail);
+            return;
+        }
+
+        if (jws.Jwk != null && !allowNewAccount && !allowJwk)
+        {
+            context.Result = AcmeError(400, "urn:ietf:params:acme:error:malformed",
+                "This request must be signed with the account key identifier (kid). An inline jwk is "
+                + "only permitted on newAccount and revokeCert (RFC 8555 §6.2).");
             return;
         }
 

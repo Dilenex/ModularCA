@@ -18,7 +18,6 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("api/v1/acme/{caLabel}")]
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
-[AcmeJws]
 public class AcmeOrderController(
     IAcmeOrderService orderService,
     IAcmeAuthorizationService authzService,
@@ -59,6 +58,7 @@ public class AcmeOrderController(
     /// <summary>
     /// Create a new certificate order (RFC 8555 §7.4).
     /// </summary>
+    [AcmeJws]
     [HttpPost("new-order")]
     public async Task<IActionResult> NewOrder()
     {
@@ -102,6 +102,7 @@ public class AcmeOrderController(
     /// <summary>
     /// Get order status (RFC 8555 §7.4 POST-as-GET). Verifies account ownership.
     /// </summary>
+    [AcmeJws]
     [HttpPost("order/{id:guid}")]
     public async Task<IActionResult> GetOrder(Guid id)
     {
@@ -128,6 +129,7 @@ public class AcmeOrderController(
     /// fixed RFC 7807 detail string instead of leaking internal text to anonymous ACME
     /// clients. The original exception is logged at warn level for operator diagnostics.
     /// </summary>
+    [AcmeJws]
     [HttpPost("order/{id:guid}/finalize")]
     public async Task<IActionResult> FinalizeOrder(Guid id)
     {
@@ -203,6 +205,7 @@ public class AcmeOrderController(
     /// <summary>
     /// Download the issued certificate (RFC 8555 §7.4.2). Verifies account ownership.
     /// </summary>
+    [AcmeJws]
     [HttpPost("cert/{id:guid}")]
     public async Task<IActionResult> DownloadCertificate(Guid id)
     {
@@ -227,6 +230,10 @@ public class AcmeOrderController(
     /// a fixed RFC 7807 detail string instead of <c>ex.Message</c>; the underlying message
     /// is logged at warn level so operators retain diagnostic information.
     /// </summary>
+    // RFC 8555 §6.2 lists revokeCert alongside newAccount as the two requests that may be
+    // signed with an inline jwk rather than a kid — a holder of the certificate's key may
+    // revoke it without an account. Every other action on this controller requires kid.
+    [AcmeJws(AllowJwk = true)]
     [HttpPost("revoke-cert")]
     public async Task<IActionResult> RevokeCert()
     {

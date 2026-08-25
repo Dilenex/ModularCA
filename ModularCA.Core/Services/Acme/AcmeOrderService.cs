@@ -132,10 +132,23 @@ public class AcmeOrderService(
             var csrPem = CertificateUtil.ConvertDerToPem(csrDer, "CERTIFICATE REQUEST");
             var parsedCsr = CertificateUtil.ParseCsr(csrPem);
 
-            // Resolve CA using the order's stored CA label
-            // (captured at new-order time) rather than the hard-coded null that
-            // always picked the protocol-level default.
-            var effectiveCaLabel = !string.IsNullOrWhiteSpace(caLabel) ? caLabel : order.CaLabel;
+            // The ORDER's CA is authoritative. The route label may only confirm it.
+            //
+            // This used to prefer the route-supplied label over the order's, so a client could
+            // create and validate an order under one CA and then finalize it against another:
+            // POST /acme/lab/new-order (where AcmeAllowPrivateAddressValidation is on), then
+            // POST /acme/prod/order/{id}/finalize, and the production CA signs an authorization
+            // that was only ever permitted under the lab CA's relaxed policy. Ownership was
+            // checked by account id alone, which does not constrain which CA acts.
+            if (!string.IsNullOrWhiteSpace(caLabel)
+                && !string.IsNullOrWhiteSpace(order.CaLabel)
+                && !string.Equals(caLabel, order.CaLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Order belongs to CA '{order.CaLabel}' and cannot be finalized against CA '{caLabel}'.");
+            }
+
+            var effectiveCaLabel = !string.IsNullOrWhiteSpace(order.CaLabel) ? order.CaLabel : caLabel;
             var caContext = await _caResolver.ResolveAsync(effectiveCaLabel, "ACME");
             var signingProfileId = caContext.SigningProfileId;
 

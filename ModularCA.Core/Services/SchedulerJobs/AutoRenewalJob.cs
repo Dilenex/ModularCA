@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -211,10 +211,15 @@ public class AutoRenewalJob : SingletonCronJob
                 var keySizeInt = ParseKeySizeToInt(keyAlgorithm, keySize);
                 var sans = ParseSansFromJson(sanJson);
 
+                // Renewing a subscriber certificate is NOT an infrastructure issuance: it must
+                // stay subject to quota and validity policy, and stay owned by whoever requested
+                // the original so they keep self-service on the replacement.
                 var (csrId, _) = await _csrService.GenerateInfrastructureCsrAsync(
                     subjectDn, keyAlgorithm, keySizeInt,
                     certProfileId.Value, signingProfileId.Value,
-                    sans);
+                    sans,
+                    isInfrastructure: originalRequest?.IsInfrastructureCert ?? false,
+                    requestorUserId: originalRequest?.RequestorUserId);
 
                 // Retrieve the generated CSR entity and stamp it as a renewal
                 renewalRequest = await _db.CertificateRequests.FirstAsync(r => r.Id == csrId, cancellationToken);

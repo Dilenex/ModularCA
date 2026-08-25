@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 
 namespace ModularCA.Shared.Utils;
 
@@ -83,26 +83,46 @@ public static class EnrollmentNameRestriction
             return false;
         }
 
-        var commonName = ExtractCommonName(subject);
+        // EVERY Common Name in the subject must be permitted, not just the first one.
+        //
+        // A DN may carry more than one CN RDN, and the issued certificate carries all of them:
+        // CertificateBuilderService.ResolveSubjectDn returns the CSR's subject verbatim. This
+        // used to test only the leftmost CN, so a CSR with
+        // `CN=host.example.com,CN=evil.attacker.net` satisfied a restriction of `example.com`
+        // and was issued with both names. Worse on the request-profile path, where the subject
+        // is rebuilt from a dictionary and the LAST CN wins — so the name that actually reached
+        // the certificate was the one never checked.
+        var commonNames = ExtractCommonNames(subject);
 
-        foreach (var pattern in patterns)
+        // DN-component patterns ("O=Acme") are asserted against the whole subject, unchanged.
+        foreach (var pattern in patterns.Where(IsDnComponent))
         {
-            if (IsDnComponent(pattern))
-            {
-                if (SubjectHasDnComponent(subject, pattern))
-                {
-                    failure = string.Empty;
-                    return true;
-                }
-            }
-            else if (commonName != null && DnsNameMatches(commonName, pattern))
+            if (SubjectHasDnComponent(subject, pattern))
             {
                 failure = string.Empty;
                 return true;
             }
         }
 
-        failure = commonName == null && patterns.Any(p => !IsDnComponent(p))
+        var dnsPatterns = patterns.Where(p => !IsDnComponent(p)).ToList();
+        if (dnsPatterns.Count > 0 && commonNames.Count > 0)
+        {
+            var unpermitted = commonNames
+                .Where(cn => !dnsPatterns.Any(p => DnsNameMatches(cn, p)))
+                .ToList();
+
+            if (unpermitted.Count == 0)
+            {
+                failure = string.Empty;
+                return true;
+            }
+
+            failure = $"the CSR subject Common Name(s) {string.Join(", ", unpermitted.Select(n => $"'{n}'"))} "
+                    + $"do not match the token restriction '{restriction}'";
+            return false;
+        }
+
+        failure = commonNames.Count == 0 && dnsPatterns.Count > 0
             ? "the CSR subject has no Common Name to match against the token's subject restriction"
             : $"the CSR subject does not match the token restriction '{restriction}'";
         return false;
@@ -210,19 +230,27 @@ public static class EnrollmentNameRestriction
             && candidate[candidate.Length - wanted.Length - 1] == '.';
     }
 
-    /// <summary>Returns the first CN value in a DN, or null when there is none.</summary>
-    private static string? ExtractCommonName(string subject)
+    /// <summary>
+    /// Returns EVERY CN value in a DN, in the order they appear. Empty when there is none.
+    /// </summary>
+    /// <remarks>
+    /// All of them, not the first: a subject may assert several Common Names and the issued
+    /// certificate carries all of them, so a restriction that checked only one left the rest
+    /// unconstrained. A regex timeout yields an empty list, which the caller treats as
+    /// "no Common Name to match" and therefore refuses — failing closed.
+    /// </remarks>
+    private static List<string> ExtractCommonNames(string subject)
     {
         try
         {
-            var match = CommonNamePattern.Match(subject);
-            if (!match.Success) return null;
-            var cn = match.Groups["cn"].Value.Trim().Trim('"');
-            return string.IsNullOrWhiteSpace(cn) ? null : cn;
+            return CommonNamePattern.Matches(subject)
+                .Select(m => m.Groups["cn"].Value.Trim().Trim('"'))
+                .Where(cn => !string.IsNullOrWhiteSpace(cn))
+                .ToList();
         }
         catch (RegexMatchTimeoutException)
         {
-            return null;
+            return [];
         }
     }
 }

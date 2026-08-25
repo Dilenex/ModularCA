@@ -20,26 +20,45 @@ namespace ModularCA.Auth.Services
         private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
         /// <summary>
-        /// Copies all access permissions from the previous certificate (identified by matching
-        /// <c>SubjectDN</c>) to the reissued certificate. Excludes the new certificate itself
-        /// from the predecessor lookup — without that filter a brand-new subject (no prior
-        /// cert) silently picks the new cert as its own predecessor and the copy becomes a
-        /// new→new no-op. When no real predecessor exists we return cleanly so brand-new
-        /// subjects don't throw on a benign "no permissions to inherit" path.
+        /// Copies access permissions from the certificate being reissued onto its replacement.
         /// </summary>
-        public async Task UpdatePermissionsOntoReissuedCertificate(Guid newCertId, Guid userContext)
+        /// <param name="newCertId">The newly issued certificate.</param>
+        /// <param name="userContext">The operator performing the reissue, recorded as grantor.</param>
+        /// <param name="previousCertId">
+        /// The certificate actually being replaced. When null, nothing is inherited.
+        /// </param>
+        /// <remarks>
+        /// The predecessor is passed in explicitly because every caller already knows it — the
+        /// reissue request names it by id, by serial, or via the CSR's IssuedCertificateId.
+        /// <para>
+        /// This method used to FIND the predecessor itself, by <c>SubjectDN</c> string equality
+        /// across the whole Certificates table, ordered by NotBefore. CertificateEntity carries
+        /// no tenant query filter, so that search spanned every CA in every tenant: any
+        /// certificate anywhere sharing the subject — and holding a newer NotBefore — donated its
+        /// ACL rows to this one. Two tenants both issuing CN=vpn.example.com cross-pollinated
+        /// permissions on every renewal with no attacker involved, and a user who could get a
+        /// certificate issued with a chosen subject on any CA could plant a Manage grant that
+        /// landed on someone else's production certificate at its next reissue — from there,
+        /// PFX export hands over the private key.
+        /// </para>
+        /// <para>
+        /// Fails closed: an unknown predecessor inherits nothing rather than guessing.
+        /// </para>
+        /// </remarks>
+        public async Task UpdatePermissionsOntoReissuedCertificate(Guid newCertId, Guid userContext, Guid? previousCertId)
         {
             var newCert = await dbContext.Certificates.FindAsync(newCertId);
             if (newCert == null)
                 throw new InvalidOperationException("New certificate not found");
 
+            if (previousCertId == null || previousCertId == newCertId)
+                return; // Nothing identified to inherit from. Caller's own grant path runs separately.
+
             var oldCert = await dbContext.Certificates
-                .Where(c => c.SubjectDN == newCert.SubjectDN && c.CertificateId != newCertId)
-                .OrderByDescending(c => c.NotBefore)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(c => c.CertificateId == previousCertId.Value);
 
             if (oldCert == null)
-                return; // No predecessor — nothing to inherit. Caller's grant path runs separately.
+                return; // Predecessor no longer present — inherit nothing rather than guess.
 
             // Copy permissions from old certificate to new certificate.
             var permissions = await dbContext.CertificateAccessLists

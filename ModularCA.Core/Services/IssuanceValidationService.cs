@@ -359,6 +359,31 @@ namespace ModularCA.Core.Services
                 .Distinct()
                 .ToList();
 
+            // A profile that ASKED for key usages must not end up with none — the same rule the
+            // extended-key-usage path enforces above, and for the same reason.
+            //
+            // CertificateBuilderService emits the KeyUsage extension only when the resolved bit
+            // set is non-zero, and a certificate with NO KeyUsage extension is unrestricted:
+            // RFC 5280 §4.2.1.3 makes the extension the thing that narrows what a key may do, so
+            // its absence narrows nothing. A profile whose usages all failed to resolve — one
+            // spelling that no longer matches an OIDOptions row is enough, and PolicySyncService
+            // writes KeyUsages verbatim from YAML with no catalog validation — therefore issued
+            // a certificate STRICTLY MORE powerful than the one the operator described.
+            //
+            // The empty-input case is different and legitimate (a profile that deliberately
+            // constrains nothing) and returns above before reaching here.
+            if (standardOidsDeserialize.Count > 0 && allowedStandard.Count == 0)
+            {
+                throw new CertificatePolicyViolationException(
+                [
+                    "[KeyUsage] The certificate profile requests key usages "
+                    + $"({string.Join(", ", standardOidsDeserialize)}) but none of them resolve against the "
+                    + "OIDOptions catalog. Issuing would emit no KeyUsage extension at all, which leaves the "
+                    + "certificate unrestricted for every usage. Correct the profile's spelling or add the "
+                    + "missing catalog entries rather than issuing an unconstrained certificate."
+                ]);
+            }
+
             return allowedStandard;
         }
 

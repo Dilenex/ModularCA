@@ -17,7 +17,9 @@ namespace ModularCA.Shared.Interfaces
         Task<(Guid csrId, AsymmetricCipherKeyPair keyPair)> GenerateInfrastructureCsrAsync(
             string subjectDn, string keyAlgorithm, int keySizeOrCurve,
             Guid certProfileId, Guid signingProfileId,
-            List<string>? sans = null);
+            List<string>? sans = null,
+            bool isInfrastructure = true,
+            Guid? requestorUserId = null);
 
         /// <summary>
         /// Generates a new CSR with a fresh key pair and stores it, returning the PEM-encoded CSR.

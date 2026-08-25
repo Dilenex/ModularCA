@@ -1,4 +1,4 @@
-using ModularCA.Shared.Utils;
+﻿using ModularCA.Shared.Utils;
 using Xunit;
 
 namespace ModularCA.Tests.Shared.Utils;
@@ -164,5 +164,50 @@ public class EnrollmentNameRestrictionTests
             EnrollmentNameRestriction.ParsePatterns("a.com, b.com  c.com"));
         Assert.Empty(EnrollmentNameRestriction.ParsePatterns(null));
         Assert.Empty(EnrollmentNameRestriction.ParsePatterns("  "));
+    }
+
+    // ---- multi-CN subjects (every Common Name must be permitted) ----
+
+    [Fact]
+    public void A_second_common_name_outside_the_restriction_is_refused()
+    {
+        // The bypass. A DN may carry several CN RDNs and the issued certificate carries all of
+        // them, but only the leftmost was ever checked — so this subject satisfied a restriction
+        // of "example.com" and was issued with CN=evil.attacker.net alongside it.
+        var ok = EnrollmentNameRestriction.SubjectSatisfies(
+            "CN=host.example.com,CN=evil.attacker.net,O=Acme", "example.com", out var failure);
+
+        Assert.False(ok);
+        Assert.Contains("evil.attacker.net", failure, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_second_common_name_is_refused_even_when_it_comes_first()
+    {
+        // The request-profile path rebuilds the subject from a dictionary where the LAST CN
+        // wins, so the ordering that reaches the certificate is not the ordering that was
+        // checked. Both orders must be refused.
+        Assert.False(EnrollmentNameRestriction.SubjectSatisfies(
+            "CN=evil.attacker.net,CN=host.example.com,O=Acme", "example.com", out _));
+    }
+
+    [Fact]
+    public void Multiple_common_names_all_inside_the_restriction_are_permitted()
+    {
+        // Not a blanket ban on multi-CN subjects — only on ones asserting a name the token
+        // does not cover. The pattern form is a suffix ("example.com"), not a wildcard label.
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies(
+            "CN=a.example.com,CN=b.example.com,O=Acme", "example.com", out _));
+    }
+
+    [Fact]
+    public void Every_common_name_is_checked_against_the_full_pattern_list()
+    {
+        // With several permitted patterns, each CN may satisfy a different one.
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies(
+            "CN=host.example.com,CN=svc.internal.test", "example.com,internal.test", out _));
+
+        Assert.False(EnrollmentNameRestriction.SubjectSatisfies(
+            "CN=host.example.com,CN=svc.elsewhere.test", "example.com,internal.test", out _));
     }
 }

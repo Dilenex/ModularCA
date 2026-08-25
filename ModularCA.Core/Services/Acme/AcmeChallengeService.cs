@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -611,6 +611,18 @@ public class AcmeChallengeService(
     /// </summary>
     private static bool IsPrivateAddress(IPAddress ip)
     {
+        // Collapse ::ffff:a.b.c.d to a.b.c.d FIRST.
+        //
+        // An IPv4-mapped address reports AddressFamily.InterNetworkV6, so it used to take the
+        // IPv6 branch below and match none of its patterns — fc00::/7 and fe80::/10 are correct
+        // for genuine IPv6 but say nothing about a mapped IPv4 address. The entire IPv4
+        // private-range block was therefore skipped, and a hostname resolving to
+        // ::ffff:169.254.169.254 or ::ffff:10.0.0.1 was treated as public. Since the per-address
+        // outcome is reported back in the challenge's problem document, that was a usable
+        // internal port scanner with status-code granularity.
+        if (ip.IsIPv4MappedToIPv6)
+            ip = ip.MapToIPv4();
+
         if (IPAddress.IsLoopback(ip)) return true;
         if (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any)) return true;
         if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast) return true;

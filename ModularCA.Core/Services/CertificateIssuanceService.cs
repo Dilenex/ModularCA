@@ -479,6 +479,13 @@ namespace ModularCA.Core.Services
             if (csrEntity == null)
                 throw new InvalidOperationException("CSR not found for reissue.");
 
+            // The certificate being replaced. Captured here, before issuance mutates anything,
+            // because it is the only trustworthy identification of the predecessor: all three
+            // entry points above resolve to this CSR, and its IssuedCertificateId is the cert
+            // they were asked to reissue. ACL inheritance keys off this rather than searching
+            // for a certificate with a matching subject DN.
+            var predecessorCertId = csrEntity.IssuedCertificateId;
+
             var prevCert = await _db.Certificates
                 .Where(c => c.CertificateId == csrEntity.IssuedCertificateId)
                 .FirstOrDefaultAsync();
@@ -775,7 +782,7 @@ namespace ModularCA.Core.Services
                 if (newCertEntity != null)
                 {
                     await _certificateAccessService.UpdatePermissionsOntoReissuedCertificate(
-                        newCertEntity.CertificateId, csrEntity.RequestorUserId ?? Guid.Empty);
+                        newCertEntity.CertificateId, csrEntity.RequestorUserId ?? Guid.Empty, predecessorCertId);
                 }
                 else
                 {

@@ -450,7 +450,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return NotFound("Newly generated certificate not found in the database.");
             }
 
-            await _certificateAccessService.UpdatePermissionsOntoReissuedCertificate(certEntry.CertificateId, _currentUser.User.Id);
+            // ACL inheritance is done inside ReissueCertificateAsync, which is the only place
+            // that still knows which certificate was replaced. Calling it again from here was a
+            // duplicate of the same operation, and it had no way to identify the predecessor —
+            // which is why the service used to guess by subject DN.
 
             var caInfoReissue = await ResolveCaFromSigningProfileAsync(certEntry.SigningProfileId);
             await _audit.LogAsync(AuditActionType.CertificateReissued, _currentUser.User.Id, _currentUser.User.Username,
@@ -525,7 +528,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return NotFound("Newly generated certificate not found in the database.");
             }
 
-            await _certificateAccessService.UpdatePermissionsOntoReissuedCertificate(certEntry.CertificateId, _currentUser.User.Id);
+            // ACL inheritance is done inside ReissueCertificateAsync, which is the only place
+            // that still knows which certificate was replaced. Calling it again from here was a
+            // duplicate of the same operation, and it had no way to identify the predecessor —
+            // which is why the service used to guess by subject DN.
 
             // Emit CertificateReissued so reissue-by-serial
             // matches the audit coverage already present on reissue-by-id.
@@ -604,7 +610,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return NotFound("Newly generated certificate not found in the database.");
             }
 
-            await _certificateAccessService.UpdatePermissionsOntoReissuedCertificate(certEntry.CertificateId, _currentUser.User.Id);
+            // ACL inheritance is done inside ReissueCertificateAsync, which is the only place
+            // that still knows which certificate was replaced. Calling it again from here was a
+            // duplicate of the same operation, and it had no way to identify the predecessor —
+            // which is why the service used to guess by subject DN.
 
             // Emit CertificateReissued for the CSR-id reissue
             // path. Target entity is the CertificateRequest because that is the input

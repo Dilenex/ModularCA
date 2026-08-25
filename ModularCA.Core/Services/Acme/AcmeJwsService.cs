@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using ModularCA.Shared.Interfaces;
@@ -69,19 +69,17 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         if (url != requestUrl)
             throw new InvalidOperationException("JWS url does not match request URL.");
 
-        // Check if this is a new-account request (uses JWK, not kid) — nonce still recommended but some clients omit on first request
-        bool hasKid = header.TryGetProperty("kid", out _);
+        // RFC 8555 §6.5: EVERY ACME POST carries a replay nonce, and the server rejects one
+        // that is missing, unknown, or already used. This requirement used to be gated on the
+        // request carrying a `kid` — i.e. jwk-signed requests were exempt — which meant a
+        // jwk-signed body consumed no nonce at all and could be replayed without limit. Since
+        // the filter resolved an account from an inline jwk on every endpoint, that included
+        // revoke-cert: capture one such request and it could be replayed indefinitely.
         if (!header.TryGetProperty("nonce", out var nonceProp) || string.IsNullOrEmpty(nonceProp.GetString()))
-        {
-            if (hasKid) // Not a new-account request — nonce is required
-                throw new InvalidOperationException("Nonce is required in ACME JWS protected header.");
-        }
-        else
-        {
-            var nonce = nonceProp.GetString()!;
-            if (!await _nonceService.ConsumeAsync(nonce))
-                throw new InvalidOperationException("Invalid or expired nonce.");
-        }
+            throw new InvalidOperationException("Nonce is required in ACME JWS protected header.");
+
+        if (!await _nonceService.ConsumeAsync(nonceProp.GetString()!))
+            throw new InvalidOperationException("Invalid or expired nonce.");
 
         string? kid = header.TryGetProperty("kid", out var kidProp) ? kidProp.GetString() : null;
         JsonElement? jwk = header.TryGetProperty("jwk", out var jwkProp) ? jwkProp : null;

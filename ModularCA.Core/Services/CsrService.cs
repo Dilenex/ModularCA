@@ -184,7 +184,9 @@ public class CsrService : ICsrService
     public async Task<(Guid csrId, Org.BouncyCastle.Crypto.AsymmetricCipherKeyPair keyPair)> GenerateInfrastructureCsrAsync(
         string subjectDn, string keyAlgorithm, int keySizeOrCurve,
         Guid certProfileId, Guid signingProfileId,
-        List<string>? sans = null)
+        List<string>? sans = null,
+        bool isInfrastructure = true,
+        Guid? requestorUserId = null)
     {
         var certProfile = await _dbContext.CertProfiles.FindAsync(certProfileId)
             ?? throw new InvalidOperationException("Infrastructure cert profile not found.");
@@ -275,12 +277,20 @@ public class CsrService : ICsrService
             SignatureAlgorithm = signatureAlgorithm,
             SubmittedAt = DateTime.UtcNow,
             Status = "Approved",
-            IsInfrastructureCert = true,
+            // The infrastructure flag is a POLICY EXEMPTION, not a bookkeeping label: at
+            // issuance it skips the tenant/CA quota, the minimum-validity check, and the global
+            // CertPolicy.MaxValidityDays ceiling. Auto-renewal used this method for ordinary
+            // subscriber certificates and therefore renewed them straight past limits their
+            // original issuance had been held to — a profile capped at 398 days renewing to its
+            // P3Y profile maximum — while also detaching the certificate from its owner, who
+            // then lost self-service on it (CertificateAccessEvaluator excludes infrastructure
+            // requests). Callers must now say so explicitly.
+            IsInfrastructureCert = isInfrastructure,
             CertProfileId = certProfile.Id,
             CertProfile = certProfile,
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
-            RequestorUserId = null,
+            RequestorUserId = requestorUserId,
         };
 
         _dbContext.CertificateRequests.Add(entity);

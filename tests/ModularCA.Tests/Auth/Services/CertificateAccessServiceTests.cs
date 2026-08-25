@@ -9,11 +9,22 @@ namespace ModularCA.Tests.Auth.Services;
 
 /// <summary>
 /// Tests for <see cref="CertificateAccessService.UpdatePermissionsOntoReissuedCertificate"/>.
-/// The predecessor lookup recently changed to exclude the new cert itself — without that
-/// filter a brand-new subject (no prior cert) silently picked the new cert as its own
-/// predecessor and the copy became a no-op. The ordering also changed from
-/// <c>OrderByDescending(RevocationDate)</c> (NULL-sort issue) to
-/// <c>OrderByDescending(NotBefore)</c>.
+/// <para>
+/// This method used to FIND the predecessor itself, by <c>SubjectDN</c> string equality across
+/// the whole Certificates table, ordered by NotBefore — and <c>CertificateEntity</c> carries no
+/// tenant query filter, so the search spanned every CA in every tenant. Any certificate anywhere
+/// sharing the subject, with a newer NotBefore, donated its ACL rows to this one. Two tenants
+/// both issuing <c>CN=vpn.example.com</c> cross-pollinated permissions on every renewal with no
+/// attacker involved; a user able to get a certificate issued with a chosen subject on any CA
+/// could plant a Manage grant that landed on someone else's production certificate at its next
+/// reissue, and Manage is what PFX export checks before handing over the private key.
+/// </para>
+/// <para>
+/// The predecessor is now passed in by the caller, which always knows it: every reissue entry
+/// point resolves to a CSR whose <c>IssuedCertificateId</c> is the certificate being replaced.
+/// The tests that used to pin the search behaviour (most-recent-NotBefore wins, exclude self)
+/// have been replaced — that behaviour is deliberately gone.
+/// </para>
 /// </summary>
 public class CertificateAccessServiceTests
 {
@@ -27,6 +38,9 @@ public class CertificateAccessServiceTests
             NotAfter = notBefore.AddYears(1),
         };
 
+    private static readonly DateTime Y2025 = new(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Y2026 = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
     [Fact]
     public async Task Throws_When_NewCert_Does_Not_Exist()
     {
@@ -34,31 +48,15 @@ public class CertificateAccessServiceTests
         var svc = new CertificateAccessService(db);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.UpdatePermissionsOntoReissuedCertificate(Guid.NewGuid(), Guid.NewGuid()));
+            svc.UpdatePermissionsOntoReissuedCertificate(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()));
     }
 
     [Fact]
-    public async Task NoOp_When_New_Subject_Has_No_Predecessor()
-    {
-        // The bug we just fixed: brand-new SubjectDN means the only matching row is the
-        // new cert itself. After the filter, oldCert == null, function returns cleanly.
-        using var db = InMemoryDbContextFactory.Create();
-        var newCert = NewCert("CN=fresh.example.com", new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc));
-        db.Certificates.Add(newCert);
-        await db.SaveChangesAsync();
-
-        var svc = new CertificateAccessService(db);
-        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid());
-
-        Assert.Empty(await db.CertificateAccessLists.ToListAsync());
-    }
-
-    [Fact]
-    public async Task Copies_Permissions_From_The_Single_Predecessor()
+    public async Task Copies_permissions_from_the_named_predecessor()
     {
         using var db = InMemoryDbContextFactory.Create();
-        var oldCert = NewCert("CN=server.example.com", new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        var newCert = NewCert("CN=server.example.com", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var oldCert = NewCert("CN=server.example.com", Y2025);
+        var newCert = NewCert("CN=server.example.com", Y2026);
         db.Certificates.AddRange(oldCert, newCert);
 
         var alice = Guid.NewGuid();
@@ -70,78 +68,118 @@ public class CertificateAccessServiceTests
 
         var operatorId = Guid.NewGuid();
         var svc = new CertificateAccessService(db);
-        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, operatorId);
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, operatorId, oldCert.CertificateId);
 
-        var newCertPerms = await db.CertificateAccessLists
-            .Where(p => p.CertificateId == newCert.CertificateId)
-            .ToListAsync();
-        Assert.Equal(2, newCertPerms.Count);
-        Assert.Contains(newCertPerms, p => p.UserId == alice && p.AccessLevel == CertificateAccessLevel.Manage);
-        Assert.Contains(newCertPerms, p => p.UserId == bob && p.AccessLevel == CertificateAccessLevel.View);
-        // The reissue-time operator is the GrantedBy on every copy — preserves audit trail
-        // showing who triggered the copy, not who originally granted to Alice/Bob.
-        Assert.All(newCertPerms, p => Assert.Equal(operatorId, p.GrantedByUserId));
+        var perms = await db.CertificateAccessLists.Where(p => p.CertificateId == newCert.CertificateId).ToListAsync();
+        Assert.Equal(2, perms.Count);
+        Assert.Contains(perms, p => p.UserId == alice && p.AccessLevel == CertificateAccessLevel.Manage);
+        Assert.Contains(perms, p => p.UserId == bob && p.AccessLevel == CertificateAccessLevel.View);
+        // The reissuing operator is the GrantedBy on every copy, preserving who triggered it.
+        Assert.All(perms, p => Assert.Equal(operatorId, p.GrantedByUserId));
     }
 
     [Fact]
-    public async Task Picks_Most_Recent_NotBefore_When_Multiple_Predecessors_Exist()
+    public async Task An_unrelated_certificate_with_the_same_subject_donates_nothing()
     {
+        // THE security test. A certificate sharing the subject DN — issued by another CA, in
+        // another tenant, by anyone — must not contribute ACL rows just because it exists and
+        // sorts newer. Under the old subject-DN search, mallory's row landed on newCert.
         using var db = InMemoryDbContextFactory.Create();
-        // Three certs with the same SubjectDN. Only the most-recent-NotBefore non-self
-        // predecessor's permissions should copy across.
-        var ancientCert = NewCert("CN=server.example.com", new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        var recentCert = NewCert("CN=server.example.com", new DateTime(2025, 6, 1, 0, 0, 0, DateTimeKind.Utc));
-        var newCert = NewCert("CN=server.example.com", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        db.Certificates.AddRange(ancientCert, recentCert, newCert);
+        var realPredecessor = NewCert("CN=vpn.example.com", Y2025);
+        var impostor = NewCert("CN=vpn.example.com", new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc));
+        var newCert = NewCert("CN=vpn.example.com", Y2026);
+        db.Certificates.AddRange(realPredecessor, impostor, newCert);
 
-        var ancientUser = Guid.NewGuid();
-        var recentUser = Guid.NewGuid();
+        var legitimate = Guid.NewGuid();
+        var mallory = Guid.NewGuid();
         db.CertificateAccessLists.AddRange(
-            new CertificateAccessListEntity { UserId = ancientUser, CertificateId = ancientCert.CertificateId, AccessLevel = CertificateAccessLevel.Manage, GrantedByUserId = Guid.NewGuid() },
-            new CertificateAccessListEntity { UserId = recentUser, CertificateId = recentCert.CertificateId, AccessLevel = CertificateAccessLevel.Manage, GrantedByUserId = Guid.NewGuid() });
+            new CertificateAccessListEntity { UserId = legitimate, CertificateId = realPredecessor.CertificateId, AccessLevel = CertificateAccessLevel.View, GrantedByUserId = Guid.NewGuid() },
+            new CertificateAccessListEntity { UserId = mallory, CertificateId = impostor.CertificateId, AccessLevel = CertificateAccessLevel.Manage, GrantedByUserId = Guid.NewGuid() });
         await db.SaveChangesAsync();
 
         var svc = new CertificateAccessService(db);
-        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid());
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid(), realPredecessor.CertificateId);
 
-        var newCertPerms = await db.CertificateAccessLists
-            .Where(p => p.CertificateId == newCert.CertificateId)
-            .ToListAsync();
-        // Only the recent-cert's user should be carried forward; ancient-cert's user is dropped.
-        Assert.Single(newCertPerms);
-        Assert.Equal(recentUser, newCertPerms[0].UserId);
+        var perms = await db.CertificateAccessLists.Where(p => p.CertificateId == newCert.CertificateId).ToListAsync();
+        Assert.Single(perms);
+        Assert.Equal(legitimate, perms[0].UserId);
+        Assert.DoesNotContain(perms, p => p.UserId == mallory);
     }
 
     [Fact]
-    public async Task Excludes_The_New_Cert_Itself_From_Predecessor_Lookup()
+    public async Task No_predecessor_named_means_nothing_is_inherited()
     {
-        // Even with a real predecessor present, the filter must keep the new cert out so
-        // the OrderByDescending doesn't pick "self" by accident.
+        // Fails closed. A same-subject certificate is present and would have been picked up by
+        // the old search; with no predecessor named, nothing is copied.
         using var db = InMemoryDbContextFactory.Create();
-        var oldCert = NewCert("CN=server.example.com", new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        var newCert = NewCert("CN=server.example.com", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        db.Certificates.AddRange(oldCert, newCert);
-
-        var oldUser = Guid.NewGuid();
+        var other = NewCert("CN=fresh.example.com", Y2025);
+        var newCert = NewCert("CN=fresh.example.com", Y2026);
+        db.Certificates.AddRange(other, newCert);
         db.CertificateAccessLists.Add(new CertificateAccessListEntity
         {
-            UserId = oldUser,
-            CertificateId = oldCert.CertificateId,
+            UserId = Guid.NewGuid(),
+            CertificateId = other.CertificateId,
             AccessLevel = CertificateAccessLevel.Manage,
             GrantedByUserId = Guid.NewGuid()
         });
-        // No permissions on newCert — if the lookup picked the new cert as predecessor,
-        // it'd find zero perms to copy and the test would still pass falsely. The Single()
-        // assertion below distinguishes "found the right predecessor" from "found nothing".
         await db.SaveChangesAsync();
 
         var svc = new CertificateAccessService(db);
-        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid());
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid(), previousCertId: null);
 
-        var newCertPerms = await db.CertificateAccessLists
-            .Where(p => p.CertificateId == newCert.CertificateId)
-            .ToListAsync();
-        Assert.Single(newCertPerms);
-        Assert.Equal(oldUser, newCertPerms[0].UserId);
+        Assert.Empty(await db.CertificateAccessLists.Where(p => p.CertificateId == newCert.CertificateId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_certificate_named_as_its_own_predecessor_is_a_no_op()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var newCert = NewCert("CN=server.example.com", Y2026);
+        db.Certificates.Add(newCert);
+        await db.SaveChangesAsync();
+
+        var svc = new CertificateAccessService(db);
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid(), newCert.CertificateId);
+
+        Assert.Empty(await db.CertificateAccessLists.ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_predecessor_that_no_longer_exists_inherits_nothing()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var newCert = NewCert("CN=server.example.com", Y2026);
+        db.Certificates.Add(newCert);
+        await db.SaveChangesAsync();
+
+        var svc = new CertificateAccessService(db);
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.Empty(await db.CertificateAccessLists.ToListAsync());
+    }
+
+    [Fact]
+    public async Task An_existing_grant_on_the_new_certificate_is_not_duplicated()
+    {
+        // (UserId, CertificateId) is unique; re-inserting the requestor's own issuance-time
+        // grant used to throw a duplicate-key DbUpdateException out of the reissue path.
+        using var db = InMemoryDbContextFactory.Create();
+        var oldCert = NewCert("CN=server.example.com", Y2025);
+        var newCert = NewCert("CN=server.example.com", Y2026);
+        db.Certificates.AddRange(oldCert, newCert);
+
+        var alice = Guid.NewGuid();
+        db.CertificateAccessLists.AddRange(
+            new CertificateAccessListEntity { UserId = alice, CertificateId = oldCert.CertificateId, AccessLevel = CertificateAccessLevel.View, GrantedByUserId = Guid.NewGuid() },
+            new CertificateAccessListEntity { UserId = alice, CertificateId = newCert.CertificateId, AccessLevel = CertificateAccessLevel.Manage, GrantedByUserId = Guid.NewGuid() });
+        await db.SaveChangesAsync();
+
+        var svc = new CertificateAccessService(db);
+        await svc.UpdatePermissionsOntoReissuedCertificate(newCert.CertificateId, Guid.NewGuid(), oldCert.CertificateId);
+
+        var perms = await db.CertificateAccessLists.Where(p => p.CertificateId == newCert.CertificateId).ToListAsync();
+        Assert.Single(perms);
+        // The pre-existing, stronger grant survives; it is not downgraded by the copy.
+        Assert.Equal(CertificateAccessLevel.Manage, perms[0].AccessLevel);
     }
 }
