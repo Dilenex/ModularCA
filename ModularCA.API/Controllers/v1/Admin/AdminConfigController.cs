@@ -278,19 +278,23 @@ public class AdminConfigController(
     /// </summary>
     [HttpPut("security")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateSecurity([FromBody] SecurityConfig update)
+    public async Task<IActionResult> UpdateSecurity([FromBody] SecurityUpdateRequest update)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null)
             return Unauthorized();
 
-        _config.Security.BindJwtToIp = update.BindJwtToIp;
-        _config.Security.BindRefreshTokenToIp = update.BindRefreshTokenToIp;
-        _config.Security.BindRefreshTokenToFingerprint = update.BindRefreshTokenToFingerprint;
-        _config.Security.AllowRefreshTokenMismatch = update.AllowRefreshTokenMismatch;
-        _config.Security.MaxPerUsernameLoginFailures = update.MaxPerUsernameLoginFailures;
-        _config.Security.PerUsernameLoginFailureWindowMinutes = update.PerUsernameLoginFailureWindowMinutes;
-        _config.Security.BehindReverseProxy = update.BehindReverseProxy;
+        // Apply only what was sent. Binding SecurityConfig directly meant an omitted field
+        // arrived as its constructor default and was written over the stored value — so a
+        // partial PUT of {"behindReverseProxy":true} silently set BindJwtToIp to Off and reset
+        // the login-failure thresholds. See SecurityUpdateRequest.
+        if (update.BindJwtToIp is { } bindJwtToIp) _config.Security.BindJwtToIp = bindJwtToIp;
+        if (update.BindRefreshTokenToIp is { } bindRefreshIp) _config.Security.BindRefreshTokenToIp = bindRefreshIp;
+        if (update.BindRefreshTokenToFingerprint is { } bindFingerprint) _config.Security.BindRefreshTokenToFingerprint = bindFingerprint;
+        if (update.AllowRefreshTokenMismatch is { } allowMismatch) _config.Security.AllowRefreshTokenMismatch = allowMismatch;
+        if (update.MaxPerUsernameLoginFailures is { } maxFailures) _config.Security.MaxPerUsernameLoginFailures = maxFailures;
+        if (update.PerUsernameLoginFailureWindowMinutes is { } failureWindow) _config.Security.PerUsernameLoginFailureWindowMinutes = failureWindow;
+        if (update.BehindReverseProxy is { } behindProxy) _config.Security.BehindReverseProxy = behindProxy;
 
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
 
@@ -573,8 +577,14 @@ public class AdminConfigController(
 
         _config.Mtls.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.AuthSubdomain)) _config.Mtls.AuthSubdomain = update.AuthSubdomain;
-        if (update.RequiredPaths != null) _config.Mtls.RequiredPaths = update.RequiredPaths;
-        if (update.TrustedCaCertPaths != null) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
+        // These != null guards are INERT: MtlsConfig declares both collections as `= new()`, so
+        // an omitted JSON key arrives as an empty non-null list and passes the guard. A partial
+        // PUT therefore replaced the mTLS TRUST ANCHORS with an empty list — and because the
+        // file-existence validation above only runs over the supplied entries, an empty list
+        // validated cleanly and no error surfaced. Treat empty as "not sent": clearing the
+        // anchors deliberately is not something to do by omission.
+        if (update.RequiredPaths is { Count: > 0 }) _config.Mtls.RequiredPaths = update.RequiredPaths;
+        if (update.TrustedCaCertPaths is { Count: > 0 }) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Mtls", new { update.Enabled, update.AuthSubdomain });
         return Ok(new { message = "mTLS config updated", config = _config.Mtls });

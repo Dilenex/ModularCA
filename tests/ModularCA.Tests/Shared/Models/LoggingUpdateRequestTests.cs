@@ -1,5 +1,6 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Enums;
 using Xunit;
 
 namespace ModularCA.Tests.Shared.Models;
@@ -80,5 +81,57 @@ public class LoggingUpdateRequestTests
 
         Assert.Equal(0, request.RetentionDays);
         Assert.NotNull(request.RetentionDays);
+    }
+}
+
+/// <summary>
+/// The same partial-update hazard on the security config, where the consequence is a silent
+/// security downgrade rather than lost preferences.
+/// </summary>
+public class SecurityUpdateRequestTests
+{
+    // Mirrors the API's configured options: it registers a global JsonStringEnumConverter, so
+    // BindJwtToIp arrives on the wire as "Exact", not as an integer.
+    private static readonly JsonSerializerOptions Wire = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+    };
+
+    [Fact]
+    public void A_partial_save_leaves_every_other_control_absent()
+    {
+        var request = JsonSerializer.Deserialize<SecurityUpdateRequest>(
+            """{"behindReverseProxy":true}""", Wire)!;
+
+        Assert.True(request.BehindReverseProxy);
+        Assert.Null(request.BindJwtToIp);
+        Assert.Null(request.MaxPerUsernameLoginFailures);
+        Assert.Null(request.PerUsernameLoginFailureWindowMinutes);
+        Assert.Null(request.BindRefreshTokenToFingerprint);
+    }
+
+    [Fact]
+    public void Binding_the_config_class_directly_would_downgrade_the_deployment()
+    {
+        // Documents the trap concretely: the same body bound to SecurityConfig turns JWT-to-IP
+        // binding OFF and restores the 20/30 login-failure defaults, and the handler used to
+        // write all seven fields unconditionally.
+        var bound = JsonSerializer.Deserialize<SecurityConfig>(
+            """{"behindReverseProxy":true}""", Wire)!;
+
+        Assert.Equal(JwtIpBindingMode.Off, bound.BindJwtToIp);
+        Assert.Equal(20, bound.MaxPerUsernameLoginFailures);
+        Assert.Equal(30, bound.PerUsernameLoginFailureWindowMinutes);
+    }
+
+    [Fact]
+    public void An_explicit_value_is_applied()
+    {
+        var request = JsonSerializer.Deserialize<SecurityUpdateRequest>(
+            """{"bindJwtToIp":"Exact","maxPerUsernameLoginFailures":5}""", Wire)!;
+
+        Assert.Equal(JwtIpBindingMode.Exact, request.BindJwtToIp);
+        Assert.Equal(5, request.MaxPerUsernameLoginFailures);
     }
 }

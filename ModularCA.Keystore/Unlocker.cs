@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Keystore.Config;
 using ModularCA.Keystore.Crypto;
@@ -94,7 +94,13 @@ public static class Unlocker
                 pinnedSpki = KeystoreService.LoadVerifiedPinnedSpki(db, keystoreName, secondaryPass);
                 try
                 {
-                    KeystoreService.VerifyKeystoreFileSignature(path, db, pinnedSpki);
+                    // Verify the object we already parsed, NOT the path. Re-reading the file
+                    // here would check different bytes from the ones about to be decrypted, and
+                    // the window between the two reads is wide — a DB open and an EF query sit
+                    // inside it. An attacker who can write to the keystore path could present a
+                    // correctly-passphrase-encrypted file of their own, then swap the genuine
+                    // signed file back in before the verification read.
+                    KeystoreService.VerifyKeystoreFileSignature(keystore, db, pinnedSpki);
                 }
                 catch (SecurityException ex)
                 {
@@ -118,7 +124,11 @@ public static class Unlocker
             // above doesn't make writing DER private keys to an arbitrary path safe by itself
             // (ACLs on the output directory are up to the operator), so the flag remains a
             // mandatory acknowledgement that the operator accepts the consequences.
-            var writeRequested = !string.IsNullOrWhiteSpace(outputPath);
+            // Redirected stdout is a file. `unlocker > keys.pem` produced exactly the artifact
+            // the --output gate exists to prevent — every CA private key in PEM, at default
+            // permissions, with no acknowledgement flag and none of the owner-only ACL the
+            // --output path applies. Treat a non-interactive stdout as a write.
+            var writeRequested = !string.IsNullOrWhiteSpace(outputPath) || Console.IsOutputRedirected;
             if (writeRequested && !insecureNoVerify)
             {
                 Console.Error.WriteLine(
@@ -163,8 +173,13 @@ public static class Unlocker
                                     $"{Path.GetFileNameWithoutExtension(outputName)}_{index}{Path.GetExtension(outputName)}")
                                 : outputName;
 
-                            File.WriteAllBytes(numberedPath, decrypted);
+                            // Restrict the file BEFORE the key material enters it. Writing
+                            // first left a window at default permissions (0644 under a typical
+                            // umask) in which another local user could open the file and keep
+                            // the descriptor — a later chmod does not revoke an open fd.
+                            File.WriteAllBytes(numberedPath, Array.Empty<byte>());
                             FileSecurityUtil.SetOwnerOnly(numberedPath);
+                            File.WriteAllBytes(numberedPath, decrypted);
                             Console.WriteLine($"Entry {index} written to: {numberedPath}");
                         }
                     });

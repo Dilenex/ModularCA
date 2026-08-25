@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -7,6 +7,7 @@ using ModularCA.Core.Services;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -22,7 +23,8 @@ public class AdminLdapController(
     ILdapGroupSyncService syncService,
     SystemConfig config,
     IAuditService audit,
-    ICurrentUserService currentUser) : ControllerBase
+    ICurrentUserService currentUser,
+    EnvVarConfigOverlay envOverlay) : ControllerBase
 {
     /// <summary>
     /// Triggers a full LDAP group sync for all active users.
@@ -145,14 +147,23 @@ public class AdminLdapController(
     /// </summary>
     private void PersistConfig()
     {
+        // Secrets that came from the environment must be nulled before serialization, or a
+        // config write persists them in cleartext to config.yaml. WithSecretsProtected covers
+        // JWT.Secret, both DB passwords, LdapAuth.BindPassword, the Email secrets,
+        // IntegrationApi.ApiKey, CertManager.ApiKey and Hsm.Pin. Writing the whole SystemConfig
+        // without it -- as this did -- meant an unrelated settings PUT could drop the JWT
+        // SIGNING KEY on disk, where anyone able to read the file can mint admin tokens.
         try
         {
-            var serializer = new SerializerBuilder()
-                .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                .Build();
-            var yaml = serializer.Serialize(config);
-            var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-            System.IO.File.WriteAllText(configPath, yaml);
+            envOverlay.WithSecretsProtected(config, () =>
+            {
+                var serializer = new SerializerBuilder()
+                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
+                    .Build();
+                var yaml = serializer.Serialize(config);
+                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+                System.IO.File.WriteAllText(configPath, yaml);
+            });
         }
         catch
         {

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Keystore.Config;
 using ModularCA.Keystore.Crypto;
@@ -868,6 +868,24 @@ public class KeystoreService : IDisposable
     }
 
     /// <summary>
+    /// Verifies the file-level signature of a keystore that has ALREADY been parsed.
+    /// </summary>
+    /// <remarks>
+    /// Prefer this over the path-based overload whenever the caller is going on to use the
+    /// parsed object. Verifying by path re-reads the file, so the bytes that were checked are
+    /// not the bytes that get used — a time-of-check/time-of-use gap an attacker who can write
+    /// to the keystore path can drive by swapping the file between the two reads. That is
+    /// precisely the threat the break-glass Unlocker's signature check exists to counter.
+    /// </remarks>
+    public static void VerifyKeystoreFileSignature(
+        KeystoreFile keystore,
+        ModularCADbContext db,
+        string? expectedSpkiSha256Hex = null)
+    {
+        VerifyFileSignature(keystore, db, expectedSpkiSha256Hex);
+    }
+
+    /// <summary>
     /// Public wrapper around <see cref="LoadPinnedSignerSpki"/> so callers outside
     /// this class (Unlocker, backup restore) can fetch the pinned SPKI hex for a keystore name.
     /// Returns null when the row is missing or the column was never populated — the caller is
@@ -891,7 +909,12 @@ public class KeystoreService : IDisposable
     /// <param name="db">Database context for reading/updating <c>Keystores</c>.</param>
     /// <param name="keystoresDir">Directory containing the keystore files by name.</param>
     /// <returns>A report describing which rows were backfilled, skipped, or failed.</returns>
-    public static KeystoreBackfillReport BackfillPinnedSpki(ModularCADbContext db, string keystoresDir, bool persist = true)
+    /// <param name="secondaryPassphraseResolver">
+    /// Resolves the secondary passphrase for a keystore name so the pin's MAC can be computed.
+    /// When null, the pin is written WITHOUT a MAC and the row is reported as unprotected.
+    /// </param>
+    public static KeystoreBackfillReport BackfillPinnedSpki(ModularCADbContext db, string keystoresDir, bool persist = true,
+        Func<string, string?>? secondaryPassphraseResolver = null)
     {
         var report = new KeystoreBackfillReport();
         var rows = db.Keystores.Where(k => k.SigningCaSpkiSha256 == null || k.SigningCaSpkiSha256 == string.Empty).ToList();
@@ -925,7 +948,25 @@ public class KeystoreService : IDisposable
                 }
                 var spkiHex = ComputeSpkiSha256Hex(signer);
                 row.SigningCaSpkiSha256 = spkiHex;
-                report.Backfilled.Add($"{row.Name} -> {spkiHex}");
+
+                // Write the MAC too, or the backfill manufactures exactly the state it is
+                // advertised as fixing. VerifySpkiPinMac accepts a pin whose MAC column is null
+                // — that is the legacy-row allowance — so a pin written without one is
+                // unauthenticated: an attacker with write access to the app DB and no access to
+                // the secondary passphrase repoints the pin at their own CA and DELETES the MAC
+                // rather than having to forge it. The warning that fires in that case names this
+                // very method as the remediation, and until now it did not populate the MAC.
+                var secondary = secondaryPassphraseResolver?.Invoke(row.Name);
+                if (!string.IsNullOrEmpty(secondary))
+                {
+                    row.SigningCaSpkiSha256Mac = ComputeSpkiPinMac(spkiHex, secondary);
+                    report.Backfilled.Add($"{row.Name} -> {spkiHex} (MAC written)");
+                }
+                else
+                {
+                    report.Backfilled.Add($"{row.Name} -> {spkiHex} (NO MAC — pin is unauthenticated; "
+                        + "re-run with the keystore passphrase available, or append an entry to trigger a rewrite)");
+                }
             }
             catch (Exception ex)
             {

@@ -307,7 +307,16 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
         .Options;
     using var backfillDb = new ModularCADbContext(dbOptions);
     var keystoresDir = Path.Combine(AppContext.BaseDirectory, "keystores");
-    var report = ModularCA.Keystore.Services.KeystoreService.BackfillPinnedSpki(backfillDb, keystoresDir, persist: writeMode);
+    // Supply the secondary passphrase so the backfill can authenticate the pin it writes.
+    // Without it the pin goes in unprotected, which is the state the backfill exists to clear.
+    var keystoreYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
+    var report = ModularCA.Keystore.Services.KeystoreService.BackfillPinnedSpki(
+        backfillDb, keystoresDir, persist: writeMode,
+        secondaryPassphraseResolver: name =>
+        {
+            try { return ModularCA.Keystore.Config.KeystoreYamlLoader.LoadSecondaryPassphrase(keystoreYamlPath, name); }
+            catch { return null; }
+        });
 
     Console.WriteLine($"Backfill report ({(writeMode ? "persisted" : "dry-run — re-run with --write")}):");
     Console.WriteLine($"  Pinned  ({report.Backfilled.Count}):");

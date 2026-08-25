@@ -10,6 +10,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
@@ -36,7 +37,8 @@ public class AdminWebTlsController(
     IDistributedCache cache,
     ICurrentUserService currentUser,
     IAuditService audit,
-    SystemConfig config) : ControllerBase
+    SystemConfig config,
+    EnvVarConfigOverlay envOverlay) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly ICertificateIssuanceService _issuance = issuance;
@@ -488,14 +490,24 @@ public class AdminWebTlsController(
     /// </summary>
     private void PersistConfig()
     {
+        // Secrets that came from the environment must be nulled before serialization, or this
+        // write persists them in cleartext to config.yaml. WithSecretsProtected covers
+        // JWT.Secret, both DB passwords, LdapAuth.BindPassword, the Email secrets,
+        // IntegrationApi.ApiKey, CertManager.ApiKey and Hsm.Pin. Writing the whole SystemConfig
+        // without it -- as this did -- meant a Web TLS reissue could drop the JWT SIGNING KEY on
+        // disk, where anyone able to read the file can mint admin tokens. WebTlsProvisioningService
+        // performs the same operation and always used the overlay; this path did not.
         try
         {
-            var serializer = new YamlDotNet.Serialization.SerializerBuilder()
-                .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.PascalCaseNamingConvention.Instance)
-                .Build();
-            var yaml = serializer.Serialize(_config);
-            var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-            System.IO.File.WriteAllText(configPath, yaml);
+            envOverlay.WithSecretsProtected(_config, () =>
+            {
+                var serializer = new YamlDotNet.Serialization.SerializerBuilder()
+                    .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.PascalCaseNamingConvention.Instance)
+                    .Build();
+                var yaml = serializer.Serialize(_config);
+                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+                System.IO.File.WriteAllText(configPath, yaml);
+            });
         }
         catch (Exception ex)
         {

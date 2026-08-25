@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Keystore.Config;
 using ModularCA.Keystore.Crypto;
@@ -26,6 +26,12 @@ namespace ModularCA.Keystore.Utils
     /// </remarks>
     public static class KeystoreDbPassphraseLoader
     {
+        // Mirrors KeystoreFileParser's bounds for the same fields; kept in step deliberately.
+        private const int MinScryptN = 1 << 14;
+        private const int MaxScryptN = 1 << 20;
+        private const int MaxScryptR = 32;
+        private const int MaxScryptP = 32;
+
         /// <summary>
         /// Loads the encrypted passphrase for the named keystore from the database, decrypts it
         /// with a KEK derived from the runtime-supplied secondary passphrase, and returns the
@@ -89,6 +95,25 @@ namespace ModularCA.Keystore.Utils
 
             var keystoreConfigPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
             var secondaryPass = KeystoreYamlLoader.LoadSecondaryPassphrase(keystoreConfigPath, name);
+
+            // Bound the KDF parameters exactly as KeystoreFileParser does for the same values
+            // when they arrive from a file. These come from a DB row, which was trusted
+            // implicitly — so a single UPDATE setting ScryptN to 2^30 turned every startup and
+            // every LoadCertKeys into a multi-hundred-gigabyte allocation, an unrecoverable
+            // outage that survives restart. Validate rather than clamp: silently weakening a KDF
+            // is worse than refusing to start with a diagnosable error.
+            if (entry.ScryptN < MinScryptN || entry.ScryptN > MaxScryptN || (entry.ScryptN & (entry.ScryptN - 1)) != 0)
+                throw new InvalidDataException(
+                    $"Keystore '{name}' has an out-of-range scrypt N={entry.ScryptN} (expected a power of two in [{MinScryptN}, {MaxScryptN}]).");
+            if (entry.ScryptR < 1 || entry.ScryptR > MaxScryptR)
+                throw new InvalidDataException($"Keystore '{name}' has an out-of-range scrypt r={entry.ScryptR} (expected 1..{MaxScryptR}).");
+            if (entry.ScryptP < 1 || entry.ScryptP > MaxScryptP)
+                throw new InvalidDataException($"Keystore '{name}' has an out-of-range scrypt p={entry.ScryptP} (expected 1..{MaxScryptP}).");
+
+            // nonce(12) + tag(16) + at least one ciphertext byte.
+            if (entry.Passblob == null || entry.Passblob.Length < 29)
+                throw new InvalidDataException(
+                    $"Keystore '{name}' has a truncated wrapped passphrase ({entry.Passblob?.Length ?? 0} bytes).");
 
             var file = new KeystoreFile
             {
