@@ -94,10 +94,10 @@ export default function AdminUiGuide() {
                 </ul>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Related API Endpoints</h3>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/dashboard/summary<br />
-                    GET /api/certificates?sort=issuedAt&amp;limit=10<br />
-                    GET /api/authorities<br />
-                    GET /api/health
+                    GET /api/v1/admin/certificates?pageSize=10<br />
+                    GET /api/v1/admin/authorities<br />
+                    GET /api/v1/admin/requests<br />
+                    GET /api/v1/admin/audit?pageSize=10
                 </div>
             </section>
 
@@ -118,8 +118,8 @@ export default function AdminUiGuide() {
                     <li>Memory and resource utilization</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/health<br />
-                    GET /api/health/detailed
+                    GET /api/v1/admin/scheduler/health<br />
+                    GET /api/v1/admin/certificates/health/summary
                 </div>
             </section>
 
@@ -144,10 +144,10 @@ export default function AdminUiGuide() {
                     <li>View subject, fingerprints, validity dates, and serial number</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/certificates<br />
-                    GET /api/certificates/&#123;id&#125;<br />
-                    GET /api/certificates/&#123;id&#125;/download?format=pem|der|chain<br />
-                    POST /api/certificates/&#123;id&#125;/revoke
+                    GET /api/v1/admin/certificates<br />
+                    GET /api/v1/admin/certificates/&#123;serial&#125;<br />
+                    GET /api/v1/admin/ssh/certificates/&#123;id&#125;/download<br />
+                    POST /api/v1/admin/certificates/&#123;certId&#125;/revoke
                 </div>
             </section>
 
@@ -181,10 +181,10 @@ export default function AdminUiGuide() {
                     <li><strong>Ed448</strong> — Edwards-curve Digital Signature Algorithm (448-bit)</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    POST /api/certificates/request<br />
-                    POST /api/certificates/request-with-keygen<br />
-                    GET /api/profiles<br />
-                    GET /api/authorities
+                    POST /api/v1/admin/ssh/profiles/request<br />
+                    POST /api/v1/admin/certificates/issue-with-key<br />
+                    GET /api/v1/admin/cert-profiles<br />
+                    GET /api/v1/admin/authorities
                 </div>
             </section>
 
@@ -206,7 +206,7 @@ export default function AdminUiGuide() {
                     <li>Export search results</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/certificates/search?subject=&amp;serial=&amp;san=&amp;from=&amp;to=
+                    GET /api/v1/admin/certificates/tags/search
                 </div>
             </section>
 
@@ -228,7 +228,7 @@ export default function AdminUiGuide() {
                     <li>Quick renew/reissue actions</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/certificates/expiring?from=&amp;to=
+                    GET /api/v1/admin/certificates/health/summary
                 </div>
             </section>
 
@@ -251,10 +251,10 @@ export default function AdminUiGuide() {
                     <li>View request history and audit trail</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/certificate-requests<br />
-                    POST /api/certificate-requests/&#123;id&#125;/approve<br />
-                    POST /api/certificate-requests/&#123;id&#125;/reject<br />
-                    POST /api/certificate-requests/&#123;id&#125;/cancel
+                    GET /api/v1/admin/requests<br />
+                    POST /api/v1/admin/ceremonies/&#123;id&#125;/approve<br />
+                    POST /api/v1/admin/ceremonies/&#123;id&#125;/reject<br />
+                    POST /api/v1/admin/requests/&#123;id&#125;/cancel
                 </div>
             </section>
 
@@ -278,11 +278,11 @@ export default function AdminUiGuide() {
                     <li>Configure CA-specific settings</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/authorities<br />
-                    POST /api/authorities/root<br />
-                    POST /api/authorities/intermediate<br />
-                    GET /api/authorities/&#123;id&#125;<br />
-                    PUT /api/authorities/&#123;id&#125;
+                    GET /api/v1/admin/authorities<br />
+                    POST /api/v1/admin/authorities/create-root<br />
+                    POST /api/v1/admin/authorities/create-intermediate<br />
+                    GET /api/v1/admin/authorities/&#123;serial&#125;<br />
+                    PUT /api/v1/admin/authorities/&#123;id&#125;
                 </div>
             </section>
 
@@ -303,8 +303,8 @@ export default function AdminUiGuide() {
                     <li>View protocol health and usage statistics</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/authorities/&#123;id&#125;/protocols<br />
-                    PUT /api/authorities/&#123;id&#125;/protocols
+                    GET /api/v1/admin/protocol-configs/&#123;caId&#125;<br />
+                    PUT /api/v1/admin/protocol-configs/&#123;caId&#125;/&#123;protocol&#125;
                 </div>
             </section>
 
@@ -326,9 +326,9 @@ export default function AdminUiGuide() {
                     <li>View CRL entries (revoked certificate list)</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/crl<br />
-                    POST /api/crl/&#123;caId&#125;/generate<br />
-                    GET /api/crl/&#123;caId&#125;/download
+                    GET /api/v1/user/authorities/&#123;serial&#125;/crl<br />
+                    POST /api/v1/admin/crl-schedules<br />
+                    GET /api/v1/admin/ssh/certificates/&#123;id&#125;/download
                 </div>
             </section>
 
@@ -347,9 +347,9 @@ export default function AdminUiGuide() {
                     <li>Configure trust anchor usage (TLS, signing verification)</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/trust-anchors<br />
-                    POST /api/trust-anchors<br />
-                    DELETE /api/trust-anchors/&#123;id&#125;
+                    GET /api/v1/admin/trust-anchors<br />
+                    POST /api/v1/admin/trust-anchors<br />
+                    DELETE /api/v1/admin/trust-anchors/&#123;id&#125;
                 </div>
             </section>
 
@@ -370,9 +370,9 @@ export default function AdminUiGuide() {
                     <li>Test LDAP connectivity</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/authorities/&#123;caId&#125;/ldap-publishers<br />
-                    POST /api/authorities/&#123;caId&#125;/ldap-publishers<br />
-                    PUT /api/authorities/&#123;caId&#125;/ldap-publishers/&#123;id&#125;
+                    GET /api/v1/admin/authorities/&#123;caId&#125;/ldap-publishers<br />
+                    POST /api/v1/admin/authorities/&#123;caId&#125;/ldap-publishers<br />
+                    PUT /api/v1/admin/authorities/&#123;caId&#125;/ldap-publishers/&#123;id&#125;
                 </div>
             </section>
 
@@ -397,10 +397,10 @@ export default function AdminUiGuide() {
                     <li>Assign profiles to specific CAs</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/profiles<br />
-                    POST /api/profiles<br />
-                    PUT /api/profiles/&#123;id&#125;<br />
-                    GET /api/profiles/&#123;id&#125;/effective
+                    GET /api/v1/admin/cert-profiles<br />
+                    POST /api/v1/admin/cert-profiles<br />
+                    PUT /api/v1/admin/authorities/&#123;id&#125;<br />
+                    GET /api/v1/admin/cert-profiles/&#123;id&#125;/resolved
                 </div>
             </section>
 
@@ -420,9 +420,9 @@ export default function AdminUiGuide() {
                     <li>Set template visibility for user self-service</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/templates<br />
-                    POST /api/templates<br />
-                    PUT /api/templates/&#123;id&#125;
+                    GET /api/v1/admin/templates<br />
+                    POST /api/v1/admin/templates<br />
+                    PUT /api/v1/admin/templates/&#123;id&#125;
                 </div>
             </section>
 
@@ -442,8 +442,8 @@ export default function AdminUiGuide() {
                     <li>Configure ACME challenge types (HTTP-01, DNS-01, TLS-ALPN-01)</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/acme/accounts<br />
-                    GET /api/acme/orders
+                    GET /api/v1/admin/acme/eab-keys<br />
+                    GET /api/v1/admin/audit/acme
                 </div>
             </section>
 
@@ -465,10 +465,10 @@ export default function AdminUiGuide() {
                     <li>View issued SSH certificates</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/ssh/ca-keys<br />
-                    POST /api/ssh/certificates/sign<br />
-                    GET /api/ssh/certificates<br />
-                    GET /api/ssh/krl
+                    GET /api/v1/admin/ssh/ca-keys<br />
+                    POST /api/v1/integration/cert-manager/sign<br />
+                    GET /api/v1/user/ssh/certificates<br />
+                    GET /api/v1/admin/ssh/ca-keys/&#123;id&#125;/krl
                 </div>
             </section>
 
@@ -492,11 +492,10 @@ export default function AdminUiGuide() {
                     <li>View user certificate and request history</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/users<br />
-                    POST /api/users<br />
-                    PUT /api/users/&#123;id&#125;<br />
-                    POST /api/users/&#123;id&#125;/enable<br />
-                    POST /api/users/&#123;id&#125;/disable
+                    GET /api/v1/admin/users<br />
+                    POST /api/v1/admin/users<br />
+                    PUT /api/v1/admin/users/&#123;id&#125;<br />
+                    DELETE /api/v1/admin/users/&#123;id&#125;
                 </div>
             </section>
 
@@ -519,10 +518,10 @@ export default function AdminUiGuide() {
                     <li>Auto-generated groups per CA label</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/groups<br />
-                    POST /api/groups<br />
-                    PUT /api/groups/&#123;id&#125;<br />
-                    POST /api/groups/&#123;id&#125;/members
+                    GET /api/v1/admin/groups<br />
+                    POST /api/v1/admin/groups<br />
+                    PUT /api/v1/admin/groups/&#123;id&#125;<br />
+                    POST /api/v1/admin/groups/&#123;id&#125;/members
                 </div>
             </section>
 
@@ -542,7 +541,7 @@ export default function AdminUiGuide() {
                     <li>Understand role hierarchy and inheritance</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/roles
+                    GET /api/v1/admin/roles
                 </div>
             </section>
 
@@ -561,8 +560,8 @@ export default function AdminUiGuide() {
                     <li>Manage enrollment agents</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/enrollment<br />
-                    PUT /api/enrollment/policies
+                    GET /api/v1/admin/enrollment-tokens<br />
+                    PUT /api/v1/admin/protocol-configs/&#123;caId&#125;/&#123;protocol&#125;
                 </div>
             </section>
 
@@ -581,8 +580,8 @@ export default function AdminUiGuide() {
                     <li>Ceremony audit logs and attestation records</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/ceremonies<br />
-                    POST /api/ceremonies
+                    GET /api/v1/admin/ceremonies<br />
+                    POST /api/v1/admin/ceremonies
                 </div>
             </section>
 
@@ -602,8 +601,8 @@ export default function AdminUiGuide() {
                     <li>Alert thresholds for quota exhaustion</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/quotas<br />
-                    PUT /api/quotas/&#123;tenantId&#125;
+                    GET /api/v1/admin/quotas<br />
+                    PUT /api/v1/admin/quotas/&#123;groupId&#125;
                 </div>
             </section>
 
@@ -623,7 +622,7 @@ export default function AdminUiGuide() {
                     <li>Weak key detection</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/intel/inventory
+                    GET /api/v1/admin/compliance
                 </div>
             </section>
 
@@ -665,8 +664,8 @@ export default function AdminUiGuide() {
                     <li>Historical compliance trend tracking</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/intel/compliance<br />
-                    GET /api/intel/compliance/export
+                    GET /api/v1/admin/compliance<br />
+                    POST /api/v1/admin/compliance/export/csv
                 </div>
             </section>
 
@@ -687,9 +686,9 @@ export default function AdminUiGuide() {
                     <li>Export audit logs</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/audit<br />
-                    GET /api/audit/network<br />
-                    GET /api/audit/protocol
+                    GET /api/v1/admin/audit<br />
+                    GET /api/v1/admin/audit/network<br />
+                    GET /api/v1/admin/audit/est
                 </div>
             </section>
 
@@ -710,9 +709,9 @@ export default function AdminUiGuide() {
                     <li>View notification delivery history</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/notifications/rules<br />
-                    POST /api/notifications/rules<br />
-                    PUT /api/notifications/rules/&#123;id&#125;
+                    GET /api/v1/admin/notifications<br />
+                    POST /api/v1/admin/notifications/test<br />
+                    PUT /api/v1/admin/protocol-configs/&#123;caId&#125;/&#123;protocol&#125;
                 </div>
             </section>
 
@@ -734,9 +733,9 @@ export default function AdminUiGuide() {
                     <li>System tenant vs. organization tenants</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/tenants<br />
-                    POST /api/tenants<br />
-                    PUT /api/tenants/&#123;id&#125;
+                    GET /api/v1/admin/tenants<br />
+                    POST /api/v1/admin/tenants<br />
+                    PUT /api/v1/admin/tenants/&#123;id&#125;
                 </div>
             </section>
 
@@ -758,8 +757,8 @@ export default function AdminUiGuide() {
                     <li>OCSP responder configuration</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/settings<br />
-                    PUT /api/settings
+                    GET /api/v1/admin/config<br />
+                    PUT /api/v1/admin/tenants/&#123;id&#125;/settings
                 </div>
             </section>
 
@@ -779,9 +778,9 @@ export default function AdminUiGuide() {
                     <li>Restore from a previous backup</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    POST /api/backup<br />
-                    GET /api/backup/history<br />
-                    POST /api/backup/restore
+                    POST /api/v1/admin/backup<br />
+                    GET /api/v1/admin/backup<br />
+                    POST /api/v1/admin/backup/restore
                 </div>
             </section>
 
@@ -804,8 +803,8 @@ export default function AdminUiGuide() {
                     <li>Automatic restart after certificate renewal</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/webtls<br />
-                    POST /api/webtls/renew
+                    GET /api/v1/admin/webtls<br />
+                    POST /api/v1/admin/certificates/&#123;serial&#125;/renew
                 </div>
             </section>
 
@@ -826,10 +825,10 @@ export default function AdminUiGuide() {
                     <li>View whitelist hit counts and activity</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/whitelists<br />
-                    POST /api/whitelists<br />
-                    PUT /api/whitelists/&#123;id&#125;<br />
-                    DELETE /api/whitelists/&#123;id&#125;
+                    GET /api/v1/admin/whitelists<br />
+                    POST /api/v1/admin/whitelists<br />
+                    PUT /api/v1/admin/whitelists/&#123;id&#125;<br />
+                    DELETE /api/v1/admin/whitelists/&#123;id&#125;
                 </div>
             </section>
 
@@ -850,10 +849,10 @@ export default function AdminUiGuide() {
                     <li>Revoke sessions</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/auth/me<br />
-                    PUT /api/auth/password<br />
-                    POST /api/auth/mfa/totp/enroll<br />
-                    POST /api/auth/mfa/webauthn/register
+                    GET /api/v1/me<br />
+                    PUT /api/v1/account/password<br />
+                    POST /api/v1/auth/mtls/enroll<br />
+                    POST /api/v1/auth/webauthn/register
                 </div>
             </section>
 

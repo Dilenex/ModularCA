@@ -48,8 +48,8 @@ export default function PublicUiGuide() {
                     <li>Copy fingerprints for out-of-band verification</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/public/authorities<br />
-                    GET /api/public/authorities/&#123;id&#125;/certificate
+                    GET /api/v1/public/ca<br />
+                    GET /api/v1/public/ca/&#123;serial&#125;
                 </div>
             </section>
 
@@ -70,8 +70,8 @@ export default function PublicUiGuide() {
                     <li>Direct download URLs for automated CRL fetching</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/public/crl<br />
-                    GET /api/public/crl/&#123;caId&#125;/download
+                    GET /api/v1/public/crl/&#123;serial&#125;<br />
+                    GET /api/v1/public/crl/&#123;serial&#125;
                 </div>
             </section>
 
@@ -99,7 +99,7 @@ export default function PublicUiGuide() {
                     </p>
                 </div>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mt-3">
-                    GET /api/public/certificates/search?serial=&amp;thumbprint=
+                    GET /api/v1/public/info
                 </div>
             </section>
 

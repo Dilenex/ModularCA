@@ -122,7 +122,9 @@ const initialData: WizardData = {
     security: {
         enableCrl: true,
         enableOcsp: true,
-        enableAcme: true,
+        // Matches SetupFeatures.Acme, which defaults to false on purpose: a first-run install
+        // must not expose anonymous ACME enrollment because the wizard pre-ticked a box.
+        enableAcme: false,
         enableEst: false,
         enableScep: false,
         enableCmp: false,
@@ -196,14 +198,52 @@ const WizardContent: React.FC = () => {
         if (data.webTlsCertificate.sans.length !== 0) return;
 
         const derived = deriveWebTlsDefaults(data.network);
-        setData(prev => ({
-            ...prev,
-            webTlsCertificate: {
-                ...prev.webTlsCertificate,
-                commonName: derived.commonName,
-                sans: derived.sans,
-            },
-        }));
+        let cancelled = false;
+
+        // Merge in GET /setup/defaults. That endpoint exists precisely to add the host's own
+        // DNS name and the incoming Host header to the SAN list, so the issued Web TLS
+        // certificate matches the address the operator actually used to reach this wizard.
+        // Deriving locally from publicDomain alone missed it: reach the wizard at
+        // https://ca-host.internal:8443 with publicDomain set to anything else and the cert
+        // came out with no SAN for the address in the URL bar. Union, not replace -- the local
+        // derivation knows publicDomain and the mTLS subdomain, which the server does not.
+        (async () => {
+            let serverSans: string[] = [];
+            let serverCommonName = '';
+            try {
+                const res = await fetch('/api/v1/setup/defaults', { signal: AbortSignal.timeout(5000) });
+                if (res.ok) {
+                    const body = await res.json();
+                    serverSans = body?.defaultWebTlsCertificate?.sans ?? [];
+                    serverCommonName = body?.defaultWebTlsCertificate?.commonName ?? '';
+                }
+            } catch {
+                // Offline or endpoint unavailable: the local derivation alone is still usable.
+            }
+            if (cancelled) return;
+
+            const seen = new Set(derived.sans.map(x => x.toLowerCase()));
+            const sans = [...derived.sans];
+            for (const san of serverSans) {
+                if (typeof san === 'string' && san && !seen.has(san.toLowerCase())) {
+                    seen.add(san.toLowerCase());
+                    sans.push(san);
+                }
+            }
+
+            // The local common name wins when publicDomain gave us a real one; otherwise take
+            // whatever the server inferred from the request rather than 'modularca.local'.
+            const commonName = derived.commonName !== 'modularca.local'
+                ? derived.commonName
+                : (serverCommonName || derived.commonName);
+
+            setData(prev => ({
+                ...prev,
+                webTlsCertificate: { ...prev.webTlsCertificate, commonName, sans },
+            }));
+        })();
+
+        return () => { cancelled = true; };
     }, [step]);
 
     const canProceed = (): boolean => {
@@ -272,7 +312,28 @@ const WizardContent: React.FC = () => {
                 return (
                     <Organization
                         data={data.organization}
-                        onChange={org => setData({ ...data, organization: org })}
+                        onChange={org => setData(prev => {
+                            // Keep the root CA name in step with the org name only while it
+                            // still holds the value we generated from the PREVIOUS org name.
+                            // Once the operator edits it, it is theirs. This used to live in a
+                            // mount effect inside RootCaConfig, which re-ran on every visit to
+                            // that step and matched any name ending in " Root CA" -- so
+                            // navigating back and forward silently reverted a hand-edited name.
+                            const wasAutoFilled =
+                                prev.rootCa.commonName === '' ||
+                                prev.rootCa.commonName === `${prev.organization.orgName} Root CA`;
+                            const nextName = org.orgName.trim();
+                            return {
+                                ...prev,
+                                organization: org,
+                                rootCa: {
+                                    ...prev.rootCa,
+                                    commonName: wasAutoFilled && nextName
+                                        ? `${nextName} Root CA`
+                                        : prev.rootCa.commonName,
+                                },
+                            };
+                        })}
                     />
                 );
             case STEP_ROOT_CA:

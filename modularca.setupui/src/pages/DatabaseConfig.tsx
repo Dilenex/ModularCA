@@ -47,6 +47,8 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
     const [dbTestResult, setDbTestResult] = useState<{ connected: boolean; error?: string; databaseExists?: boolean } | null>(null);
     const [restarting, setRestarting] = useState(false);
     const [restartFailed, setRestartFailed] = useState(false);
+    /** Set when the server ANSWERED and refused the save, as opposed to dropping the connection. */
+    const [saveRejected, setSaveRejected] = useState<string | null>(null);
     const [droppingDb, setDroppingDb] = useState(false);
     const [dropResult, setDropResult] = useState<{ ok: boolean; message: string } | null>(null);
     const [autoSkipped, setAutoSkipped] = useState(false);
@@ -120,16 +122,38 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
     const handleSaveAndRestart = async () => {
         setRestarting(true);
         setRestartFailed(false);
+        setSaveRejected(null);
 
         try {
+            // A dropped connection is the expected success path here: the server restarts to
+            // pick up the new database configuration and never finishes the response. But a
+            // response that ARRIVES and is not ok means the save was refused -- a 403 from CSRF,
+            // a 400 from validation -- and the server is very much still running. That case used
+            // to be swallowed with the connection drop, the status poll then succeeded
+            // immediately because nothing had restarted, and the wizard advanced as though the
+            // database had been configured.
+            let rejection: string | null = null;
             try {
-                await fetch('/api/v1/setup/database/save', {
+                const res = await fetch('/api/v1/setup/database/save', {
                     method: 'POST',
                     headers: setupHeaders(),
                     body: JSON.stringify(data),
                 });
+                if (!res.ok) {
+                    let detail = '';
+                    try {
+                        const body = await res.json();
+                        detail = body?.error || body?.detail || body?.message || '';
+                    } catch { /* non-JSON body */ }
+                    rejection = detail || `The server refused the save (HTTP ${res.status}).`;
+                }
             } catch {
-                // Server may shut down before responding — expected
+                // Connection dropped before a response — the server is restarting, as expected.
+            }
+
+            if (rejection !== null) {
+                setSaveRejected(rejection);
+                return;
             }
 
             // Poll until the server comes back (or give up after 30s)
@@ -401,6 +425,16 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                     Database credentials saved. Server is restarting...
                                 </span>
                             </div>
+                        </div>
+                    )}
+
+                    {saveRejected && (
+                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                            <p className="text-red-800 dark:text-red-300 font-medium">Database configuration was not saved.</p>
+                            <p className="text-red-700 dark:text-red-400 text-sm mt-1">{saveRejected}</p>
+                            <p className="text-red-700 dark:text-red-400 text-sm mt-1">
+                                Nothing has changed on the server. Correct the settings above and try again.
+                            </p>
                         </div>
                     )}
 

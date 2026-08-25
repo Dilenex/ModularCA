@@ -277,6 +277,29 @@ namespace ModularCA.Core.Services
                 }
             }
 
+            // A profile that ASKED for extended key usages must not end up with none.
+            //
+            // The builder emits the EKU extension only when this list is non-empty, and a
+            // certificate with no ExtendedKeyUsage extension is unconstrained: per RFC 5280
+            // §4.2.1.12 the absence of the extension means the key may be used for any purpose.
+            // So "every requested EKU was unresolvable, or every one was removed by the signing
+            // profile" silently produced a certificate STRICTLY MORE powerful than the one the
+            // operator asked for — a misspelled EKU in a profile widened it to everything.
+            //
+            // The empty-input case is different and legitimate (a CA profile that deliberately
+            // restricts nothing), and returns above before reaching here.
+            if (allowedExtended.Count == 0)
+            {
+                throw new CertificatePolicyViolationException(
+                [
+                    "[ExtendedKeyUsage] The certificate profile requests extended key usages "
+                    + $"({string.Join(", ", certEkus)}) but none of them survived resolution and the signing "
+                    + "profile's AllowedEKUs. Issuing would emit no ExtendedKeyUsage extension at all, which "
+                    + "leaves the certificate valid for every purpose. Correct the profile's spelling or widen "
+                    + "the signing profile rather than issuing an unconstrained certificate."
+                ]);
+            }
+
             return allowedExtended;
         }
 

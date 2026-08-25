@@ -3,6 +3,35 @@ import { useMemo } from 'react';
 import EndpointCard from '../components/EndpointCard';
 import type { Endpoint } from '../components/EndpointCard';
 
+/**
+ * Maps a sidebar slug to the endpoint categories it covers.
+ *
+ * The sidebar offers 13 coarse groupings ("certificates", "ca-management") while the endpoint
+ * data carries 65 fine-grained categories ("Admin Certificates", "Admin CA", "Admin CRL"). The
+ * page compared `ep.category.toLowerCase() === slug` for exact equality, so only the three
+ * slugs that happened to coincide with a real category name -- authentication, integration,
+ * setup -- rendered anything. The other TEN sidebar links led to an empty page with no
+ * explanation.
+ *
+ * Grouped rather than flattened to 65 sidebar entries: the curation is the useful part.
+ */
+const CATEGORY_GROUPS: Record<string, string[]> = {
+    'authentication': ['Authentication', 'MFA Step-Up', 'TOTP MFA', 'WebAuthn MFA', 'mTLS Authentication', 'Account'],
+    'certificates': ['Admin Certificates', 'Admin Issuance', 'Admin Revocation', 'Admin Certificate Permissions', 'User Certificates', 'User CA Certificates'],
+    'certificate requests': ['Admin CSR', 'Admin Request Profiles', 'User Certificate Requests', 'User Request Profiles'],
+    'ca management': ['Admin CA', 'Admin CA Service URLs', 'Admin CRL', 'Admin CRL Schedules', 'Admin Trust Anchors', 'Admin Key Ceremonies', 'Admin CT Logs'],
+    'ssh ca': ['Admin SSH', 'Admin SSH Profiles', 'Admin SSH Templates', 'User SSH', 'Public SSH'],
+    'profiles': ['Admin Cert Profiles', 'Admin Signing Profiles', 'Admin Templates', 'Admin OID Options', 'User Signing Profiles'],
+    'groups permissions': ['Admin Groups', 'Admin Quotas', 'Admin Tenants', 'User Groups'],
+    'users accounts': ['Admin Users', 'Admin Password Policy', 'Admin Security Policy'],
+    'audit compliance': ['Admin Audit', 'Admin Compliance', 'Admin Policy'],
+    'protocols': ['ACME', 'EST', 'SCEP', 'CMP', 'Admin ACME EAB', 'Admin Protocol Configs', 'Admin Enrollment Tokens'],
+    'integration': ['Integration', 'Admin LDAP', 'Admin LDAP Publisher', 'Admin LDAP Publishers', 'Admin Notifications'],
+    'system': ['Admin Configuration', 'Admin Feature Flags', 'Admin Scheduler', 'Admin Backup', 'Admin Whitelists', 'Admin Rate Limit Policy'],
+    'setup': ['Setup'],
+    'public': ['Public', 'Public Enrollment', 'Public Short URLs'],
+};
+
 let importedEndpoints: Endpoint[] = [];
 try {
     const mod = await import('../data/endpoints');
@@ -20,10 +49,16 @@ export default function ApiCategoryPage() {
 
     const normalizedCategory = decodedCategory.replace(/-/g, ' ').toLowerCase();
 
-    const filtered = useMemo(
-        () => endpoints.filter((ep) => ep.category.toLowerCase() === normalizedCategory),
-        [endpoints, normalizedCategory],
-    );
+    const filtered = useMemo(() => {
+        const wanted = CATEGORY_GROUPS[normalizedCategory];
+        if (wanted) {
+            const set = new Set(wanted.map((c) => c.toLowerCase()));
+            return endpoints.filter((ep) => set.has(ep.category.toLowerCase()));
+        }
+        // Unknown slug: fall back to exact match so a category added to the data set is
+        // reachable at /docs/api/<its-name> even before it is grouped in the sidebar.
+        return endpoints.filter((ep) => ep.category.toLowerCase() === normalizedCategory);
+    }, [endpoints, normalizedCategory]);
 
     return (
         <div className="max-w-4xl mx-auto">

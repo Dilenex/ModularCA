@@ -143,9 +143,13 @@ export default function TenantModelDiagram() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Group Naming Convention</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Groups follow a prefix-based naming convention that indicates their scope. Tenant-scoped
-                    groups use an <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Org-</code> prefix,
-                    while system-level groups use a <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-</code> prefix.
+                    Auto-generated CA groups are named
+                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">&#123;tenantSlug&#125;_&#123;caLabel&#125;_&#123;role&#125;</code>,
+                    with underscores between the three segments and a lowercase role. The tenant slug is part
+                    of the name so two tenants can own CAs with the same label without colliding on the unique
+                    group-name index; the underscores remove the hyphen-boundary ambiguity in a name like
+                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">modularca_modularca-root-cert-1_admin</code>.
+                    System-level groups use a <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-</code> prefix.
                 </p>
                 <table className="w-full border-collapse mb-4">
                     <thead>
@@ -157,14 +161,14 @@ export default function TenantModelDiagram() {
                     </thead>
                     <tbody className="text-gray-700 dark:text-gray-300">
                         <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4">Tenant (Org)</td>
-                            <td className="py-2 pr-4 font-mono text-sm">Org-</td>
-                            <td className="py-2 font-mono text-sm">Org-Admin, Org-Operator</td>
+                            <td className="py-2 pr-4">Tenant</td>
+                            <td className="py-2 pr-4 font-mono text-sm">&mdash;</td>
+                            <td className="py-2 font-mono text-sm">No auto-generated tenant-wide groups</td>
                         </tr>
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4">CA-scoped</td>
-                            <td className="py-2 pr-4 font-mono text-sm">{'{CALabel}-'}</td>
-                            <td className="py-2 font-mono text-sm">MyCA-Admin, MyCA-Operator</td>
+                            <td className="py-2 pr-4 font-mono text-sm">{'{tenantSlug}_{caLabel}_'}</td>
+                            <td className="py-2 font-mono text-sm">acme_webserver-ca_admin, acme_webserver-ca_operator</td>
                         </tr>
                         <tr>
                             <td className="py-2 pr-4">System (global)</td>
@@ -186,14 +190,15 @@ export default function TenantModelDiagram() {
 
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Auto-Generated Groups per CA</h3>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    When a CA named "MyCA" is created, the following groups are automatically generated using
-                    the CA label as prefix:
+                    When a CA with label <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">webserver-ca</code> is
+                    created inside tenant <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">acme</code>,
+                    these four groups are generated automatically:
                 </p>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-4">
-                    MyCA-Admin&nbsp;&nbsp;&nbsp;&nbsp;-- Full control over this CA (role level 1)<br />
-                    MyCA-Operator -- Issue and revoke certificates (role level 2)<br />
-                    MyCA-Auditor&nbsp;&nbsp;-- Read-only access to logs and certs (role level 3)<br />
-                    MyCA-User&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;-- Self-service certificate requests (role level 4)
+                    acme_webserver-ca_admin&nbsp;&nbsp;&nbsp;&nbsp;-- Administrator: full control over this CA<br />
+                    acme_webserver-ca_operator&nbsp;-- Operator: issue and revoke certificates<br />
+                    acme_webserver-ca_auditor&nbsp;&nbsp;-- Auditor: read-only access to logs and certs<br />
+                    acme_webserver-ca_user&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;-- Requester: self-service certificate requests
                 </div>
                 <div className="border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-r mb-4">
                     <p className="text-gray-700 dark:text-gray-300 text-sm">

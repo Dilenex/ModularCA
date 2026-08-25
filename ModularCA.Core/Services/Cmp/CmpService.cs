@@ -548,6 +548,20 @@ public class CmpService : ICmpService
     /// commas and could let two distinct DNs collide. Returns false if either string fails to
     /// parse as an X.500 name — fail closed.
     /// </summary>
+    /// <summary>
+    /// Whether a CA whose subject is <paramref name="caSubjectDn"/> is permitted to revoke a
+    /// certificate whose stored issuer DN is <paramref name="certIssuerDn"/>.
+    /// </summary>
+    /// <remarks>
+    /// Fails closed on a missing or blank issuer: an unknown owner is not a matching owner. The
+    /// CMP revocation path looks the target certificate up by serial across ALL certificates,
+    /// so this is what stops one CA revoking another CA's certificate.
+    /// </remarks>
+    internal static bool IsRevocableByCa(string? certIssuerDn, string caSubjectDn) =>
+        !string.IsNullOrWhiteSpace(certIssuerDn)
+        && !string.IsNullOrWhiteSpace(caSubjectDn)
+        && DnEquals(certIssuerDn, caSubjectDn);
+
     internal static bool DnEquals(string a, string b)
     {
         if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
@@ -935,20 +949,20 @@ public class CmpService : ICmpService
                     }
                 }
 
-                // Check that the certificate was actually issued by this CA by comparing
-                // issuer DN in DB. Same DN-normalized equality as above.
-                if (!string.IsNullOrEmpty(certEntity.Issuer))
+                // The authoritative ownership check: the stored issuer DN must match this CA.
+                // UNCONDITIONAL and fail-closed. It used to be wrapped in
+                // `if (!string.IsNullOrEmpty(certEntity.Issuer))`, so a row with a blank issuer
+                // skipped the check entirely and became revocable by ANY CMP-enabled CA. The
+                // preceding check reads the issuer out of the request, which the caller
+                // controls and can simply omit, so this is the only guard that can be trusted.
+                if (!IsRevocableByCa(certEntity.Issuer, caCert.SubjectDN.ToString()))
                 {
-                    var caSubjectDn = caCert.SubjectDN.ToString();
-                    if (!DnEquals(certEntity.Issuer, caSubjectDn))
-                    {
-                        statusList.Add(new PkiStatusInfo(
-                            StatusRejection,
-                            new PkiFreeText(new DerUtf8String(
-                                $"Certificate with serial {serialHex} was not issued by this CA.")),
-                            new PkiFailureInfo(FailBadRequest)));
-                        continue;
-                    }
+                    statusList.Add(new PkiStatusInfo(
+                        StatusRejection,
+                        new PkiFreeText(new DerUtf8String(
+                            $"Certificate with serial {serialHex} was not issued by this CA.")),
+                        new PkiFailureInfo(FailBadRequest)));
+                    continue;
                 }
 
                 // Check if the certificate is already revoked

@@ -1,14 +1,20 @@
-using ModularCA.Core.Services.Cmp;
+﻿using ModularCA.Core.Services.Cmp;
 using Xunit;
 
 namespace ModularCA.Tests.Core.Services.Cmp;
 
 /// <summary>
-/// Tests for <see cref="CmpService.DnEquals"/>, the helper that decides whether a CMP
-/// revocation request's issuer DN matches the responding CA's subject. A regression here is a
-/// security bug: too lenient and a CA can revoke certs issued by a different CA; too strict and
-/// legitimate revocations are rejected. The previous implementation used <c>String.Contains</c>
-/// which let "CN=Foo" match "CN=FooBar" — the case in test #4 below.
+/// Tests for <see cref="CmpService.DnEquals"/>, the DN comparison used by the CMP revocation
+/// path. Too lenient and DNs that should differ compare equal; too strict and legitimate
+/// revocations are rejected. The previous implementation used <c>String.Contains</c>, which let
+/// "CN=Foo" match "CN=FooBar" — the case in test #4 below.
+/// <para>
+/// This class used to claim it prevented "a CA revoking certs issued by a different CA". It
+/// does not: it exercises a pure string helper and never reaches the revocation handler. The
+/// guard that actually enforces ownership is <see cref="CmpService.IsRevocableByCa"/>, covered
+/// by <see cref="CmpRevocationOwnershipTests"/> — and until that was written, the guard was
+/// conditional on a non-empty stored issuer and nothing tested it at all.
+/// </para>
 /// </summary>
 public class CmpServiceDnEqualsTests
 {

@@ -28,7 +28,7 @@ export default function UserUiGuide() {
                     <li>Quick-action buttons for requesting a new certificate</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/user/dashboard
+                    GET /api/v1/me
                 </div>
             </section>
 
@@ -66,9 +66,9 @@ export default function UserUiGuide() {
                     </p>
                 </div>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    POST /api/certificate-requests<br />
-                    GET /api/profiles?available=true<br />
-                    GET /api/templates?available=true
+                    POST /api/v1/user/requests<br />
+                    GET /api/v1/user/request-profiles<br />
+                    GET /api/v1/user/signing-profiles
                 </div>
             </section>
 
@@ -105,8 +105,8 @@ export default function UserUiGuide() {
                     </p>
                 </div>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/user/certificates<br />
-                    GET /api/user/certificates/&#123;id&#125;/download
+                    GET /api/v1/user/certificates<br />
+                    GET /api/v1/user/certificates/&#123;serial&#125;/file
                 </div>
             </section>
 
@@ -127,8 +127,8 @@ export default function UserUiGuide() {
                     <li>Download issued certificate once approved</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/user/certificate-requests<br />
-                    POST /api/user/certificate-requests/&#123;id&#125;/cancel
+                    GET /api/v1/user/requests<br />
+                    POST /api/v1/user/requests
                 </div>
             </section>
 
@@ -148,8 +148,8 @@ export default function UserUiGuide() {
                     <li>View SSH CA public key for trust configuration</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    POST /api/user/ssh/sign<br />
-                    GET /api/user/ssh/certificates
+                    POST /api/v1/user/ssh/sign-user<br />
+                    GET /api/v1/user/ssh/certificates
                 </div>
             </section>
 
@@ -169,7 +169,7 @@ export default function UserUiGuide() {
                     <li>View CA certificate details and chain</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/authorities/public
+                    GET /api/v1/user/authorities
                 </div>
             </section>
 
@@ -202,10 +202,10 @@ export default function UserUiGuide() {
                     </p>
                 </div>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/auth/me<br />
-                    PUT /api/auth/password<br />
-                    POST /api/auth/mfa/totp/enroll<br />
-                    POST /api/auth/mfa/webauthn/register
+                    GET /api/v1/me<br />
+                    POST /api/v1/auth/change-password<br />
+                    POST /api/v1/auth/totp/setup<br />
+                    POST /api/v1/auth/webauthn/register
                 </div>
             </section>
 

@@ -36,6 +36,26 @@ interface ReviewProps {
     onClearSecrets?: () => void;
 }
 
+/**
+ * Returns the fully-qualified algorithm name for a post-quantum selection.
+ *
+ * KeyGenerationUtil picks the parameter set from the ALGORITHM NAME, not from the key size:
+ * `GenerateSlhDsaKeyPair` switches on "SLH-DSA-SHA2-256S" and friends and falls through to
+ * `slh_dsa_sha2_128f` — the weakest set — for anything it does not recognise. The wizard stores
+ * the variant in `keySize` ('128f', '256s', '87') and sent the bare family name, so choosing
+ * SLH-DSA-256s produced a 128f key and choosing ML-DSA-87 produced an ML-DSA-65 key. Silently,
+ * and for the root CA as well as the Web TLS certificate.
+ *
+ * SHA2 is the family the generator defaults to, so that is what the wizard's bare variants mean.
+ */
+function qualifyPqcAlgorithm(algorithm: string, keySize: string): string {
+    const variant = (keySize || '').trim();
+    if (!variant) return algorithm;
+    if (algorithm === 'ML-DSA') return `ML-DSA-${variant}`;
+    if (algorithm === 'SLH-DSA') return `SLH-DSA-SHA2-${variant.toUpperCase()}`;
+    return algorithm;
+}
+
 const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, security, network, webTlsCertificate, setupToken, onClearSecrets }) => {
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
@@ -66,7 +86,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 locality: rootCa.locality.trim() || undefined,
                 state: rootCa.state.trim() || undefined,
                 country: rootCa.country.trim() || undefined,
-                keyAlgorithm: rootCa.keyAlgorithm,
+                keyAlgorithm: qualifyPqcAlgorithm(rootCa.keyAlgorithm, rootCa.keySize || ''),
                 // #38/#39: send the raw string so SLH-DSA variants (128f/128s/etc) and
                 // Ed25519 (no parameter → null) round-trip faithfully. The backend DTO
                 // is string? and parses this via SetupKeySizeParser.
@@ -126,7 +146,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 country: webTlsCertificate.country.trim().toUpperCase(),
                 sans: webTlsCertificate.sans.map(s => s.trim()).filter(Boolean),
                 validityDays: webTlsCertificate.validityDays,
-                keyAlgorithm: webTlsCertificate.keyAlgorithm,
+                keyAlgorithm: qualifyPqcAlgorithm(webTlsCertificate.keyAlgorithm, webTlsCertificate.keySize),
                 keySize: parseInt(webTlsCertificate.keySize) || 256,
             },
             database: {
@@ -240,7 +260,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 {rootCa.locality && <SummaryRow label="Location" value={rootCa.locality} />}
                 {rootCa.state && <SummaryRow label="State" value={rootCa.state} />}
                 {rootCa.country && <SummaryRow label="Country" value={rootCa.country} />}
-                <SummaryRow label="Key Algorithm" value={rootCa.keyAlgorithm} />
+                <SummaryRow label="Key Algorithm" value={qualifyPqcAlgorithm(rootCa.keyAlgorithm, rootCa.keySize || '')} />
                 {rootCa.keySize && <SummaryRow label="Key Size" value={rootCa.keySize} />}
                 <SummaryRow label="Validity" value={`${rootCa.validityYears} years`} />
             </SummaryCard>

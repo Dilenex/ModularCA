@@ -4,6 +4,18 @@ import { Toast, type ToastType } from '@shared/components/Toast';
 interface ToastItem { id: string; type: ToastType; message: string; }
 interface ToastContextValue { showToast: (type: ToastType, message: string, duration?: number) => void; }
 
+/**
+ * Toast ids are React list keys with a page lifetime -- they need to be unique, not
+ * unguessable. This used to call `crypto.randomUUID()`, which is [SecureContext]-gated and
+ * therefore UNDEFINED on a non-localhost http:// origin. This portal is deliberately reachable
+ * over plain HTTP (HttpSchemeEnforcementMiddleware allow-lists /public and
+ * /api/v1/public/info, because a relying party fetching the CA certificate may not have TLS
+ * trust established yet), so every toast threw a TypeError on exactly the deployment the
+ * portal exists to serve -- including the toast that would have reported the original error.
+ */
+let toastSequence = 0;
+const nextToastId = () => `toast-${++toastSequence}`;
+
 const ToastContext = createContext<ToastContextValue>({ showToast: () => {} });
 export const useToast = () => useContext(ToastContext);
 
@@ -21,7 +33,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, []);
 
     const showToast = useCallback((type: ToastType, message: string, duration = 5000) => {
-        const id = crypto.randomUUID();
+        const id = nextToastId();
         setToasts(prev => [...prev, { id, type, message }]);
         if (duration > 0) setTimeout(() => dismiss(id), duration);
     }, [dismiss]);

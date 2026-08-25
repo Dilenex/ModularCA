@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.SigningProfiles;
@@ -51,19 +51,28 @@ public class SigningProfileEkuRoundTripTests
     [Fact]
     public async Task UpdateAsync_persists_AllowedEKUs()
     {
-        using var db = InMemoryDbContextFactory.Create();
-        var entity = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "sp", AllowedEKUs = "[]" };
-        db.SigningProfiles.Add(entity);
-        await db.SaveChangesAsync();
+        var dbName = $"eku-persist-{Guid.NewGuid():N}";
+        var id = Guid.NewGuid();
 
-        var svc = new SigningProfileService(db);
-        await svc.UpdateAsync(entity.Id, new UpdateSigningProfileRequest
+        using (var seed = InMemoryDbContextFactory.Create(dbName))
         {
-            Name = "sp",
-            AllowedEKUs = $"[\"{ServerAuthOid}\"]",
-        });
+            seed.SigningProfiles.Add(new SigningProfileEntity { Id = id, Name = "sp", AllowedEKUs = "[]" });
+            await seed.SaveChangesAsync();
+        }
 
-        var reloaded = await svc.GetByIdAsync(entity.Id);
+        using (var write = InMemoryDbContextFactory.Create(dbName))
+        {
+            await new SigningProfileService(write).UpdateAsync(id, new UpdateSigningProfileRequest
+            {
+                Name = "sp",
+                AllowedEKUs = $"[\"{ServerAuthOid}\"]",
+            });
+        }
+
+        // Read through a FRESH context: FindAsync would otherwise hand back the instance the
+        // write context is still tracking, and the assertion would hold even if nothing was saved.
+        using var read = InMemoryDbContextFactory.Create(dbName);
+        var reloaded = await new SigningProfileService(read).GetByIdAsync(id);
         Assert.Equal($"[\"{ServerAuthOid}\"]", reloaded!.AllowedEKUs);
     }
 
@@ -80,15 +89,23 @@ public class SigningProfileEkuRoundTripTests
     [InlineData("1.3.6.1.5.5.7.3.1")]
     public async Task UpdateAsync_repairs_a_corrupted_value(string stored)
     {
-        using var db = InMemoryDbContextFactory.Create();
-        var entity = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "sp", AllowedEKUs = "[]" };
-        db.SigningProfiles.Add(entity);
-        await db.SaveChangesAsync();
+        var dbName = $"eku-repair-{Guid.NewGuid():N}";
+        var id = Guid.NewGuid();
 
-        var svc = new SigningProfileService(db);
-        await svc.UpdateAsync(entity.Id, new UpdateSigningProfileRequest { Name = "sp", AllowedEKUs = stored });
+        using (var seed = InMemoryDbContextFactory.Create(dbName))
+        {
+            seed.SigningProfiles.Add(new SigningProfileEntity { Id = id, Name = "sp", AllowedEKUs = "[]" });
+            await seed.SaveChangesAsync();
+        }
 
-        var reloaded = await svc.GetByIdAsync(entity.Id);
+        using (var write = InMemoryDbContextFactory.Create(dbName))
+        {
+            await new SigningProfileService(write).UpdateAsync(id,
+                new UpdateSigningProfileRequest { Name = "sp", AllowedEKUs = stored });
+        }
+
+        using var read = InMemoryDbContextFactory.Create(dbName);
+        var reloaded = await new SigningProfileService(read).GetByIdAsync(id);
         Assert.Equal($"[\"{ServerAuthOid}\"]", reloaded!.AllowedEKUs);
     }
 
@@ -99,19 +116,26 @@ public class SigningProfileEkuRoundTripTests
     [Fact]
     public async Task UpdateAsync_persists_ExtendedKeyUsageCritical()
     {
-        using var db = InMemoryDbContextFactory.Create();
-        var entity = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "sp", AllowedEKUs = "[]" };
-        db.SigningProfiles.Add(entity);
-        await db.SaveChangesAsync();
+        var dbName = $"eku-critical-{Guid.NewGuid():N}";
+        var id = Guid.NewGuid();
 
-        var svc = new SigningProfileService(db);
-        await svc.UpdateAsync(entity.Id, new UpdateSigningProfileRequest
+        using (var seed = InMemoryDbContextFactory.Create(dbName))
         {
-            Name = "sp",
-            AllowedEKUs = $"[\"{ServerAuthOid}\"]",
-            ExtendedKeyUsageCritical = true,
-        });
+            seed.SigningProfiles.Add(new SigningProfileEntity { Id = id, Name = "sp", AllowedEKUs = "[]" });
+            await seed.SaveChangesAsync();
+        }
 
-        Assert.True((await svc.GetByIdAsync(entity.Id))!.ExtendedKeyUsageCritical);
+        using (var write = InMemoryDbContextFactory.Create(dbName))
+        {
+            await new SigningProfileService(write).UpdateAsync(id, new UpdateSigningProfileRequest
+            {
+                Name = "sp",
+                AllowedEKUs = $"[\"{ServerAuthOid}\"]",
+                ExtendedKeyUsageCritical = true,
+            });
+        }
+
+        using var read = InMemoryDbContextFactory.Create(dbName);
+        Assert.True((await new SigningProfileService(read).GetByIdAsync(id))!.ExtendedKeyUsageCritical);
     }
 }

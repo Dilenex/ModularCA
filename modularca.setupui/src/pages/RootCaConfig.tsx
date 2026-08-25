@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useAutoFocus } from '../hooks/useAutoFocus';
 
 export type KeyAlgorithm = 'ECDSA' | 'RSA' | 'Ed25519' | 'ML-DSA' | 'SLH-DSA';
@@ -30,13 +30,10 @@ const keySizeOptions: Record<KeyAlgorithm, string[]> = {
 
 const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) => {
     const autoFocusRef = useAutoFocus<HTMLInputElement>();
-    // Auto-fill common name from org name when it hasn't been manually edited
-    useEffect(() => {
-        if (orgName && (data.commonName === '' || data.commonName === `${orgName} Root CA` || data.commonName.endsWith(' Root CA'))) {
-            onChange({ ...data, commonName: `${orgName} Root CA` });
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [orgName]);
+    // The org-name -> common-name auto-fill lives in App, where the wizard state lives. It ran
+    // here as a mount effect, and this component unmounts whenever the step changes: revisiting
+    // the step re-ran it, and its `endsWith(' Root CA')` guard matched almost any real CA name,
+    // so a hand-edited common name was silently reverted just by navigating back and forward.
 
     const handleAlgorithmChange = (alg: KeyAlgorithm) => {
         const sizes = keySizeOptions[alg];

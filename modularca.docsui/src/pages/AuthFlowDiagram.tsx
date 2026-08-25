@@ -41,7 +41,7 @@ export default function AuthFlowDiagram() {
     |        refreshToken }        |                            |
     |<-----------------------------|                            |
     |                              |                            |
-    |  GET /api/certificates       |                            |
+    |  GET /api/v1/user/certificates       |                            |
     |  Authorization: Bearer {jwt} |                            |
     |----------------------------->|                            |
     |                              |  Validate JWT claims       |
@@ -50,8 +50,8 @@ export default function AuthFlowDiagram() {
     |                              |                            |
     |  --- Sensitive Operation (e.g. revoke) ---                |
     |                              |                            |
-    |  POST /api/certificates/     |                            |
-    |       {id}/revoke            |                            |
+    |  POST /api/v1/user/          |                            |
+    |  certificates/{serial}/revoke|                            |
     |  X-Step-Up-Token: {token}    |                            |
     |----------------------------->|                            |
     |                              |                            |
@@ -66,8 +66,8 @@ export default function AuthFlowDiagram() {
     |  200 { stepUpToken }         |                            |
     |<-----------------------------|                            |
     |                              |                            |
-    |  POST /api/certificates/     |                            |
-    |       {id}/revoke            |                            |
+    |  POST /api/v1/user/          |                            |
+    |  certificates/{serial}/revoke|                            |
     |  X-Step-Up-Token: {token}    |                            |
     |----------------------------->|                            |
     |  200 { success }             |                            |
@@ -250,7 +250,7 @@ export default function AuthFlowDiagram() {
                     <pre className="text-gray-700 dark:text-gray-300">{`
   Client                        Server
     |                              |
-    |  GET /api/certificates       |
+    |  GET /api/v1/user/certificates       |
     |  Authorization: Bearer {expired-jwt}
     |----------------------------->|
     |  401 Unauthorized            |
@@ -264,7 +264,7 @@ export default function AuthFlowDiagram() {
     |        refreshToken }        |
     |<-----------------------------|
     |                              |
-    |  GET /api/certificates       |
+    |  GET /api/v1/user/certificates       |
     |  Authorization: Bearer {new-jwt}
     |----------------------------->|
     |  200 { certificates }        |
@@ -365,8 +365,8 @@ MFA enroll:   totp-setup, totp-verify-setup, totp-remove,
   User/UI                       API Server                    Cache (Redis)
     |                              |                              |
     |  1. Sensitive operation       |                              |
-    |  POST /api/v1/certificates/  |                              |
-    |       {id}/revoke            |                              |
+    |  POST /api/v1/user/            |                              |
+    |  certificates/{serial}/revoke|                              |
     |  Authorization: Bearer {jwt} |                              |
     |----------------------------->|                              |
     |                              |  Check for X-MFA-Token       |
@@ -399,8 +399,8 @@ MFA enroll:   totp-setup, totp-verify-setup, totp-remove,
     |<-----------------------------|                              |
     |                              |                              |
     |  8. Retry original request   |                              |
-    |  POST /api/v1/certificates/  |                              |
-    |       {id}/revoke            |                              |
+    |  POST /api/v1/user/            |                              |
+    |  certificates/{serial}/revoke|                              |
     |  Authorization: Bearer {jwt} |                              |
     |  X-MFA-Token: tok_...        |                              |
     |----------------------------->|                              |

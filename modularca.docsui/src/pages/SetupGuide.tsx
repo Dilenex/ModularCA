@@ -183,14 +183,20 @@ export default function SetupGuide() {
                             <tr className="bg-white dark:bg-gray-800/50">
                                 <td className="px-4 py-3 font-mono text-xs text-blue-600 dark:text-blue-400">modularca-audit</td>
                                 <td className="px-4 py-3 text-gray-600 dark:text-gray-400">Append-only audit trail</td>
-                                <td className="px-4 py-3 text-gray-600 dark:text-gray-400">INSERT and SELECT only</td>
+                                <td className="px-4 py-3 text-gray-600 dark:text-gray-400">SELECT, INSERT, DELETE + schema (no UPDATE)</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-3">
-                    The audit user's restricted permissions ensure that audit records cannot be modified or deleted,
-                    even if the application database is compromised.
+                    The audit user has no <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">UPDATE</code> grant,
+                    so an existing audit row cannot be rewritten in place &mdash; that is the property the
+                    separate database buys you. It <em>does</em> hold
+                    <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">DELETE</code>, which the
+                    scheduled retention job needs to age rows out, plus
+                    <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">CREATE / ALTER / INDEX</code> for
+                    schema migrations. Audit rows are therefore tamper-evident against modification, not
+                    against deletion by something running as the audit user.
                 </p>
             </section>
 
@@ -250,12 +256,15 @@ export default function SetupGuide() {
                         </div>
                     </div>
                     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-5">
-                        <h3 className="font-semibold text-gray-900 dark:text-white mb-2">Docs Behind Authentication</h3>
+                        <h3 className="font-semibold text-gray-900 dark:text-white mb-2">Docs Are Not Authenticated</h3>
                         <p className="text-sm text-gray-600 dark:text-gray-400">
                             The <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">/docs/</code> path
-                            requires authentication. Users must log in
-                            via <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">/admin/login</code> before
-                            accessing the documentation UI.
+                            is readable without logging in. The middleware only rejects a request that
+                            <em>carries</em> an expired or invalid bearer token &mdash; a request with no
+                            <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">Authorization</code> header
+                            at all is served. Treat this UI as public: it describes the admin surface, the
+                            config file layout, and the reset procedure. Put it behind your reverse proxy if
+                            that matters in your environment.
                         </p>
                     </div>
                 </div>
@@ -277,10 +286,17 @@ export default function SetupGuide() {
                                 Resetting drops all database tables and removes configuration files.
                                 All certificates, CAs, and user data will be permanently deleted.
                             </p>
-                            <CodeBlock variant="danger">dotnet run --project ModularCA -- --reset --force</CodeBlock>
+                            <CodeBlock variant="danger">dotnet run --project ModularCA -- --reset --force --confirm-db-name modularca-app</CodeBlock>
                             <p className="text-sm text-red-700 dark:text-red-400 mt-2">
-                                The <code className="px-1.5 py-0.5 bg-red-100 dark:bg-red-900/40 rounded text-sm font-mono">--force</code> flag
-                                skips the confirmation prompt. Omit it for an interactive confirmation.
+                                There is no interactive confirmation. Both flags are mandatory and the process
+                                exits 1 without them:
+                                <code className="px-1.5 py-0.5 bg-red-100 dark:bg-red-900/40 rounded text-sm font-mono">--force</code> acknowledges
+                                that the operation is destructive, and
+                                <code className="px-1.5 py-0.5 bg-red-100 dark:bg-red-900/40 rounded text-sm font-mono">--confirm-db-name</code> requires
+                                you to type the target database name, so a reset cannot be aimed at the wrong
+                                one by muscle memory. Non-interactive pipelines that genuinely need an
+                                unattended reset can substitute
+                                <code className="px-1.5 py-0.5 bg-red-100 dark:bg-red-900/40 rounded text-sm font-mono">--ci-no-confirm</code>.
                             </p>
                             <p className="text-sm font-medium text-red-800 dark:text-red-300 mt-4 mb-2">What reset does:</p>
                             <ul className="text-sm text-red-700 dark:text-red-400 space-y-1.5 list-disc list-inside">
