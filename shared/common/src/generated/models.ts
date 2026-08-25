@@ -1012,6 +1012,17 @@ export interface SecurityConfig {
     behindReverseProxy: boolean;
 }
 
+/** From `ModularCA.Shared/Models/Config/SecurityUpdateRequest.cs`. */
+export interface SecurityUpdateRequest {
+    bindJwtToIp?: E.JwtIpBindingMode | null;
+    bindRefreshTokenToIp?: boolean | null;
+    bindRefreshTokenToFingerprint?: boolean | null;
+    allowRefreshTokenMismatch?: boolean | null;
+    maxPerUsernameLoginFailures?: number | null;
+    perUsernameLoginFailureWindowMinutes?: number | null;
+    behindReverseProxy?: boolean | null;
+}
+
 /** From `ModularCA.Shared/Models/Management/PermissionChangeRequest.cs`. */
 export interface SetCertPermissionRequest {
     userId: string;

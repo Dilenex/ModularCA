@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Keystore.Services;
 using ModularCA.Keystore.Utils;
@@ -420,7 +420,18 @@ public class BootstrapModularCA
             KeyAlgorithmsJson, KeySizesJson, SignatureAlgorithmsJson, "P5Y", "P25Y");
         var caCertProfile = BootstrapProfileSeeder.GetCertProfileFromDb(dbContext, "Main CA Certificate Profile");
         var allowedCertExtendedOids = new[] { "Server Authentication", "Client Authentication", "Email Protection" };
-        var CertExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedCertExtendedOids, dbContext);
+        // The SIGNING profile must permit the CA's OWN infrastructure EKUs, not just the leaf
+        // ones. Built from the three-entry leaf list, the signing profile bound to the
+        // bootstrap-created root allowed serverAuth/clientAuth/emailProtection only — and
+        // "reissue infrastructure certificates" resolves the profile by
+        // sp.IssuerId == caEntity.CertificateId, lands on exactly this profile, and
+        // EnsureSigningProfilePermitsInfrastructureEkus then refuses for both OCSP signing and
+        // time stamping. The primary CA's OCSP responder and TSA could never be rotated,
+        // including after a key compromise. Invisible until the first reissue, because bootstrap
+        // issues those two through BootstrapCertCreator, which hardcodes the EKU and bypasses
+        // the profile. CaCreationService seeds all six for runtime-created CAs; this matches now.
+        // allowedCertExtendedOids stays the leaf list and is still used for the non-CA profile.
+        var CertExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedRootCaExtendedOids, dbContext);
         var caCn = bootstrapConfig.CA.Subject.CN ?? "ModularCA";
         var signingProfileName = $"{caCn} Signing Profile";
         BootstrapProfileSeeder.CreateSigningProfile(dbContext, signingProfileName, $"Default signing profile for {caCn}",
@@ -1196,6 +1207,27 @@ public class BootstrapModularCA
         {
             var appUser = setupDbConfig.SqlApp.Username;
             var auditUser = setupDbConfig.SqlAudit.Username;
+            var rootUser = setupDbConfig.SqlRoot.Username?.Trim() ?? string.Empty;
+
+            // Refuse BEFORE dropping anything if either service account names the admin user.
+            // BootstrapDatabaseSetup.CreateDatabaseUsers has this exact guard, with the comment
+            // "This would drop and recreate your admin account" — but Run() reaches
+            // ReconstructDatabase first, so the DROP USER below executed and only then did the
+            // guard fire. `SqlApp.Username: root` therefore destroyed the MySQL administrative
+            // account and aborted with no config written: unrecoverable without
+            // --skip-grant-tables. The guard is only worth having if it runs first.
+            if (!string.IsNullOrWhiteSpace(rootUser))
+            {
+                if (string.Equals(appUser?.Trim(), rootUser, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        $"SqlApp.Username must differ from SqlRoot.Username (both are '{rootUser}'). "
+                        + "Dropping it would destroy the database administrative account.");
+                if (string.Equals(auditUser?.Trim(), rootUser, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        $"SqlAudit.Username must differ from SqlRoot.Username (both are '{rootUser}'). "
+                        + "Dropping it would destroy the database administrative account.");
+            }
+
             if (!string.IsNullOrWhiteSpace(appUser))
             {
                 using var dropAppUser = new MySqlCommand($"DROP USER IF EXISTS '{appUser}'@'%'", conn);

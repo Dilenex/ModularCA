@@ -120,6 +120,41 @@ namespace ModularCA.Core.Services
         /// operator-authored pattern with nested quantifiers would let an unauthenticated
         /// requester burn a CPU core per request. The helper bounds the match and fails closed.
         /// </summary>
+        /// <summary>
+        /// Whether the profile pins SAN <em>values</em> of the given type to an explicit pattern,
+        /// as opposed to merely allowing the type.
+        /// </summary>
+        /// <remarks>
+        /// Callers use this to tell "the operator has declared which names may appear here" from
+        /// "nothing constrains this name at all". A profile that lists <c>DNS</c> in
+        /// <c>AllowedTypes</c> but sets no regex for it permits every hostname in existence, which
+        /// is a fine default for a CA whose callers are already name-bound by their client
+        /// certificate and an open door for one whose callers are bound only by a username.
+        /// Returns false when the profile is missing or its SAN rules cannot be read — an
+        /// unreadable rule is not a constraint.
+        /// </remarks>
+        public async Task<bool> ConstrainsSanValuesAsync(Guid requestProfileId, string sanType)
+        {
+            var profile = await LoadEffectiveAsync(requestProfileId);
+            if (profile == null) return false;
+
+            try
+            {
+                var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules);
+                if (sanRules?.Rules == null) return false;
+                foreach (var (type, rule) in sanRules.Rules)
+                {
+                    if (string.Equals(type, sanType, StringComparison.OrdinalIgnoreCase))
+                        return !string.IsNullOrWhiteSpace(rule.Regex);
+                }
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+            return false;
+        }
+
         public async Task<(bool IsValid, string? Error, string? ModifiedSubject)> ValidateAsync(
             Guid requestProfileId,
             string subjectDn,

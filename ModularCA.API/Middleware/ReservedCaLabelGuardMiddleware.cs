@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace ModularCA.API.Middleware;
 
@@ -41,7 +41,15 @@ public class ReservedCaLabelGuardMiddleware
     /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
-        if (context.Request.RouteValues.TryGetValue("caLabel", out var labelObj)
+        // Short-URL routes bind the same value under a DIFFERENT name — PublicShortUrlController
+        // uses {serialOrLabel} and resolves it against CertificateAuthorities.Label — so this
+        // guard, which only inspected "caLabel", did not see them. GET /ca/system-signing-ca
+        // therefore returned the System Signing CA certificate that PublicCaCertController
+        // deliberately hides.
+        if (!context.Request.RouteValues.TryGetValue("caLabel", out var labelObj))
+            context.Request.RouteValues.TryGetValue("serialOrLabel", out labelObj);
+
+        if (labelObj != null
             && labelObj is string label
             && ReservedLabels.Contains(label))
         {

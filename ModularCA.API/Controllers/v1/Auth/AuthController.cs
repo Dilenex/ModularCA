@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using FluentValidation;
@@ -1001,6 +1001,42 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return StatusCode(403, new { error = "Account is locked" });
             if (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow)
                 return StatusCode(403, new { error = "Account is temporarily locked" });
+
+            // A client certificate is ONE factor. If the account has a second enrolled, require
+            // it — exactly as MtlsController does for the same certificate on the same listener,
+            // and as /auth/login does after a correct password.
+            //
+            // This endpoint went straight from chain validation to GenerateToken, so a user with
+            // TOTP or a security key enrolled — for whom /auth/login enforces MFA — could bypass
+            // it entirely by presenting their enrolled .p12 here instead. Anyone holding that
+            // file had single-factor admin, and the file is written to disk by MtlsController's
+            // enrolment flow.
+            var certMfaMethods = new List<string>();
+            if (await _db.TotpSecrets.AnyAsync(t => t.UserId == user.Id && t.IsVerified))
+                certMfaMethods.Add("totp");
+            if (_config.WebAuthn.Enabled && _fido2 != null
+                && await _db.Fido2Credentials.AnyAsync(c => c.UserId == user.Id))
+                certMfaMethods.Add("webauthn");
+
+            if (certMfaMethods.Count > 0)
+            {
+                var certMfaToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                var certMfaTtl = Math.Clamp((await _securityPolicy.GetAsync()).MfaSessionTtlSeconds, 60, 900);
+                await _cache.SetStringAsync($"mfa:{certMfaToken}", user.Id.ToString(),
+                    new DistributedCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(certMfaTtl)
+                    });
+
+                return Ok(new
+                {
+                    requiresMfa = true,
+                    mfaToken = certMfaToken,
+                    method = certMfaMethods.Count == 1 ? certMfaMethods[0] : null,
+                    availableMethods = certMfaMethods,
+                    message = "Client certificate accepted. Complete multi-factor authentication to continue."
+                });
+            }
 
             var groups = await _db.CaGroupMembers
                 .Where(gm => gm.UserId == user.Id)

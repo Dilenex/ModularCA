@@ -1,4 +1,4 @@
-using ModularCA.Shared.Entities;
+﻿using ModularCA.Shared.Entities;
 
 namespace ModularCA.Shared.Interfaces;
 
@@ -17,7 +17,7 @@ public interface ISshCaService
     /// Lists issued SSH certificates, optionally filtered by CA key.
     /// </summary>
     Task<List<SshCertificateEntity>> GetCertificatesAsync(int page = 1, int pageSize = 50, Guid? caKeyId = null);
-    Task<bool> RevokeCertificateAsync(Guid certId);
+    Task<bool> RevokeCertificateAsync(Guid certId, Guid? requiredCaKeyId = null);
     Task<SshCertificateEntity?> GetCertificateByIdAsync(Guid certId);
     Task<byte[]> GenerateKrlAsync(Guid caKeyId);
 }

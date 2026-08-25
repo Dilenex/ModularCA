@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
 using ModularCA.Core.Helpers;
@@ -349,10 +349,25 @@ public class SshCaService : ISshCaService
             .ToListAsync();
     }
 
-    public async Task<bool> RevokeCertificateAsync(Guid certId)
+    /// <summary>
+    /// Revokes an SSH certificate, optionally constrained to the CA key that issued it.
+    /// </summary>
+    /// <param name="certId">The certificate to revoke.</param>
+    /// <param name="requiredCaKeyId">
+    /// When set, the certificate must belong to this CA key or the call is refused.
+    /// </param>
+    /// <remarks>
+    /// The admin route is <c>ca-keys/{caKeyId}/certificates/{id}/revoke</c> and the authorization
+    /// handler resolves the CA from <c>caKeyId</c> — the caller's OWN key. Nothing then checked
+    /// that <c>{id}</c> belonged to it, and SshCertificateEntity carries no tenant query filter,
+    /// so cert.revoke on any one SSH CA was enough to revoke every SSH certificate in the
+    /// deployment, one id at a time.
+    /// </remarks>
+    public async Task<bool> RevokeCertificateAsync(Guid certId, Guid? requiredCaKeyId = null)
     {
         var cert = await _db.SshCertificates.FindAsync(certId);
         if (cert == null) return false;
+        if (requiredCaKeyId.HasValue && cert.SshCaKeyId != requiredCaKeyId.Value) return false;
         cert.IsRevoked = true;
         await _db.SaveChangesAsync();
         return true;

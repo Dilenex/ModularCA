@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -354,7 +354,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     public async Task<IActionResult> RevokeCertificate(Guid caKeyId, Guid id)
     {
         await currentUser.EnsureLoadedAsync();
-        if (await sshCaService.RevokeCertificateAsync(id))
+        // Constrain the target to the CA key in the route: that is the CA the policy handler
+        // authorized against, and without this the {id} was free to name any SSH certificate
+        // in the deployment.
+        if (await sshCaService.RevokeCertificateAsync(id, requiredCaKeyId: caKeyId))
         {
             await audit.LogAsync(AuditActionType.SshCertRevoked, currentUser.User?.Id, currentUser.User?.Username,
                 "SshCertificate", id.ToString(),

@@ -1,4 +1,5 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
+using ModularCA.API.Services;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -368,6 +369,32 @@ public class MfaStepUpController : ControllerBase
 
         if (credential == null)
             return Unauthorized(new { error = "Client certificate does not match any active mTLS credential" });
+
+        // Validate the chain and revocation status, as all four sibling mTLS paths do
+        // (AuthController.CertLogin, MtlsController.Verify/LoginRedirect/Enroll).
+        //
+        // Matching a thumbprint against a credential row proves neither issuer binding nor
+        // current validity. The Kestrel handshake does not compensate: it runs with
+        // RevocationMode.Offline and IgnoreEndRevocationUnknown. And MtlsCredentialEntity
+        // .IsRevoked is written only by MtlsController.RevokeCredential — so a certificate
+        // revoked through the certificate admin UI still had IsRevoked = false on its
+        // credential row. Such a certificate was rejected by /auth/cert-login and
+        // /auth/mtls/verify but still minted step-up tokens here, and the operations reachable
+        // via mTLS step-up include totp-remove, webauthn-delete and mtls-enroll — enough to
+        // strip the rightful owner's remaining factors and enrol a fresh certificate.
+        var stepUpChainOk = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
+            _db, credential.SigningCaId, clientCert,
+            requireRevocationCheck: (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck);
+        if (!stepUpChainOk)
+        {
+            await _audit.LogAsync(
+                AuditActionType.MfaStepUpFailed,
+                userId.Value, _currentUser.User?.Username,
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
+                details: new { reason = "mtls_chain_or_revocation_check_failed", request.Operation },
+                errorMessage: "StepUpFailed");
+            return Unauthorized(new { error = "Client certificate failed chain or revocation validation" });
+        }
 
         var jti = ExtractJti(User);
         var stepUpToken = await IssueStepUpTokenAsync(userId.Value, jti, request.Operation, request.TargetId);

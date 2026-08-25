@@ -1,9 +1,11 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
+using ModularCA.Shared.Enums;
+using ModularCA.Shared.Interfaces;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -20,6 +22,7 @@ public class AdminComplianceController : ControllerBase
     private readonly IComplianceReportService _reportService;
     private readonly ICurrentUserService _currentUser;
     private readonly ModularCADbContext _db;
+    private readonly IAuditService _audit;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AdminComplianceController"/> class.
@@ -27,14 +30,17 @@ public class AdminComplianceController : ControllerBase
     /// <param name="reportService">Service for generating compliance reports.</param>
     /// <param name="currentUser">Service for resolving the authenticated user.</param>
     /// <param name="db">Database context for querying and updating compliance findings.</param>
+    /// <param name="audit">Audit trail for recording who resolved or dismissed a finding.</param>
     public AdminComplianceController(
         IComplianceReportService reportService,
         ICurrentUserService currentUser,
-        ModularCADbContext db)
+        ModularCADbContext db,
+        IAuditService audit)
     {
         _reportService = reportService;
         _currentUser = currentUser;
         _db = db;
+        _audit = audit;
     }
 
     /// <summary>
@@ -183,9 +189,16 @@ public class AdminComplianceController : ControllerBase
     /// flag to true and records the current UTC timestamp as the resolution time.
     /// </summary>
     /// <param name="id">The unique identifier of the compliance finding to resolve.</param>
+    // The class policy is SystemAuditor — the deliberately READ-ONLY bundle. This is the only
+    // mutation on the controller, and it inherited that policy, so an auditor could walk the
+    // Critical findings and clear every one of them. Nothing recorded it either: the controller
+    // did not take IAuditService at all. Clearing a compliance finding is an operator action.
+    [Authorize(Policy = "SystemOperator")]
     [HttpPost("{id}/resolve")]
     public async Task<IActionResult> Resolve(Guid id)
     {
+        await _currentUser.EnsureLoadedAsync();
+
         var finding = await _db.CertComplianceFindings.FindAsync(id);
         if (finding == null)
             return NotFound(new { error = "Compliance finding not found" });
@@ -196,6 +209,14 @@ public class AdminComplianceController : ControllerBase
         finding.IsResolved = true;
         finding.ResolvedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            AuditActionType.ComplianceFindingResolved,
+            _currentUser.User?.Id,
+            _currentUser.User?.Username,
+            "ComplianceFinding", finding.Id.ToString(),
+            new { finding.Severity, finding.Type, finding.CertificateId, finding.Description },
+            HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new { message = "Finding resolved", finding.Id, finding.ResolvedAt });
     }

@@ -56,6 +56,11 @@ public class LoginRateLimitMiddleware
         ["/api/v1/auth/login"] = (10, 5),
         ["/api/v1/auth/totp/verify"] = (25, 5),
         ["/api/v1/auth/totp/verify-setup"] = (5, 5),
+        // Unauthenticated and credential-checking: a recovery code is a bearer credential, so
+        // leaving this endpoint unthrottled made it a guessing oracle against 50-bit codes that
+        // are stored as unsalted single-round SHA-256. Tighter than the TOTP buckets because a
+        // recovery code is used once, by a human, in an already-bad day — not repeatedly.
+        ["/api/v1/auth/totp/recovery"] = (5, 15),
         ["/api/v1/auth/webauthn/assertion"] = (50, 5),
         ["/api/v1/auth/mtls/verify"] = (25, 5),
         ["/api/v1/auth/change-password"] = (5, 5),

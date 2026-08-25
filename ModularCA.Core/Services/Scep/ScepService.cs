@@ -373,6 +373,36 @@ public class ScepService : IScepService
                             "Renewal signer subject does not match CSR subject.");
                         return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
                     }
+
+                    // The subject match alone does not bound a renewal — SANs are where a TLS
+                    // certificate's real identity lives, and nothing was checking them.
+                    //
+                    // A renewal skips the challenge password precisely because the signer
+                    // certificate stands in for it; that makes the signer's own names the whole
+                    // authorization. With only the DN compared, the holder of any certificate this
+                    // CA issued could renew "itself" while adding DNS:vpn.example.com — or
+                    // DNS:* where the profile permits wildcards — and the initial-enrollment
+                    // SANRestriction that would have stopped it never runs on this path. A printer
+                    // with a device certificate was one renewal away from a certificate for the
+                    // CA's own web front end.
+                    //
+                    // Rule: every name asked for must already be a name the signer holds. Renewal
+                    // preserves an identity; it does not extend one. Compared on values so the
+                    // certificate parser's "Email:" and the CSR parser's prefix spelling cannot
+                    // make two identical names look different. This mirrors the SAN subset check
+                    // EstService.SimpleEnrollAsync applies to its mTLS clients.
+                    var unheldSan = FirstSanNotHeldBySigner(
+                        parsedCsr.SubjectAlternativeNames,
+                        CertificateUtil.ParseCertificate(cmsSignerCert).SubjectAlternativeNames);
+                    if (unheldSan != null)
+                    {
+                        _logger.LogWarning(
+                            "SCEP renewal rejected — CSR requests SAN '{San}' that the signer certificate does not hold. signer='{Signer}'",
+                            unheldSan, signerSubject);
+                        await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                            "Renewal CSR requests a SAN the signer certificate does not hold.");
+                        return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                    }
                 }
                 else
                 {
@@ -873,6 +903,42 @@ public class ScepService : IScepService
     /// Helper: normalize a DN string for RFC 8894 renewal-binding
     /// comparison. Not ideal — a future follow-up should use X500Name canonical form.
     /// </summary>
+    /// <summary>
+    /// Returns the first requested SAN that the renewal signer's certificate does not already
+    /// carry, or <c>null</c> when every requested name is one the signer holds.
+    /// </summary>
+    /// <remarks>
+    /// A renewal preserves an identity; it does not extend one. This is the SAN half of that rule,
+    /// alongside the subject-DN match — and it was missing, so a renewal could add any name the
+    /// request profile happened to tolerate while skipping the challenge password that would
+    /// otherwise have bounded it.
+    /// <para>
+    /// Compared on values with the <c>TYPE:</c> prefix stripped: the certificate parser and the CSR
+    /// parser spell the prefixes differently ("Email" vs "EMAIL", "Other" for anything they do not
+    /// recognise), so comparing whole entries would report two identical names as different and
+    /// reject healthy renewals. The value is the identity; the prefix is a label.
+    /// </para>
+    /// </remarks>
+    internal static string? FirstSanNotHeldBySigner(
+        IEnumerable<string> requestedSans, IEnumerable<string> signerSans)
+    {
+        var held = signerSans.Select(SanValue).ToList();
+        foreach (var requested in requestedSans)
+        {
+            var value = SanValue(requested);
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            if (!held.Any(h => string.Equals(h, value, StringComparison.OrdinalIgnoreCase)))
+                return requested;
+        }
+        return null;
+    }
+
+    private static string SanValue(string entry)
+    {
+        var idx = entry.IndexOf(':');
+        return idx > 0 ? entry[(idx + 1)..].Trim() : entry.Trim();
+    }
+
     private static string NormalizeDn(string dn)
     {
         if (string.IsNullOrWhiteSpace(dn)) return string.Empty;

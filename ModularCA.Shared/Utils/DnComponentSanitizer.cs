@@ -1,4 +1,4 @@
-using System.Net.Mail;
+﻿using System.Net.Mail;
 
 namespace ModularCA.Shared.Utils
 {
@@ -149,6 +149,15 @@ namespace ModularCA.Shared.Utils
                 if (labels.Length < 3)
                     throw new InvalidOperationException(
                         $"Wildcard DNS SAN '{trimmed}' must contain at least two labels beneath the wildcard (e.g. *.example.com).");
+
+                // And the rest must actually be a host name. This branch used to check only
+                // wildcard PLACEMENT and label count, never syntax, while the non-wildcard
+                // branch below runs Uri.CheckHostName — so on any profile with AllowWildcard
+                // enabled, `*.exa mple.com` and `*.ev!l.com` were accepted and encoded verbatim
+                // into a dNSName SAN. Only control characters and total length were rejected.
+                if (Uri.CheckHostName(string.Join('.', labels.Skip(1))) != UriHostNameType.Dns)
+                    throw new InvalidOperationException(
+                        $"DNS SAN '{trimmed}' is not a valid wildcard DNS name.");
             }
             else
             {

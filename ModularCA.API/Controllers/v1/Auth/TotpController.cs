@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
@@ -236,17 +236,39 @@ public class TotpController : ControllerBase
         if (user == null)
             return Unauthorized(new { error = "Invalid recovery code" });
 
+        // Recovery is a credential exchange, so the account-state checks that gate every other
+        // login path apply here too. Without them a disabled or locked account could still
+        // trade a recovery code for a cleared MFA enrolment and a rotated security stamp.
+        if (!user.IsActive || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.MfaTotpFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp, success: false,
+                details: new { reason = "totp_recovery_account_not_eligible" },
+                errorMessage: "RecoveryFailed");
+            return Unauthorized(new { error = "Invalid recovery code" });
+        }
+
         var hash = ComputeRecoveryCodeHash(request.RecoveryCode);
         var code = await _db.TotpRecoveryCodes
             .FirstOrDefaultAsync(r => r.UserId == user.Id && r.CodeHash == hash && r.UsedAt == null);
 
         if (code == null)
         {
+            // Count the failure against the account, as the password and TOTP paths do.
+            // Without this, guesses here were free: they never advanced the lockout counter,
+            // so an attacker could work through the code space without ever locking the
+            // account they were attacking.
+            user.FailedLoginAttempts++;
+            _db.Users.Update(user);
+            await _db.SaveChangesAsync();
+
             await _audit.LogAsync(
                 Shared.Enums.AuditActionType.MfaTotpFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp, success: false,
-                details: new { reason = "totp_recovery_code_invalid" },
+                details: new { reason = "totp_recovery_code_invalid", user.FailedLoginAttempts },
                 errorMessage: "RecoveryFailed");
             return Unauthorized(new { error = "Invalid recovery code" });
         }

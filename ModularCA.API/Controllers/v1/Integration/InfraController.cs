@@ -440,14 +440,14 @@ public class InfraController(
             .FirstOrDefaultAsync(sp => sp.Id == signingProfileId);
 
         if (signingProfile?.IssuerId == null)
-            return null;
+            return TenantFenceDenied("the target's issuing CA could not be determined.");
 
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
             .FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
 
         if (ca == null)
-            return null;
+            return TenantFenceDenied("the target's issuing CA could not be determined.");
 
         if (ca.TenantId != tenantId.Value)
         {
@@ -467,6 +467,20 @@ public class InfraController(
     /// the configured tenant. Returns null if the check passes, or an <see cref="IActionResult"/>
     /// to short-circuit the action if the tenant does not match.
     /// </summary>
+    /// <summary>
+    /// The tenant fence's DENY result. Used wherever the fence cannot positively establish that
+    /// the target belongs to the configured tenant.
+    /// </summary>
+    /// <remarks>
+    /// Every "cannot determine" path in this fence used to `return null`, which is the ALLOW
+    /// sentinel — so a certificate the lookup could not resolve, or one with no SigningProfileId,
+    /// sailed through. MtlsController persists mTLS login certificates without a
+    /// SigningProfileId at all, so a key scoped to tenant A could read another tenant's admin
+    /// mTLS certificate and revoke it. An unestablished tenant is not a matching tenant.
+    /// </remarks>
+    private static IActionResult TenantFenceDenied(string reason) =>
+        new ObjectResult(new { error = $"Access denied: {reason}" }) { StatusCode = 403 };
+
     private async Task<IActionResult?> VerifyCertificateTenantBySerialAsync(string serial)
     {
         var tenantId = _config.IntegrationApi.TenantId;
@@ -478,12 +492,13 @@ public class InfraController(
             .ResolveBySerialOrNullAsync(serial);
 
         if (certEntity == null)
-            return null;
+            return TenantFenceDenied("the target certificate could not be found.");
 
         // Walk from the cert's signing profile to the issuing CA
         var signingProfileId = certEntity.SigningProfileId;
         if (signingProfileId == null)
-            return null;
+            return TenantFenceDenied("the target certificate is not associated with a signing profile, "
+                                   + "so its owning tenant cannot be established.");
 
         return await VerifySigningProfileTenantAsync(signingProfileId.Value);
     }

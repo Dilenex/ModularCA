@@ -203,7 +203,18 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
-            Guid certId = new Guid(request.CertId);
+            // Parse BOTH ids. This used to be `new Guid(request.CertId)` — an unguarded
+            // constructor, so {"certId":"x"} threw FormatException and surfaced as HTTP 500 —
+            // and then ignored request.UserId entirely, writing the ACL row for the CALLER while
+            // the response text and the audit payload both named the target user. So "grant Bob
+            // manage" silently granted the operator instead, and "revoke Bob" stripped the
+            // operator's own row while logging Bob's id: the audit trail asserted something that
+            // had not happened. The serial-based siblings above always parsed and used the
+            // target correctly; these four did not.
+            if (!Guid.TryParse(request.CertId, out var certId))
+                return BadRequest(new { error = "certId must be a GUID." });
+            if (!Guid.TryParse(request.UserId, out var targetUserId))
+                return BadRequest(new { error = "userId must be a GUID." });
             /*
             var cert = await _certStore.GetCertificateByIdAsync(certId);
             
@@ -211,7 +222,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 return NotFound();
             */
 
-            var result = await _accessAssignment.AssignCertificateViewAccessAsync(_currentUser.User.Id, certId);
+            var result = await _accessAssignment.AssignCertificateViewAccessAsync(targetUserId, certId);
             if (result)
             {
                 await _audit.LogAsync(AuditActionType.CertPermissionViewGranted, _currentUser.User?.Id, _currentUser.User?.Username,
@@ -229,10 +240,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
-            Guid certId = new Guid(request.CertId);
+            // Parse BOTH ids. This used to be `new Guid(request.CertId)` — an unguarded
+            // constructor, so {"certId":"x"} threw FormatException and surfaced as HTTP 500 —
+            // and then ignored request.UserId entirely, writing the ACL row for the CALLER while
+            // the response text and the audit payload both named the target user. So "grant Bob
+            // manage" silently granted the operator instead, and "revoke Bob" stripped the
+            // operator's own row while logging Bob's id: the audit trail asserted something that
+            // had not happened. The serial-based siblings above always parsed and used the
+            // target correctly; these four did not.
+            if (!Guid.TryParse(request.CertId, out var certId))
+                return BadRequest(new { error = "certId must be a GUID." });
+            if (!Guid.TryParse(request.UserId, out var targetUserId))
+                return BadRequest(new { error = "userId must be a GUID." });
 
 
-            var result = await _accessAssignment.AssignCertificateManageAccessAsync(_currentUser.User.Id, certId);
+            var result = await _accessAssignment.AssignCertificateManageAccessAsync(targetUserId, certId);
             if (result)
             {
                 await _audit.LogAsync(AuditActionType.CertPermissionManageGranted, _currentUser.User?.Id, _currentUser.User?.Username,
@@ -251,10 +273,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
-            Guid certId = new Guid(request.CertId);
+            // Parse BOTH ids. This used to be `new Guid(request.CertId)` — an unguarded
+            // constructor, so {"certId":"x"} threw FormatException and surfaced as HTTP 500 —
+            // and then ignored request.UserId entirely, writing the ACL row for the CALLER while
+            // the response text and the audit payload both named the target user. So "grant Bob
+            // manage" silently granted the operator instead, and "revoke Bob" stripped the
+            // operator's own row while logging Bob's id: the audit trail asserted something that
+            // had not happened. The serial-based siblings above always parsed and used the
+            // target correctly; these four did not.
+            if (!Guid.TryParse(request.CertId, out var certId))
+                return BadRequest(new { error = "certId must be a GUID." });
+            if (!Guid.TryParse(request.UserId, out var targetUserId))
+                return BadRequest(new { error = "userId must be a GUID." });
 
 
-            var result = await _accessAssignment.DowngradeCertificateManageAccessAsync(_currentUser.User.Id, certId);
+            var result = await _accessAssignment.DowngradeCertificateManageAccessAsync(targetUserId, certId);
             if (result)
             {
                 await _audit.LogAsync(AuditActionType.CertPermissionDowngraded, _currentUser.User?.Id, _currentUser.User?.Username,
@@ -273,10 +306,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
-            Guid certId = new Guid(request.CertId);
+            // Parse BOTH ids. This used to be `new Guid(request.CertId)` — an unguarded
+            // constructor, so {"certId":"x"} threw FormatException and surfaced as HTTP 500 —
+            // and then ignored request.UserId entirely, writing the ACL row for the CALLER while
+            // the response text and the audit payload both named the target user. So "grant Bob
+            // manage" silently granted the operator instead, and "revoke Bob" stripped the
+            // operator's own row while logging Bob's id: the audit trail asserted something that
+            // had not happened. The serial-based siblings above always parsed and used the
+            // target correctly; these four did not.
+            if (!Guid.TryParse(request.CertId, out var certId))
+                return BadRequest(new { error = "certId must be a GUID." });
+            if (!Guid.TryParse(request.UserId, out var targetUserId))
+                return BadRequest(new { error = "userId must be a GUID." });
 
 
-            var result = await _accessAssignment.RevokeCertificateAccessAsync(_currentUser.User.Id, certId);
+            var result = await _accessAssignment.RevokeCertificateAccessAsync(targetUserId, certId);
             if (result)
             {
                 await _audit.LogAsync(AuditActionType.CertPermissionRevoked, _currentUser.User?.Id, _currentUser.User?.Username,

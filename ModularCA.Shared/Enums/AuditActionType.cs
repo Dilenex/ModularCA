@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Enums;
+﻿namespace ModularCA.Shared.Enums;
 
 public static class AuditActionType
 {
@@ -262,4 +262,8 @@ public static class AuditActionType
     public const string SchedulerScheduleDeleted = "SchedulerScheduleDeleted";
     public const string SchedulerScheduleManualRun = "SchedulerScheduleManualRun";
     public const string SchedulerConfigUpdated = "SchedulerConfigUpdated";
+
+    // Compliance
+    /// <summary>An operator cleared a compliance finding. Previously unrecorded entirely.</summary>
+    public const string ComplianceFindingResolved = "ComplianceFindingResolved";
 }

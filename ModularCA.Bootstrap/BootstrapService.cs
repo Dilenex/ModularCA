@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -216,8 +216,20 @@ public class BootstrapService
                 allowedRootCaStandardOids, allowedRootCaExtendedOids, false, true,
                 KeyAlgorithmsJson, KeySizesJson, SignatureAlgorithmsJson, "P5Y", "P25Y");
             var caCertProfile = BootstrapProfileSeeder.GetCertProfileFromDb(dbContext, "Main CA Certificate Profile");
+            // The signing profile must permit the CA's OWN infrastructure EKUs, not just the
+            // leaf ones. This used the three-entry leaf list, so the signing profile bound to
+            // the bootstrap-created root permitted serverAuth/clientAuth/emailProtection only —
+            // and "reissue infrastructure certificates" resolves the profile by
+            // sp.IssuerId == caEntity.CertificateId, hits exactly this profile, and
+            // EnsureSigningProfilePermitsInfrastructureEkus refuses for both OCSP signing and
+            // time stamping. The primary CA's OCSP responder and TSA could therefore never be
+            // rotated, including after a responder key compromise. It was invisible until the
+            // first reissue because bootstrap issues those two certificates through
+            // BootstrapCertCreator, which hardcodes the EKU and bypasses the profile.
+            // CaCreationService seeds all six for runtime-created CAs; this now matches.
+            // allowedCertExtendedOids remains the LEAF list, still used by the non-CA cert profile below.
             var allowedCertExtendedOids = new[] { "Server Authentication", "Client Authentication", "Email Protection" };
-            var CertExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedCertExtendedOids, dbContext);
+            var CertExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedRootCaExtendedOids, dbContext);
             var caCn = request.RootCa.CommonName ?? "ModularCA";
             var signingProfileName = $"{caCn} Signing Profile";
             BootstrapProfileSeeder.CreateSigningProfile(dbContext, signingProfileName, $"Default signing profile for {caCn}",

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -105,17 +105,53 @@ public class CmpService : ICmpService
     /// doesn't cross-contaminate concurrent requests. Carries the detected protection
     /// mode so responses can echo the client's selection (High #6).
     /// </summary>
-    private sealed class CmpRequestContext
+    internal sealed class CmpRequestContext
     {
         public string? SourceIp { get; init; }
         public string? CaLabel { get; init; }
         public CmpProtectionMode ProtectionMode { get; set; } = CmpProtectionMode.None;
 
-        /// <summary>For PBMAC responses: the derived MAC key from the original request.</summary>
-        public byte[]? PbmDerivedKey { get; set; }
-
         /// <summary>For PBMAC responses: reference value to echo in senderKID (bytes).</summary>
         public byte[]? PbmReferenceValue { get; set; }
+
+        /// <summary>
+        /// The raw shared secret that verified the request's PBMAC, retained so the response MAC
+        /// key can be derived correctly.
+        /// <para>
+        /// RFC 4210 §5.1.3.1 derives the MAC key as <c>OWF^iterations(secret || salt)</c>. The
+        /// response carries its own freshly generated salt, so the response key must be derived
+        /// from the SAME secret against the NEW salt. Deriving it from the request's derived key
+        /// instead — which is what the response builder used to do, for want of the secret at that
+        /// point — produces a key no conforming client can reproduce, because the client only ever
+        /// has the secret. Every PBMAC-protected response was therefore unverifiable.
+        /// </para>
+        /// <para>Zeroed by <see cref="ProcessRequestAsync"/> once the response has been built.</para>
+        /// </summary>
+        public byte[]? PbmSecret { get; set; }
+
+        /// <summary>
+        /// The one-way function, MAC algorithm and iteration count the client selected. Echoed on
+        /// the response instead of the hardcoded SHA-1 / HMAC-SHA1 pair, so a client that
+        /// negotiated SHA-256 is not handed a SHA-1 MAC it will not check for.
+        /// </summary>
+        public AlgorithmIdentifier? PbmOwf { get; set; }
+        public AlgorithmIdentifier? PbmMac { get; set; }
+        public int PbmIterationCount { get; set; } = 1024;
+
+        /// <summary>
+        /// The enrollment-token row whose shared secret authenticated a PBMAC request. Carries the
+        /// credential's <c>SubjectRestriction</c> / <c>SANRestriction</c>, which bound what this
+        /// credential may enroll and revoke.
+        /// </summary>
+        public EnrollmentTokenEntity? PbmToken { get; set; }
+
+        /// <summary>
+        /// Subject DN of the certificate that signed a signature-protected request, and its serial.
+        /// These are the requester's identity: revocation is authorized against them so a peer
+        /// cannot revoke certificates that are not its own.
+        /// </summary>
+        public string? SignerSubjectDn { get; set; }
+        public string? SignerSerialHex { get; set; }
 
         /// <summary>Owner of the matched CMP PBMAC credential, used in audit as callerPrincipal.</summary>
         public string? CallerPrincipal { get; set; }
@@ -133,7 +169,7 @@ public class CmpService : ICmpService
         public bool IsAuthorizedRa { get; set; } = false;
     }
 
-    private enum CmpProtectionMode
+    internal enum CmpProtectionMode
     {
         None = 0,
         PbMac = 1,
@@ -196,7 +232,7 @@ public class CmpService : ICmpService
             reqCtx.ProtectionMode = CmpProtectionMode.PbMac;
 
             // Lookup per-reference-value secret via enrollment tokens.
-            var pbmVerified = await TryVerifyPbmAsync(header, request, body, caLabel, reqCtx);
+            var pbmVerified = await TryVerifyPbmAsync(header, request, body, context.Ca?.Id, caLabel, reqCtx);
             if (!pbmVerified)
             {
                 return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
@@ -207,7 +243,7 @@ public class CmpService : ICmpService
         {
             // Signature-based protection (RFC 4210 §5.1.3.3).
             reqCtx.ProtectionMode = CmpProtectionMode.Signature;
-            var sigError = await VerifySignatureProtectionAsync(request, header, body, reqCtx);
+            var sigError = await VerifySignatureProtectionAsync(request, header, body, caCert, reqCtx);
             if (sigError != null)
             {
                 return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
@@ -283,6 +319,15 @@ public class CmpService : ICmpService
             return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailSystemFailure,
                 $"Certificate issuance failed; contact administrator (ref {correlationId})");
         }
+        finally
+        {
+            // The shared secret lives only as long as it takes to protect the response.
+            if (reqCtx.PbmSecret != null)
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(reqCtx.PbmSecret);
+                reqCtx.PbmSecret = null;
+            }
+        }
     }
 
     /// <summary>
@@ -291,7 +336,8 @@ public class CmpService : ICmpService
     /// and populates <paramref name="reqCtx"/> with the derived key so the response can
     /// be PBMAC-protected as well (High #6).
     /// </summary>
-    private async Task<bool> TryVerifyPbmAsync(PkiHeader header, PkiMessage request, PkiBody body, string? caLabel, CmpRequestContext reqCtx)
+    private async Task<bool> TryVerifyPbmAsync(PkiHeader header, PkiMessage request, PkiBody body,
+        Guid? caId, string? caLabel, CmpRequestContext reqCtx)
     {
         try
         {
@@ -319,6 +365,29 @@ public class CmpService : ICmpService
                     .FirstOrDefaultAsync(t =>
                         t.CmpReferenceValue == referenceValue &&
                         t.UsedForCmp && !t.IsRevoked);
+
+                // A CMP shared secret authenticates to the CA it was minted for and to no other.
+                //
+                // This lookup used to match on the reference value alone, and `caLabel` — the only
+                // CA context the method received — was never read. Every CMP-enabled CA in the
+                // deployment therefore accepted every CMP credential in the deployment: a secret
+                // issued for a lab CA authenticated ir/cr/kur/rr against the production CA simply
+                // by POSTing to the production CA's URL. Tenancy made no difference, because the
+                // token table was never consulted for one.
+                //
+                // A token with no CertificateAuthorityId is a system-wide enrollment token, not a
+                // CA credential; it is refused here rather than treated as a wildcard. The refusal
+                // is logged distinctly so an operator can tell "wrong CA" from "wrong secret",
+                // which the generic PBMAC failure response deliberately does not reveal.
+                if (tokenEntity != null && tokenEntity.CertificateAuthorityId != caId)
+                {
+                    _logger.LogWarning(
+                        "CMP PBMAC credential {TokenId} presented to CA '{CaLabel}' but is scoped to {ScopedCa} — rejected.",
+                        tokenEntity.Id, caLabel ?? "(default)",
+                        tokenEntity.CertificateAuthorityId?.ToString() ?? "(no CA)");
+                    tokenEntity = null;
+                }
+
                 if (tokenEntity != null && tokenEntity.ExpiresAt >= DateTime.UtcNow
                     && (tokenEntity.MaxUses <= 0 || tokenEntity.UsesRemaining > 0))
                 {
@@ -333,28 +402,15 @@ public class CmpService : ICmpService
 
             if (candidates.Count == 0) return false;
 
-            // BouncyCastle's ProtectedPkiMessage.Verify is the canonical
-            // PBMAC verification path — but only accepts a PKMacBuilder. We still need
-            // the derived key for building the response MAC, so we compute both.
+            // BouncyCastle's ProtectedPkiMessage.Verify is the canonical PBMAC verification path,
+            // but it only accepts a PKMacBuilder, so the MAC is computed here directly.
             var receivedMac = request.Protection.GetBytes();
             var protectedPartBytes = new DerSequence(header, body).GetDerEncoded();
 
             foreach (var (secret, principal, token) in candidates)
             {
-                var owfDigest = DigestUtilities.GetDigest(owf.Algorithm);
-                var baseKey = new byte[secret.Length + salt.Length];
-                Array.Copy(secret, 0, baseKey, 0, secret.Length);
-                Array.Copy(salt, 0, baseKey, secret.Length, salt.Length);
-
-                var dk = new byte[owfDigest.GetDigestSize()];
-                owfDigest.BlockUpdate(baseKey, 0, baseKey.Length);
-                owfDigest.DoFinal(dk, 0);
-                for (int i = 1; i < iterCount; i++)
-                {
-                    owfDigest.Reset();
-                    owfDigest.BlockUpdate(dk, 0, dk.Length);
-                    owfDigest.DoFinal(dk, 0);
-                }
+                // Same derivation the response builder uses — see DerivePbmKey.
+                var dk = DerivePbmKey(secret, salt, owf, iterCount);
 
                 var mac = MacUtilities.GetMac(macAlg.Algorithm);
                 mac.Init(new Org.BouncyCastle.Crypto.Parameters.KeyParameter(dk));
@@ -362,13 +418,19 @@ public class CmpService : ICmpService
                 var computedMac = new byte[mac.GetMacSize()];
                 mac.DoFinal(computedMac, 0);
 
-                System.Security.Cryptography.CryptographicOperations.ZeroMemory(baseKey);
-
                 if (Org.BouncyCastle.Utilities.Arrays.FixedTimeEquals(computedMac, receivedMac))
                 {
-                    reqCtx.PbmDerivedKey = dk;
+                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(dk);
                     reqCtx.PbmReferenceValue = header.SenderKID?.GetOctets();
                     reqCtx.CallerPrincipal = $"cmp-pbmac:{principal}";
+
+                    // Carry the secret and the client's negotiated parameters forward: the response
+                    // MAC key has to be derived from the secret against the response's own salt.
+                    reqCtx.PbmSecret = (byte[])secret.Clone();
+                    reqCtx.PbmOwf = owf;
+                    reqCtx.PbmMac = macAlg;
+                    reqCtx.PbmIterationCount = iterCount;
+                    reqCtx.PbmToken = token;
 
                     // Atomic consume — see EnrollmentTokenService.TryConsumeUseAsync. A losing
                     // race here means another request already spent the token's last use, so the
@@ -376,7 +438,8 @@ public class CmpService : ICmpService
                     if (token != null &&
                         !await EnrollmentTokenService.TryConsumeUseAsync(_db, token))
                     {
-                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(dk);
+                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(reqCtx.PbmSecret);
+                        reqCtx.PbmSecret = null;
                         return false;
                     }
                     return true;
@@ -405,7 +468,7 @@ public class CmpService : ICmpService
     /// Returns null on success or a public-safe error string on failure.
     /// </summary>
     private async Task<string?> VerifySignatureProtectionAsync(
-        PkiMessage request, PkiHeader header, PkiBody body, CmpRequestContext reqCtx)
+        PkiMessage request, PkiHeader header, PkiBody body, X509Certificate caCert, CmpRequestContext reqCtx)
     {
         var allowedSigAlgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -449,29 +512,29 @@ public class CmpService : ICmpService
         if (now < signingCert.NotBefore || now > signingCert.NotAfter)
             return "Signing certificate is not within its validity window.";
 
-        // Chain validation — signing cert must be issued by one of
-        // our CAs. Minimal path check: look up issuer by DN, verify signature.
-        var issuerDn = signingCert.IssuerDN.ToString();
-        var caCertEntities = await _db.Certificates
-            .Where(c => c.IsCA && c.SubjectDN == issuerDn && !c.Revoked)
-            .ToListAsync();
-        if (caCertEntities.Count == 0)
-            return "Signing certificate is not issued by any configured CA.";
+        // Chain validation — the signing certificate must have been issued by THE CA THIS
+        // REQUEST ADDRESSES, not merely by some CA in the deployment.
+        //
+        // This used to search every CA row whose subject matched the signer's issuer DN and accept
+        // a signature that verified against any of them. A certificate issued by a lab or tenant CA
+        // therefore authenticated CMP requests to the production CA: the caller picked the target
+        // by URL, and nothing tied the credential to it. Combined with revocation being authorized
+        // for anything the addressed CA had issued, that was a cross-CA revocation primitive.
+        //
+        // There is no RA concept here (CmpRequestContext.IsAuthorizedRa is hardwired false), so
+        // there is no legitimate case for a credential from another CA — a client that enrolled
+        // against this CA holds a certificate from this CA.
+        if (!DnEquals(signingCert.IssuerDN.ToString(), caCert.SubjectDN.ToString()))
+            return "Signing certificate was not issued by the CA this request addresses.";
 
-        bool chainValid = false;
-        foreach (var caEntity in caCertEntities)
+        try
         {
-            try
-            {
-                var issuingCa = CertificateUtil.ParseFromPem(caEntity.Pem);
-                signingCert.Verify(issuingCa.GetPublicKey());
-                chainValid = true;
-                break;
-            }
-            catch { /* try next candidate */ }
+            signingCert.Verify(caCert.GetPublicKey());
         }
-        if (!chainValid)
-            return "Signing certificate signature does not verify against the claimed issuer.";
+        catch
+        {
+            return "Signing certificate signature does not verify against this CA.";
+        }
 
         var signingCertSerial = CertificateUtil.FormatSerialNumber(signingCert.SerialNumber);
         var revokedCheck = await _db.Certificates
@@ -503,6 +566,8 @@ public class CmpService : ICmpService
         }
 
         reqCtx.CallerPrincipal = $"cmp-sig:{signingCertSerial}";
+        reqCtx.SignerSubjectDn = signingCert.SubjectDN.ToString();
+        reqCtx.SignerSerialHex = signingCertSerial;
 
         // Kur key-identity binding. Partial — subject-DN match only,
         // not full oldCertId binding per RFC 4210 §5.3.5.
@@ -561,6 +626,113 @@ public class CmpService : ICmpService
         !string.IsNullOrWhiteSpace(certIssuerDn)
         && !string.IsNullOrWhiteSpace(caSubjectDn)
         && DnEquals(certIssuerDn, caSubjectDn);
+
+    /// <summary>
+    /// Decides whether the authenticated CMP peer may revoke <paramref name="certEntity"/>.
+    /// Returns the denial reason for the log when it may not; the wire response stays generic.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Signature-protected requests.</b> The peer is the subject of its signing certificate, so
+    /// it may revoke that certificate itself and any other certificate carrying the same subject
+    /// DN — which is what makes "revoke my old certificate after rekey" work. It may not reach a
+    /// different subject.
+    /// </para>
+    /// <para>
+    /// <b>PBMAC-protected requests.</b> The peer is a shared secret, whose scope is exactly the
+    /// name restrictions recorded on its enrollment-token row. A credential with no restrictions
+    /// has no scope to speak of, so it is refused rather than treated as unlimited: a bare shared
+    /// secret must not be a CA-wide revocation key. Give the credential a
+    /// <c>SubjectRestriction</c> covering the names it is meant to manage.
+    /// </para>
+    /// <para>RFC 4210 §5.3.9 leaves this policy to the CA; leaving it unstated meant "anyone".</para>
+    /// </remarks>
+    private static (bool Allowed, string Reason) AuthorizeRevocation(
+        CertificateEntity certEntity, CmpRequestContext reqCtx)
+    {
+        if (reqCtx.ProtectionMode == CmpProtectionMode.Signature)
+        {
+            return SignerMayRevoke(
+                reqCtx.SignerSerialHex, reqCtx.SignerSubjectDn,
+                certEntity.SerialNumber, certEntity.SubjectDN);
+        }
+
+        if (reqCtx.ProtectionMode == CmpProtectionMode.PbMac)
+        {
+            var token = reqCtx.PbmToken;
+            if (token == null)
+                return (false, "no PBMAC credential recorded for this request");
+
+            List<string> targetSans;
+            try
+            {
+                targetSans = string.IsNullOrWhiteSpace(certEntity.SubjectAlternativeNamesJson)
+                    ? []
+                    : JsonSerializer.Deserialize<List<string>>(certEntity.SubjectAlternativeNamesJson) ?? [];
+            }
+            catch (JsonException)
+            {
+                // An unreadable SAN column cannot be shown to satisfy a restriction.
+                return (false, "target SAN list could not be parsed");
+            }
+
+            return CredentialMayRevoke(
+                token.SubjectRestriction, token.SANRestriction, certEntity.SubjectDN, targetSans);
+        }
+
+        return (false, "request carried no verified protection");
+    }
+
+    /// <summary>
+    /// Whether the holder of a signature-protection certificate may revoke a given target.
+    /// It may revoke that certificate itself, and any other certificate carrying the same subject
+    /// DN — which is what makes "revoke my previous certificate after rekey" work — and nothing
+    /// beyond that.
+    /// </summary>
+    internal static (bool Allowed, string Reason) SignerMayRevoke(
+        string? signerSerialHex, string? signerSubjectDn, string targetSerial, string? targetSubjectDn)
+    {
+        if (!string.IsNullOrWhiteSpace(signerSerialHex)
+            && string.Equals(
+                CertificateUtil.NormalizeSerialForLookup(signerSerialHex),
+                CertificateUtil.NormalizeSerialForLookup(targetSerial),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return (true, string.Empty);
+        }
+
+        if (!string.IsNullOrWhiteSpace(signerSubjectDn)
+            && !string.IsNullOrWhiteSpace(targetSubjectDn)
+            && DnEquals(signerSubjectDn!, targetSubjectDn!))
+        {
+            return (true, string.Empty);
+        }
+
+        return (false, "signing certificate is neither the target nor shares its subject DN");
+    }
+
+    /// <summary>
+    /// Whether a PBMAC shared-secret credential may revoke a given target. The credential's scope
+    /// is exactly the name restrictions recorded on its enrollment-token row; a credential with no
+    /// restrictions has no scope, and is refused rather than treated as unlimited.
+    /// </summary>
+    internal static (bool Allowed, string Reason) CredentialMayRevoke(
+        string? subjectRestriction, string? sanRestriction,
+        string? targetSubjectDn, IEnumerable<string> targetSans)
+    {
+        var hasScope = EnrollmentNameRestriction.ParsePatterns(subjectRestriction).Count > 0
+            || EnrollmentNameRestriction.ParsePatterns(sanRestriction).Count > 0;
+        if (!hasScope)
+            return (false, "PBMAC credential carries no subject or SAN restriction to scope it");
+
+        if (!EnrollmentNameRestriction.SubjectSatisfies(targetSubjectDn, subjectRestriction, out var subjectFailure))
+            return (false, $"target subject outside credential scope: {subjectFailure}");
+
+        if (!EnrollmentNameRestriction.SansSatisfy(targetSans, sanRestriction, out var sanFailure))
+            return (false, $"target SANs outside credential scope: {sanFailure}");
+
+        return (true, string.Empty);
+    }
 
     internal static bool DnEquals(string a, string b)
     {
@@ -756,7 +928,32 @@ public class CmpService : ICmpService
                 var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
                 foreach (var gn in generalNames.GetNames())
                 {
-                    sans.Add(gn.Name.ToString() ?? string.Empty);
+                    // Emit the TYPE:value form the rest of the pipeline speaks. These were stored
+                    // as bare values, which CertificateBuilderService rejects outright ("SAN entry
+                    // is missing a TYPE:value prefix") — so any CMP request carrying a SAN failed
+                    // at issuance — and which EnrollmentNameRestriction would have had to guess at.
+                    if (gn.TagNo == GeneralName.IPAddress && gn.Name is Asn1OctetString ipOctets)
+                    {
+                        sans.Add($"IP:{new System.Net.IPAddress(ipOctets.GetOctets())}");
+                        continue;
+                    }
+
+                    var prefix = gn.TagNo switch
+                    {
+                        GeneralName.DnsName => "DNS",
+                        GeneralName.Rfc822Name => "EMAIL",
+                        GeneralName.UniformResourceIdentifier => "URI",
+                        _ => null
+                    };
+                    if (prefix == null)
+                    {
+                        // An otherName / dirName / registeredID cannot be re-encoded by the builder,
+                        // so accepting it here would only produce a confusing failure later.
+                        throw new InvalidOperationException(
+                            $"Unsupported SAN type in CMP certTemplate (GeneralName tag {gn.TagNo}). " +
+                            "Supported types: DNS, IP, URI, EMAIL.");
+                    }
+                    sans.Add($"{prefix}:{gn.Name}");
                 }
             }
         }
@@ -790,6 +987,21 @@ public class CmpService : ICmpService
         // base64-encoded SubjectPublicKeyInfo DER so the issuance pipeline can
         // extract it without needing a real CSR signature.
         var sanJson = JsonSerializer.Serialize(sans);
+
+        // A PBMAC credential may only enroll the names it is scoped to.
+        //
+        // Enrollment tokens carry SubjectRestriction / SANRestriction, and every other consumer of
+        // them — the public enrollment controller and the SCEP challenge path — enforces both. CMP
+        // read the row only to verify the MAC and consume a use, so the restrictions were inert
+        // here: a shared secret issued to enroll one device could name any subject and any SAN the
+        // request profile happened to permit, up to and including the CA's own service names.
+        if (reqCtx.PbmToken is { } pbmToken)
+        {
+            if (!EnrollmentNameRestriction.SubjectSatisfies(subject, pbmToken.SubjectRestriction, out var subjFailure))
+                throw new InvalidOperationException($"Subject not permitted for this CMP credential: {subjFailure}");
+            if (!EnrollmentNameRestriction.SansSatisfy(sans, pbmToken.SANRestriction, out var sanFailure))
+                throw new InvalidOperationException($"SAN not permitted for this CMP credential: {sanFailure}");
+        }
 
         // Validate against request profile if one is configured for this protocol
         if (context.RequestProfileId != null)
@@ -965,6 +1177,29 @@ public class CmpService : ICmpService
                     continue;
                 }
 
+                // Ownership by CA is not authorization. Everything above proves only that THIS CA
+                // issued the target; it says nothing about whether THIS CALLER may revoke it.
+                //
+                // Without the check below, any peer able to authenticate a CMP message to a CA
+                // could revoke every certificate that CA had ever issued, one serial at a time —
+                // including the operator's mTLS admin credential and the Web TLS certificate
+                // serving the admin UI, since those are ordinary rows with the CA's issuer DN. A
+                // single device shared secret was a deployment-wide denial of service, and the
+                // audit row recorded it as a well-formed revocation.
+                var (revAllowed, revDenial) = AuthorizeRevocation(certEntity, reqCtx);
+                if (!revAllowed)
+                {
+                    _logger.LogWarning(
+                        "CMP revocation refused for serial {Serial} — {Reason} (caller {Caller}).",
+                        serialHex, revDenial, reqCtx.CallerPrincipal ?? "unknown");
+                    statusList.Add(new PkiStatusInfo(
+                        StatusRejection,
+                        new PkiFreeText(new DerUtf8String(
+                            "Not authorized to revoke this certificate.")),
+                        new PkiFailureInfo(FailNotAuthorized)));
+                    continue;
+                }
+
                 // Check if the certificate is already revoked
                 if (certEntity.Revoked)
                 {
@@ -1129,10 +1364,10 @@ public class CmpService : ICmpService
         // Mirror the inbound protection mode. PBMAC-in → PBMAC-out
         // with the same derived key so clients bootstrapping without the CA cert can
         // still validate. Signature-in / None-in → signature-out with the CA key.
-        if (reqCtx.ProtectionMode == CmpProtectionMode.PbMac && reqCtx.PbmDerivedKey != null)
+        if (reqCtx.ProtectionMode == CmpProtectionMode.PbMac && reqCtx.PbmSecret != null)
         {
             return BuildPbmProtectedMessage(sender, recipient, responseBody, transactionId,
-                senderNonce, responseNonce, reqCtx.PbmDerivedKey, reqCtx.PbmReferenceValue);
+                senderNonce, responseNonce, reqCtx);
         }
 
         // Use BouncyCastle's ProtectedPkiMessageBuilder which correctly computes
@@ -1159,70 +1394,105 @@ public class CmpService : ICmpService
     }
 
     /// <summary>
-    /// Build a PBMAC-protected response reusing the caller's derived key.
-    /// Emits a fresh salt for the response and tags the header with the SAME senderKID so
-    /// the client knows which shared-secret credential validates it.
+    /// Builds a PBMAC-protected response, deriving the response MAC key from the shared secret
+    /// that authenticated the request.
+    /// <para>
+    /// The response carries a freshly generated salt, and RFC 4210 §5.1.3.1 defines the MAC key as
+    /// <c>OWF^iterations(secret || salt)</c> — so the client will derive the response key from the
+    /// secret it holds and the salt it reads out of this header. This method must do the same.
+    /// </para>
+    /// <para>
+    /// It previously derived the response key from the <em>request's</em> derived key instead of
+    /// from the secret, because the secret was not carried past verification. Its own comment
+    /// claimed "clients that implement PBM verify correctly will accept this"; they cannot. The
+    /// client computes <c>OWF^n(secret || salt')</c>, the responder computed
+    /// <c>OWF^1024(OWF^n(secret || salt) || salt')</c>, and the two never agree — so every
+    /// PBMAC-protected response failed verification at every conforming client, which is the
+    /// bootstrap case PBMAC exists to serve. It also hardcoded SHA-1 and HMAC-SHA1 regardless of
+    /// what the client selected; the client's own algorithms are echoed now.
+    /// </para>
     /// </summary>
-    private static byte[] BuildPbmProtectedMessage(
+    internal static byte[] BuildPbmProtectedMessage(
         GeneralName sender, GeneralName recipient, PkiBody body,
         Asn1OctetString? transactionId, Asn1OctetString? requestNonce,
-        byte[] responseNonce, byte[] derivedKey, byte[]? referenceValue)
+        byte[] responseNonce, CmpRequestContext reqCtx)
     {
+        var secret = reqCtx.PbmSecret
+            ?? throw new InvalidOperationException("PBMAC response requested without a verified shared secret.");
+        var owfAlg = reqCtx.PbmOwf
+            ?? new AlgorithmIdentifier(Org.BouncyCastle.Asn1.Oiw.OiwObjectIdentifiers.IdSha1, DerNull.Instance);
+        var macAlg = reqCtx.PbmMac
+            ?? new AlgorithmIdentifier(new DerObjectIdentifier("1.3.6.1.5.5.8.1.2"), DerNull.Instance);
+        var iterCount = reqCtx.PbmIterationCount > 0 ? reqCtx.PbmIterationCount : 1024;
+
         var headerBuilder = new PkiHeaderBuilder(PkiHeader.CMP_2000, sender, recipient);
         headerBuilder.SetMessageTime(new DerGeneralizedTime(DateTime.UtcNow));
         if (transactionId != null) headerBuilder.SetTransactionID(transactionId);
         if (requestNonce != null) headerBuilder.SetRecipNonce(requestNonce);
         headerBuilder.SetSenderNonce(new DerOctetString(responseNonce));
-        if (referenceValue != null)
-            headerBuilder.SetSenderKID(new DerOctetString(referenceValue));
+        // Same senderKID as the request, so the client knows which credential validates this.
+        if (reqCtx.PbmReferenceValue != null)
+            headerBuilder.SetSenderKID(new DerOctetString(reqCtx.PbmReferenceValue));
 
-        // Use the same HMAC-SHA1 / PBM parameters the client likely used. Regenerate the
-        // salt so response protection is independent of the request's salt.
+        // Fresh salt: response protection stays independent of the request's.
         var salt = new byte[16];
         new SecureRandom().NextBytes(salt);
-        var owfAlg = new AlgorithmIdentifier(Org.BouncyCastle.Asn1.Oiw.OiwObjectIdentifiers.IdSha1, DerNull.Instance);
-        var macAlg = new AlgorithmIdentifier(
-            new DerObjectIdentifier("1.3.6.1.5.5.8.1.2"),  // hmacWithSHA1
-            DerNull.Instance);
-        var pbm = new PbmParameter(salt, owfAlg, 1024, macAlg);
+        var pbm = new PbmParameter(salt, owfAlg, iterCount, macAlg);
         var protectionAlg = new AlgorithmIdentifier(
             new DerObjectIdentifier("1.2.840.113533.7.66.13"), pbm);
         headerBuilder.SetProtectionAlg(protectionAlg);
 
         var header = headerBuilder.Build();
 
-        // Compute derived key for the response salt
-        // We cannot reuse the request's derivedKey directly because PBM re-hashes with the salt.
-        // Build the response key from the same "input key material" (the original raw secret).
-        // We don't have raw secret here — so to keep things simple we compute a fresh salt-chain
-        // using the original derivedKey as the shared secret. Clients that implement PBM verify
-        // correctly will accept this because the key derivation is just salt+secret → iterated hash.
-        var owfDigest = DigestUtilities.GetDigest(owfAlg.Algorithm);
-        var baseKey = new byte[derivedKey.Length + salt.Length];
-        Array.Copy(derivedKey, 0, baseKey, 0, derivedKey.Length);
-        Array.Copy(salt, 0, baseKey, derivedKey.Length, salt.Length);
-        var dk = new byte[owfDigest.GetDigestSize()];
-        owfDigest.BlockUpdate(baseKey, 0, baseKey.Length);
-        owfDigest.DoFinal(dk, 0);
-        for (int i = 1; i < 1024; i++)
+        var dk = DerivePbmKey(secret, salt, owfAlg, iterCount);
+        try
         {
-            owfDigest.Reset();
-            owfDigest.BlockUpdate(dk, 0, dk.Length);
-            owfDigest.DoFinal(dk, 0);
+            var protectedPartBytes = new DerSequence(header, body).GetDerEncoded();
+            var mac = MacUtilities.GetMac(macAlg.Algorithm);
+            mac.Init(new Org.BouncyCastle.Crypto.Parameters.KeyParameter(dk));
+            mac.BlockUpdate(protectedPartBytes, 0, protectedPartBytes.Length);
+            var macBytes = new byte[mac.GetMacSize()];
+            mac.DoFinal(macBytes, 0);
+
+            var pkiMessage = new PkiMessage(header, body, new DerBitString(macBytes));
+            return pkiMessage.GetDerEncoded();
         }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(dk);
+        }
+    }
 
-        var protectedPartBytes = new DerSequence(header, body).GetDerEncoded();
-        var mac = MacUtilities.GetMac(macAlg.Algorithm);
-        mac.Init(new Org.BouncyCastle.Crypto.Parameters.KeyParameter(dk));
-        mac.BlockUpdate(protectedPartBytes, 0, protectedPartBytes.Length);
-        var macBytes = new byte[mac.GetMacSize()];
-        mac.DoFinal(macBytes, 0);
+    /// <summary>
+    /// RFC 4210 §5.1.3.1 password-based MAC key derivation:
+    /// <c>K = OWF^iterations(secret || salt)</c>, where each iteration after the first hashes the
+    /// previous digest. Shared by request verification and response generation so the two cannot
+    /// drift apart — they did, and PBMAC responses were unverifiable as a result.
+    /// </summary>
+    internal static byte[] DerivePbmKey(byte[] secret, byte[] salt, AlgorithmIdentifier owf, int iterations)
+    {
+        var digest = DigestUtilities.GetDigest(owf.Algorithm);
+        var baseKey = new byte[secret.Length + salt.Length];
+        try
+        {
+            Array.Copy(secret, 0, baseKey, 0, secret.Length);
+            Array.Copy(salt, 0, baseKey, secret.Length, salt.Length);
 
-        System.Security.Cryptography.CryptographicOperations.ZeroMemory(baseKey);
-        System.Security.Cryptography.CryptographicOperations.ZeroMemory(dk);
-
-        var pkiMessage = new PkiMessage(header, body, new DerBitString(macBytes));
-        return pkiMessage.GetDerEncoded();
+            var dk = new byte[digest.GetDigestSize()];
+            digest.BlockUpdate(baseKey, 0, baseKey.Length);
+            digest.DoFinal(dk, 0);
+            for (int i = 1; i < iterations; i++)
+            {
+                digest.Reset();
+                digest.BlockUpdate(dk, 0, dk.Length);
+                digest.DoFinal(dk, 0);
+            }
+            return dk;
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(baseKey);
+        }
     }
 
     private byte[] BuildErrorResponse(

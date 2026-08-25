@@ -137,6 +137,7 @@ public class EstService : IEstService
         // CN=root-admin and receive it. The request profile can still override patterns
         // downstream, but the caller-identity binding is enforced here so privilege
         // escalation via EST is closed by default.
+        string? basicBoundUsername = null;
         if (clientCert != null)
         {
             var csrSanValues = parsedCsr.SubjectAlternativeNames
@@ -185,6 +186,8 @@ public class EstService : IEstService
         else if (isAuthenticated && !string.IsNullOrEmpty(callerUsername))
         {
             // HTTP Basic / bearer path: CSR CN must match the authenticated username.
+            // The SANs are bound further down, once the request profile is known.
+            basicBoundUsername = callerUsername;
             string? csrCn;
             try
             {
@@ -250,6 +253,12 @@ public class EstService : IEstService
             var requestProfile = await _profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
             if (requestProfile.RequireApproval)
                 requireApproval = true;
+        }
+
+        if (basicBoundUsername != null)
+        {
+            await EnforceBasicAuthSanBindingAsync(
+                parsedCsr, basicBoundUsername, context.RequestProfileId, caLabel, sourceIp);
         }
 
         var csrEntity = new CertRequestEntity
@@ -463,6 +472,94 @@ public class EstService : IEstService
                 "CSR subject must match the original certificate subject for re-enrollment.", caLabel, sourceIp, clientCert);
 
         return await SimpleEnrollAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername);
+    }
+
+    /// <summary>
+    /// Bounds the SANs a username-authenticated EST caller may ask for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mTLS branch of <see cref="SimpleEnrollAsync"/> requires every CSR SAN to be a name the
+    /// client certificate already carries. The HTTP-auth branch checked only the CN, so the two
+    /// paths to the same endpoint were not equally bound: an account with nothing but enrollment
+    /// rights could submit <c>CN=&lt;its own username&gt;</c> — passing the CN check exactly — with
+    /// <c>DNS:vpn.example.com</c> in the SAN extension and be issued a server certificate for a
+    /// host it has no relationship to. The CN is not where a TLS certificate's identity lives.
+    /// </para>
+    /// <para>A SAN is accepted when it is:</para>
+    /// <list type="bullet">
+    /// <item>the caller's own username, or the CN that was already pinned to it — so the ordinary
+    /// <c>CN=printer1, DNS:printer1</c> shape keeps working; or</item>
+    /// <item>of a type whose values the protocol's request profile pins with an explicit pattern —
+    /// the operator has then declared the namespace, and
+    /// <c>RequestProfileValidationService.ValidateAsync</c> has already held this value to it.</item>
+    /// </list>
+    /// <para>
+    /// Anything else is refused. That is deliberately stricter than "a profile exists": a profile
+    /// that allows the DNS type without pinning its values permits every hostname there is, which
+    /// is the state a default install is in.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// Whether a SAN value is one the authenticated caller has already been pinned to — its own
+    /// username, or the CSR CN that had to equal that username to get this far.
+    /// </summary>
+    /// <remarks>
+    /// Keeping the ordinary <c>CN=printer1</c> plus <c>DNS:printer1</c> shape working is the whole
+    /// reason this is not simply "the SAN must equal the username": a CSR that repeats its own
+    /// subject in the SAN extension is asserting nothing new.
+    /// </remarks>
+    internal static bool SanIsBoundToCaller(string sanValue, string callerUsername, string? csrCn)
+    {
+        if (string.IsNullOrWhiteSpace(sanValue)) return false;
+        if (string.Equals(sanValue, callerUsername, StringComparison.OrdinalIgnoreCase)) return true;
+        return !string.IsNullOrEmpty(csrCn)
+            && string.Equals(sanValue, csrCn, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task EnforceBasicAuthSanBindingAsync(
+        CertificateUtil.ParsedCsrInfo parsedCsr, string callerUsername, Guid? requestProfileId,
+        string? caLabel, string? sourceIp)
+    {
+        if (parsedCsr.SubjectAlternativeNames.Count == 0)
+            return;
+
+        string? csrCn;
+        try
+        {
+            csrCn = ExtractCommonName(parsedCsr.SubjectName);
+        }
+        catch (InvalidOperationException)
+        {
+            csrCn = null;
+        }
+
+        foreach (var entry in parsedCsr.SubjectAlternativeNames)
+        {
+            if (string.IsNullOrWhiteSpace(entry)) continue;
+
+            var separator = entry.IndexOf(':');
+            var sanType = separator > 0 ? entry[..separator].Trim() : "DNS";
+            var sanValue = separator > 0 ? entry[(separator + 1)..].Trim() : entry.Trim();
+
+            if (SanIsBoundToCaller(sanValue, callerUsername, csrCn))
+                continue;
+
+            if (requestProfileId != null &&
+                await _requestProfileValidation.ConstrainsSanValuesAsync(requestProfileId.Value, sanType))
+            {
+                continue;
+            }
+
+            await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
+                success: false,
+                errorMessage: $"SAN '{entry}' is not bound to the authenticated caller",
+                callerPrincipal: $"basic:{callerUsername}");
+            throw new InvalidOperationException(
+                $"SAN '{entry}' is not bound to the authenticated caller and no request profile " +
+                $"constrains SAN values of type '{sanType}'.");
+        }
     }
 
     /// <summary>
