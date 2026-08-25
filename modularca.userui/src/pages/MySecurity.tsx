@@ -26,6 +26,8 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
     const [provisioningUri, setProvisioningUri] = useState<string | null>(null);
     const [totpCode, setTotpCode] = useState('');
     const [totpLoading, setTotpLoading] = useState(false);
+    /** One-time TOTP recovery codes; shown once, then never again by the server. */
+    const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
     const [totpDeviceName, setTotpDeviceName] = useState('');
 
     // WebAuthn setup state
@@ -118,13 +120,20 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
         setTotpLoading(true);
         setError(null);
         try {
-            await apiPostWithMfa(
+            // Capture the one-time recovery codes: the server hashes them and never reveals
+            // them again, so discarding the response here left the user with no way back in
+            // after losing their authenticator.
+            const result: any = await apiPostWithMfa(
                 '/auth/totp/verify-setup',
                 { code: totpCode },
                 requireStepUp,
                 StepUpOps.TotpVerifySetup
             );
-            showMsg('Authenticator app enrolled successfully');
+            const codes: string[] = Array.isArray(result?.recoveryCodes) ? result.recoveryCodes : [];
+            setRecoveryCodes(codes);
+            showMsg(codes.length > 0
+                ? 'Authenticator app enrolled. Save your recovery codes below — they will not be shown again.'
+                : 'Authenticator app enrolled successfully');
             setTotpSetupActive(false);
             setTotpSecret(null);
             setProvisioningUri(null);
@@ -275,6 +284,27 @@ const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
 
             {/* ── TOTP ── */}
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5 space-y-4">
+                {recoveryCodes.length > 0 && (
+                    <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-4 space-y-3">
+                        <p className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+                            Save your recovery codes now — they will not be shown again.
+                        </p>
+                        <p className="text-xs text-amber-800 dark:text-amber-400">
+                            Each code works once, and they are the only way back into your account if you lose
+                            your authenticator.
+                        </p>
+                        <ul className="grid grid-cols-2 gap-1 font-mono text-sm text-gray-900 dark:text-gray-100">
+                            {recoveryCodes.map((code) => (<li key={code}>{code}</li>))}
+                        </ul>
+                        <button
+                            type="button"
+                            onClick={() => setRecoveryCodes([])}
+                            className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                        >
+                            I have saved them — dismiss
+                        </button>
+                    </div>
+                )}
                 <div className="flex items-center justify-between">
                     <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Authenticator App (TOTP)</h2>
                     {mfa?.totp.enrolled ? (

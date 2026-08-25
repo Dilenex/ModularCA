@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
@@ -162,71 +162,46 @@ namespace ModularCA.Core.Services.SchedulerJobs
                 .AsNoTracking()
                 .FirstOrDefaultAsync(j => j.TaskId == task.TaskId, cancellationToken);
 
-            if (await CheckNewCrlEntries(caCertificate, cancellationToken))
+            // Regenerate EVERY tick, whether or not anything new was revoked.
+            //
+            // A CRL is a time-bounded assertion, not a change log: its nextUpdate is baked into
+            // the signed DER at generation time. The old code only regenerated when
+            // CheckNewCrlEntries found something new, and otherwise advanced the NextUpdate
+            // COLUMNS while leaving RawData untouched — so once a quiet period passed, the CA
+            // served a CRL that had already expired, and PublicCrlController derived its
+            // Cache-Control max-age from the advanced column, propagating the false freshness to
+            // caches. It stayed that way until someone happened to revoke something.
+            //
+            // CheckNewCrlEntries is kept for the audit/log distinction only.
+            var hadNewEntries = await CheckNewCrlEntries(caCertificate, cancellationToken);
+
+            if (crlJob != null && crlJob.IsDelta)
             {
-                if (crlJob != null && crlJob.IsDelta)
-                {
-                    await _crlService.GenerateDeltaCrlAsync(caCertificate.CertificateId, cancellationToken);
-                    _logger.LogInformation("Delta CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
-                }
-                else
-                {
-                    await _crlService.GenerateCrlAsync(caCertificate.CertificateId, cancellationToken);
-                    _logger.LogInformation("CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
-
-                    if (crlJob != null && !string.IsNullOrWhiteSpace(crlJob.DeltaInterval))
-                    {
-                        try
-                        {
-                            await _crlService.GenerateDeltaCrlAsync(caCertificate.CertificateId, cancellationToken);
-                            _logger.LogInformation("Opportunistic delta CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
-                        }
-                        catch (Exception dex)
-                        {
-                            _logger.LogWarning(dex, "Opportunistic delta CRL regen failed for CA {CaCertificateId}; full CRL was still published.", task.CaCertificateId);
-                        }
-                    }
-                }
-
-                await _audit.LogAsync(AuditActionType.CrlExported, null, "Scheduler",
-                    "CRL", task.CaCertificateId.ToString(),
-                    new { CaCertificateId = task.CaCertificateId, IsDelta = crlJob?.IsDelta ?? false });
+                await _crlService.GenerateDeltaCrlAsync(caCertificate.CertificateId, cancellationToken);
+                _logger.LogInformation("Delta CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
             }
             else
             {
-                _logger.LogDebug("No new CRL entries found for CA certificate {CaCertificateId}. Advancing schedule.", task.CaCertificateId);
+                await _crlService.GenerateCrlAsync(caCertificate.CertificateId, cancellationToken);
+                _logger.LogInformation("CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
 
-                // Wrap the schedule advance in a transaction so the read-modify-write on
-                // CrlConfigurations.NextUpdateUtc + Crls.NextUpdate is atomic. Cross-instance
-                // races are already prevented by the lease, but this keeps the in-process
-                // path safe from partial failures mid-save. Use the base class's TimeProvider
-                // so test fakes apply uniformly.
-                var now = TimeProvider.GetUtcNow().UtcDateTime;
-                var parsedUpdate = CrontabSchedule.Parse(cronExpression);
-                var nextUpdate = parsedUpdate.GetNextOccurrence(now);
-
-                await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
-
-                var updateCrlJobSchedule = await _db.CrlConfigurations
-                    .Where(j => j.TaskId == task.TaskId)
-                    .FirstOrDefaultAsync(cancellationToken);
-
-                if (updateCrlJobSchedule == null)
-                    throw new InvalidOperationException("Could not find associated CRL scheduled job for next run time update");
-
-                updateCrlJobSchedule.NextUpdateUtc = nextUpdate;
-
-                var updateCrl = await _db.Crls
-                    .Where(c => c.TaskId == task.TaskId)
-                    .FirstOrDefaultAsync(cancellationToken);
-                if (updateCrl != null)
+                if (crlJob != null && !string.IsNullOrWhiteSpace(crlJob.DeltaInterval))
                 {
-                    updateCrl.NextUpdate = nextUpdate;
+                    try
+                    {
+                        await _crlService.GenerateDeltaCrlAsync(caCertificate.CertificateId, cancellationToken);
+                        _logger.LogInformation("Opportunistic delta CRL generated for CA certificate {CaCertificateId}.", task.CaCertificateId);
+                    }
+                    catch (Exception dex)
+                    {
+                        _logger.LogWarning(dex, "Opportunistic delta CRL regen failed for CA {CaCertificateId}; full CRL was still published.", task.CaCertificateId);
+                    }
                 }
-
-                await _db.SaveChangesAsync(cancellationToken);
-                await tx.CommitAsync(cancellationToken);
             }
+
+            await _audit.LogAsync(AuditActionType.CrlExported, null, "Scheduler",
+                "CRL", task.CaCertificateId.ToString(),
+                new { CaCertificateId = task.CaCertificateId, IsDelta = crlJob?.IsDelta ?? false, HadNewEntries = hadNewEntries });
         }
 
         /// <summary>

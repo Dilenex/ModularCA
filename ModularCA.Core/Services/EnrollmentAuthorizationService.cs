@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -101,8 +101,19 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         if (string.IsNullOrWhiteSpace(challengePassword))
             return (false, "SCEP challenge password required but not found in CSR");
 
-        var subject = TryExtractSubject(csrPem);
-        return await _tokenService.ValidateAndConsumeAsync(challengePassword, subject, "SCEP");
+        // Pass the CSR's SANs, not just its subject.
+        //
+        // ValidateAndConsumeAsync takes `sans` as an OPTIONAL parameter and skips the
+        // SANRestriction check entirely when it is null (EnrollmentTokenService: `if (sans !=
+        // null && !SansSatisfy(...))`). This call omitted it, and it is the only caller that
+        // reaches that check — the public enrollment controller runs SansSatisfy itself. So the
+        // restriction was dead code on the SCEP path: a client holding a challenge password
+        // scoped to example.com could put DNS:evil.attacker.net in the CSR's SAN extension and
+        // be issued it, because only the CN was ever compared. The comment on the check itself
+        // says SCEP is "where it is the ONLY name check", which is exactly what made the gap
+        // invisible.
+        var (subject, sans) = TryExtractSubjectAndSans(csrPem);
+        return await _tokenService.ValidateAndConsumeAsync(challengePassword, subject, "SCEP", sans);
     }
 
     /// <summary>
@@ -131,13 +142,22 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         return (true, null);
     }
 
-    private static string? TryExtractSubject(string csrPem)
+    /// <summary>
+    /// Extracts the subject DN and SAN list from a PEM CSR for enrollment-token name checks.
+    /// </summary>
+    /// <remarks>
+    /// Returns <c>(null, null)</c> if the CSR cannot be parsed. A null SAN list means "could not
+    /// determine", and <c>ValidateAndConsumeAsync</c> treats that as "no SAN check" — which is
+    /// safe here only because an unparseable CSR fails later in issuance anyway. An empty list
+    /// is different and is checked normally.
+    /// </remarks>
+    private static (string? Subject, IEnumerable<string>? Sans) TryExtractSubjectAndSans(string csrPem)
     {
         try
         {
             var parsed = CertificateUtil.ParseCsr(csrPem);
-            return parsed.SubjectName;
+            return (parsed.SubjectName, parsed.SubjectAlternativeNames);
         }
-        catch { return null; }
+        catch { return (null, null); }
     }
 }

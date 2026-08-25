@@ -499,6 +499,30 @@ public class AdminCertificateController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ExportCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+        // Resolve the target BEFORE exporting anything. This endpoint had neither of the two
+        // guards every sibling on this controller applies, and step-up MFA is not a substitute:
+        // it re-authenticates the caller, it does not authorize the object — the caller names
+        // its own targetId when minting the token.
+        //
+        // Without these checks, any holder of cert.revoke on the root CA (the CaOperator policy
+        // this endpoint already requires) could POST the ROOT CA's own serial with
+        // format=pem-key and receive the root private key in PEM. Bootstrap writes the root and
+        // System Signing CA rows with a non-null SigningProfileId, so the CA-scoped policy
+        // handler resolves a CA for those serials and the policy passes. The same call against
+        // the System Signing CA returns the key that wraps every stored end-entity private key.
+        var target = await _certStore.GetCertificateInfoAsync(serial);
+        if (target == null)
+            return NotFound(new { error = "Certificate not found" });
+
+        // CA private keys are never exportable over the API. They live in the keystore, and the
+        // break-glass path for them is the offline Unlocker, deliberately.
+        if (target.IsCA || (target.SubjectDN?.Contains("System Signing CA", StringComparison.OrdinalIgnoreCase) ?? false))
+            return NotFound(new { error = "Certificate not found" });
+
+        // Per-object ownership, matching GetCertificate/Renew/Revoke on this controller.
+        if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, target.CertificateId))
+            return NotFound(new { error = "Certificate not found" });
+
         if (string.Equals(request.Format, "pem-key", StringComparison.OrdinalIgnoreCase))
         {
             var pem = await exportService.ExportPemWithKeyAsync(serial);

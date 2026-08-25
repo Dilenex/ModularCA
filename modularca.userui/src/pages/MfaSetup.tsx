@@ -20,6 +20,8 @@ const MfaSetup: React.FC = () => {
     const [totpLoading, setTotpLoading] = useState(false);
     const [totpError, setTotpError] = useState<string | null>(null);
     const [totpSuccess, setTotpSuccess] = useState(false);
+    /** One-time recovery codes returned by verify-setup. The server will never show them again. */
+    const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
     // WebAuthn state
     const [webauthnLoading, setWebauthnLoading] = useState(false);
@@ -83,13 +85,22 @@ const MfaSetup: React.FC = () => {
         setTotpLoading(true);
         setTotpError(null);
         try {
-            await apiPost('/auth/totp/verify-setup', { code: totpCode });
+            // verify-setup returns one-time recovery codes that the server hashes and never
+            // reveals again. This call used to discard the whole response and redirect after
+            // 1.5s, so the codes were generated, stored, and lost -- leaving a user who lost
+            // their authenticator with no way back in short of an admin MFA reset.
+            const result: any = await apiPost('/auth/totp/verify-setup', { code: totpCode });
+            const codes: string[] = Array.isArray(result?.recoveryCodes) ? result.recoveryCodes : [];
+            setRecoveryCodes(codes);
             setTotpSuccess(true);
             localStorage.removeItem('authToken');
             localStorage.removeItem('refreshToken');
             localStorage.removeItem('expiresAt');
             localStorage.removeItem('mfaSetupRequired');
-            setTimeout(() => { window.location.href = '/user/login'; }, 1500);
+            // Only auto-redirect when there is nothing the user must copy down first.
+            if (codes.length === 0) {
+                setTimeout(() => { window.location.href = '/user/login'; }, 1500);
+            }
         } catch (err: any) {
             setTotpError(err.message || 'Invalid verification code');
         } finally {
@@ -227,8 +238,31 @@ const MfaSetup: React.FC = () => {
                     <h3 className="text-lg font-medium text-gray-900 dark:text-white">Authenticator App (TOTP)</h3>
 
                     {totpSuccess ? (
-                        <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
-                            Authenticator app configured successfully. Redirecting to login...
+                        <div className="space-y-4">
+                            <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
+                                Authenticator app configured successfully.
+                            </div>
+                            {recoveryCodes.length > 0 && (
+                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-4 space-y-3">
+                                    <p className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+                                        Save your recovery codes now — they will not be shown again.
+                                    </p>
+                                    <p className="text-xs text-amber-800 dark:text-amber-400">
+                                        Each code works once. They are the only way back into your account if you
+                                        lose your authenticator.
+                                    </p>
+                                    <ul className="grid grid-cols-2 gap-1 font-mono text-sm text-gray-900 dark:text-gray-100">
+                                        {recoveryCodes.map((code) => (<li key={code}>{code}</li>))}
+                                    </ul>
+                                    <button
+                                        type="button"
+                                        onClick={() => { window.location.href = '/user/login'; }}
+                                        className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors"
+                                    >
+                                        I have saved my recovery codes — continue to login
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     ) : !totpSecret ? (
                         <div className="space-y-4">

@@ -211,7 +211,13 @@ const WizardContent: React.FC = () => {
             let serverSans: string[] = [];
             let serverCommonName = '';
             try {
-                const res = await fetch('/api/v1/setup/defaults', { signal: AbortSignal.timeout(5000) });
+                // GetDefaults runs RejectNonLocalRequest, which validates X-Setup-Token even for
+                // loopback callers. Without the header this 403s every time and the merge below
+                // silently degrades to the local derivation -- i.e. the whole call is dead.
+                const res = await fetch('/api/v1/setup/defaults', {
+                    headers: setupToken ? { 'X-Setup-Token': setupToken } : {},
+                    signal: AbortSignal.timeout(5000),
+                });
                 if (res.ok) {
                     const body = await res.json();
                     serverSans = body?.defaultWebTlsCertificate?.sans ?? [];
@@ -244,7 +250,7 @@ const WizardContent: React.FC = () => {
         })();
 
         return () => { cancelled = true; };
-    }, [step]);
+    }, [step, setupToken]);
 
     const canProceed = (): boolean => {
         switch (step) {

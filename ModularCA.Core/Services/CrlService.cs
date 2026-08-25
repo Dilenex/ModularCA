@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services.SchedulerJobs;
 using ModularCA.Database;
@@ -47,6 +47,13 @@ public class CrlService : ICrlService
     private readonly IAuditService _audit;
 
     /// <summary>
+    /// Resolves the CA's published CDP URLs — the same ones <c>CertificateBuilderService</c>
+    /// stamps into issued certificates — so the CRL's IssuingDistributionPoint can name the
+    /// identical distribution point. See <see cref="AddIssuingDistributionPoint"/>.
+    /// </summary>
+    private readonly ICaServiceUrlService _caServiceUrls;
+
+    /// <summary>
     /// Constructs the CRL service. The unused <c>IFeatureFlagService</c> dependency
     /// that was wired in but never referenced has been removed.
     /// Added <see cref="IAuditService"/> so each
@@ -54,12 +61,14 @@ public class CrlService : ICrlService
     /// <see cref="AuditActionType.CrlGenerated"/> record (distinct from the
     /// scheduler's <c>CrlExported</c> dispatch event).
     /// </summary>
-    public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit)
+    public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
+        ICaServiceUrlService caServiceUrls)
     {
         _dbContext = dbContext;
         _keystore = keystore;
         _logger = logger;
         _audit = audit;
+        _caServiceUrls = caServiceUrls;
     }
 
     /// <summary>
@@ -132,8 +141,16 @@ public class CrlService : ICrlService
 
             // Persistent per-CA counter. Start from max(existing CRL numbers,
             // LastCrlNumber) so legacy installs where the counter is still 0 don't regress.
+            //
+            // Scope this by ISSUER, not by TaskId. The unique index is (IssuerName, CrlNumber)
+            // and the delta path already allocates across the issuer's whole history so that
+            // full and delta share one sequence. Scoping the full path per-config meant that as
+            // soon as a separate delta configuration existed, the delta would take number N and
+            // the next full CRL — seeing only its own TaskId's rows — would recompute N and hit
+            // a duplicate-key violation. That failure is permanent: every subsequent run
+            // recomputes the same number, so the CA silently stops publishing CRLs for good.
             var existingMax = await _dbContext.Crls
-                .Where(c => c.TaskId == lockedCrlJob.TaskId)
+                .Where(c => c.IssuerName == ca.SubjectDN)
                 .Select(c => (long?)c.CrlNumber)
                 .MaxAsync(cancellationToken) ?? 0L;
             newCrlNumber = Math.Max(lockedCrlJob.LastCrlNumber, existingMax) + 1;
@@ -175,7 +192,8 @@ public class CrlService : ICrlService
             crlGen.AddExtension(X509Extensions.AuthorityKeyIdentifier, false, aki);
 
             // IssuingDistributionPoint extension.
-            AddIssuingDistributionPoint(crlGen, ca, lockedCrlJob, isDelta: false);
+            var fullCdp = (await _caServiceUrls.ResolveForCaAsync(ca.CertificateId)).CdpUrls;
+            AddIssuingDistributionPoint(crlGen, ca, lockedCrlJob, isDelta: false, fullCdp);
 
             // Sign with the CA's own public-key algorithm, not the SigAlgName
             // field that reflects how its parent signed this cert.
@@ -431,7 +449,8 @@ public class CrlService : ICrlService
             var aki = X509ExtensionUtilities.CreateAuthorityKeyIdentifier(caPubKeyInfo2);
             crlGen.AddExtension(X509Extensions.AuthorityKeyIdentifier, false, aki);
 
-            AddIssuingDistributionPoint(crlGen, ca, lockedCounter, isDelta: true);
+            var deltaCdp = (await _caServiceUrls.ResolveForCaAsync(ca.CertificateId)).CdpUrls;
+            AddIssuingDistributionPoint(crlGen, ca, lockedCounter, isDelta: true, deltaCdp);
 
             var sigAlg = KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caPubKey.GetPublicKey());
             var signer = new PrivateKeyHandleSignatureFactory(CertificateUtil.NormalizeSigAlgName(sigAlg), caKeyHandle);
@@ -597,12 +616,38 @@ public class CrlService : ICrlService
         X509V2CrlGenerator crlGen,
         CertificateEntity ca,
         CrlConfigurationEntity config,
-        bool isDelta)
+        bool isDelta,
+        IReadOnlyList<string> cdpUrls)
     {
-        // No CDP URI on the config → synthesize a relative "CN=issuer" distribution point name
-        // from the CA subject DN so validators at least see a scoped DP identity.
-        var dpName = new DistributionPointName(DistributionPointName.FullName,
-            new GeneralNames(new GeneralName(GeneralName.DirectoryName, new Org.BouncyCastle.Asn1.X509.X509Name(ca.SubjectDN))));
+        // The distributionPoint here must name the SAME point the covered certificates carry in
+        // their CRLDistributionPoints extension, because RFC 5280 §6.3.3(b)(2)(i) matches the two
+        // by name. Issued certificates get a uniformResourceIdentifier
+        // (CertificateBuilderService: GeneralName.UniformResourceIdentifier), so a URI is the
+        // only name form that can ever match.
+        //
+        // This used to synthesise a directoryName from the CA's subject DN when no CDP URI was
+        // to hand. A directoryName never matches a URI, and the extension is CRITICAL, so every
+        // CRL this CA published was rejected by any validator that performs the check —
+        // `openssl verify -crl_check` among them. Revocation checking did not work at all.
+        //
+        // When no CDP URL is configured we now omit the distributionPoint rather than inventing
+        // one. Per §6.3.3(b)(2), an IDP with no distributionPoint simply does not trigger the
+        // name-matching test, so the CRL covers the issuer's certificates as intended — and we
+        // skip the extension entirely when it would carry no information at all.
+        DistributionPointName? dpName = null;
+        if (cdpUrls.Count > 0)
+        {
+            var names = cdpUrls
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Select(u => new GeneralName(GeneralName.UniformResourceIdentifier, u))
+                .ToArray();
+            if (names.Length > 0)
+                dpName = new DistributionPointName(DistributionPointName.FullName, new GeneralNames(names));
+        }
+
+        var scoped = config.OnlyContainsUserCerts || config.OnlyContainsCACerts;
+        if (dpName == null && !scoped)
+            return;
 
         var idp = new IssuingDistributionPoint(
             distributionPoint: dpName,
@@ -612,6 +657,7 @@ public class CrlService : ICrlService
             indirectCRL: false,
             onlyContainsAttributeCerts: false);
 
+        // RFC 5280 §5.2.5: when present, IssuingDistributionPoint MUST be critical.
         crlGen.AddExtension(X509Extensions.IssuingDistributionPoint, true, idp);
     }
 
