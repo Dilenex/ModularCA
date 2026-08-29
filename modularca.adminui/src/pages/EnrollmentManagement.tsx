@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { apiGet, apiPost, apiDelete } from '../api/client';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
-import { generateQrSvg } from '../utils/qrcode';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { generateQrSvg } from '@shared-auth/utils/qrcode';
 
 function formatDate(d: string | null) {
     if (!d) return '-';

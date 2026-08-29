@@ -4,7 +4,9 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
 import { ThemeProvider } from '@shared/context/ThemeContext';
-import { ToastProvider } from './context/ToastContext';
+import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
+import { apiGet, apiPut } from './api/client';
+import { ToastProvider } from '@shared/context/ToastContext';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 
@@ -33,6 +35,8 @@ const PageLoader = () => (
 
 const App = () => (
     <ThemeProvider>
+    {/* Supplies this app's API client to the shared table preference store. */}
+    <TablePrefsProvider transport={{ apiGet, apiPut }}>
     <ToastProvider>
     <Router basename="/user">
         <ScrollToTop />
@@ -73,6 +77,7 @@ const App = () => (
         </Routes>
     </Router>
     </ToastProvider>
+    </TablePrefsProvider>
     </ThemeProvider>
 );
 

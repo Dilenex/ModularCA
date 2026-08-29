@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
-import { DataTable, DataTableColumn } from '../components/DataTable';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
+import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { REVOCATION_REASONS } from './CertificateDetail';
 import { StepUpOps } from '@shared/generated';
 

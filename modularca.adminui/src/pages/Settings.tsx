@@ -3,9 +3,9 @@ import { Chevron } from '@shared/components/Chevron';
 import { Link } from 'react-router-dom';
 import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 
 function formatDate(d: string | null) {

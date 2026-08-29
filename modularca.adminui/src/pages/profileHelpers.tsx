@@ -13,6 +13,36 @@ import { KEY_USAGE_NAMES, canonicalizeUsage } from '@shared/generated';
  * that usage the moment someone opened the profile and saved it. Deriving the list from the
  * server's own switch statement is what makes the two sets equal by construction.
  */
+/**
+ * A certificate authority has TWO ids, and picking the wrong one is silent.
+ *
+ * `/api/v1/admin/authorities` returns both `id` (the CertificateAuthorities row) and
+ * `certificateId` (the CA's own certificate). Different fields key on different ones:
+ *
+ *   - CA scope on a certificate, request or SSH request profile is a foreign key to the CA ROW.
+ *   - A signing profile's issuer, and a CRL schedule's caCertificateId, key on the CERTIFICATE.
+ *
+ * Every CA `<select>` used to be written `value={a.certificateId || a.id}`, which is right for the
+ * second group and wrong for the first. The failure is not uniform, which is what made it hard to
+ * see: CertProfiles and RequestProfiles carry a real foreign key, so posting a certificate id was
+ * rejected outright and CA-scoping a profile simply failed — but only for a CA that had already
+ * been issued a certificate, because a CA without one fell through to `|| a.id` and worked.
+ * SshRequestProfiles have no such constraint, so there the wrong id was stored without complaint
+ * and the profile ended up scoped to a CA that does not exist.
+ *
+ * These two helpers exist so the choice has to be made explicitly at each call site.
+ */
+
+/** The CertificateAuthorities row id — for anything named `certificateAuthorityId`. */
+export const caRowId = (ca: any): string => ca?.id ?? '';
+
+/** The CA's certificate id — for a signing profile issuer or a CRL schedule. */
+export const caCertId = (ca: any): string => ca?.certificateId ?? '';
+
+/** Display name for a CA, falling back through the fields the API may populate. */
+export const caDisplayName = (ca: any): string =>
+    ca?.name || ca?.commonName || ca?.label || ca?.id || '';
+
 export const KEY_USAGE_OPTIONS: readonly string[] = KEY_USAGE_NAMES;
 
 /**

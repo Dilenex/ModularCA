@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { DetailField } from '@shared/components/cards/DetailField';
 import MySecurity from './MySecurity';
+import { StepUpOps } from '@shared/generated';
 
 const inputClass =
     'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
@@ -67,7 +68,7 @@ const GeneralTab: React.FC = () => {
             // in that case and apiPutWithMfa transparently prompts + retries. Other field edits save
             // on the first try with no MFA prompt.
             const res = await apiPutWithMfa<Partial<Account> & { message?: string }>(
-                '/api/v1/account', body, requireStepUp, 'change-email', acct.id,
+                '/api/v1/account', body, requireStepUp, StepUpOps.ChangeEmail, acct.id,
             );
             const next: Account = {
                 ...acct,

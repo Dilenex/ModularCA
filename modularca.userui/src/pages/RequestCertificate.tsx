@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost } from '../api/client';
-import DetailField from '../components/cards/DetailField';
-import { validateAgainstProfileClient } from '../validation/profileValidation';
+import { DetailField } from '@shared/components/cards/DetailField';
+import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
 import { Link } from 'react-router-dom';
 

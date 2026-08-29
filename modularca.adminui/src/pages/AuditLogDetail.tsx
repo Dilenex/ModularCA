@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 
 function formatDate(d: string | null) {

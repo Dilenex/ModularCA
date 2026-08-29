@@ -31,16 +31,30 @@ namespace ModularCA.API.Controllers.v1.Account
         private readonly IDistributedCache _cache = cache;
         private readonly ModularCADbContext _db = db;
 
+        /// <summary>
+        /// Returns the authenticated caller's own profile. This is the read side of this
+        /// controller's <c>PUT</c>, and the endpoint both self-service account pages use.
+        /// </summary>
+        /// <remarks>
+        /// <c>GetUserById</c> throws when the user is missing rather than returning null, so the
+        /// old <c>if (user == null) return NotFound()</c> was unreachable and a caller whose row had
+        /// been deleted mid-session got a 500 instead. Catching the miss keeps that case a 404.
+        /// </remarks>
         [HttpGet]
         public async Task<IActionResult> GetUserInfo()
         {
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
-            var user = await _userManager.GetUserById(_currentUser.User.Id);
-            if (user == null)
+
+            try
+            {
+                return Ok(await _userManager.GetUserById(_currentUser.User.Id));
+            }
+            catch (Exception)
+            {
                 return NotFound();
-            return Ok(user);
+            }
         }
 
         /// <summary>

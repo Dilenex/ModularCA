@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet } from '../api/client';
-import { useTablePrefs } from '../hooks/useTablePrefs';
+import { useTablePrefs } from '@shared/context/TablePrefsContext';
 
 const MIN_HEIGHT = 36;
 const DEFAULT_HEIGHT = 220;

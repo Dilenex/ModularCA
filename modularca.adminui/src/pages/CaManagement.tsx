@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
-import { DataTable, DataTableColumn } from '../components/DataTable';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
+import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
 import { StepUpOps } from '@shared/generated';
 

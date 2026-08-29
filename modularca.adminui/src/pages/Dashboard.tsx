@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import DataCard from '../components/cards/DataCard';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 import { StepUpOps } from '@shared/generated';
 import {
     canonicalizeUsages, parseListField, keyUsageLabel,

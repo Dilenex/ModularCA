@@ -20,6 +20,9 @@ Inside `shared/common/src`:
 |---|---|
 | `hostname.ts` | DNS name helpers. |
 | `components/`, `context/` | React primitives every SPA rendered identically: `Chevron`, `Toast`, `ScrollToTop`, `ThemeContext`. |
+| `components/DataTable.tsx`, `components/Drawer.tsx`, `context/TablePrefsContext.tsx` | The sortable/resizable table, its column-visibility drawer, and the per-user preference store. `adminui` and `userui` only — the anonymous SPAs never mount them. |
+| `validation/profileValidation.ts` | Client-side mirror of the server's request-profile rules. Pure — no imports at all. |
+| `context/ToastContext.tsx`, `components/cards/` | The toast provider and the `DetailField` / `StatusBadge` presentational pair. |
 | `generated/` | **Machine-generated. Do not edit.** DTO interfaces, enums, `StepUpOps`, and the X.509 usage vocabulary, all derived from C#. See below. |
 
 The split is enforced by wiring: `@shared-auth/*` is only aliased in the two SPAs entitled to it, so
@@ -84,7 +87,47 @@ Phase 3 (done) — the React primitives above, plus the step-up call sites migra
 string literals to the generated `StepUpOps` constants.
 
 Phase 4 (done) — `shared/authenticated`, holding the API client, DPoP, and the step-up MFA
-prompt. This *was* the fix for the two findings at the top of this file.
+prompt.
+
+Phase 5 (done) — `DataTable` + `Drawer` + the table preference store. The two copies were 460
+lines each and had drifted in the one place that mattered: `userui`'s CSV export was missing the
+spreadsheet formula-injection neutralisation, so a certificate field starting with `=` exported
+as a live formula — in the app whose rows are built from CSR-supplied subject and SAN values.
+The preference hook's only app-specific dependency was the API client, so it takes a transport
+through `TablePrefsProvider` rather than importing one, mirroring how `StepUpMfaModal` takes
+`apiPost` as a prop.
+
+Phase 6 (done) — `profileValidation`, `ToastContext`, `DetailField`, `StatusBadge`. All four were
+identical or differed only in comments. `profileValidation` matters most of the four: ~290 lines
+deciding what a requester may ask for, and two copies of a rule set drift into disagreeing with
+each other and with the server.
+
+The two `AccountDetail` pages were converged in the same pass but not yet shared — they still
+import `useStepUp` and `MySecurity` from their own apps. adminui was fetching `/api/v1/me`, the
+identity/authorization endpoint, to render a name and an email; userui passed the step-up
+operation as a bare `'change-email'` string rather than the generated constant, which is the
+`delete-eab-key` shape the allow-list exists to catch. Both now use `/api/v1/account` and
+`StepUpOps.ChangeEmail`, leaving the files identical and ready to move once the step-up context
+and `MySecurity` follow.
+
+Phase 7 (done) — `utils/qrcode.ts`. The two apps had unrelated implementations: adminui wrapped
+the `qrcode-generator` package behind a documented XSS review (the SVG is consumed through
+`dangerouslySetInnerHTML`), while userui hand-rolled 308 lines including its own Reed-Solomon
+arithmetic — and that was the encoder producing the TOTP provisioning code users scan to enrol a
+second factor. The library version is the shared one.
+
+It sits in `shared/authenticated`, not `shared/common`, for a mechanical reason worth recording:
+**it is the only shared file with a third-party dependency**, and all three anonymous SPAs list
+`../shared/common/src` in their tsconfig `include`, so every file there is typechecked by apps
+that do not have the package installed. Putting it in the authenticated tier scopes it to exactly
+the two apps that render a QR code. A future shared file with an npm dependency faces the same
+choice: put it where only its consumers compile it, or add the dependency and the alias to all
+five.
+
+Both apps also needed a `qrcode-generator` entry in the vite alias and tsconfig `paths`, for the
+same walk-up-and-find-no-node_modules reason as React. Note adminui carries a self-contained
+`tsconfig.json` **and** a `tsconfig.app.json` with a duplicated `paths` block — the root one is
+what `tsc -p tsconfig.json` uses, and forgetting it is a silent miss. This *was* the fix for the two findings at the top of this file.
 
 No capability flag was needed in the end. The anonymous SPAs simply do not get the alias, so the
 question of what an unauthenticated client should do never arises inside this module — it only

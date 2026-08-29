@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiGet, apiPostWithMfa, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 
 /// <summary>

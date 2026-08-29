@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiBlob } from '../api/client';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 
 // ---------------------------------------------------------------------------
 // Types

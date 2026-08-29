@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiDelete, apiPost, apiPutWithMfa, apiPostWithMfa, api, apiBlob, apiBlobWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { generateQrSvg } from '../utils/qrcode';
+import { generateQrSvg } from '@shared-auth/utils/qrcode';
 import { StepUpOps } from '@shared/generated';
 
 interface TotpStatus { enrolled: boolean; deviceName?: string; registeredAt?: string; lastUsedAt?: string; }

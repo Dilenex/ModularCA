@@ -2,17 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPut, apiDelete, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import {
     KEY_USAGE_OPTIONS, keyUsageLabel,
     canonicalizeUsages, parseListField,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
     SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS,
-    inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
+    inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName,
 } from './profileHelpers';
 
 import RequestProfilesTab from './RequestProfiles';
@@ -221,8 +221,8 @@ const CertProfilesTab: React.FC = () => {
                             <select value={form.certificateAuthorityId} onChange={(e) => setForm({ ...form, certificateAuthorityId: e.target.value })} className={inputClass}>
                                 <option value="">-- System-wide --</option>
                                 {authorities.map((a) => (
-                                    <option key={a.certificateId || a.id} value={a.certificateId || a.id}>
-                                        {a.name || a.commonName || a.label || a.id}
+                                    <option key={caRowId(a)} value={caRowId(a)}>
+                                        {caDisplayName(a)}
                                     </option>
                                 ))}
                             </select>
@@ -510,8 +510,8 @@ const SigningProfilesTab: React.FC = () => {
                             <select value={form.issuerId} onChange={(e) => setForm({ ...form, issuerId: e.target.value })} className={inputClass}>
                                 <option value="">-- Select Issuing Authority --</option>
                                 {authorities.map((a) => (
-                                    <option key={a.certificateId || a.id} value={a.certificateId || a.id}>
-                                        {a.name || a.commonName || a.label || a.id}
+                                    <option key={caCertId(a)} value={caCertId(a)}>
+                                        {caDisplayName(a)}
                                     </option>
                                 ))}
                             </select>
@@ -1151,7 +1151,7 @@ const SshRequestProfilesTab: React.FC = () => {
     };
 
     const caName = (caId: string) => {
-        const a = authorities.find((x) => (x.certificateId || x.id) === caId);
+        const a = authorities.find((x) => caRowId(x) === caId);
         return a ? (a.name || a.commonName || caId) : caId;
     };
 
@@ -1216,8 +1216,8 @@ const SshRequestProfilesTab: React.FC = () => {
                             <select value={form.certificateAuthorityId} onChange={(e) => setForm({ ...form, certificateAuthorityId: e.target.value })} className={inputClass}>
                                 <option value="">-- Any CA --</option>
                                 {authorities.map((a) => (
-                                    <option key={a.certificateId || a.id} value={a.certificateId || a.id}>
-                                        {a.name || a.commonName || a.label || a.id}
+                                    <option key={caRowId(a)} value={caRowId(a)}>
+                                        {caDisplayName(a)}
                                     </option>
                                 ))}
                             </select>

@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPutWithMfa, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { LdapPublisherManager } from './LdapPublishers';
 import { StepUpOps } from '@shared/generated';
 

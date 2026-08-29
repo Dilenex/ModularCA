@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
@@ -12,7 +12,7 @@ import {
     canonicalizeUsages,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
-    FieldSourceBadge, SourceBorderedField,
+    FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName,
 } from './profileHelpers';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
@@ -207,7 +207,7 @@ const CertProfileDetail: React.FC = () => {
                                 <label className={labelClass}>CA Scope</label>
                                 <select value={editForm.certificateAuthorityId} onChange={(e) => setEditForm({ ...editForm, certificateAuthorityId: e.target.value })} className={inputClass}>
                                     <option value="">-- System-wide --</option>
-                                    {authorities.map((a) => <option key={a.certificateId || a.id} value={a.certificateId || a.id}>{a.name || a.commonName || a.label || a.id}</option>)}
+                                    {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
                                 </select>
                             </div>
                         </div>

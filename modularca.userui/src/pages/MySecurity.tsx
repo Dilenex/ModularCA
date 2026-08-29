@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost, apiPutWithMfa, apiPostWithMfa, api, apiBlobWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { generateQrSvg } from '../utils/qrcode';
+import { generateQrSvg } from '@shared-auth/utils/qrcode';
 import { StepUpOps } from '@shared/generated';
 
 interface TotpStatus { enrolled: boolean; deviceName?: string; registeredAt?: string; lastUsedAt?: string; }

@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { apiGet, apiPut, apiPost } from '../api/client';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';

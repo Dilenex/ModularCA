@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost } from '../api/client';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import { SystemQuorumCard } from '../components/UserQuorumPanel';
-import { DataTable, DataTableColumn } from '../components/DataTable';
+import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 
 /* ── shared helpers (re-used by TenantDetail) ─────────────────────────────── */
 export function formatDate(d: string | null) {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiGetAllPages } from '../api/client';
-import StatusBadge from '../components/cards/StatusBadge';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { Link } from 'react-router-dom';
 
 function formatDate(d: string | null) {

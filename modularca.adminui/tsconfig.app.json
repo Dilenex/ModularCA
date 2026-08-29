@@ -21,7 +21,8 @@
       "react": ["./node_modules/@types/react"],
       "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
       "react-dom": ["./node_modules/@types/react-dom"],
-      "react-router-dom": ["./node_modules/react-router-dom"]
+      "react-router-dom": ["./node_modules/react-router-dom"],
+      "qrcode-generator": ["./node_modules/qrcode-generator"]
     },
     "allowImportingTsExtensions": true,
     "isolatedModules": true,

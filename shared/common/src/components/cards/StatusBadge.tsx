@@ -1,3 +1,8 @@
+/**
+ * Coloured status pill. The two copies differed only in comment wording, and userui's was missing its React import.
+ *
+ * No default export: shared/README.md rule 3.
+ */
 import React from 'react';
 
 interface StatusBadgeProps {
@@ -19,7 +24,7 @@ const colors: Record<string, string> = {
     pending:  'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-900/50 dark:text-blue-300 dark:border-blue-700',
 };
 
-export default function StatusBadge({ status, label }: StatusBadgeProps) {
+export function StatusBadge({ status, label }: StatusBadgeProps) {
     return (
         <span className={`inline-block px-2 py-0.5 text-xs rounded border ${colors[status] || colors.disabled}`}>
             {label || status}

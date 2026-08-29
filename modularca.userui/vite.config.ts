@@ -43,6 +43,9 @@ export default defineConfig({
             react: resolve(process.cwd(), 'node_modules', 'react'),
             'react-dom': resolve(process.cwd(), 'node_modules', 'react-dom'),
             'react-router-dom': resolve(process.cwd(), 'node_modules', 'react-router-dom'),
+            // Same reason as React above: shared/common/src/utils/qrcode.ts imports this,
+            // and resolution from a file there finds no node_modules on the way up.
+            'qrcode-generator': resolve(process.cwd(), 'node_modules', 'qrcode-generator'),
         },
     },
     base: '/user/',

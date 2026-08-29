@@ -5,7 +5,9 @@ import ProtectedRoute from './components/ProtectedRoute';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
 import { ThemeProvider } from '@shared/context/ThemeContext';
-import { ToastProvider } from './context/ToastContext';
+import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
+import { apiGet, apiPut } from './api/client';
+import { ToastProvider } from '@shared/context/ToastContext';
 import { TenantProvider } from './context/TenantContext';
 import { AuthProvider } from './context/AuthContext';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
@@ -94,6 +96,8 @@ const App: React.FC = () => {
     return (
         <ErrorBoundary>
             <ThemeProvider>
+                {/* Supplies this app's API client to the shared table preference store. */}
+                <TablePrefsProvider transport={{ apiGet, apiPut }}>
                 <ToastProvider>
                     <AuthProvider>
                         <TenantProvider>
@@ -209,6 +213,7 @@ const App: React.FC = () => {
                         </TenantProvider>
                     </AuthProvider>
                 </ToastProvider>
+                </TablePrefsProvider>
             </ThemeProvider>
         </ErrorBoundary>
     );

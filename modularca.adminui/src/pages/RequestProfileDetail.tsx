@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
+import { caRowId, caDisplayName } from './profileHelpers';
 
 const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
 const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
@@ -220,7 +221,7 @@ const RequestProfileDetail: React.FC = () => {
                                 <label className={labelClass}>CA Scope</label>
                                 <select value={editForm.certificateAuthorityId} onChange={(e) => setEditForm({ ...editForm, certificateAuthorityId: e.target.value })} className={inputClass}>
                                     <option value="">-- System-wide --</option>
-                                    {authorities.map((a) => <option key={a.certificateId || a.id} value={a.certificateId || a.id}>{a.name || a.commonName || a.label || a.id}</option>)}
+                                    {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
                                 </select>
                             </div>
                         </div>

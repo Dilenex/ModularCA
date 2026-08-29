@@ -1,3 +1,10 @@
+/**
+ * Slide-over panel used by the shared DataTable for its column-visibility editor.
+ *
+ * Byte-identical in adminui and userui before this move. Shared because DataTable — which now
+ * lives in shared/common — imports it, and a shared component may not reach back into a
+ * consuming app for a dependency.
+ */
 import React, { useEffect } from 'react';
 
 export interface DrawerProps {
@@ -42,4 +49,4 @@ export const Drawer: React.FC<DrawerProps> = ({ open, onClose, title, widthClass
     );
 };
 
-export default Drawer;
+// No default export: shared/README.md rule 3 keeps call sites greppable across five SPAs.

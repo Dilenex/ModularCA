@@ -1,5 +1,11 @@
+/**
+ * Toast provider and the module-level `globalToast` escape hatch the API client uses to surface
+ * transport errors from outside React.
+ *
+ * Byte-identical in adminui and userui before this move.
+ */
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import { Toast, type ToastType } from '@shared/components/Toast';
+import { Toast, type ToastType } from '../components/Toast';
 
 interface ToastItem { id: string; type: ToastType; message: string; }
 interface ToastContextValue { showToast: (type: ToastType, message: string, duration?: number) => void; }

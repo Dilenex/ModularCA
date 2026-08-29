@@ -1,5 +1,5 @@
 import { createAuthClient } from '@shared-auth/api/createClient';
-import { globalToast } from '../context/ToastContext';
+import { globalToast } from '@shared/context/ToastContext';
 
 /**
  * This app's authenticated API client.

@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { apiPost, apiBlob, apiPostWithMfa, apiGetAllPages } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
-import { DataTable, type DataTableColumn } from '../components/DataTable';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in

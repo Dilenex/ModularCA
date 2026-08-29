@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { DetailField } from '@shared/components/cards/DetailField';
 import MySecurity from './MySecurity';
 import { StepUpOps } from '@shared/generated';
 
@@ -37,7 +37,11 @@ const GeneralTab: React.FC = () => {
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<Account>('/api/v1/me')
+        // The self-service profile resource, and the GET that pairs with the PUT below.
+        // This used to call /api/v1/me, which is the identity/authorization endpoint: it also
+        // computes group memberships, effective scopes and three MFA existence checks — four
+        // extra queries per page load, all of it discarded to render a name and an email.
+        apiGet<Account>('/api/v1/account')
             .then((a) => { setAcct(a); fillForm(a); })
             .catch((e) => setError(e.message || 'Failed to load account'))
             .finally(() => setLoading(false));

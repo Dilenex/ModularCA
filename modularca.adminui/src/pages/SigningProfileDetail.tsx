@@ -2,16 +2,16 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import {
     SIGNING_ALLOWED_ALGORITHM_OPTIONS,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
-    canonicalizeUsages,
+    canonicalizeUsages, caCertId, caDisplayName,
 } from './profileHelpers';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
@@ -199,7 +199,7 @@ const SigningProfileDetail: React.FC = () => {
                                 <label className={labelClass}>Issuer</label>
                                 <select value={editForm.issuerId} onChange={(e) => setEditForm({ ...editForm, issuerId: e.target.value })} className={inputClass}>
                                     <option value="">-- Select Issuing Authority --</option>
-                                    {authorities.map((a) => <option key={a.certificateId || a.id} value={a.certificateId || a.id}>{a.name || a.commonName || a.label || a.id}</option>)}
+                                    {authorities.map((a) => <option key={caCertId(a)} value={caCertId(a)}>{caDisplayName(a)}</option>)}
                                 </select>
                             </div>
                             <div><label className={labelClass}>Max Path Length</label><input type="text" inputMode="numeric" value={editForm.maxPathLength} onChange={(e) => setEditForm({ ...editForm, maxPathLength: e.target.value.replace(/\D/g, '') })} className={inputClass} /></div>

@@ -2,12 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { inputClass, labelClass, parseJsonArray } from './profileHelpers';
+import { inputClass, labelClass, parseJsonArray, caRowId, caDisplayName,
+} from './profileHelpers';
 import { StepUpOps } from '@shared/generated';
 
 const SSH_REQUEST_TAB = `/profiles?tab=${encodeURIComponent('SSH Request')}`;
@@ -75,7 +76,7 @@ const SshRequestProfileDetail: React.FC = () => {
 
     const resolveNames = (idsJson: any, items: any[]) => parseJsonArray(idsJson).map((x) => items.find((i) => i.id === x)?.name || x);
     const caName = (caId: string) => {
-        const a = authorities.find((x) => (x.certificateId || x.id) === caId);
+        const a = authorities.find((x) => caRowId(x) === caId);
         return a ? (a.name || a.commonName || caId) : caId;
     };
 
@@ -164,7 +165,7 @@ const SshRequestProfileDetail: React.FC = () => {
                                 <label className={labelClass}>CA Scope</label>
                                 <select value={editForm.certificateAuthorityId} onChange={(e) => setEditForm({ ...editForm, certificateAuthorityId: e.target.value })} className={inputClass}>
                                     <option value="">-- Any CA --</option>
-                                    {authorities.map((a) => <option key={a.certificateId || a.id} value={a.certificateId || a.id}>{a.name || a.commonName || a.label || a.id}</option>)}
+                                    {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
                                 </select>
                             </div>
                         </div>

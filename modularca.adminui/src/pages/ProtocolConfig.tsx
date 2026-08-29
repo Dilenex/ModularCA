@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP'];

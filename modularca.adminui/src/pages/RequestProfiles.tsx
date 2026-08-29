@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
-import StatusBadge from '../components/cards/StatusBadge';
-import DetailField from '../components/cards/DetailField';
+import { useToast } from '@shared/context/ToastContext';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
-import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
+import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { caRowId, caDisplayName } from './profileHelpers';
 
 const DN_FIELD_OPTIONS = ['CN', 'O', 'OU', 'L', 'ST', 'C', 'DC'];
 const REQUIREMENT_OPTIONS = ['Required', 'Optional', 'Forbidden'];
@@ -247,7 +248,7 @@ const RequestProfiles: React.FC = () => {
                             <label className={labelClass}>CA Scope</label>
                             <select value={form.certificateAuthorityId} onChange={(e) => setForm({ ...form, certificateAuthorityId: e.target.value })} className={inputClass}>
                                 <option value="">-- System-wide --</option>
-                                {authorities.map((a) => <option key={a.certificateId || a.id} value={a.certificateId || a.id}>{a.name || a.commonName || a.label || a.id}</option>)}
+                                {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
                             </select>
                         </div>
                     </div>

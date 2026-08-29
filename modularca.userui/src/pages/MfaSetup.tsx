@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { isAuthenticated, isMfaSetupRequired, setMfaSetupRequired } from '../components/auth';
 import { apiGet, apiPost, apiLogout, API_BASE } from '../api/client';
-import { generateQrSvg } from '../utils/qrcode';
+import { generateQrSvg } from '@shared-auth/utils/qrcode';
 
 interface AllowedCa {
     caId: string;

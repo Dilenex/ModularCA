@@ -1,4 +1,18 @@
 /**
+ * Client-side mirror of the server's request-profile validation.
+ *
+ * Shared because adminui and userui each carried a ~290-line copy whose only differences were
+ * comments — including which server file each one claimed to mirror. Two copies of a rule set
+ * drift into enforcing different rules from each other and from the server, and this one decides
+ * what a requester is allowed to ask for, so the divergence would show up as a request the UI
+ * accepts and the API rejects (or worse, the reverse).
+ *
+ * The server remains authoritative — this exists to give immediate feedback, not to gate.
+ * Server-side counterparts:
+ *   ModularCA.API/Controllers/v1/Admin/AdminCertSignRequestController.cs (ValidateAgainstProfile,
+ *   ValidateFieldValue) and the matching User* controller.
+ */
+/**
  * Client-side mirror of the server's `validate-against-profile` endpoint. Provides instant
  * feedback per keystroke without a network round-trip; the server endpoint remains canonical
  * and is still called on field-blur and at submit time. Keeping the two in sync is a

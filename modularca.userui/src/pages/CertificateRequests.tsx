@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet } from '../api/client';
-import StatusBadge from '../components/cards/StatusBadge';
-import { DataTable, type DataTableColumn } from '../components/DataTable';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { Link } from 'react-router-dom';
 
 function formatDate(d: string | null) {

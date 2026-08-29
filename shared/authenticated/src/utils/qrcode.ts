@@ -14,6 +14,17 @@
  * sinks because the backend builds provisioning URIs from user-controlled
  * fields (username, configured issuer). If you need to display label text,
  * render it as a sibling React element outside the SVG — never inside it.
+ *
+ * SHARED. adminui and userui had unrelated implementations: this one, backed by the
+ * `qrcode-generator` package, and a 308-line hand-rolled encoder in userui carrying its own
+ * Reed-Solomon arithmetic. The hand-rolled one had none of the review below and was generating
+ * the TOTP provisioning code users scan to enrol a second factor. The library version wins.
+ * It lives in shared/authenticated rather than shared/common for a mechanical reason: it is
+ * the only shared file with a third-party dependency, and all three anonymous SPAs list
+ * ../shared/common/src in their tsconfig include, so every file there is typechecked by apps
+ * that have no such package installed. shared/authenticated is included only by the two SPAs
+ * that actually render a QR code, which is the same set that needs the dependency.
+ *
  */
 
 import qrcode from 'qrcode-generator';

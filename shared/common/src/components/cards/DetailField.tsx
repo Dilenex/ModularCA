@@ -1,3 +1,8 @@
+/**
+ * Label-over-value pair used throughout the detail pages. Byte-identical in both SPAs.
+ *
+ * No default export: shared/README.md rule 3.
+ */
 import React from 'react';
 
 interface DetailFieldProps {
@@ -6,7 +11,7 @@ interface DetailFieldProps {
     mono?: boolean;
 }
 
-export default function DetailField({ label, value, mono }: DetailFieldProps) {
+export function DetailField({ label, value, mono }: DetailFieldProps) {
     if (value === null || value === undefined || value === '') return null;
 
     return (

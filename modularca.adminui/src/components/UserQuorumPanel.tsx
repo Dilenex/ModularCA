@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPutWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
-import { useToast } from '../context/ToastContext';
+import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { StepUpOps } from '@shared/generated';
 

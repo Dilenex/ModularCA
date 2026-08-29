@@ -1,8 +1,20 @@
+/**
+ * Sortable, resizable, column-configurable data table with CSV export.
+ *
+ * Shared because adminui and userui held near-identical 460-line copies that had already drifted
+ * in the one place it mattered: userui's CSV export was missing the spreadsheet formula-injection
+ * neutralisation below, so a certificate field beginning with "=" was exported as a live formula.
+ * That is the more exposed of the two apps for this, since its rows are built from CSR-supplied
+ * subject and SAN values.
+ *
+ * The preference store arrives via TablePrefsProvider rather than an imported API client — see
+ * context/TablePrefsContext.tsx.
+ */
 import React, { useState, useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useTablePrefs } from '../hooks/useTablePrefs';
-import { Chevron } from '@shared/components/Chevron';
-import Drawer from './Drawer';
+import { useTablePrefs } from '../context/TablePrefsContext';
+import { Chevron } from './Chevron';
+import { Drawer } from './Drawer';
 
 /* ── public API ───────────────────────────────────────────────────────────── */
 export interface DataTableColumn<Row> {
@@ -246,8 +258,12 @@ export function DataTable<Row>({
         const rowsOut = selected.size > 0 ? selectedRows : rows;
         const cols = visibleCols;
         const esc = (v: unknown) => {
-            const s = v == null ? '' : String(v);
-            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+            if (typeof v === 'number') return String(v);
+            let s = v == null ? '' : String(v);
+            // Neutralize spreadsheet formula injection (OWASP): a leading =,+,-,@,tab,CR can be
+            // executed as a formula (DDE/HYPERLINK/WEBSERVICE) when the CSV is opened in Excel/Sheets.
+            if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+            return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
         };
         const cellVal = (c: DataTableColumn<Row>, r: Row): string | number => {
             if (c.exportValue) { const v = c.exportValue(r); return v == null ? '' : v; }
@@ -453,4 +469,5 @@ export function DataTable<Row>({
     );
 }
 
-export default DataTable;
+// No default export: shared/README.md rule 3. Every call site already imported the named
+// binding, so nothing changes for them.
