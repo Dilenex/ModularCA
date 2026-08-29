@@ -7,6 +7,8 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
+import ConfirmModal from '../components/ConfirmModal';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -17,8 +19,6 @@ const TABS = ['General', 'Security', 'Certificates', 'Integrations', 'Logging', 
 type Tab = typeof TABS[number];
 
 /* --- Shared Form Helpers --- */
-const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 const cardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden';
 
 const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string }> = ({ label, value, onChange, type = 'text', placeholder }) => (
@@ -158,6 +158,37 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
     const [restarting, setRestarting] = useState(false);
+
+    // Restarting the server is the most destructive control on this page, and it was the
+    // one place in adminui still using a native window.confirm — ConfirmModal is used in
+    // thirty others. A native dialog blocks the page, cannot be styled to match, and is
+    // dismissed by reflex.
+    const [confirmRestart, setConfirmRestart] = useState(false);
+
+    const doRestart = async () => {
+        setConfirmRestart(false);
+        setRestarting(true);
+        try {
+            await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, StepUpOps.Restart);
+            setSuccessMsg('Restart initiated. Reconnecting...');
+            const poll = setInterval(async () => {
+                try {
+                    await apiGet('/api/v1/admin/config');
+                    clearInterval(poll);
+                    setRestarting(false);
+                    setSuccessMsg('Server restarted successfully');
+                    load();
+                } catch { /* still restarting */ }
+            }, 2000);
+            setTimeout(() => {
+                clearInterval(poll);
+                setRestarting(false);
+            }, 60000);
+        } catch (err: any) {
+            showToast('error', err.message || 'Failed to restart');
+            setRestarting(false);
+        }
+    };
 
     /* Password Policy state (inlined into Security tab) */
     const [policy, setPolicy] = useState<any>(null);
@@ -441,36 +472,23 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 </p>
                             </div>
                             <button
-                                onClick={async () => {
-                                    if (!window.confirm('Restart the ModularCA server? Active connections will be dropped.')) return;
-                                    setRestarting(true);
-                                    try {
-                                        await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, StepUpOps.Restart);
-                                        setSuccessMsg('Restart initiated. Reconnecting...');
-                                        const poll = setInterval(async () => {
-                                            try {
-                                                await apiGet('/api/v1/admin/config');
-                                                clearInterval(poll);
-                                                setRestarting(false);
-                                                setSuccessMsg('Server restarted successfully');
-                                                load();
-                                            } catch { /* still restarting */ }
-                                        }, 2000);
-                                        setTimeout(() => {
-                                            clearInterval(poll);
-                                            setRestarting(false);
-                                        }, 60000);
-                                    } catch (err: any) {
-                                        showToast('error', err.message || 'Failed to restart');
-                                        setRestarting(false);
-                                    }
-                                }}
+                                onClick={() => setConfirmRestart(true)}
                                 disabled={restarting}
                                 className="px-4 py-2 text-sm bg-yellow-600 text-gray-900 dark:text-white rounded hover:bg-yellow-700 disabled:opacity-50 transition-colors flex-shrink-0"
                             >
                                 {restarting ? 'Restarting...' : 'Restart Server'}
                             </button>
                         </div>
+                        <ConfirmModal
+                            isOpen={confirmRestart}
+                            title="Restart server"
+                            message="Restart the ModularCA server? Active connections will be dropped and issuance, OCSP and CRL responses will be unavailable until it comes back."
+                            confirmLabel="Restart"
+                            confirmClass="bg-yellow-600 hover:bg-yellow-700"
+                            loading={restarting}
+                            onConfirm={doRestart}
+                            onCancel={() => setConfirmRestart(false)}
+                        />
                     </div>
                 </>
             )}

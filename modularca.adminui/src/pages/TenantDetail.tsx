@@ -8,7 +8,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/UserQuorumPanel';
-import { Tenant, CaQuotaRow, formatDate, numInput, labelCls } from './TenantsAndQuotas';
+import { Tenant, CaQuotaRow, formatDate, numInput } from './TenantsAndQuotas';
+import { labelClass as labelCls } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));

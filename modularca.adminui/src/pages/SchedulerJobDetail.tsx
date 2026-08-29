@@ -14,6 +14,7 @@ import {
     setSchedulerJobEnabled,
     updateSchedulerJob,
 } from '../api/scheduler';
+import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
 const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'TlsRenewal']);
 const CRON_5_FIELD = /^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/;
@@ -34,8 +35,6 @@ function jobResultBadge(result: SchedulerJob['lastResult']): React.ReactElement 
     return <StatusBadge status="disabled" label="never run" />;
 }
 
-const inputCls = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-const labelCls = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
 /// <summary>
 /// Editable detail page for a single scheduler job (keyed by name). View shows run state; Edit

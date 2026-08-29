@@ -7,6 +7,7 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
+import { ToggleField, labelClass } from '@shared/components/forms';
 
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
@@ -97,7 +98,6 @@ const ProtocolConfig: React.FC = () => {
     };
 
     const selectClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-    const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
@@ -179,18 +179,6 @@ interface ProtocolCardProps {
     labelClass: string;
     selectClass: string;
 }
-
-const ToggleField: React.FC<{ label: string; description?: string; checked: boolean; onChange: (v: boolean) => void; selectClass: string }> = ({ label, description, checked, onChange, selectClass }) => (
-    <div className="flex items-center justify-between py-1">
-        <div>
-            <span className="text-xs text-gray-700 dark:text-gray-300">{label}</span>
-            {description && <p className="text-[10px] text-gray-600">{description}</p>}
-        </div>
-        <button onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-600'}`}>
-            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
-        </button>
-    </div>
-);
 
 const ProtocolCard: React.FC<ProtocolCardProps> = ({
     protocol, config, expanded, onToggleExpand, onSave, saving,
@@ -331,12 +319,11 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                     <div className="border-t border-gray-300 dark:border-gray-700 pt-3">
                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider mb-2">Visibility &amp; Access</h4>
                         <div className="space-y-3">
-                            <ToggleField
+                            <ToggleField size="md" labelSide="left"
                                 label="Show on Public Portal"
                                 description="When unchecked, this protocol endpoint won't appear on the public portal for this CA"
                                 checked={form.isPublicVisible}
                                 onChange={(v) => setForm({ ...form, isPublicVisible: v })}
-                                selectClass={selectClass}
                             />
                         </div>
                     </div>
@@ -347,20 +334,20 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
 
                         {protocol === 'EST' && (
                             <div className="space-y-2">
-                                <ToggleField label="Require Client Certificate" description="Clients must present a valid certificate for enrollment" checked={form.estRequireClientCert} onChange={(v) => setForm({ ...form, estRequireClientCert: v })} selectClass={selectClass} />
-                                <ToggleField label="HTTP Authentication" description="Accept HTTP Basic/Digest authentication for enrollment" checked={form.estHttpAuthEnabled} onChange={(v) => setForm({ ...form, estHttpAuthEnabled: v })} selectClass={selectClass} />
+                                <ToggleField size="md" labelSide="left" label="Require Client Certificate" description="Clients must present a valid certificate for enrollment" checked={form.estRequireClientCert} onChange={(v) => setForm({ ...form, estRequireClientCert: v })} />
+                                <ToggleField size="md" labelSide="left" label="HTTP Authentication" description="Accept HTTP Basic/Digest authentication for enrollment" checked={form.estHttpAuthEnabled} onChange={(v) => setForm({ ...form, estHttpAuthEnabled: v })} />
                             </div>
                         )}
 
                         {protocol === 'SCEP' && (
                             <div className="space-y-2">
-                                <ToggleField label="Require Challenge Password" description="CSR must include a challenge password for enrollment" checked={form.scepChallengeRequired} onChange={(v) => setForm({ ...form, scepChallengeRequired: v })} selectClass={selectClass} />
+                                <ToggleField size="md" labelSide="left" label="Require Challenge Password" description="CSR must include a challenge password for enrollment" checked={form.scepChallengeRequired} onChange={(v) => setForm({ ...form, scepChallengeRequired: v })} />
                             </div>
                         )}
 
                         {protocol === 'CMP' && (
                             <div className="space-y-3">
-                                <ToggleField label="Require Signature Protection" description="When enabled, only signature-based protection is accepted (client cert required). When disabled, PBMAC (shared secret) is also accepted." checked={form.cmpRequireSignature} onChange={(v) => setForm({ ...form, cmpRequireSignature: v })} selectClass={selectClass} />
+                                <ToggleField size="md" labelSide="left" label="Require Signature Protection" description="When enabled, only signature-based protection is accepted (client cert required). When disabled, PBMAC (shared secret) is also accepted." checked={form.cmpRequireSignature} onChange={(v) => setForm({ ...form, cmpRequireSignature: v })} />
                                 <p className="text-[10px] text-gray-600 mt-1">
                                     PBMAC shared secrets are issued per client from{' '}
                                     <Link to="/enrollment" className="text-blue-600 dark:text-blue-400 hover:underline">Enrollment Management</Link>,
@@ -371,8 +358,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
 
                         {protocol === 'ACME' && (
                             <div className="space-y-3">
-                                <ToggleField label="Require External Account Binding" description="Accounts must provide an EAB key during registration (RFC 8555 \u00A77.3.4)" checked={form.acmeRequireEab} onChange={(v) => setForm({ ...form, acmeRequireEab: v })} selectClass={selectClass} />
-                                <ToggleField label="Allow Private Address Validation (HTTP-01)" description="Permit the http-01 validator to fetch challenges from RFC 1918 / loopback / link-local addresses, and to resolve identifiers via the server's OS hosts file (/etc/hosts or the Windows hosts file) in addition to DNS. Required for internal-only PKI; leave off for public deployments to prevent SSRF." checked={form.acmeAllowPrivateAddressValidation} onChange={(v) => setForm({ ...form, acmeAllowPrivateAddressValidation: v })} selectClass={selectClass} />
+                                <ToggleField size="md" labelSide="left" label="Require External Account Binding" description="Accounts must provide an EAB key during registration (RFC 8555 \u00A77.3.4)" checked={form.acmeRequireEab} onChange={(v) => setForm({ ...form, acmeRequireEab: v })} />
+                                <ToggleField size="md" labelSide="left" label="Allow Private Address Validation (HTTP-01)" description="Permit the http-01 validator to fetch challenges from RFC 1918 / loopback / link-local addresses, and to resolve identifiers via the server's OS hosts file (/etc/hosts or the Windows hosts file) in addition to DNS. Required for internal-only PKI; leave off for public deployments to prevent SSRF." checked={form.acmeAllowPrivateAddressValidation} onChange={(v) => setForm({ ...form, acmeAllowPrivateAddressValidation: v })} />
                                 <div>
                                     <label className={labelClass}>Allowed Challenge Types</label>
                                     <div className="flex gap-3 mt-1">
@@ -397,7 +384,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
 
                         {protocol === 'OCSP' && (
                             <div className="space-y-2">
-                                <ToggleField label="Sign Responses" description="Sign OCSP responses with the CA's OCSP responder key" checked={form.ocspSignResponses} onChange={(v) => setForm({ ...form, ocspSignResponses: v })} selectClass={selectClass} />
+                                <ToggleField size="md" labelSide="left" label="Sign Responses" description="Sign OCSP responses with the CA's OCSP responder key" checked={form.ocspSignResponses} onChange={(v) => setForm({ ...form, ocspSignResponses: v })} />
                             </div>
                         )}
                     </div>

@@ -8,6 +8,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
 import { StepUpOps } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -231,8 +232,6 @@ const CaManagement: React.FC = () => {
         }
     };
 
-    const inputClass = 'w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-    const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
     const caColumns: DataTableColumn<any>[] = [
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <StatusBadge status={b.status} label={b.label} />; } },

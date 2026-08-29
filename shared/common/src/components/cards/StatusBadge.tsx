@@ -3,7 +3,6 @@
  *
  * No default export: shared/README.md rule 3.
  */
-import React from 'react';
 
 interface StatusBadgeProps {
     status: 'active' | 'revoked' | 'expired' | 'held' | 'pending' | 'locked' | 'disabled' | 'enabled';

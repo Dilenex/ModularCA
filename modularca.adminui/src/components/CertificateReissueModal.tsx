@@ -3,6 +3,7 @@ import { apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { looksLikeHostname } from '@shared/hostname';
 import { StepUpOps } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 /// Properties for the shared CertificateReissueModal.
 export interface CertificateReissueModalProps {
@@ -188,8 +189,6 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
         }
     };
 
-    const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50';
-    const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
     const helperClass = 'text-[11px] text-gray-600 dark:text-gray-500 mt-1';
 
     return (

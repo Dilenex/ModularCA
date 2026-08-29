@@ -5,6 +5,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { SystemQuorumCard } from '../components/UserQuorumPanel';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { labelClass as labelCls } from '@shared/components/forms';
 
 /* ── shared helpers (re-used by TenantDetail) ─────────────────────────────── */
 export function formatDate(d: string | null) {
@@ -18,7 +19,6 @@ export const usageTextColor = (p: number) => (p > 80 ? 'text-red-800 dark:text-r
 export const fmtLimit = (used: number, max: number) => (max > 0 ? `${used} / ${max}` : `${used} / ∞`);
 
 export const numInput = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-export const labelCls = 'text-xs text-gray-600 block mb-1';
 
 export interface Quota {
     groupId: string | null;

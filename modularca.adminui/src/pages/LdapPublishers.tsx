@@ -7,6 +7,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -190,8 +191,6 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
         }
     };
 
-    const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-    const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
     /// <summary>
     /// Renders a toggle checkbox used in both create and edit forms for LDAP publisher configuration.

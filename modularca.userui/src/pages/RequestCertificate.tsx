@@ -4,6 +4,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
 import { Link } from 'react-router-dom';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 // --- Types ---
 
@@ -356,8 +357,6 @@ const RequestCertificate: React.FC = () => {
     };
 
     // --- Styles ---
-    const inputClass = 'w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-    const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
     const statusIcon = (status?: string) => {
         if (!status) return null;

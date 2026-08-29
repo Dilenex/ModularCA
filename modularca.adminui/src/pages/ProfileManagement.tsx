@@ -7,13 +7,8 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import {
-    KEY_USAGE_OPTIONS, keyUsageLabel,
-    canonicalizeUsages, parseListField,
-    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
-    SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS,
-    inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName,
-} from './profileHelpers';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 import RequestProfilesTab from './RequestProfiles';
 import { StepUpOps } from '@shared/generated';

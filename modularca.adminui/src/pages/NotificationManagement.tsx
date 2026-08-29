@@ -3,9 +3,9 @@ import { apiGet, apiPut, apiPost } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { inputClass as inputCls, labelClass } from '@shared/components/forms';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
 const validateEmails = (value: string): string | null => {
     if (!value.trim()) return null;
@@ -144,7 +144,6 @@ const NotificationManagement: React.FC = () => {
         </div>
     );
 
-    const inputCls = 'w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">

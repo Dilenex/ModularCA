@@ -1,5 +1,6 @@
 import React from 'react';
 import { KEY_USAGE_NAMES, canonicalizeUsage } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
@@ -211,8 +212,6 @@ export const SSH_EXTENSION_OPTIONS = [
     'no-X11-forwarding', 'no-user-rc',
 ];
 
-export const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-export const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
 /** Parse a JSON array field from the API (could be string or array) into a string array */
 /**

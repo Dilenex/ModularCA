@@ -5,7 +5,8 @@ import ProtectedRoute from './components/ProtectedRoute';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
 import { ThemeProvider } from '@shared/context/ThemeContext';
 import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
-import { apiGet, apiPut } from './api/client';
+import { AuthClientProvider } from '@shared-auth/api/AuthClientContext';
+import { apiGet, apiPut, authClient } from './api/client';
 import { ToastProvider } from '@shared/context/ToastContext';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
@@ -24,7 +25,10 @@ const MyCertificates = React.lazy(() => import('./pages/MyCertificates'));
 const CertificateRequests = React.lazy(() => import('./pages/CertificateRequests'));
 const MySshCertificates = React.lazy(() => import('./pages/MySshCertificates'));
 const CaInformation = React.lazy(() => import('./pages/CaInformation'));
-const AccountDetail = React.lazy(() => import('./pages/AccountDetail'));
+// Shared with the other authenticated SPA. Named export, so the lazy import maps it onto
+// the `default` shape React.lazy expects — shared/README rule 3 forbids default exports.
+const AccountDetail = React.lazy(() =>
+    import('@shared-auth/pages/AccountDetail').then((m) => ({ default: m.AccountDetail })));
 const NotFound = React.lazy(() => import('./pages/NotFound'));
 
 const PageLoader = () => (
@@ -36,6 +40,8 @@ const PageLoader = () => (
 const App = () => (
     <ThemeProvider>
     {/* Supplies this app's API client to the shared table preference store. */}
+    {/* Hands this app's API client to shared pages — see AuthClientContext. */}
+    <AuthClientProvider client={authClient}>
     <TablePrefsProvider transport={{ apiGet, apiPut }}>
     <ToastProvider>
     <Router basename="/user">
@@ -78,6 +84,7 @@ const App = () => (
     </Router>
     </ToastProvider>
     </TablePrefsProvider>
+    </AuthClientProvider>
     </ThemeProvider>
 );
 

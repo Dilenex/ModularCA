@@ -8,6 +8,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
+import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { ToggleField } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -29,17 +31,7 @@ const emptyForm = {
     publishCACert: true, publishCRL: true, publishDelta: false, publishUserCerts: false,
 };
 
-const inputCls = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-const labelCls = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
-const ToggleField: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void }> = ({ label, checked, onChange }) => (
-    <label className="flex items-center gap-2 cursor-pointer text-sm">
-        <div onClick={() => onChange(!checked)} className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${checked ? 'bg-blue-600' : 'bg-gray-400 dark:bg-gray-600'}`}>
-            <div className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${checked ? 'translate-x-4' : ''}`} />
-        </div>
-        <span className="text-gray-700 dark:text-gray-300">{label}</span>
-    </label>
-);
 
 /// <summary>
 /// Editable detail page for a single LDAP publisher. Publishers are CA-scoped, so the owning CA id

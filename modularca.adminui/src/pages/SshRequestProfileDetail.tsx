@@ -7,8 +7,8 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { inputClass, labelClass, parseJsonArray, caRowId, caDisplayName,
-} from './profileHelpers';
+import { parseJsonArray, caRowId, caDisplayName } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 
 const SSH_REQUEST_TAB = `/profiles?tab=${encodeURIComponent('SSH Request')}`;

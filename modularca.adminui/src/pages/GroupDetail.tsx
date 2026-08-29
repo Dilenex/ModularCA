@@ -8,6 +8,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
+import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
 function templateLabel(t: string | null): string { return t || 'Custom'; }
 function templateStatus(t: string | null): 'revoked' | 'held' | 'pending' | 'active' {
@@ -19,8 +20,6 @@ function templateStatus(t: string | null): 'revoked' | 'held' | 'pending' | 'act
     }
 }
 
-const inputCls = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50';
-const labelCls = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
 const GroupDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();

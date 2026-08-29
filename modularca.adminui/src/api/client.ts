@@ -10,7 +10,13 @@ import { globalToast } from '@shared/context/ToastContext';
  * Everything below is re-export, so existing call sites (`import { apiGet } from '../api/client'`)
  * are unchanged.
  */
-const client = createAuthClient({ basename: '/admin', toast: globalToast });
+const client = createAuthClient({ basename: '/admin', toast: globalToast });
+
+/**
+ * The same instance, exported whole so App.tsx can hand it to <AuthClientProvider> for
+ * shared pages. The named re-exports below remain the idiom for this app's own code.
+ */
+export const authClient = client;
 
 export const {
     getToken,

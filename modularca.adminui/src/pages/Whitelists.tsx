@@ -5,6 +5,7 @@ import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 /// <summary>
 /// Represents a single whitelist rule returned by the admin whitelist API.
@@ -282,8 +283,6 @@ const Whitelists: React.FC = () => {
         { label: 'Delete', variant: 'danger', enabledFor: (wl) => !wl.isSystemDefault, onClick: (rows) => setConfirmBulk(rows) },
     ];
 
-    const inputClass = 'w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-    const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">

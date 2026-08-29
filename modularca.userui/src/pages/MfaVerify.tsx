@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { API_BASE } from '../api/client';
+import { createDpopProof } from '@shared-auth/api/dpop';
 
 interface MfaVerifyState {
     mfaToken: string;
@@ -59,6 +60,11 @@ const MfaVerify: React.FC = () => {
             const csrfHeaders: Record<string, string> = {};
             if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
 
+            // Bind the session to this device's proof-of-possession key as MFA completes.
+            // Without this the issued refresh token carries no CnfJkt, and AuthController's
+            // refresh check skips proof validation for the life of that session.
+            const totpProof = await createDpopProof('POST', `${API_BASE}/auth/totp/verify`);
+            if (totpProof) csrfHeaders['DPoP'] = totpProof;
             const resp = await fetch(`${API_BASE}/auth/totp/verify`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...csrfHeaders },
@@ -67,7 +73,14 @@ const MfaVerify: React.FC = () => {
 
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-                throw new Error(err.error || err.message || 'Verification failed');
+                const msg = err.error || err.message || 'Verification failed';
+                // Expired/invalid MFA token — send the user back to log in rather than
+                // showing a dead-end error on a page whose token is already spent.
+                if (resp.status === 401 && msg.toLowerCase().includes('mfa token')) {
+                    navigate('/login', { replace: true });
+                    return;
+                }
+                throw new Error(msg);
             }
 
             const data = await resp.json();
@@ -157,6 +170,9 @@ const MfaVerify: React.FC = () => {
             const assertionResponse = credential.response as AuthenticatorAssertionResponse;
 
             // Send assertion to server
+            // Same binding on the security-key path.
+            const waProof = await createDpopProof('POST', `${API_BASE}/auth/webauthn/assertion`);
+            if (waProof) csrfHeaders['DPoP'] = waProof;
             const verifyResp = await fetch(`${API_BASE}/auth/webauthn/assertion`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...csrfHeaders },

@@ -6,7 +6,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { StepUpMfaProvider } from './components/StepUpMfaContext';
 import { ThemeProvider } from '@shared/context/ThemeContext';
 import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
-import { apiGet, apiPut } from './api/client';
+import { AuthClientProvider } from '@shared-auth/api/AuthClientContext';
+import { apiGet, apiPut, authClient } from './api/client';
 import { ToastProvider } from '@shared/context/ToastContext';
 import { TenantProvider } from './context/TenantContext';
 import { AuthProvider } from './context/AuthContext';
@@ -61,7 +62,10 @@ const BackupRestore = React.lazy(() => import('./pages/BackupRestore'));
 const WebTlsManagement = React.lazy(() => import('./pages/WebTlsManagement'));
 const SystemHealth = React.lazy(() => import('./pages/SystemHealth'));
 const TrustAnchors = React.lazy(() => import('./pages/TrustAnchors'));
-const AccountDetail = React.lazy(() => import('./pages/AccountDetail'));
+// Shared with the other authenticated SPA. Named export, so the lazy import maps it onto
+// the `default` shape React.lazy expects — shared/README rule 3 forbids default exports.
+const AccountDetail = React.lazy(() =>
+    import('@shared-auth/pages/AccountDetail').then((m) => ({ default: m.AccountDetail })));
 const CertInventory = React.lazy(() => import('./pages/CertInventory'));
 const Compliance = React.lazy(() => import('./pages/Compliance'));
 const Ceremonies = React.lazy(() => import('./pages/Ceremonies'));
@@ -97,6 +101,8 @@ const App: React.FC = () => {
         <ErrorBoundary>
             <ThemeProvider>
                 {/* Supplies this app's API client to the shared table preference store. */}
+                {/* Hands this app's API client to shared pages — see AuthClientContext. */}
+                <AuthClientProvider client={authClient}>
                 <TablePrefsProvider transport={{ apiGet, apiPut }}>
                 <ToastProvider>
                     <AuthProvider>
@@ -214,6 +220,7 @@ const App: React.FC = () => {
                     </AuthProvider>
                 </ToastProvider>
                 </TablePrefsProvider>
+                </AuthClientProvider>
             </ThemeProvider>
         </ErrorBoundary>
     );

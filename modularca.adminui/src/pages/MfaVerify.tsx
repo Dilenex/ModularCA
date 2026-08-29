@@ -22,7 +22,7 @@ const MfaVerify: React.FC = () => {
     const [mtlsInfo, setMtlsInfo] = useState<{ enabled: boolean; subdomain?: string } | null>(null);
 
     useEffect(() => {
-        fetch('/auth/mtls/auth-info').then(r => r.json()).then(setMtlsInfo).catch(() => {});
+        fetch(`${API_BASE}/auth/mtls/auth-info`).then(r => r.json()).then(setMtlsInfo).catch(() => {});
     }, []);
 
     // If there is no MFA state, redirect back to login

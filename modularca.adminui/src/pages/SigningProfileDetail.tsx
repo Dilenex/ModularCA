@@ -8,11 +8,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import {
-    SIGNING_ALLOWED_ALGORITHM_OPTIONS,
-    inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
-    canonicalizeUsages, caCertId, caDisplayName,
-} from './profileHelpers';
+import { SIGNING_ALLOWED_ALGORITHM_OPTIONS, parseJsonArray, parseListField, BadgeList, MultiToggle, canonicalizeUsages, caCertId, caDisplayName } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const SIGNING_TAB = `/profiles?tab=${encodeURIComponent('Signing Profiles')}`;

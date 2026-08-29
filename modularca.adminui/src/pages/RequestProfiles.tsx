@@ -8,13 +8,12 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { caRowId, caDisplayName } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 const DN_FIELD_OPTIONS = ['CN', 'O', 'OU', 'L', 'ST', 'C', 'DC'];
 const REQUIREMENT_OPTIONS = ['Required', 'Optional', 'Forbidden'];
 const SAN_TYPE_OPTIONS = ['DNS', 'IP', 'Email', 'URI'];
 
-const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
 interface SubjectDnFieldRule {
     field: string;

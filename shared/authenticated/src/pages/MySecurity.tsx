@@ -1,7 +1,20 @@
+/**
+ * Self-service MFA management: TOTP, security keys and mTLS credentials.
+ *
+ * Shared because the two copies were ~600 lines at 4% divergence, and the divergence was a bug —
+ * running the OPPOSITE way from the DataTable one. userui captured the one-time TOTP recovery
+ * codes the server returns from /auth/totp/verify and displayed them; adminui awaited the same
+ * call without binding its result and reported success. The server hashes those codes and never
+ * reveals them again, so an administrator who enrolled TOTP through the admin UI was left with no
+ * way back into the most privileged account on the CA if they lost their authenticator.
+ *
+ * This version is userui's. adminui contributed nothing the other lacked: its only extra import,
+ * useNavigate, was never called.
+ */
 import React, { useState, useEffect } from 'react';
-import { apiGet, apiPost, apiPutWithMfa, apiPostWithMfa, api, apiBlobWithMfa } from '../api/client';
+import { useAuthClient } from '../api/AuthClientContext';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { generateQrSvg } from '@shared-auth/utils/qrcode';
+import { generateQrSvg } from '../utils/qrcode';
 import { StepUpOps } from '@shared/generated';
 
 interface TotpStatus { enrolled: boolean; deviceName?: string; registeredAt?: string; lastUsedAt?: string; }
@@ -12,7 +25,8 @@ interface AllowedCa { caId: string; caName: string; caLabel: string; }
 
 const MAX_WEBAUTHN_KEYS = 3;
 
-const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+    const { apiGet, apiPost, apiPostWithMfa, api, apiBlobWithMfa } = useAuthClient();
     const { requireStepUp } = useStepUp();
     const [mfa, setMfa] = useState<MfaStatus | null>(null);
     const [allowedCas, setAllowedCas] = useState<AllowedCa[]>([]);
@@ -508,6 +522,7 @@ const ChangePasswordSection: React.FC<{
     showMsg: (msg: string) => void;
     setError: (msg: string) => void;
 }> = ({ requireStepUp, showMsg, setError }) => {
+    const { apiPutWithMfa } = useAuthClient();
     const [open, setOpen] = useState(false);
     const [oldPassword, setOldPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
@@ -604,4 +619,3 @@ function bufferToBase64url(buf: ArrayBuffer): string {
     return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export default MySecurity;

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { API_BASE } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 
 /**
@@ -21,7 +22,7 @@ const MfaCallback: React.FC = () => {
             const csrfMatch = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
             const csrfHeaders: Record<string, string> = {};
             if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
-            fetch('/auth/mtls/exchange', {
+            fetch(`${API_BASE}/auth/mtls/exchange`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...csrfHeaders },
                 body: JSON.stringify({ code }),

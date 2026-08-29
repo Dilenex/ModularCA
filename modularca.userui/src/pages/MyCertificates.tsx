@@ -7,6 +7,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { inputClassNarrow as inputClass } from '@shared/components/forms';
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in
 // sync with UserCertificateController.SelfRevokeAllowedReasons on the backend — CA-level reasons
@@ -215,7 +216,6 @@ const MyCertificates: React.FC = () => {
         return certStatus(cert) === statusFilter;
     });
 
-    const inputClass = 'px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
 
     const columns: DataTableColumn<any>[] = [
         {

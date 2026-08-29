@@ -6,7 +6,8 @@ import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { SSH_EXTENSION_OPTIONS, inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
+import { SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 
 const SSH_CERT_TAB = `/profiles?tab=${encodeURIComponent('SSH Cert')}`;

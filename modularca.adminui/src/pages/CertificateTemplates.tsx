@@ -6,9 +6,8 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { StepUpOps } from '@shared/generated';
+import { inputClass, labelClass } from '@shared/components/forms';
 
-const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 
 const TEMPLATE_TABS = ['X.509 CA', 'SSH CA'] as const;
 type TemplateTab = typeof TEMPLATE_TABS[number];

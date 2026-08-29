@@ -22,14 +22,13 @@ import {
     setSchedulerJobEnabled,
     updateSchedulerConfig,
 } from '../api/scheduler';
+import { inputClass, labelClass } from '@shared/components/forms';
 
 // ---------------------------------------------------------------------------
 // Style helpers (match Settings/Vulnerabilities/BackupRestore conventions)
 // ---------------------------------------------------------------------------
 
 const cardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg';
-const inputClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
 const primaryButton = 'px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50';
 
 // ---------------------------------------------------------------------------

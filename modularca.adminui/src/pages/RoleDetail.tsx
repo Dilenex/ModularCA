@@ -10,6 +10,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { capabilityCategory, categoryStatus } from './RoleManagement';
 import type { RoleDetail as RoleDetailModel, RoleCapability } from './RoleManagement';
 import { StepUpOps } from '@shared/generated';
+import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
 const ALL_CAPABILITIES = [
     'cert.request', 'cert.view', 'cert.revoke', 'cert.reissue', 'cert.approve',
@@ -20,8 +21,6 @@ const ALL_CAPABILITIES = [
     'audit.view', 'backup.manage', 'system.manage',
 ];
 
-const inputCls = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50';
-const labelCls = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
 
 type CapEdit = { capability: string; resourceType?: string; resourceId?: string };
 

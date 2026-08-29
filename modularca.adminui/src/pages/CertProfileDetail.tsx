@@ -7,13 +7,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import {
-    KEY_USAGE_OPTIONS, keyUsageLabel,
-    canonicalizeUsages,
-    ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
-    inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
-    FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName,
-} from './profileHelpers';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel, FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName } from './profileHelpers';
+import { inputClass, labelClass } from '@shared/components/forms';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const CERT_TAB = `/profiles?tab=${encodeURIComponent('Certificate Profiles')}`;

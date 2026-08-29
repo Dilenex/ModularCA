@@ -136,9 +136,12 @@ const Login: React.FC = () => {
                     {changeSuccess && <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm text-center p-2 rounded">{changeSuccess}</div>}
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="login-username">Username</label>
                         <input
                             type="text"
+                            id="login-username"
+                            name="username"
+                            autoComplete="username"
                             className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
                             value={username}
                             onChange={e => setUsername(e.target.value)}
@@ -147,8 +150,10 @@ const Login: React.FC = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="login-password">Password</label>
                         <input
+                            id="login-password"
+                            name="password"
                             type="password"
                             className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
                             value={password}

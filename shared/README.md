@@ -65,7 +65,12 @@ in one bundle break hooks in ways that are painful to diagnose.
    The reason is usually "these copies drifted and it caused a bug" — worth recording.
 3. **No default exports.** Named exports keep the call sites greppable across five SPAs.
 4. **Changing a shared file affects all consumers.** Typecheck every SPA that aliases it, not just
-   the one you are working in.
+   the one you are working in — and do it with `npx tsc -b --force`, not `tsc --noEmit -p tsconfig.json`.
+   Those are not the same check. `tsc -b` builds through the project references to
+   `tsconfig.app.json`, which sets `noUnusedLocals`; the root `tsconfig.json` in some apps does not.
+   A shared file with a dead import passes the second and fails the first, in an app that never
+   imports it — every SPA compiles all of `shared/common`, whether it renders any of it or not.
+   This has already happened once: an unused `React` import in `StatusBadge` broke publicui's build.
 
 ## Roadmap
 
@@ -123,6 +128,44 @@ that do not have the package installed. Putting it in the authenticated tier sco
 the two apps that render a QR code. A future shared file with an npm dependency faces the same
 choice: put it where only its consumers compile it, or add the dependency and the alias to all
 five.
+
+Phase 8 (done) — `AccountDetail` and `MySecurity` move to `shared/authenticated/src/pages/`,
+the first shared *pages*. The divergence here ran the opposite way from the DataTable one:
+**userui had the fix and adminui did not.** userui captured the one-time TOTP recovery codes
+returned by `/auth/totp/verify` and displayed them; adminui awaited the same call without binding
+its result. The server hashes those codes and never reveals them again, so an administrator who
+enrolled TOTP through the admin UI had no way back into the most privileged account on the CA
+after losing their authenticator. Do not assume adminui is the better copy when reconciling.
+
+Pages need more of the API client than a component does — `MySecurity` alone uses six of its
+functions — so `AuthClientProvider` / `useAuthClient` hand over the whole client rather than
+threading six props. There is still one client per app, created with that app's basename; the
+provider is only how shared code receives it. Unlike `useTablePrefs`, `useAuthClient` throws when
+no provider is mounted: a page that cannot reach the API has no meaningful fallback, and failing
+at mount beats `undefined is not a function` somewhere deeper in.
+
+### Deliberately NOT shared
+
+`Login`, `MfaVerify`, `MfaCallback`, `LoginBanner` and `NotFound` are 4–9% apart and were left
+as two copies. Their differences are real rather than accidental: adminui refreshes an
+`AuthContext` that userui does not have, the route basename differs, and the user-facing copy
+names the portal it belongs to ("the admin route you requested" vs "your self-service portal").
+Sharing them would mean prop-driving strings through ~100-line pages to save little.
+
+Comparing them was still worth it, because the diff is where three defects were hiding — see the
+commit for `MfaVerify`. When two copies stay, re-diff them after touching either.
+
+Phase 9 (done) — `components/forms.tsx`: `inputClass`, `labelClass`, `ToggleField`.
+Twenty-three files declared their own field classes in ten distinct variants, disagreeing about
+the background (`gray-50/900`, `gray-100/800`, `gray-200/700`), the border weight, and whether
+placeholders and disabled states were styled at all — so a form's appearance depended on which
+file it lived in. Nineteen of the twenty-three were adminui: this was never a userui problem.
+The shared values are the majority spelling of each, so most call sites are unchanged.
+
+`ToggleField` existed twice inside adminui alone, at different sizes and with the label on
+opposite sides. Both layouts survive as `size` and `labelSide` props rather than one being
+imposed on the other — a deduplication, not a redesign.
+
 
 Both apps also needed a `qrcode-generator` entry in the vite alias and tsconfig `paths`, for the
 same walk-up-and-find-no-node_modules reason as React. Note adminui carries a self-contained

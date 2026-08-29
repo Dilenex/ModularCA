@@ -1,9 +1,17 @@
+/**
+ * Self-service account page: profile edit plus the security tab.
+ *
+ * The two copies were 196 and 195 lines with a five-line diff, and both halves of that diff were
+ * wrong in one app or the other — adminui fetched the identity/authorization endpoint to render a
+ * name and an email, userui passed the step-up operation as a bare string instead of the
+ * generated constant. Both were reconciled before this move.
+ */
 import React, { useState, useEffect } from 'react';
-import { apiGet, apiPutWithMfa } from '../api/client';
+import { useAuthClient } from '../api/AuthClientContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
-import MySecurity from './MySecurity';
+import { MySecurity } from './MySecurity';
 import { StepUpOps } from '@shared/generated';
 
 const inputClass =
@@ -21,6 +29,7 @@ interface Account {
 
 /* ─── General tab: view + edit own profile ─── */
 const GeneralTab: React.FC = () => {
+    const { apiGet, apiPutWithMfa } = useAuthClient();
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
 
@@ -164,7 +173,7 @@ const GeneralTab: React.FC = () => {
 };
 
 /* ─── Account page: General + Security tabs ─── */
-const AccountDetail: React.FC = () => {
+export const AccountDetail: React.FC = () => {
     const [tab, setTab] = useState<'general' | 'security'>('general');
 
     const tabBtn = (key: 'general' | 'security', label: string) => (
@@ -197,4 +206,3 @@ const AccountDetail: React.FC = () => {
     );
 };
 
-export default AccountDetail;
