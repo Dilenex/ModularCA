@@ -25,21 +25,33 @@ export const KEY_USAGE_OPTIONS: readonly string[] = KEY_USAGE_NAMES;
  * row, so any cert profile edited in the admin UI was issued with NO ExtendedKeyUsage and NO
  * KeyUsage extension. Use the *_LABELS maps for presentation only.
  */
-export const EKU_OPTIONS = [
+/**
+ * FALLBACK ONLY. The live vocabulary comes from the OID catalog via `useEkuCatalog()`, because
+ * the catalog is extensible and this list is not: `canonicalizeUsages` drops what it does not
+ * recognise and the result is saved back, so a stale list here silently strips usages from a
+ * profile. These entries exist so the pages still render correctly before the catalog fetch
+ * resolves, and if it fails.
+ *
+ * Smart Card Logon and KDC Authentication are included because both are seeded defaults and both
+ * are load-bearing for Windows smart-card logon — the first on the card's certificate, the second
+ * on the domain controller's.
+ */
+export const DEFAULT_EKU_OPTIONS = [
     '1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.3',
     '1.3.6.1.5.5.7.3.4', '1.3.6.1.5.5.7.3.8', '1.3.6.1.5.5.7.3.9',
+    '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.5',
 ];
 
-export const EKU_LABELS: Record<string, string> = {
+export const DEFAULT_EKU_LABELS: Record<string, string> = {
     '1.3.6.1.5.5.7.3.1': 'Server Auth',
     '1.3.6.1.5.5.7.3.2': 'Client Auth',
     '1.3.6.1.5.5.7.3.3': 'Code Signing',
     '1.3.6.1.5.5.7.3.4': 'Email Protection',
     '1.3.6.1.5.5.7.3.8': 'Time Stamping',
     '1.3.6.1.5.5.7.3.9': 'OCSP Signing',
+    '1.3.6.1.4.1.311.20.2.2': 'Smart Card Logon',
+    '1.3.6.1.5.2.3.5': 'KDC Authentication',
 };
-
-export const ekuLabel = (v: string): string => EKU_LABELS[v] ?? v;
 
 /**
  * Comparison key for a usage identifier.
@@ -96,13 +108,15 @@ export const canonicalizeUsages = (
  * bootstrap seeder uses — "Server Authentication" and "OCSP Signer" — because neither is a
  * punctuation variant of "Server Auth" or "OCSP Signing"; they differ in words.
  */
-export const EKU_ALIASES: Record<string, string> = {
+export const DEFAULT_EKU_ALIASES: Record<string, string> = {
     serverAuth: '1.3.6.1.5.5.7.3.1',
     clientAuth: '1.3.6.1.5.5.7.3.2',
     codeSigning: '1.3.6.1.5.5.7.3.3',
     emailProtection: '1.3.6.1.5.5.7.3.4',
     timeStamping: '1.3.6.1.5.5.7.3.8',
     ocspSigning: '1.3.6.1.5.5.7.3.9',
+    smartcardLogon: '1.3.6.1.4.1.311.20.2.2',
+    kdcAuthentication: '1.3.6.1.5.2.3.5',
 };
 
 /**
@@ -152,14 +166,12 @@ export const formatSignatureAlgorithmLabel = (alg: string) =>
 export const SIGNING_ALLOWED_ALGORITHM_OPTIONS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
 
 /** Common EKU OIDs with display names for signing profile EKU picker */
-export const SIGNING_EKU_OPTIONS: { oid: string; label: string }[] = [
-    { oid: '1.3.6.1.5.5.7.3.1', label: 'Server Auth' },
-    { oid: '1.3.6.1.5.5.7.3.2', label: 'Client Auth' },
-    { oid: '1.3.6.1.5.5.7.3.3', label: 'Code Signing' },
-    { oid: '1.3.6.1.5.5.7.3.4', label: 'Email Protection' },
-    { oid: '1.3.6.1.5.5.7.3.8', label: 'Time Stamping' },
-    { oid: '1.3.6.1.5.5.7.3.9', label: 'OCSP Signing' },
-];
+/**
+ * Fallback signing-profile EKU options, derived from the same defaults. Live values come from
+ * `useEkuCatalog()`; see DEFAULT_EKU_OPTIONS for why a hardcoded list cannot be the source.
+ */
+export const DEFAULT_SIGNING_EKU_OPTIONS: { oid: string; label: string }[] =
+    DEFAULT_EKU_OPTIONS.map((oid) => ({ oid, label: DEFAULT_EKU_LABELS[oid] ?? oid }));
 
 /** SSH certificate extension allow/require options. */
 export const SSH_EXTENSION_OPTIONS = [

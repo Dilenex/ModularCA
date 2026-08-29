@@ -6,6 +6,20 @@
         public Guid CertificateAuthorityId { get; set; }
         public string LdapHost { get; set; } = string.Empty;
         public int LdapPort { get; set; } = 389;
+
+        /// <summary>
+        /// Whether the bind runs over TLS (LDAPS), mirroring
+        /// <c>LdapConfigurationEntity.UseSsl</c>.
+        /// <para>
+        /// This field did not exist, which is what made the operator-facing "Use SSL" checkbox
+        /// inert: the column was written, read back and rendered, but the value stopped at the
+        /// entity and never reached <c>LdapPublishHelper.Connect</c>. Every publisher bind — the
+        /// scheduled run, the CRL hook, and the admin "Test Connection" button that reported
+        /// success — was a cleartext simple bind carrying the directory credential.
+        /// </para>
+        /// </summary>
+        public bool UseSsl { get; set; }
+
         public string BaseDn { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;

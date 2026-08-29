@@ -14,20 +14,71 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 public static class LdapPublishHelper
 {
     /// <summary>
-    /// Creates and authenticates an <see cref="LdapConnection"/> using the
-    /// host, port, and credentials from the supplied <paramref name="options"/>.
+    /// Creates and authenticates an <see cref="LdapConnection"/> using the host, port, TLS
+    /// setting and credentials from the supplied <paramref name="options"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="LdapScheduleOptions.UseSsl"/> is honoured here. It previously was not — the
+    /// setting existed on the entity, was persisted, was returned by the admin API and was
+    /// rendered as a checkbox, but no code path ever applied it, so every publisher bind was a
+    /// cleartext simple bind sending the directory password over the network. The admin "Test
+    /// Connection" button shared this method and so reported success for a connection that was
+    /// not the one the operator had configured.
+    /// </para>
+    /// <para>
+    /// This is LDAPS (TLS from the first byte, conventionally port 636), matching what
+    /// <c>LdapAuthService</c> does. StartTLS on port 389 is a different handshake and is not
+    /// offered, so a publisher pointed at 389 with this enabled will fail to connect rather than
+    /// quietly downgrade.
+    /// </para>
+    /// <para>
+    /// The server certificate is validated against the host's trust store. On Linux that is
+    /// OpenLDAP's configuration (<c>TLS_CACERT</c> in <c>ldap.conf</c>), not the .NET trust
+    /// store — worth knowing when the directory presents a certificate from a private CA.
+    /// </para>
+    /// </remarks>
     /// <param name="options">LDAP connection options.</param>
+    /// <param name="timeout">Caps blocking time on an unresponsive directory server.</param>
+    /// <param name="logger">Optional logger, used to record an unencrypted bind.</param>
     /// <returns>A bound <see cref="LdapConnection"/> ready for requests.</returns>
-    public static LdapConnection Connect(LdapScheduleOptions options, TimeSpan? timeout = null)
+    public static LdapConnection Connect(LdapScheduleOptions options, TimeSpan? timeout = null, ILogger? logger = null)
+    {
+        var connection = CreateConnection(options, timeout, logger);
+        connection.Bind();
+        return connection;
+    }
+
+    /// <summary>
+    /// Builds and configures the connection without binding it. Split out from
+    /// <see cref="Connect"/> so the transport settings — the part that was silently wrong — can be
+    /// asserted in a test without a directory server to bind to.
+    /// </summary>
+    internal static LdapConnection CreateConnection(
+        LdapScheduleOptions options, TimeSpan? timeout = null, ILogger? logger = null)
     {
         var connection = new LdapConnection(new LdapDirectoryIdentifier(options.LdapHost, options.LdapPort));
         connection.AuthType = AuthType.Basic;
+        connection.SessionOptions.ProtocolVersion = 3;
+        connection.SessionOptions.SecureSocketLayer = options.UseSsl;
         connection.Credential = new NetworkCredential(options.Username, options.Password);
         // Cap blocking time on an unresponsive directory server.
         if (timeout.HasValue && timeout.Value > TimeSpan.Zero)
             connection.Timeout = timeout.Value;
-        connection.Bind();
+
+        if (!options.UseSsl)
+        {
+            // Not refused, because a publisher against a directory on a trusted segment is a
+            // legitimate configuration and refusing would break running deployments on upgrade.
+            // It is recorded every time, because a simple bind puts the credential on the wire in
+            // the clear and most directories — Active Directory among them — reject it outright
+            // once LDAP signing and channel binding are enforced.
+            logger?.LogWarning(
+                "LDAP publisher binding to {Host}:{Port} WITHOUT TLS — the bind password is sent in cleartext. " +
+                "Enable 'Use SSL' on this publisher and point it at the directory's LDAPS port.",
+                options.LdapHost, options.LdapPort);
+        }
+
         return connection;
     }
 

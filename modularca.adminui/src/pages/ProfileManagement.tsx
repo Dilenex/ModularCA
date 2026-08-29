@@ -8,21 +8,24 @@ import DetailField from '../components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '../components/DataTable';
 import {
-    KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
-    canonicalizeUsages, EKU_ALIASES, parseListField,
+    KEY_USAGE_OPTIONS, keyUsageLabel,
+    canonicalizeUsages, parseListField,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
-    SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS, SSH_EXTENSION_OPTIONS,
+    SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS,
     inputClass, labelClass, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel,
 } from './profileHelpers';
 
 import RequestProfilesTab from './RequestProfiles';
 import { StepUpOps } from '@shared/generated';
+import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const TABS = ['Certificate Profiles', 'Signing Profiles', 'Request Profiles', 'SSH Signing', 'SSH Cert', 'SSH Request'] as const;
 type Tab = typeof TABS[number];
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
+    // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
+    const ekuCatalog = useEkuCatalog();
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
@@ -257,7 +260,7 @@ const CertProfilesTab: React.FC = () => {
                     </div>
                     <div>
                         <label className={labelClass}>Extended Key Usages</label>
-                        <MultiToggle options={EKU_OPTIONS} formatLabel={ekuLabel} selected={form.extendedKeyUsages}
+                        <MultiToggle options={ekuCatalog.options} formatLabel={ekuCatalog.label} selected={form.extendedKeyUsages}
                             onChange={(next) => setForm({ ...form, extendedKeyUsages: next })} />
                     </div>
                     <div>
@@ -317,6 +320,8 @@ const CertProfilesTab: React.FC = () => {
 
 /* ─── Signing Profiles Tab ─── */
 const SigningProfilesTab: React.FC = () => {
+    // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
+    const ekuCatalog = useEkuCatalog();
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
@@ -472,7 +477,7 @@ const SigningProfilesTab: React.FC = () => {
             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
             <DetailField label="Issuer" value={authorityName(p.issuerId)} />
             <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES).map(ekuLabel)} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
             <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
             <p className="text-[11px] text-gray-500 pt-3">Open the full page for all settings or to edit.</p>
         </div>
@@ -526,7 +531,7 @@ const SigningProfilesTab: React.FC = () => {
                         <div>
                             <label className={labelClass}>Allowed EKUs</label>
                             <div className="flex flex-wrap gap-2">
-                                {SIGNING_EKU_OPTIONS.map((eku) => {
+                                {ekuCatalog.options.map((oid) => { const eku = { oid, label: ekuCatalog.label(oid) };
                                     const selected = form.allowedEkus.includes(eku.oid);
                                     return (
                                         <button key={eku.oid} type="button"

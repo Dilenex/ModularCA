@@ -205,7 +205,7 @@ const LdapPublisherDetail: React.FC = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                                 <div><label className={labelCls}>Name *</label><input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></div>
                                 <div><label className={labelCls}>Host *</label><input type="text" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} className={inputCls} /></div>
-                                <div><label className={labelCls}>Port</label><input type="text" inputMode="numeric" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value.replace(/\D/g, '') })} className={inputCls} /></div>
+                                <div><label className={labelCls}>Port</label><input type="text" inputMode="numeric" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value.replace(/\D/g, '') })} placeholder="636 for LDAPS, 389 plain" className={inputCls} /></div>
                                 <div><label className={labelCls}>Username</label><input type="text" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className={inputCls} /></div>
                                 <div><label className={labelCls}>Password</label><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="(unchanged)" className={inputCls} /></div>
                                 <div><label className={labelCls}>Base DN *</label><input type="text" value={form.baseDn} onChange={(e) => setForm({ ...form, baseDn: e.target.value })} className={inputCls} /></div>
@@ -216,6 +216,15 @@ const LdapPublisherDetail: React.FC = () => {
                                 <ToggleField label="Use SSL" checked={form.useSsl} onChange={(v) => setForm({ ...form, useSsl: v })} />
                                 <ToggleField label="Enabled" checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} />
                             </div>
+                            {!form.useSsl && (
+                                <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
+                                    <p className="text-xs text-amber-900 dark:text-amber-300">
+                                        Without SSL the bind password is sent to {form.host || 'the directory'} in cleartext.
+                                        Enable it and use the LDAPS port (usually 636). Many directories, Active Directory
+                                        included, reject unencrypted simple binds outright.
+                                    </p>
+                                </div>
+                            )}
                             <div>
                                 <span className={`${labelCls} mb-2`}>Publish Options</span>
                                 <div className="flex flex-wrap gap-4">

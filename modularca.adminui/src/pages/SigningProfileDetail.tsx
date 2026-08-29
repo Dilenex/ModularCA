@@ -9,10 +9,11 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import {
-    SIGNING_ALLOWED_ALGORITHM_OPTIONS, SIGNING_EKU_OPTIONS,
+    SIGNING_ALLOWED_ALGORITHM_OPTIONS,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle,
-    canonicalizeUsages, EKU_ALIASES, ekuLabel,
+    canonicalizeUsages,
 } from './profileHelpers';
+import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const SIGNING_TAB = `/profiles?tab=${encodeURIComponent('Signing Profiles')}`;
 const spId = (p: any): string => p.id || p.signingProfileId;
@@ -25,6 +26,8 @@ const QUALIFIERS_PLACEHOLDER = '{\n  "2.23.140.1.2.1": {\n    "cpsUri": "https:/
 /// profiles. Edit changes all fields plus the allowed cert profiles (step-up MFA).
 /// </summary>
 const SigningProfileDetail: React.FC = () => {
+    // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
+    const ekuCatalog = useEkuCatalog();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
@@ -78,7 +81,7 @@ const SigningProfileDetail: React.FC = () => {
                     // Wire name is `allowedEKUs`: System.Text.Json's camelCase policy lowercases only
                     // the leading char of `AllowedEKUs`. Reading `allowedEkus` gave undefined, so the
                     // toggles rendered empty and saving wrote that empty list back over the real one.
-                    allowedEkus: canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES),
+                    allowedEkus: canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases),
                     maxPathLength: p.maxPathLength != null ? String(p.maxPathLength) : '',
                     nameConstraintsPermitted: typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : (p.nameConstraintsPermitted || ''),
                     nameConstraintsExcluded: typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : (p.nameConstraintsExcluded || ''),
@@ -207,7 +210,7 @@ const SigningProfileDetail: React.FC = () => {
                         <div>
                             <label className={labelClass}>Allowed EKUs</label>
                             <div className="flex flex-wrap gap-2">
-                                {SIGNING_EKU_OPTIONS.map((eku) => {
+                                {ekuCatalog.options.map((oid) => { const eku = { oid, label: ekuCatalog.label(oid) };
                                     const selected = editForm.allowedEkus.includes(eku.oid);
                                     return <button key={eku.oid} type="button" onClick={() => toggleEku(eku.oid)} className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-blue-600/30 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-600' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>{eku.label} <span className="text-[10px] text-gray-600 ml-1">{eku.oid}</span></button>;
                                 })}
@@ -253,7 +256,7 @@ const SigningProfileDetail: React.FC = () => {
                     <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                     <DetailField label="Issuer" value={authorityName(p.issuerId)} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), SIGNING_EKU_OPTIONS.map((o) => o.oid), EKU_ALIASES).map(ekuLabel)} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
                     <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
                     <DetailField label="Name Constraints Permitted" value={typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : p.nameConstraintsPermitted} />
                     <DetailField label="Name Constraints Excluded" value={typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : p.nameConstraintsExcluded} />

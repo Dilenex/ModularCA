@@ -82,6 +82,7 @@ export const StepUpOps = {
     UpdateCrlSchedule: 'update-crl-schedule',
     DeleteCrlSchedule: 'delete-crl-schedule',
     ToggleCrlSchedule: 'toggle-crl-schedule',
+    ManageOidCatalog: 'manage-oid-catalog',
     CreateLdapPublisher: 'create-ldap-publisher',
     UpdateLdapPublisher: 'update-ldap-publisher',
     DeleteLdapPublisher: 'delete-ldap-publisher',

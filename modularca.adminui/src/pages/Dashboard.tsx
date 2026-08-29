@@ -9,9 +9,10 @@ import CertificateReissueModal from '../components/CertificateReissueModal';
 import { useToast } from '../context/ToastContext';
 import { StepUpOps } from '@shared/generated';
 import {
-    canonicalizeUsages, parseListField, ekuLabel, keyUsageLabel,
-    KEY_USAGE_OPTIONS, EKU_OPTIONS, EKU_ALIASES,
+    canonicalizeUsages, parseListField, keyUsageLabel,
+    KEY_USAGE_OPTIONS,
 } from './profileHelpers';
+import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -70,6 +71,8 @@ function parseSansForReissue(raw: any): string[] | undefined {
 }
 
 const Dashboard: React.FC = () => {
+    // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
+    const ekuCatalog = useEkuCatalog();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
@@ -630,7 +633,7 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Validity Min" value={p.validityPeriodMin} />
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
                             <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
-                            <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
+                            <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
                             <DetailField label="Allowed Algorithms" value={parseJsonSafe(p.allowedKeyAlgorithms)} />
                             <DetailField label="Allowed Sizes" value={parseJsonSafe(p.allowedKeySizes)} />
                             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />

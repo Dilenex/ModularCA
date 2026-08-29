@@ -54,6 +54,12 @@ public class CrlService : ICrlService
     private readonly ICaServiceUrlService _caServiceUrls;
 
     /// <summary>
+    /// Decrypts the LDAP publisher bind password before the fire-and-forget CRL publish hands it
+    /// to a background task — the scoped protector must be used while this scope is still alive.
+    /// </summary>
+    private readonly ILdapSecretProtector _ldapSecretProtector;
+
+    /// <summary>
     /// Constructs the CRL service. The unused <c>IFeatureFlagService</c> dependency
     /// that was wired in but never referenced has been removed.
     /// Added <see cref="IAuditService"/> so each
@@ -62,13 +68,14 @@ public class CrlService : ICrlService
     /// scheduler's <c>CrlExported</c> dispatch event).
     /// </summary>
     public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
-        ICaServiceUrlService caServiceUrls)
+        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector)
     {
         _dbContext = dbContext;
         _keystore = keystore;
         _logger = logger;
         _audit = audit;
         _caServiceUrls = caServiceUrls;
+        _ldapSecretProtector = ldapSecretProtector;
     }
 
     /// <summary>
@@ -686,9 +693,13 @@ public class CrlService : ICrlService
         {
             LdapHost = cfg.Host,
             LdapPort = cfg.Port,
+            UseSsl = cfg.UseSsl,
             BaseDn = cfg.BaseDn,
             Username = cfg.Username,
-            Password = cfg.Password,
+            // Decrypted on this thread, while the request scope and its protector are still
+            // alive. A row still holding a plaintext password reads through unchanged; the
+            // scheduled publisher owns upgrading those, since this path has no writable context.
+            Password = _ldapSecretProtector.Unprotect(cfg.Password),
             CertificateAuthorityId = cfg.CertificateAuthorityId,
             PublishCRL = true,
             TaskId = cfg.Id,
@@ -703,7 +714,7 @@ public class CrlService : ICrlService
             {
                 try
                 {
-                    using var connection = LdapPublishHelper.Connect(options);
+                    using var connection = LdapPublishHelper.Connect(options, timeout: null, logger: logger);
                     LdapPublishHelper.PublishCrl(connection, options, derCopy, logger);
                 }
                 catch (Exception ex)

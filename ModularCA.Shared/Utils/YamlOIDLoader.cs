@@ -58,6 +58,11 @@ namespace ModularCA.Shared.Utils
                         ["timeStamping"] = "1.3.6.1.5.5.7.3.8",
                         ["OCSPSigning"] = "1.3.6.1.5.5.7.3.9",
                         ["smartcardLogon"] = "1.3.6.1.4.1.311.20.2.2",
+                        // Kerberos PKINIT KDC authentication (RFC 4556 id-pkinit-KPKdc).
+                        // A domain controller must hold a certificate carrying this before it
+                        // will accept smart-card logon; without one PKINIT fails at the KDC with
+                        // KDC_ERR_PADATA_TYPE_NOSUPP, which reads as a client problem and is not.
+                        ["kdcAuthentication"] = "1.3.6.1.5.2.3.5",
                     }
                 }
             };

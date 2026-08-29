@@ -43,6 +43,7 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
     private readonly ModularCADbContext _dbContext;
     private readonly ILogger<LdapPublisherJob> _logger;
     private readonly ILdapPublisherPolicyService _publisherPolicy;
+    private readonly ILdapSecretProtector _secretProtector;
 
     /// <summary>
     /// Initializes a new instance of <see cref="LdapPublisherJob"/>. The base class needs the
@@ -51,11 +52,13 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
     /// <see cref="PerRowScheduledJob{TRow}.ExecuteRowAsync"/> path and the manual-run shim
     /// need them.
     /// </summary>
+    /// <param name="secretProtector">Decrypts the row's stored bind password.</param>
     public LdapPublisherJob(
         IServiceProvider serviceProvider,
         ModularCADbContext dbContext,
         ILogger<LdapPublisherJob> logger,
         ILdapPublisherPolicyService publisherPolicy,
+        ILdapSecretProtector secretProtector,
         SystemConfig config,
         SchedulerJobRunner runner)
         : base(serviceProvider, logger, config, runner)
@@ -63,6 +66,7 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
         _dbContext = dbContext;
         _logger = logger;
         _publisherPolicy = publisherPolicy;
+        _secretProtector = secretProtector;
     }
 
     /// <inheritdoc />
@@ -184,21 +188,50 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
                 options.CertificateAuthorityId = ldapConfig.CertificateAuthorityId;
                 options.LdapHost = ldapConfig.Host;
                 options.LdapPort = ldapConfig.Port;
+                options.UseSsl = ldapConfig.UseSsl;
                 options.BaseDn = ldapConfig.BaseDn;
                 options.Username = ldapConfig.Username;
-                options.Password = ldapConfig.Password;
+                options.Password = _secretProtector.Unprotect(ldapConfig.Password);
                 options.PublishCRL = ldapConfig.PublishCRL;
                 options.PublishCACert = ldapConfig.PublishCACert;
                 options.PublishDelta = ldapConfig.PublishDelta;
                 options.PublishUserCerts = ldapConfig.PublishUserCerts;
                 options.UserDnTemplate = ldapConfig.UserDnTemplate ?? string.Empty;
+
+                // Self-heal rows written before the password was protected at rest. The
+                // scheduled run is the natural place for it: it already holds the row and a
+                // writable context, and it reaches every enabled publisher without waiting for
+                // an operator to open and re-save each one. Re-protecting is a pure re-encoding
+                // of a value we just decrypted, so a failure here is not worth failing the
+                // publish over.
+                if (LdapSecretProtection.NeedsUpgrade(ldapConfig.Password))
+                {
+                    try
+                    {
+                        var protectedPassword = _secretProtector.Protect(options.Password);
+                        await _dbContext.LdapConfigurations
+                            .Where(l => l.Id == ldapConfig.Id)
+                            .ExecuteUpdateAsync(setters => setters
+                                .SetProperty(l => l.Password, protectedPassword),
+                                cancellationToken);
+                        _logger.LogInformation(
+                            "Encrypted the stored bind password for LDAP publisher {PublisherId} ({Name}).",
+                            ldapConfig.Id, ldapConfig.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "Could not encrypt the stored bind password for LDAP publisher {PublisherId}; it remains in plaintext.",
+                            ldapConfig.Id);
+                    }
+                }
             }
         }
 
         var policy = await _publisherPolicy.GetAsync();
         var connectTimeout = TimeSpan.FromSeconds(Math.Max(5, policy.ConnectionTimeoutSeconds));
 
-        using var connection = LdapPublishHelper.Connect(options, connectTimeout);
+        using var connection = LdapPublishHelper.Connect(options, connectTimeout, _logger);
 
         _logger.LogInformation("LDAP bind successful to {Host}:{Port}", options.LdapHost, options.LdapPort);
 

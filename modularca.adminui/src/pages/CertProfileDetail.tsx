@@ -8,12 +8,13 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import {
-    KEY_USAGE_OPTIONS, EKU_OPTIONS, ekuLabel, keyUsageLabel,
-    canonicalizeUsages, EKU_ALIASES,
+    KEY_USAGE_OPTIONS, keyUsageLabel,
+    canonicalizeUsages,
     ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel,
     inputClass, labelClass, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel,
     FieldSourceBadge, SourceBorderedField,
 } from './profileHelpers';
+import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const CERT_TAB = `/profiles?tab=${encodeURIComponent('Certificate Profiles')}`;
 const cpId = (p: any): string => p.id || p.certProfileId;
@@ -25,6 +26,8 @@ const displayCommaSep = (val: any): string => parseListField(val).join(', ');
 /// usages/algorithm allow-lists and inheritance; Edit changes all profile fields via step-up MFA.
 /// </summary>
 const CertProfileDetail: React.FC = () => {
+    // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
+    const ekuCatalog = useEkuCatalog();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
@@ -78,7 +81,7 @@ const CertProfileDetail: React.FC = () => {
                     // live hold fragments like '["[]"' or '"Server Auth"'. Normalising punctuation away
                     // recovers the real selection, and the next save rewrites the field cleanly.
                     keyUsages: canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS),
-                    extendedKeyUsages: canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES),
+                    extendedKeyUsages: canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases),
                     allowedKeyAlgorithms: parseJsonArray(p.allowedKeyAlgorithms),
                     allowedKeySizes: parseJsonArray(p.allowedKeySizes),
                     allowedSignatureAlgorithms: parseJsonArray(p.allowedSignatureAlgorithms),
@@ -218,7 +221,7 @@ const CertProfileDetail: React.FC = () => {
                             <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance. Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the leftmost label, and at least two labels.</p>
                         </div>
                         <div><label className={labelClass}>Key Usages</label><MultiToggle options={KEY_USAGE_OPTIONS} selected={editForm.keyUsages} onChange={(next) => setEditForm({ ...editForm, keyUsages: next })} formatLabel={keyUsageLabel} /></div>
-                        <div><label className={labelClass}>Extended Key Usages</label><MultiToggle options={EKU_OPTIONS} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuLabel} /></div>
+                        <div><label className={labelClass}>Extended Key Usages</label><MultiToggle options={ekuCatalog.options} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuCatalog.label} /></div>
                         <div><label className={labelClass}>Allowed Key Algorithms</label><MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={editForm.allowedKeyAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedKeyAlgorithms: next })} /></div>
                         <div><label className={labelClass}>Allowed Key Sizes</label><MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={editForm.allowedKeySizes} onChange={(next) => setEditForm({ ...editForm, allowedKeySizes: next })} formatLabel={formatKeySizeLabel} /></div>
                         <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} /></div>
@@ -230,7 +233,7 @@ const CertProfileDetail: React.FC = () => {
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
                     <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
-                    <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
+                    <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><BadgeList items={p.allowedKeyAlgorithms} /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><BadgeList items={p.allowedKeySizes} /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><BadgeList items={p.allowedSignatureAlgorithms} /></div>
@@ -264,7 +267,7 @@ const CertProfileDetail: React.FC = () => {
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.Description} label="Description" value={resolvedProfile.description} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.IsCaProfile} label="CA Profile" value={resolvedProfile.isCaProfile ? 'Yes' : 'No'} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.KeyUsages} label="Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
-                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExtendedKeyUsages} label="Extended Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.extendedKeyUsages), EKU_OPTIONS, EKU_ALIASES).map(ekuLabel).join(', ')} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExtendedKeyUsages} label="Extended Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMin} label="Validity Period Min" value={resolvedProfile.validityPeriodMin} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={resolvedProfile.validityPeriodMax} />
                                 <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeyAlgorithms === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>

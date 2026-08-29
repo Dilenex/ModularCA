@@ -1152,6 +1152,11 @@ builder.Services.AddSingleton<ModularCA.Shared.Interfaces.IWhitelistService, Mod
 builder.Services.AddScoped<IFeatureFlagService, FeatureFlagService>();
 builder.Services.AddScoped<ISecurityPolicyService, SecurityPolicyService>();
 builder.Services.AddScoped<ILdapPublisherPolicyService, LdapPublisherPolicyService>();
+// Encrypts LDAP publisher bind passwords at rest on the same Data Protection keyring that
+// protects TOTP secrets. Registered here rather than in Core so Core keeps no dependency on
+// ASP.NET Core Data Protection.
+builder.Services.AddScoped<ModularCA.Shared.Interfaces.ILdapSecretProtector,
+    ModularCA.API.Services.DataProtectionLdapSecretProtector>();
 builder.Services.AddScoped<IProtocolRateLimitService, ProtocolRateLimitService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<IProtocolAuditService, ProtocolAuditService>();

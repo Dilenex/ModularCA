@@ -27,7 +27,9 @@ namespace ModularCA.API.Controllers.v1.Admin;
 public class AdminLdapPublishersController(
     ModularCADbContext dbContext,
     ICurrentUserService currentUser,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    ILdapSecretProtector secretProtector,
+    ILogger<AdminLdapPublishersController> logger) : ControllerBase
 {
     /// <summary>
     /// Resolves <paramref name="caId"/> to its owning tenant and verifies the caller
@@ -164,7 +166,9 @@ public class AdminLdapPublishersController(
             Port = request.Port,
             UseSsl = request.UseSsl,
             Username = request.Username ?? string.Empty,
-            Password = request.Password ?? string.Empty,
+            // Encrypted before it reaches the column. The API already masked it on read and kept
+            // it out of the audit payload; the value itself was the one place it stayed in clear.
+            Password = secretProtector.Protect(request.Password),
             BaseDn = request.BaseDn,
             PublishCACert = request.PublishCACert,
             PublishCRL = request.PublishCRL,
@@ -263,7 +267,8 @@ public class AdminLdapPublishersController(
         if (request.Port.HasValue) entity.Port = request.Port.Value;
         if (request.UseSsl.HasValue) entity.UseSsl = request.UseSsl.Value;
         if (request.Username != null) entity.Username = request.Username;
-        if (request.Password != null && request.Password != "***") entity.Password = request.Password;
+        if (request.Password != null && request.Password != "***")
+            entity.Password = secretProtector.Protect(request.Password);
         if (request.BaseDn != null) entity.BaseDn = request.BaseDn;
         if (request.PublishCACert.HasValue) entity.PublishCACert = request.PublishCACert.Value;
         if (request.PublishCRL.HasValue) entity.PublishCRL = request.PublishCRL.Value;
@@ -507,14 +512,20 @@ public class AdminLdapPublishersController(
             {
                 LdapHost = cfg.Host,
                 LdapPort = cfg.Port,
+                // Carried so the test exercises the connection the publisher will actually make.
+                // Without it this reported success for a cleartext bind while the row said TLS,
+                // which is worse than not testing at all: it confirmed a configuration that was
+                // never in effect.
+                UseSsl = cfg.UseSsl,
                 BaseDn = cfg.BaseDn,
                 Username = cfg.Username,
-                Password = cfg.Password,
+                Password = secretProtector.Unprotect(cfg.Password),
                 TaskId = cfg.Id,
             };
 
-            using var connection = LdapPublishHelper.Connect(options, TimeSpan.FromSeconds(10));
-            return Ok(new { success = true, message = $"LDAP bind successful to {cfg.Host}:{cfg.Port}." });
+            using var connection = LdapPublishHelper.Connect(options, TimeSpan.FromSeconds(10), logger);
+            var transport = cfg.UseSsl ? "LDAPS" : "cleartext LDAP";
+            return Ok(new { success = true, message = $"LDAP bind successful to {cfg.Host}:{cfg.Port} over {transport}." });
         }
         catch (Exception ex)
         {

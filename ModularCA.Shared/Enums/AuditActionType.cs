@@ -216,6 +216,10 @@ public static class AuditActionType
     public const string LdapPublisherUpdated = "LdapPublisherUpdated";
     public const string LdapPublisherDeleted = "LdapPublisherDeleted";
 
+    // OID catalog management
+    public const string OidOptionCreated = "OidOptionCreated";
+    public const string OidOptionDeleted = "OidOptionDeleted";
+
     // Certificate renewal
     public const string CertificateRenewalInitiated = "CertificateRenewalInitiated";
 

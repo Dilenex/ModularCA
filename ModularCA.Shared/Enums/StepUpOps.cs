@@ -138,6 +138,10 @@ public static class StepUpOps
     public const string DeleteCrlSchedule = "delete-crl-schedule";
     public const string ToggleCrlSchedule = "toggle-crl-schedule";
 
+    // OID catalog administration. The catalog is global and decides what usages every CA in the
+    // deployment may issue, so widening it is a system-wide change, not a per-CA one.
+    public const string ManageOidCatalog = "manage-oid-catalog";
+
     // LDAP publisher administration (per-CA LDAP publishing configurations).
     public const string CreateLdapPublisher = "create-ldap-publisher";
     public const string UpdateLdapPublisher = "update-ldap-publisher";
@@ -243,6 +247,7 @@ public static class StepUpOps
         UpdateSchedulerConfig,
         CreateCrlSchedule, UpdateCrlSchedule, DeleteCrlSchedule, ToggleCrlSchedule,
         CreateLdapPublisher, UpdateLdapPublisher, DeleteLdapPublisher,
+        ManageOidCatalog,
         BulkCrlSchedule, BulkLdapPublisher,
         CreateCtLog, UpdateCtLog, DeleteCtLog,
         CreateCertificateTemplate, UpdateCertificateTemplate, DeleteCertificateTemplate,

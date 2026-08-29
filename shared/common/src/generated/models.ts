@@ -790,6 +790,7 @@ export interface LdapScheduleOptions {
     certificateAuthorityId: string;
     ldapHost: string;
     ldapPort: number;
+    useSsl: boolean;
     baseDn: string;
     username: string;
     password: string;
