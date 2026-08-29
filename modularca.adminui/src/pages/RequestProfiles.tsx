@@ -12,7 +12,11 @@ import { inputClass, labelClass } from '@shared/components/forms';
 
 const DN_FIELD_OPTIONS = ['CN', 'O', 'OU', 'L', 'ST', 'C', 'DC'];
 const REQUIREMENT_OPTIONS = ['Required', 'Optional', 'Forbidden'];
-const SAN_TYPE_OPTIONS = ['DNS', 'IP', 'Email', 'URI'];
+// UPN must be selectable here or it can never be used: profile validation rejects any SAN whose
+// type is absent from a profile's allowedTypes, on the server and in the browser. It is off by
+// default on every existing profile, which is the intended posture — a UPN asserts an Active
+// Directory identity, so permitting it should be a deliberate per-profile choice.
+const SAN_TYPE_OPTIONS = ['DNS', 'IP', 'Email', 'URI', 'UPN'];
 
 
 interface SubjectDnFieldRule {

@@ -212,6 +212,23 @@ public class EstService : IEstService
                     "CSR CN does not match the authenticated caller username.");
             }
         }
+        else if (isAuthenticated)
+        {
+            // Authenticated, no client certificate, and no username could be resolved. There is
+            // nothing to bind the CSR to, so the subject and SAN checks above would be skipped
+            // entirely and the caller could enroll any identity.
+            //
+            // This is the shape of the original defect: the caller name arrived null because the
+            // controller read a claim the token never carried, and the binding quietly did not
+            // apply. Refuse rather than fall through, so a future mis-wiring fails visibly
+            // instead of silently disabling the control.
+            await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
+                success: false, errorMessage: "Authenticated caller has no resolvable username to bind the CSR to",
+                callerPrincipal: "unknown");
+            throw new InvalidOperationException(
+                "Authenticated EST caller could not be identified; enrollment refused.");
+        }
 
         var context = await _caResolver.ResolveAsync(caLabel, "EST");
         var signingProfileId = context.SigningProfileId;

@@ -1,4 +1,4 @@
-using ModularCA.Shared.Models;
+﻿using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
@@ -42,8 +42,10 @@ namespace ModularCA.Core.Implementations
             var certGen = new X509V3CertificateGenerator();
             certGen.SetSerialNumber(serial);
             certGen.SetIssuerDN(issuerDN);
-            certGen.SetNotBefore(notBefore);
-            certGen.SetNotAfter(notAfter);
+            // See CertificateValidityUtil.AsUtc: BouncyCastle treats an Unspecified DateTime as
+            // local and shifts it by the host's UTC offset.
+            certGen.SetNotBefore(CertificateValidityUtil.AsUtc(notBefore));
+            certGen.SetNotAfter(CertificateValidityUtil.AsUtc(notAfter));
             certGen.SetSubjectDN(subjectDN);
             certGen.SetPublicKey(subjectKeyPair.Public);
 
@@ -77,10 +79,45 @@ namespace ModularCA.Core.Implementations
                         "Key usages were requested but resolved to no KeyUsage bits: "
                         + string.Join(", ", request.KeyUsages)
                         + ". Refusing to emit an empty critical KeyUsage extension.");
+
+                // A CA key signs certificates and CRLs. It never enciphers a key or performs key
+                // agreement, and RFC 5480 §3 forbids keyEncipherment outright for id-ecPublicKey
+                // (RFC 8410 §5 likewise for Ed25519) — which is what the default install used,
+                // so the bootstrap root asserted a bit its own key type cannot carry.
+                //
+                // The caller's list is fixed now, but this is the layer that decides what ends up
+                // inside the signature, and a certificate's extensions cannot be corrected after
+                // issuance. Refuse rather than quietly strip, so a reintroduction is a failed
+                // bootstrap and not a non-compliant root nobody notices for a year.
+                const int encipherOrAgree = KeyUsage.KeyEncipherment | KeyUsage.DataEncipherment | KeyUsage.KeyAgreement;
+                if (request.IsCA && (flags & encipherOrAgree) != 0)
+                    throw new InvalidOperationException(
+                        "A CA certificate must not assert keyEncipherment, dataEncipherment or keyAgreement. "
+                        + "Requested: " + string.Join(", ", request.KeyUsages)
+                        + ". A CA key signs certificates and CRLs; RFC 5480 §3 forbids keyEncipherment "
+                        + "for EC keys and RFC 8410 §5 for Ed25519.");
+
                 certGen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(flags));
             }
 
             // Extended Key Usage
+            //
+            // An EKU on a CA constrains every certificate beneath it (RFC 5280 §4.2.1.12), so a
+            // root carrying serverAuth/clientAuth/codeSigning/emailProtection/timeStamping/OCSP
+            // makes a smartcardLogon or kdcAuthentication leaf fail EKU-nesting in Windows
+            // CryptoAPI with CERT_E_WRONG_USAGE. CA/B BR §7.1.2.1.2 forbids extKeyUsage on a root
+            // outright. The bootstrap paths passed exactly that six-entry list into the root's own
+            // request, which is what this rejects.
+            //
+            // What the CA is permitted to ISSUE is a separate question, carried by the signing
+            // profile's AllowedEKUs, and is unaffected.
+            if (request.IsCA && request.ExtendedKeyUsages.Any())
+                throw new InvalidOperationException(
+                    "A CA certificate must not carry an ExtendedKeyUsage extension. Requested: "
+                    + string.Join(", ", request.ExtendedKeyUsages)
+                    + ". An EKU on a CA constrains every certificate beneath it; put the permitted "
+                    + "issuance EKUs on the signing profile instead.");
+
             if (request.ExtendedKeyUsages.Any())
             {
                 var usages = request.ExtendedKeyUsages.Select(u => new DerObjectIdentifier(u)).ToList();
@@ -138,17 +175,23 @@ namespace ModularCA.Core.Implementations
 
         /// <summary>
         /// Parses a "type:value" SAN string (e.g. "DNS:example.com", "IP:10.0.0.1") into a BouncyCastle
-        /// <see cref="GeneralName"/>. Falls back to DNS for unknown prefixes.
+        /// <see cref="GeneralName"/>.
         /// </summary>
+        /// <remarks>
+        /// Unknown prefixes used to fall back to <c>DnsName</c>, which is worse than it sounds: a
+        /// "UPN:alice@example.test" entry became a DNS SAN containing that text, and a typo like
+        /// "DSN:host" became a DNS name silently rather than being reported. A SAN the caller did
+        /// not ask for is a wrong identity in a signed certificate, so unknown types are refused.
+        /// This mirrors <c>CertificateBuilderService</c>, which is the runtime path.
+        /// </remarks>
         private static GeneralName GeneralNameFactory(string name)
         {
             var parts = name.Split(':', 2);
-            return parts[0].ToLower() switch
-            {
-                "dns" => new GeneralName(GeneralName.DnsName, parts[1]),
-                "ip" => new GeneralName(GeneralName.IPAddress, parts[1]),
-                _ => new GeneralName(GeneralName.DnsName, parts[1])
-            };
+            if (parts.Length < 2)
+                throw new InvalidOperationException(
+                    $"SAN entry '{name}' is missing a TYPE:value prefix (expected DNS:, IP:, URI:, EMAIL:, UPN:).");
+
+            return SanGeneralNames.Build(parts[0], parts[1].Trim());
         }
     }
 }

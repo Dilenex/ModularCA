@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
@@ -28,6 +28,30 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// CSRs should never approach this size; oversized payloads are rejected early.
     /// </summary>
     private const int MaxCsrBodySize = 256 * 1024;
+
+    /// <summary>
+    /// Resolves the authenticated caller's username for the EST CSR-to-caller binding.
+    /// </summary>
+    /// <remarks>
+    /// This previously read <c>HttpContext.User?.Identity?.Name</c> alone. The JWT emits the
+    /// username under the custom claim <c>username</c>, so with no <c>NameClaimType</c> configured
+    /// <c>Identity.Name</c> was always null and the entire Basic/bearer binding branch in
+    /// <c>EstService</c> — both the CN check and the SAN binding — was unreachable. Any account
+    /// that could log in could enroll <c>CN=root-admin</c> with arbitrary SANs.
+    ///
+    /// <c>NameClaimType</c> is now set on the bearer handler, so <c>Identity.Name</c> is correct.
+    /// The explicit claim read stays as the fallback so this binding does not depend on a setting
+    /// in a different file to remain enforced — the same coupling that produced the original
+    /// defect. The claim name matches the rest of the codebase (<c>AuthController</c>).
+    /// </remarks>
+    /// <returns>The caller's username, or null when no authenticated username is present.</returns>
+    private string? ResolveCallerUsername()
+    {
+        var name = HttpContext.User?.Identity?.Name;
+        if (!string.IsNullOrWhiteSpace(name))
+            return name;
+        return HttpContext.User?.FindFirst("username")?.Value;
+    }
 
     /// <summary>
     /// CA Certificates Distribution (RFC 7030 §4.1).
@@ -94,7 +118,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
         try
         {
             var clientCert = await HttpContext.Connection.GetClientCertificateAsync();
-            var callerName = HttpContext.User?.Identity?.Name;
+            var callerName = ResolveCallerUsername();
             var pkcs7Der = await estService.SimpleEnrollAsync(body, caLabel,
                 HttpContext.Connection.RemoteIpAddress?.ToString(), clientCert,
                 HttpContext.User?.Identity?.IsAuthenticated ?? false, callerName);
@@ -175,7 +199,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
 
         try
         {
-            var callerName = HttpContext.User?.Identity?.Name;
+            var callerName = ResolveCallerUsername();
             var pkcs7Der = await estService.SimpleReenrollAsync(body, caLabel,
                 HttpContext.Connection.RemoteIpAddress?.ToString(), clientCert,
                 HttpContext.User?.Identity?.IsAuthenticated ?? false, callerName);

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
 using ModularCA.Core.Implementations;
@@ -294,7 +294,7 @@ public class CaCreationService(
                 notAfter = parentBcCert.NotAfter;
             }
 
-            result = await issuanceService.IssueCertificateAsync(
+            result = await issuanceService.IssueCaCertificateAsync(
                 csrId, notBefore, notAfter, parentBcCert, parentKeyHandle);
         }
         finally
@@ -1438,7 +1438,7 @@ public class CaCreationService(
         if (notAfter > caCert.NotAfter)
             notAfter = caCert.NotAfter;
 
-        var result = await issuanceService.IssueCertificateAsync(
+        var result = await issuanceService.IssueCaCertificateAsync(
             csrId, notBefore, notAfter, caCert, caKeyHandle);
 
         // Parse the issued cert PEM for keystore writing

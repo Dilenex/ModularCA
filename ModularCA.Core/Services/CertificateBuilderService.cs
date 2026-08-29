@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -115,8 +115,14 @@ namespace ModularCA.Core.Services
             certGen.SetSerialNumber(serialNumber);
             certGen.SetIssuerDN(issuerCert.SubjectDN);
             certGen.SetSubjectDN(subjectDn);
-            certGen.SetNotBefore(validFrom);
-            certGen.SetNotAfter(validTo);
+            // Normalize the Kind before handing these to BouncyCastle. SetNotBefore/SetNotAfter
+            // call ToUniversalTime(), which for a DateTimeKind.Unspecified value assumes LOCAL time
+            // and adds the host's UTC offset. Requested windows are read back from MySQL by EF as
+            // Unspecified, so an issuance that honoured the window recorded on the request produced
+            // a certificate that was not valid until now-plus-the-server-offset — six hours on the
+            // affected host, rejected by every relying party until then.
+            certGen.SetNotBefore(CertificateValidityUtil.AsUtc(validFrom));
+            certGen.SetNotAfter(CertificateValidityUtil.AsUtc(validTo));
             certGen.SetPublicKey(subjectPublicKey);
 
             // === Extensions ===
@@ -205,7 +211,7 @@ namespace ModularCA.Core.Services
                         {
                             case "DNS":
                                 DnComponentSanitizer.ValidateDnsName(value, allowWildcardSans);
-                                sanNames.Add(new GeneralName(GeneralName.DnsName, value));
+                                sanNames.Add(SanGeneralNames.Build(type, value));
                                 break;
                             case "IP":
                                 var ipValue = value;
@@ -218,21 +224,29 @@ namespace ModularCA.Core.Services
                                 }
                                 if (!IPAddress.TryParse(ipValue, out _))
                                     throw new InvalidOperationException($"IP SAN '{value}' is not a valid IP literal.");
-                                sanNames.Add(new GeneralName(GeneralName.IPAddress, ipValue));
+                                sanNames.Add(SanGeneralNames.Build(type, ipValue));
                                 break;
                             case "URI":
                                 DnComponentSanitizer.ValidateUri(value);
-                                sanNames.Add(new GeneralName(GeneralName.UniformResourceIdentifier, value));
+                                sanNames.Add(SanGeneralNames.Build(type, value));
                                 break;
                             case "EMAIL":
                             case "RFC822":
                                 DnComponentSanitizer.ValidateEmail(value);
-                                sanNames.Add(new GeneralName(GeneralName.Rfc822Name, value));
+                                sanNames.Add(SanGeneralNames.Build(type, value));
+                                break;
+                            case "UPN":
+                                // Microsoft otherName (1.3.6.1.4.1.311.20.2.3). This is the name
+                                // Windows maps a smart-card logon certificate to an Active
+                                // Directory account by, so it is an identity claim rather than a
+                                // network name — see UpnSanEncoding and ValidateUpn.
+                                DnComponentSanitizer.ValidateUpn(value);
+                                sanNames.Add(SanGeneralNames.Build(type, value));
                                 break;
                             default:
                                 throw new InvalidOperationException(
                                     $"Unsupported SAN type '{type}' in entry '{entry}'. " +
-                                    "Supported types: DNS, IP, URI, EMAIL.");
+                                    $"Supported types: {SanGeneralNames.SupportedTypes}.");
                         }
                     }
                     if (sanNames.Count > 0)

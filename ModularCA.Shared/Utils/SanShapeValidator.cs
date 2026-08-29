@@ -101,6 +101,19 @@ public static class SanShapeValidator
                 return IsValidFqdn(value)
                     ? null
                     : $"'{value}' is not a valid DNS hostname (FQDN).";
+            case "UPN":
+                // Same rule the issuance pipeline enforces, surfaced here so a malformed principal
+                // name is reported while the operator is still looking at the form rather than
+                // failing at signing time.
+                try
+                {
+                    DnComponentSanitizer.ValidateUpn(value);
+                    return null;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return ex.Message;
+                }
             default:
                 return null;
         }

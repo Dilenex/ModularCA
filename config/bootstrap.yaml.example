@@ -43,4 +43,8 @@ HttpsApi:
     - "IP:127.0.0.1"
     - "IP:::1"
   Port: 8443
+  # Plain-HTTP port for CRL, OCSP and AIA distribution. The CDP and AIA URLs baked into every
+  # issued certificate point here, so it must match what clients can actually reach. Set to 0 to
+  # disable plain HTTP, in which case certificates are issued with no distribution point.
+  HttpPort: 8080
   ValidityYears: 2

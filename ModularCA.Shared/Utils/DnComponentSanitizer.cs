@@ -191,5 +191,57 @@ namespace ModularCA.Shared.Utils
             if (!Uri.TryCreate(uri, UriKind.Absolute, out _))
                 throw new InvalidOperationException($"URI SAN '{uri}' is not a valid absolute URI.");
         }
+
+        /// <summary>
+        /// Validates a User Principal Name for a UPN <c>otherName</c> SAN.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A UPN is <c>user@suffix</c>. It resembles an email address but is not one, so it is not
+        /// validated as such: <see cref="System.Net.Mail.MailAddress"/> accepts display-name forms
+        /// like <c>"Alice" &lt;a@b&gt;</c> and would let that reach the certificate.
+        /// </para>
+        /// <para>
+        /// This matters more here than for other SAN types. A UPN is a claim to be a specific
+        /// Active Directory account, and Windows uses it to decide which account a smart-card
+        /// logon authenticates. A value carrying a stray NUL, a control character or a second
+        /// <c>@</c> is either a mapping failure or an attempt to be mistaken for another
+        /// principal, so this rejects rather than sanitises.
+        /// </para>
+        /// </remarks>
+        public static void ValidateUpn(string upn)
+        {
+            if (string.IsNullOrWhiteSpace(upn))
+                throw new InvalidOperationException("UPN SAN must not be empty.");
+
+            if (upn.Length > 1024)
+                throw new InvalidOperationException($"UPN SAN is {upn.Length} characters; the maximum is 1024.");
+
+            if (upn.Any(char.IsControl))
+                throw new InvalidOperationException("UPN SAN must not contain control characters.");
+
+            // No whitespace anywhere — not merely trimmed. A UPN has none, and allowing interior
+            // whitespace is what lets the RFC 822 display form `"Alice" <alice@example.test>`
+            // through: its '@' is singular and its suffix parses, so every other check here passes.
+            if (upn.Any(char.IsWhiteSpace))
+                throw new InvalidOperationException($"UPN SAN '{upn}' must not contain whitespace.");
+
+            // Characters that only appear when someone is writing an address in a wrapper syntax
+            // rather than a bare principal name. Rejecting them keeps a UPN from being read one
+            // way by the CA and another way by whatever consumes the certificate.
+            const string forbidden = "\"<>,;\\()[]";
+            var bad = upn.FirstOrDefault(forbidden.Contains);
+            if (bad != default)
+                throw new InvalidOperationException($"UPN SAN '{upn}' must not contain '{bad}'.");
+
+            var at = upn.IndexOf('@');
+            if (at < 1 || at != upn.LastIndexOf('@') || at == upn.Length - 1)
+                throw new InvalidOperationException(
+                    $"UPN SAN '{upn}' must be of the form user@suffix with exactly one '@'.");
+
+            var suffix = upn[(at + 1)..];
+            if (suffix.StartsWith('.') || suffix.EndsWith('.') || suffix.Contains(".."))
+                throw new InvalidOperationException($"UPN SAN '{upn}' has a malformed suffix '{suffix}'.");
+        }
     }
 }

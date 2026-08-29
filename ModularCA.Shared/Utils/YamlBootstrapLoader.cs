@@ -87,6 +87,18 @@ namespace ModularCA.Shared.Utils
             public int Port { get; set; } = 8443;
 
             /// <summary>
+            /// Plain-HTTP port used for CRL, OCSP and AIA distribution. Set to 0 to disable plain
+            /// HTTP, in which case no CDP/AIA URL is embedded in issued certificates.
+            /// <para>
+            /// This was previously hardcoded as <c>8080</c> where config.yaml is written and not
+            /// represented here at all, so the AIA/CDP builder had nothing correct to read and
+            /// pointed at the TLS port instead. It is a config field now so the listener and the
+            /// URLs embedded in certificates come from one value.
+            /// </para>
+            /// </summary>
+            public int HttpPort { get; set; } = 8080;
+
+            /// <summary>
             /// Web TLS certificate validity in days. Default 397 — the CA/Browser Forum maximum
             /// for publicly-trusted server certificates (effective 2020). The issuing signing
             /// profile may enforce a shorter ceiling.

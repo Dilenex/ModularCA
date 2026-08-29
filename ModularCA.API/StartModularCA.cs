@@ -875,7 +875,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(key),
             ValidateLifetime = true,
             ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
-            ClockSkew = TimeSpan.FromMinutes(1)
+            ClockSkew = TimeSpan.FromMinutes(1),
+            // JwtTokenService emits the username under the custom claim name "username", not
+            // "name" or "unique_name". Without this, ClaimsIdentity.Name is always null, and any
+            // code reading User.Identity.Name silently sees an unauthenticated-looking caller —
+            // which disabled the EST caller-to-CSR binding entirely and defeated the fallback in
+            // JwtIpBindingMiddleware.
+            NameClaimType = "username"
         };
 
     });
@@ -1037,13 +1043,61 @@ else
             .Select(x => new CertificateAuthorityIdentity(x.Cert, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(x.PrivateKey)))
             .ToList();
     }
+    catch (Exception ex) when (IsKeystoreIntegrityFailure(ex))
+    {
+        // Fail closed. A keystore that is present but does not verify means the CA private key
+        // material cannot be trusted, and continuing would serve a CA whose integrity checks were
+        // performed, failed, and then ignored.
+        //
+        // This whole block used to be a single `catch (Exception ex)` that swallowed the
+        // SecurityException from a failed file signature, the SPKI pin-MAC mismatch, and per-entry
+        // signature failures, along with the AES-GCM tag mismatch — then booted with an empty CA
+        // registry while printing "This is expected during initial setup" on a path where
+        // isSetupMode was already handled above, so it never is setup. Flipping one byte of
+        // ca-certs.keystore fired the entire integrity apparatus correctly and discarded it.
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("[FATAL] Keystore integrity verification failed. Refusing to start.");
+        Console.Error.WriteLine($"        {ex.GetType().Name}: {ex.Message}");
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("        The keystore did not verify. This means the file, its signature, or the");
+        Console.Error.WriteLine("        pinned signing identity has been altered. Restore from a known-good");
+        Console.Error.WriteLine("        backup; do not delete the keystore to get past this message.");
+        Console.Error.WriteLine();
+        Environment.Exit(1);
+        throw; // Unreachable. Present so the compiler sees this path terminate.
+    }
     catch (Exception ex)
     {
-        Console.WriteLine($"[WARNING] Failed to load keystores: {ex.Message}");
-        Console.WriteLine("         This is expected during initial setup.");
+        // Everything else — the keystore files not written yet, the database not reachable to
+        // read the pinned signer, a malformed keystore.yaml. These are recoverable states that
+        // the setup and migration paths below already tolerate, so starting with an empty CA
+        // registry is preserved deliberately rather than made fatal here.
+        //
+        // The old wording claimed this was "expected during initial setup", which was never true
+        // on this branch. Say what actually happened instead.
+        Console.WriteLine($"[WARNING] Could not load keystores: {ex.GetType().Name}: {ex.Message}");
+        Console.WriteLine("          Starting with an empty CA registry. No certificate can be issued");
+        Console.WriteLine("          until this is resolved.");
         trustedCAs = new();
         fullCAs = new();
     }
+}
+
+// Distinguishes "this keystore failed its integrity checks" from "this keystore could not be
+// read at all". Only the former is fatal — see the catch blocks above. SecurityException covers
+// the file and per-entry signatures and the SPKI pin MAC; CryptographicException covers the
+// AES-GCM authentication tag; InvalidDataException covers a malformed or truncated file. The
+// inner-exception walk matters because the loader wraps failures as it unwinds.
+static bool IsKeystoreIntegrityFailure(Exception? ex)
+{
+    for (; ex != null; ex = ex.InnerException)
+    {
+        if (ex is System.Security.SecurityException
+            or System.Security.Cryptography.CryptographicException
+            or InvalidDataException)
+            return true;
+    }
+    return false;
 }
 
 // Load HSM-backed CA signers if PKCS#11 is configured and enabled

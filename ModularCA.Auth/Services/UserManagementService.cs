@@ -120,14 +120,27 @@ namespace ModularCA.Auth.Services
         /// <summary>
         /// Updates an existing user's profile fields (username, email, name, active/locked status).
         /// </summary>
+        /// <remarks>
+        /// The uniqueness checks exclude the user being updated. Without that exclusion a PUT
+        /// carrying the account's own current username or email matched the account itself and
+        /// returned false, which the controller reports as 404 "user not found" — so disabling a
+        /// compromised account failed unless the admin also changed both the username and the
+        /// email in the same request. This method holds the only assignment of
+        /// <see cref="UserEntity.IsActive"/> from a request in the solution, so that failure left
+        /// the account enabled and skipped the stamp rotation and audit record below.
+        ///
+        /// A null field means "leave unchanged", so it is not a value to check for collisions.
+        /// </remarks>
         public async Task<bool> UpdateUser(Guid userId, UpdateUserRequest request)
         {
-            if (await _dbContext.Users.AnyAsync(u => u.Username == request.Username))
+            if (!string.IsNullOrEmpty(request.Username)
+                && await _dbContext.Users.AnyAsync(u => u.Id != userId && u.Username == request.Username))
             {
                 _logger.LogWarning("Attempted to update user {UserId} with existing username {Username}", userId, request.Username);
                 return false;
             }
-            if (await _dbContext.Users.AnyAsync(u => u.Email == request.Email))
+            if (!string.IsNullOrEmpty(request.Email)
+                && await _dbContext.Users.AnyAsync(u => u.Id != userId && u.Email == request.Email))
             {
                 _logger.LogWarning("Attempted to update user {UserId} with existing email {Email}", userId, request.Email);
                 return false;

@@ -1,4 +1,4 @@
-using ModularCA.Shared.Models;
+﻿using ModularCA.Shared.Models;
 using ModularCA.Shared.Models.Csr;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Pkcs;
@@ -93,10 +93,7 @@ public static class CertificateUtil
             foreach (Asn1Encodable entry in san)
             {
                 var gn = GeneralName.GetInstance(entry);
-                var val = gn.TagNo == GeneralName.IPAddress && gn.Name is Org.BouncyCastle.Asn1.DerOctetString ipOct
-                    ? new System.Net.IPAddress(ipOct.GetOctets()).ToString()
-                    : gn.Name.ToString() ?? "";
-                info.SubjectAlternativeNames.Add($"{GeneralNameTypeName(gn.TagNo)}:{val}");
+                info.SubjectAlternativeNames.Add(UpnSanEncoding.Describe(gn));
             }
         }
 
@@ -125,17 +122,6 @@ public static class CertificateUtil
         info.SignatureAlgorithm = MapSignatureAlgorithmOidToName(cert.SigAlgOid);
 
         return info;
-    }
-
-    private static string GeneralNameTypeName(int tag)
-    {
-        return tag switch
-        {
-            GeneralName.DnsName => "DNS",
-            GeneralName.IPAddress => "IP",
-            GeneralName.Rfc822Name => "Email",
-            _ => "Other"
-        };
     }
 
     // === Thumbprint Calculation ===
@@ -294,25 +280,15 @@ public static class CertificateUtil
                     foreach (Asn1Encodable entry in sanSeq)
                     {
                         var gn = GeneralName.GetInstance(entry);
-                        var sanType = gn.TagNo switch
-                        {
-                            GeneralName.DnsName => "DNS",
-                            GeneralName.IPAddress => "IP",
-                            GeneralName.Rfc822Name => "Email",
-                            GeneralName.UniformResourceIdentifier => "URI",
-                            _ => "Other"
-                        };
-                        var sanValue = gn.Name.ToString() ?? "";
-                        // IP addresses come as ASN.1 octet strings — convert to dotted notation
-                        if (sanType == "IP" && gn.Name is Org.BouncyCastle.Asn1.DerOctetString octets)
-                        {
-                            var ipBytes = octets.GetOctets();
-                            sanValue = new System.Net.IPAddress(ipBytes).ToString();
-                        }
+                        // Same decode as every other SAN path — see UpnSanEncoding. This one wants
+                        // the type and value as separate fields, so split on the first colon; the
+                        // value may itself contain colons (an IPv6 literal, a URI).
+                        var described = UpnSanEncoding.Describe(gn);
+                        var split = described.IndexOf(':');
                         response.Sans.Add(new Models.Csr.SanEntry
                         {
-                            Type = sanType,
-                            Value = sanValue
+                            Type = split > 0 ? described[..split] : "Other",
+                            Value = split > 0 ? described[(split + 1)..] : described
                         });
                     }
                 }
@@ -415,10 +391,7 @@ public static class CertificateUtil
                     foreach (Asn1Encodable entry in sanSeq)
                     {
                         var gn = GeneralName.GetInstance(entry);
-                        var gnVal = gn.TagNo == GeneralName.IPAddress && gn.Name is Org.BouncyCastle.Asn1.DerOctetString ipO
-                            ? new System.Net.IPAddress(ipO.GetOctets()).ToString()
-                            : gn.Name.ToString() ?? "";
-                        altNames.Add($"{GeneralNameTypeNameForCsr(gn.TagNo)}:{gnVal}");
+                        altNames.Add(UpnSanEncoding.Describe(gn));
                     }
                 }
             }
@@ -481,19 +454,6 @@ public static class CertificateUtil
     private static string MapSignatureAlgorithmOidToName(string oidOrName)
     {
         return SignatureAlgorithmOidToName.TryGetValue(oidOrName, out var name) ? name : oidOrName;
-    }
-
-    // Helper to avoid ambiguous call
-    private static string GeneralNameTypeNameForCsr(int tag)
-    {
-        return tag switch
-        {
-            GeneralName.DnsName => "DNS",
-            GeneralName.IPAddress => "IP",
-            GeneralName.Rfc822Name => "Email",
-            _ => "Other"
-        };
-
     }
 
     public static CreateCsrRequest CreateCsrRequestFromCsrPem(
@@ -723,10 +683,7 @@ public static class CertificateUtil
             foreach (Asn1Encodable entry in san)
             {
                 var gn = GeneralName.GetInstance(entry);
-                var val = gn.TagNo == GeneralName.IPAddress && gn.Name is DerOctetString ipOct
-                    ? new IPAddress(ipOct.GetOctets()).ToString()
-                    : gn.Name.ToString() ?? "";
-                result.SubjectAlternativeNames.Add($"{GeneralNameTypeName(gn.TagNo)}:{val}");
+                result.SubjectAlternativeNames.Add(UpnSanEncoding.Describe(gn));
             }
         }
 

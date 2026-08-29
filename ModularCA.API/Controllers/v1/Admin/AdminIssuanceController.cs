@@ -244,15 +244,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var sanGeneralNames = new List<GeneralName>();
                 foreach (var san in req.Sans)
                 {
-                    var gn = san.Type.ToUpperInvariant() switch
-                    {
-                        "DNS" => new GeneralName(GeneralName.DnsName, san.Value),
-                        "IP" => new GeneralName(GeneralName.IPAddress, san.Value),
-                        "EMAIL" => new GeneralName(GeneralName.Rfc822Name, san.Value),
-                        "URI" => new GeneralName(GeneralName.UniformResourceIdentifier, san.Value),
-                        _ => new GeneralName(GeneralName.DnsName, san.Value)
-                    };
-                    sanGeneralNames.Add(gn);
+                    // Shared with the runtime and bootstrap builders. The local switch this
+                    // replaces fell back to DnsName for any unrecognised type, so a UPN — or a
+                    // typo — was signed into the certificate as a DNS name with nothing reported.
+                    sanGeneralNames.Add(SanGeneralNames.Build(san.Type, san.Value));
                 }
 
                 var sanExtension = new GeneralNames(sanGeneralNames.ToArray());

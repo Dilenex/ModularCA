@@ -78,7 +78,11 @@ interface SanRulesObj {
 // --- Constants ---
 
 const DN_FIELDS = ['CN', 'O', 'OU', 'L', 'ST', 'C'];
-const SAN_TYPES = ['DNS', 'IP', 'Email', 'URI'];
+// UPN is a Microsoft otherName (1.3.6.1.4.1.311.20.2.3) and is how Windows maps a smart-card
+// logon certificate to an Active Directory account. Unlike the others it names a principal rather
+// than a network endpoint, so a request profile has to list it in allowedTypes before it can be
+// used — see RequestProfiles.
+const SAN_TYPES = ['DNS', 'IP', 'Email', 'URI', 'UPN'];
 
 // --- Component ---
 
@@ -144,11 +148,21 @@ const IssueCertificate: React.FC = () => {
             })
             .catch(() => {});
 
+        // <input type="datetime-local"> reads its value as LOCAL time, so it must be seeded
+        // with local wall-clock components. toISOString() returns UTC: seeding from it put a
+        // UTC clock reading into a local-time field, so the form opened pre-filled with a
+        // notBefore one UTC-offset in the future, and the certificate was issued starting
+        // then — invalid to every relying party until that time arrived.
+        const toLocalInputValue = (d: Date) => {
+            const pad = (v: number) => String(v).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+                + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        };
         const now = new Date();
         const oneYear = new Date(now);
         oneYear.setFullYear(oneYear.getFullYear() + 1);
-        setNotBefore(now.toISOString().slice(0, 16));
-        setNotAfter(oneYear.toISOString().slice(0, 16));
+        setNotBefore(toLocalInputValue(now));
+        setNotAfter(toLocalInputValue(oneYear));
     }, []);
 
     // --- CSR parsing ---
@@ -762,7 +776,7 @@ const IssueCertificate: React.FC = () => {
                                                     onChange={(e) => updateSan(idx, 'value', e.target.value)}
                                                     onBlur={handleFieldBlur}
                                                     className={`flex-1 px-3 py-2 bg-gray-50 dark:bg-gray-900 border ${borderClass} rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500`}
-                                                    placeholder={`${san.type} value`}
+                                                    placeholder={san.type === 'UPN' ? 'user@domain.example' : `${san.type} value`}
                                                 />
                                                 {statusIcon(sanValidation?.status)}
                                                 <button

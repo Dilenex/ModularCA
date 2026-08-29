@@ -107,16 +107,27 @@ namespace ModularCA.Core.Services
         /// <returns>The PEM-encoded certificate with intermediate chain and any issuance warnings.</returns>
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, null, cancellationToken);
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, null, allowCaProfile: false, cancellationToken);
 
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, cancellationToken);
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: false, cancellationToken);
 
+        /// <inheritdoc />
+        public Task<IssuanceResult> IssueCaCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
+            X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: true, cancellationToken);
+
+        /// <param name="allowCaProfile">
+        /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
+        /// entry point; only <see cref="IssueCaCertificateAsync"/> passes true. See
+        /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why.
+        /// </param>
         private async Task<IssuanceResult> IssueCertificateInternalAsync(
             Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate? preResolvedCaCert, IPrivateKeyHandle? preResolvedCaKeyHandle,
+            bool allowCaProfile,
             CancellationToken cancellationToken = default)
         {
             var issuanceWarnings = new List<string>();
@@ -177,6 +188,20 @@ namespace ModularCA.Core.Services
 
             // Resolve the effective (merged/inherited) cert profile instead of using the raw entity
             var effectiveCertProfile = await _profileResolver.ResolveCertProfileAsync(csrEntity.CertProfileId.Value);
+
+            // A CA-flagged profile may only be used through IssueCaCertificateAsync. The profile id
+            // reaches here from the request body on the integration, cert-manager, public
+            // enrollment, and protocol paths, validated only for existence — so without this gate
+            // naming a CA profile's GUID yields a cA=TRUE certificate signed by the production CA.
+            if (effectiveCertProfile.IsCaProfile && !allowCaProfile)
+            {
+                _logger.LogWarning(
+                    "Blocked issuance of CA-flagged cert profile {ProfileId} through a non-CA issuance path for CSR {CsrId}.",
+                    effectiveCertProfile.SourceProfileId, csrId);
+                throw new InvalidOperationException(
+                    "The selected certificate profile is a CA profile and cannot be used for certificate issuance. " +
+                    "CA certificates are created through the CA creation workflow.");
+            }
 
             if (!_validation.NotBeyondMaximumDate(notAfter, effectiveCertProfile))
             {
@@ -240,8 +265,11 @@ namespace ModularCA.Core.Services
 
             // Backdate an auto-generated start time so the certificate is valid on verifiers whose
             // clocks trail ours. An explicitly requested notBefore is honoured as given.
-            var validFrom = notBefore ?? CertificateValidityUtil.DefaultNotBefore();
-            var validTo = notAfter ?? timeMax;
+            // AsUtc: a requested window read back from the database arrives as
+            // DateTimeKind.Unspecified, and every comparison, clamp and audit record below should
+            // see the same instant the certificate will carry. See CertificateValidityUtil.AsUtc.
+            var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
+            var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin
             // for clock skew. Both auto-generated and explicitly requested dates are clamped
@@ -516,6 +544,28 @@ namespace ModularCA.Core.Services
             if (string.IsNullOrWhiteSpace(csrEntity.CSR))
                 throw new InvalidOperationException("CSR field is empty");
 
+            // Reissue has no CA-creation caller — CaCreationService issues, it never reissues — so
+            // a CA-flagged profile here is always the escalation described on
+            // ICertificateIssuanceService.IssueCaCertificateAsync, reached through a certificate or
+            // CSR id instead of a profile id.
+            //
+            // This sits ahead of the auto-revocation below on purpose: refusing after revoking the
+            // predecessor would take a certificate out of service on a request that was never going
+            // to be honoured.
+            if (csrEntity.CertProfileId != null)
+            {
+                var reissueProfile = await _profileResolver.ResolveCertProfileAsync(csrEntity.CertProfileId.Value);
+                if (reissueProfile.IsCaProfile)
+                {
+                    _logger.LogWarning(
+                        "Blocked reissue against CA-flagged cert profile {ProfileId} (certId={CertId}, certSN={CertSN}, csrId={CsrId}).",
+                        reissueProfile.SourceProfileId, certId, certSN, csrId);
+                    throw new InvalidOperationException(
+                        "The selected certificate profile is a CA profile and cannot be used for reissuance. " +
+                        "CA certificates are managed through the CA creation workflow.");
+                }
+            }
+
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
             // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, do so now via
             // ICertificateRevocationService — that path triggers CRL regeneration, audit logging,
@@ -622,8 +672,11 @@ namespace ModularCA.Core.Services
 
             // Backdate an auto-generated start time so the certificate is valid on verifiers whose
             // clocks trail ours. An explicitly requested notBefore is honoured as given.
-            var validFrom = notBefore ?? CertificateValidityUtil.DefaultNotBefore();
-            var validTo = notAfter ?? timeMax;
+            // AsUtc: a requested window read back from the database arrives as
+            // DateTimeKind.Unspecified, and every comparison, clamp and audit record below should
+            // see the same instant the certificate will carry. See CertificateValidityUtil.AsUtc.
+            var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
+            var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin.
             var reissueCaNotAfterMargin = caMatch.NotAfter - TimeSpan.FromMinutes(5);
@@ -1047,7 +1100,7 @@ namespace ModularCA.Core.Services
 
             // Validate overridden SANs use a recognized TYPE:value format
             var parsedSans = ParseSanJson(effectiveSansJson);
-            var allowedSanTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DNS", "IP", "EMAIL", "URI" };
+            var allowedSanTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DNS", "IP", "EMAIL", "URI", "UPN" };
             foreach (var san in parsedSans)
             {
                 var colonIndex = san.IndexOf(':');
@@ -1073,6 +1126,13 @@ namespace ModularCA.Core.Services
                     var dnsValue = san[(colonIndex + 1)..].Trim();
                     DnComponentSanitizer.ValidateDnsName(dnsValue, allowWildcardSans);
                 }
+
+                // A UPN names an Active Directory account, and Windows decides which account a
+                // smart-card logon authenticates from it. Validate it here as well as at build
+                // time so a malformed or wrapper-syntax value is refused at the override boundary
+                // rather than reaching the certificate.
+                if (sanType == "UPN")
+                    DnComponentSanitizer.ValidateUpn(san[(colonIndex + 1)..].Trim());
             }
         }
 

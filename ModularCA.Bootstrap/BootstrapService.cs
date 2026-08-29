@@ -197,11 +197,27 @@ public class BootstrapService
             // === OID Loading ===
             BootstrapProfileSeeder.LoadOidsToDb(dbContext, OIDConfig);
 
-            var allowedRootCaStandardOids = new[] { "Digital Signature", "Key Encipherment", "Key Certificate Signing", "CRL Signing" };
+            // What the CA may put in the certificates it ISSUES. Kept at all six so that
+            // "reissue infrastructure certificates" can rotate this CA's own OCSP responder and
+            // TSA — see the signing-profile comment below.
             var allowedRootCaExtendedOids = new[] { "Server Authentication", "Client Authentication", "Code Signing", "Email Protection", "Time Stamping", "OCSP Signer" };
 
-            var RootCaStandardOidsJson = BootstrapProfileSeeder.SetupAllowedStandardOidsJson(allowedRootCaStandardOids, dbContext);
-            var RootCaExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedRootCaExtendedOids, dbContext);
+            // What the CA's own certificate asserts — a different question from the list above.
+            //
+            // No EKU: RFC 5280 §4.2.1.12 makes an EKU on a CA constrain every certificate beneath
+            // it, so a smartcardLogon or kdcAuthentication leaf under a root carrying the
+            // six-entry list fails EKU-nesting in Windows CryptoAPI with CERT_E_WRONG_USAGE.
+            // CA/B BR §7.1.2.1.2 forbids extKeyUsage on a root outright.
+            //
+            // No keyEncipherment: RFC 5480 §3 forbids that bit for id-ecPublicKey and RFC 8410 §5
+            // for Ed25519. A CA key signs; it never encrypts.
+            //
+            // Matches what CaCreationService emits for runtime-created CAs.
+            var rootCaCertificateStandardOids = new[] { "Digital Signature", "Key Certificate Signing", "CRL Signing" };
+            var rootCaCertificateExtendedOids = Array.Empty<string>();
+
+            var RootCaStandardOidsJson = BootstrapProfileSeeder.SetupAllowedStandardOidsJson(rootCaCertificateStandardOids, dbContext);
+            var RootCaExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(rootCaCertificateExtendedOids, dbContext);
 
             var KeyAlgorithms = new List<string> { "RSA", "ECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" };
             var KeySizes = new List<string> { "2048", "3072", "4096", "7680", "8192", "P-256", "P-384", "P-521" };
@@ -213,7 +229,7 @@ public class BootstrapService
 
             // === CA Certificate Profile & Signing Profile ===
             BootstrapProfileSeeder.CreateCertProfile(dbContext, "Main CA Certificate Profile", "Default cert profile for self-signed CA certificates",
-                allowedRootCaStandardOids, allowedRootCaExtendedOids, false, true,
+                rootCaCertificateStandardOids, rootCaCertificateExtendedOids, false, true,
                 KeyAlgorithmsJson, KeySizesJson, SignatureAlgorithmsJson, "P5Y", "P25Y");
             var caCertProfile = BootstrapProfileSeeder.GetCertProfileFromDb(dbContext, "Main CA Certificate Profile");
             // The signing profile must permit the CA's OWN infrastructure EKUs, not just the
@@ -262,8 +278,8 @@ public class BootstrapService
                 DateTime.UtcNow,
                 DateTime.UtcNow.AddYears(request.RootCa.ValidityYears),
                 signingProfile.Id,
-                allowedRootCaStandardOids,
-                allowedRootCaExtendedOids,
+                rootCaCertificateStandardOids,
+                rootCaCertificateExtendedOids,
                 dbContext);
 
             var (signedCaCert, caPrivKey, caPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(caCertRequest);
@@ -274,7 +290,7 @@ public class BootstrapService
                 request.RootCa.Locality ?? string.Empty, request.RootCa.State ?? string.Empty, request.RootCa.Country ?? string.Empty,
                 rootCaAlgorithm, rootCaKeySizeInt,
                 DateTime.UtcNow, DateTime.UtcNow.AddYears(100),
-                signingProfile.Id, allowedRootCaStandardOids, allowedRootCaExtendedOids, dbContext);
+                signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
             var (signedSysCert, sysPrivKey, sysPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(sysCertRequest);
 
             var caCertPem = KeystoreService.ExportCertificateToPem(signedCaCert);
@@ -464,27 +480,29 @@ public class BootstrapService
             // Auto-generate service URLs — use explicit Network.PublicDomain if provided,
             // otherwise derive from the cert's DNS SANs as a fallback. PublicDomain and ports
             // are network-deployment concerns, owned by SetupNetwork.
-            string publicBaseUrl;
-            if (!string.IsNullOrWhiteSpace(request.Network.PublicDomain))
+            // Shares its derivation with the CLI — see BootstrapServiceUrlBuilder. The SAN fallback
+            // here dropped the port (giving port 80 against a listener on 8080) and the
+            // no-domain fallback aimed plain HTTP at the HTTPS port; the builder does neither.
+            var publicBaseUrl = BootstrapServiceUrlBuilder.Build(
+                publicDomain: request.Network.PublicDomain,
+                dnsSans: request.WebTlsCertificate.Sans,
+                httpPort: request.Network.HttpPublicPort ?? request.Network.HttpPort);
+
+            if (publicBaseUrl == null)
             {
-                var httpPort = request.Network.HttpPublicPort ?? request.Network.HttpPort;
-                publicBaseUrl = httpPort == 80
-                    ? $"http://{request.Network.PublicDomain}"
-                    : $"http://{request.Network.PublicDomain}:{httpPort}";
+                // The operator set the HTTP port to 0, which the wizard offers and Kestrel honours.
+                // Publishing "http://host:0" was the old behaviour and is worse than publishing
+                // nothing, because a CDP that cannot be fetched fails revocation checking outright.
+                warnings.Add(
+                    "Plain HTTP is disabled (HTTP port 0), so no CRL, OCSP or AIA URL was published. " +
+                    "Certificates will be issued without a distribution point. Set an HTTP port and " +
+                    "re-run setup, or add service URLs for this CA afterwards, to publish one.");
             }
             else
             {
-                var firstDnsSan = request.WebTlsCertificate.Sans
-                    .Where(s => s.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase))
-                    .Select(s => s.Substring(4))
-                    .FirstOrDefault(s => s != "localhost");
-                publicBaseUrl = !string.IsNullOrEmpty(firstDnsSan)
-                    ? $"http://{firstDnsSan}"
-                    : "http://localhost:" + request.Network.HttpsPort;
+                BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, caCertEntity, publicBaseUrl, caCertCaEntity.Label ?? "default");
+                BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, sysCertEntity, publicBaseUrl, sysCertCaEntity.Label ?? "system-signing-ca");
             }
-
-            BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, caCertEntity, publicBaseUrl, caCertCaEntity.Label ?? "default");
-            BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, sysCertEntity, publicBaseUrl, sysCertCaEntity.Label ?? "system-signing-ca");
 
             BootstrapProfileSeeder.SeedPasswordPolicy(dbContext);
             BootstrapProfileSeeder.SeedSecurityPolicy(

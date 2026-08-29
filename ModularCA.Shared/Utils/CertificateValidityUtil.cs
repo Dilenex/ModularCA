@@ -37,6 +37,46 @@ public static class CertificateValidityUtil
     public static DateTime DefaultNotBefore() => DateTime.UtcNow - SkewAllowance;
 
     /// <summary>
+    /// Tags a validity timestamp as UTC, converting a local one and treating an unspecified one as
+    /// already-UTC per the application's convention.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists because of a defect that put a future <c>notBefore</c> into production
+    /// certificates. BouncyCastle's <c>SetNotBefore</c> / <c>SetNotAfter</c> call
+    /// <see cref="DateTime.ToUniversalTime"/> on the value they are given, and for
+    /// <see cref="DateTimeKind.Unspecified"/> that assumes <em>local</em> time and adds the host's
+    /// UTC offset. Measured on a UTC-7 host:
+    /// </para>
+    /// <code>
+    /// Kind=Utc          09:00 -> notBefore 09:00   correct
+    /// Kind=Local        02:00 -> notBefore 09:00   correct
+    /// Kind=Unspecified  09:00 -> notBefore 16:00   shifted by the host offset
+    /// </code>
+    /// <para>
+    /// Requested validity windows are persisted on the certificate request and read back by EF,
+    /// which returns MySQL <c>datetime</c> columns as <see cref="DateTimeKind.Unspecified"/>. So a
+    /// window that was correct when submitted became "now plus the server's UTC offset" at
+    /// issuance — six hours on the affected host — and every relying party rejected the
+    /// certificate until that time passed.
+    /// </para>
+    /// <para>
+    /// The same convention is already applied on the JSON boundary by
+    /// <c>UtcDateTimeJsonConverter</c>; this is its counterpart for values that reach the
+    /// certificate builder from the database instead.
+    /// </para>
+    /// </remarks>
+    public static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+    };
+
+    /// <inheritdoc cref="AsUtc(DateTime)"/>
+    public static DateTime? AsUtc(DateTime? value) => value.HasValue ? AsUtc(value.Value) : null;
+
+    /// <summary>
     /// Raises <paramref name="notBefore"/> to <paramref name="issuerNotBefore"/> when it would
     /// otherwise precede it, since a certificate cannot be valid before its issuer.
     /// <para>

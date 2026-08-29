@@ -400,11 +400,31 @@ public class BootstrapModularCA
         // === OID Loading ===
         BootstrapProfileSeeder.LoadOidsToDb(dbContext, OIDConfig);
 
-        var allowedRootCaStandardOids = new[] { "Digital Signature", "Key Encipherment", "Key Certificate Signing", "CRL Signing" };
+        // What the CA may put in the certificates it ISSUES. Kept at all six so that
+        // "reissue infrastructure certificates" can rotate this CA's own OCSP responder and TSA
+        // — see the signing-profile comment below.
         var allowedRootCaExtendedOids = new[] { "Server Authentication", "Client Authentication", "Code Signing", "Email Protection", "Time Stamping", "OCSP Signer" };
 
-        var RootCaStandardOidsJson = BootstrapProfileSeeder.SetupAllowedStandardOidsJson(allowedRootCaStandardOids, dbContext);
-        var RootCaExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(allowedRootCaExtendedOids, dbContext);
+        // What the CA's own certificate asserts. This is a different question from the list above,
+        // and conflating the two put both of the following in every bootstrap root:
+        //
+        // No EKU. RFC 5280 §4.2.1.12 makes an EKU on a CA constrain every certificate beneath it,
+        // so a smartcardLogon or kdcAuthentication leaf under a root carrying the six-entry list
+        // fails EKU-nesting in Windows CryptoAPI with CERT_E_WRONG_USAGE — the Windows smart-card
+        // logon work cannot succeed under such a root. CA/B BR §7.1.2.1.2 forbids extKeyUsage on a
+        // root outright.
+        //
+        // No keyEncipherment. RFC 5480 §3 forbids that bit for id-ecPublicKey and RFC 8410 §5 for
+        // Ed25519, while config/bootstrap.yaml.example defaults to ECDSA P-384 — so the default
+        // install asserted a bit the key type cannot carry. A CA key signs; it never encrypts.
+        //
+        // These three match what CaCreationService already emits for runtime-created CAs, which
+        // were correct all along.
+        var rootCaCertificateStandardOids = new[] { "Digital Signature", "Key Certificate Signing", "CRL Signing" };
+        var rootCaCertificateExtendedOids = Array.Empty<string>();
+
+        var RootCaStandardOidsJson = BootstrapProfileSeeder.SetupAllowedStandardOidsJson(rootCaCertificateStandardOids, dbContext);
+        var RootCaExtendedOidsJson = BootstrapProfileSeeder.SetupAllowedExtendedOidsJson(rootCaCertificateExtendedOids, dbContext);
 
         var KeyAlgorithms = new List<string> { "RSA", "ECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" };
         var KeySizes = new List<string> { "2048", "3072", "4096", "7680", "8192", "P-256", "P-384", "P-521" };
@@ -415,8 +435,14 @@ public class BootstrapModularCA
         var SignatureAlgorithmsJson = JsonSerializer.Serialize(SignatureAlgorithms);
 
         // === CA Certificate Profile & Signing Profile ===
+        // The CA cert profile governs CA certificates, so it takes the CA-certificate lists, not
+        // the issuable-EKU list. This matters beyond the root: CaCreationService issues
+        // INTERMEDIATE CAs through the normal issuance pipeline, which reads this profile's
+        // KeyUsages and ExtendedKeyUsages straight into the certificate — so seeding it with the
+        // six EKUs and keyEncipherment reproduced both defects one level down, on every
+        // intermediate created from the default profile.
         BootstrapProfileSeeder.CreateCertProfile(dbContext, "Main CA Certificate Profile", "Default cert profile for self-signed CA certificates",
-            allowedRootCaStandardOids, allowedRootCaExtendedOids, false, true,
+            rootCaCertificateStandardOids, rootCaCertificateExtendedOids, false, true,
             KeyAlgorithmsJson, KeySizesJson, SignatureAlgorithmsJson, "P5Y", "P25Y");
         var caCertProfile = BootstrapProfileSeeder.GetCertProfileFromDb(dbContext, "Main CA Certificate Profile");
         var allowedCertExtendedOids = new[] { "Server Authentication", "Client Authentication", "Email Protection" };
@@ -443,7 +469,7 @@ public class BootstrapModularCA
         // === Self-Signed CA Certificate ===
         var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(bootstrapConfig.CA.Subject.CN ?? throw new Exception("The CA Subject CN was not found"), bootstrapConfig.CA.Subject.O ?? throw new Exception("The CA Subject O was not found"), theOUs,
             bootstrapConfig.CA.Subject.L ?? throw new Exception("The CA Subject L was not found"), bootstrapConfig.CA.Subject.ST ?? throw new Exception("The CA Subject ST was not found"), bootstrapConfig.CA.Subject.C ?? throw new Exception("The CA Subject C was not found"), bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
-            DateTime.UtcNow, DateTime.UtcNow.AddYears(bootstrapConfig.CA.ValidityYears), signingProfile.Id, allowedRootCaStandardOids, allowedRootCaExtendedOids, dbContext);
+            DateTime.UtcNow, DateTime.UtcNow.AddYears(bootstrapConfig.CA.ValidityYears), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
 
         var (signedCaCert, caPrivKey, caPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(caCertRequest);
 
@@ -451,7 +477,7 @@ public class BootstrapModularCA
         var sysCertRequest = BootstrapCertCreator.CreateCertificateRequest("ModularCA System Signing CA", "ModularCA", string.Empty,
             bootstrapConfig.CA.Subject.L, bootstrapConfig.CA.Subject.ST, bootstrapConfig.CA.Subject.C,
             bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
-            DateTime.UtcNow, DateTime.UtcNow.AddYears(100), signingProfile.Id, allowedRootCaStandardOids, allowedRootCaExtendedOids, dbContext);
+            DateTime.UtcNow, DateTime.UtcNow.AddYears(100), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
         var (signedSysCert, sysPrivKey, sysPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(sysCertRequest);
 
         var caCertPem = KeystoreService.ExportCertificateToPem(signedCaCert);
@@ -668,17 +694,24 @@ public class BootstrapModularCA
         // ReservedCaLabelGuardMiddleware; even if the guard is lifted, the DB row says "off".
         BootstrapProfileSeeder.SeedSystemCaProtocolConfigs(dbContext, sysCertCaEntity);
 
-        // Auto-generate service URLs (AIA/CDP) for the public CA
-        var publicBaseUrl = "http://localhost:" + bootstrapConfig.HttpsApi.Port;
-        var firstDnsSan = bootstrapConfig.HttpsApi.SANs
-            .Where(s => s.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase))
-            .Select(s => s.Substring(4))
-            .FirstOrDefault(s => s != "localhost");
-        if (!string.IsNullOrEmpty(firstDnsSan))
-            publicBaseUrl = $"http://{firstDnsSan}";
+        // Auto-generate service URLs (AIA/CDP) for the public CA. Shares its derivation with the
+        // setup wizard — see BootstrapServiceUrlBuilder for what each path used to get wrong.
+        var publicBaseUrl = BootstrapServiceUrlBuilder.Build(
+            publicDomain: null,
+            dnsSans: bootstrapConfig.HttpsApi.SANs,
+            httpPort: bootstrapConfig.HttpsApi.HttpPort);
 
-        BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, caCertEntity, publicBaseUrl, caCertCaEntity.Label ?? "default");
-        BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, sysCertEntity, publicBaseUrl, sysCertCaEntity.Label ?? "system-signing-ca");
+        if (publicBaseUrl == null)
+        {
+            Console.WriteLine("[WARNING] HttpsApi.HttpPort is 0, so plain HTTP is disabled and no CRL, OCSP");
+            Console.WriteLine("          or AIA URL can be published. Certificates will be issued without a");
+            Console.WriteLine("          distribution point. Set HttpsApi.HttpPort in bootstrap.yaml to publish one.");
+        }
+        else
+        {
+            BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, caCertEntity, publicBaseUrl, caCertCaEntity.Label ?? "default");
+            BootstrapProfileSeeder.SeedCaServiceUrls(dbContext, sysCertEntity, publicBaseUrl, sysCertCaEntity.Label ?? "system-signing-ca");
+        }
 
         BootstrapProfileSeeder.SeedPasswordPolicy(dbContext);
         BootstrapProfileSeeder.SeedSecurityPolicy(dbContext);
@@ -737,7 +770,9 @@ public class BootstrapModularCA
         BootstrapDatabaseSetup.WriteConfigFile(configDir, rootConfig, setupDbConfig, bootstrapConfig, appUserPassword, auditUserPassword,
             pfxPassword: "", // No PFX yet — Stage 2 generates it
             httpsPort: bootstrapConfig.HttpsApi.Port,
-            httpPort: 8080,
+            // Was hardcoded 8080 while the AIA/CDP builder above pointed at the TLS port. Both now
+            // read the same field, so the listener and the URLs in issued certificates agree.
+            httpPort: bootstrapConfig.HttpsApi.HttpPort,
             security: null,
             network: null,
             pendingSubjectDn: pendingSubjectDn,
