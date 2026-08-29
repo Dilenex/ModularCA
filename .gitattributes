@@ -70,3 +70,15 @@
 
 # Same reasoning for the systemd unit and the nginx/nftables templates: they are parsed on Linux.
 *.service text eol=lf
+deploy/*.conf text eol=lf
+
+# Debian maintainer scripts. These have NO extension, so the *.sh rule above does not reach them,
+# and they are the worst place for a CRLF to survive: dpkg runs them from inside the package,
+# after unpacking, and a CRLF shebang aborts the install with "bad interpreter: /bin/sh^M",
+# leaving the package half-configured. build-deb.sh also refuses to package a script containing
+# CR, because a .gitattributes rule only helps while it is correct.
+packaging/debian/* text eol=lf
+
+# Config templates are copied to the target verbatim. modularca.env.example is sourced by a
+# shell, where a trailing CR becomes part of the value.
+config/*.example text eol=lf

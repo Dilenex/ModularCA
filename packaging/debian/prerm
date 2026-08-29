@@ -1,0 +1,19 @@
+#!/bin/sh
+# ModularCA — pre-removal.
+#
+# Stops the service before its binaries go away. Nothing here touches configuration, keystores or
+# the database; see postrm for why those survive even a purge.
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            # || true: a unit that is already stopped, masked, or was never enabled must not fail
+            # the removal. dpkg leaves a package half-configured when a maintainer script exits
+            # non-zero, and that is a worse state than a service that was already down.
+            systemctl stop modularca.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+exit 0

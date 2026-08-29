@@ -1,0 +1,27 @@
+#!/bin/sh
+# ModularCA — pre-installation.
+#
+# Runs BEFORE any file is unpacked. Its only job is to warn, because the one irreversible thing
+# an upgrade can do is apply a database migration that the previous version cannot read back.
+set -e
+
+case "$1" in
+    upgrade)
+        cat >&2 <<'WARN'
+
+  ModularCA upgrade
+  -----------------
+  The service applies its own EF Core migrations on start, so the schema changes AFTER this
+  package finishes installing. dpkg will report success either way; a migration failure shows up
+  in `journalctl -u modularca`, not here.
+
+  If you have not already: back up the database and /opt/modularca/keystores before continuing.
+
+WARN
+        ;;
+    install)
+        :
+        ;;
+esac
+
+exit 0

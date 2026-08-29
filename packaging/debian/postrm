@@ -1,0 +1,105 @@
+#!/bin/sh
+# ModularCA — post-removal.
+#
+# The important decision in this package lives here: a purge does NOT delete the CA's private
+# keys, its configuration, or its database.
+#
+# dpkg's contract says purge removes configuration, and for most software that is right. For a
+# certificate authority it is not. The keystores hold the CA private keys; without them every
+# certificate this CA has ever issued is orphaned — no CRL can be signed, no OCSP response can be
+# produced, nothing can be revoked, and no replacement CA can adopt the existing chain. The
+# database holds the issuance record, the revocation state and the audit trail. None of it is
+# recoverable from a backup that nobody took because `apt purge` looked routine.
+#
+# So purge removes what the package created and can recreate, names precisely what it is leaving
+# behind, and tells the operator how to remove it deliberately. This follows the precedent set by
+# the postgresql packages, which likewise refuse to remove /var/lib/postgresql on purge.
+#
+# The escape hatch for lab and CI teardown is a sentinel FILE rather than a debconf prompt: a
+# prompt gets answered by reflex, and an unattended `apt purge` answers it without a human at all.
+set -e
+
+APP_DIR=/opt/modularca
+SERVICE_USER=modularca
+SERVICE_GROUP=modularca
+PURGE_SENTINEL="$APP_DIR/config/purge-keys"
+
+case "$1" in
+
+remove)
+    # Binaries are gone; everything else stays untouched, including the service account, so file
+    # ownership under $APP_DIR remains meaningful if the package is reinstalled.
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    ;;
+
+purge)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+
+    if [ -e "$PURGE_SENTINEL" ]; then
+        # Explicit opt-in. Someone created this file by hand, which is not something that happens
+        # by accident during an unattended removal.
+        echo "ModularCA: $PURGE_SENTINEL present - removing keystores and configuration." >&2
+        rm -rf "$APP_DIR"
+    else
+        # Remove only what the package seeded and nothing that carries state.
+        rm -f "$APP_DIR"/config/*.example 2>/dev/null || true
+        rm -rf "$APP_DIR/logs" 2>/dev/null || true
+        # Succeeds only while empty, which is exactly the intended test: a config directory still
+        # holding a real config.yaml is left alone.
+        rmdir "$APP_DIR/config" 2>/dev/null || true
+        rmdir "$APP_DIR/keystores" 2>/dev/null || true
+        rmdir "$APP_DIR" 2>/dev/null || true
+
+        if [ -d "$APP_DIR" ]; then
+            cat >&2 <<NOTICE
+
+  ModularCA purged, but its key material and configuration were NOT removed:
+
+      $APP_DIR/keystores   CA private keys
+      $APP_DIR/config      database credentials, JWT signing secret
+
+  Deleting the keystores destroys this CA permanently. Every certificate it issued becomes
+  unverifiable and unrevocable: no further CRL can be signed and no OCSP response produced.
+  There is no recovery without a backup of these files.
+
+  The database is also untouched. It holds the issuance record, revocation state and audit
+  trail, and must be dropped separately.
+
+  If you are certain, remove them by hand:
+
+      sudo rm -rf $APP_DIR
+      # and, for the database, e.g.:
+      # mysql -e 'DROP DATABASE modularca; DROP DATABASE modularca_audit;'
+
+  To have a future purge do this automatically (lab and CI only):
+
+      sudo touch $PURGE_SENTINEL
+
+NOTICE
+        fi
+    fi
+
+    # The service account is removed only when nothing it owns survives. Deleting it while files
+    # remain would orphan those files to a bare uid, which the system is free to reassign to some
+    # later service account — quietly handing that service read access to whatever was left.
+    if [ ! -d "$APP_DIR" ] && getent passwd "$SERVICE_USER" >/dev/null; then
+        deluser --system "$SERVICE_USER" >/dev/null 2>&1 || true
+        if getent group "$SERVICE_GROUP" >/dev/null; then
+            delgroup --system "$SERVICE_GROUP" >/dev/null 2>&1 || true
+        fi
+    elif [ -d "$APP_DIR" ]; then
+        echo "ModularCA: keeping the '$SERVICE_USER' account - it still owns files under $APP_DIR." >&2
+    fi
+    ;;
+
+upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    :
+    ;;
+
+esac
+
+exit 0

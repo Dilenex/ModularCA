@@ -1,0 +1,118 @@
+#!/bin/sh
+# ModularCA — post-installation.
+#
+# Creates the service account, seeds configuration only where none exists, and sets the ownership
+# and modes the payload cannot carry itself. The build host is frequently Windows, where a file's
+# mode means nothing, so every permission this install depends on is set here rather than inherited
+# from the package — the same reasoning packaging/install.sh has always used.
+set -e
+
+APP_DIR=/opt/modularca
+SERVICE_USER=modularca
+SERVICE_GROUP=modularca
+
+case "$1" in
+configure)
+
+    # ── Service account ────────────────────────────────────────────────────────
+    if ! getent group "$SERVICE_GROUP" >/dev/null; then
+        addgroup --system "$SERVICE_GROUP"
+    fi
+    if ! getent passwd "$SERVICE_USER" >/dev/null; then
+        adduser --system --ingroup "$SERVICE_GROUP" --home "$APP_DIR" \
+                --no-create-home --shell /usr/sbin/nologin \
+                --gecos "ModularCA certificate authority" "$SERVICE_USER"
+    fi
+
+    # ── Configuration ──────────────────────────────────────────────────────────
+    # The shipped .example files are the only configuration this package owns. A real config.yaml
+    # holds the database password and the JWT signing secret, so it is deliberately NOT a dpkg
+    # conffile: dpkg would keep hashes and backup copies of it in its own bookkeeping, and would
+    # prompt on upgrade to replace a working CA's identity with defaults. Seeding only where a
+    # file is absent gives the useful half of that behaviour with none of the hazard.
+    mkdir -p "$APP_DIR/config" "$APP_DIR/keystores" "$APP_DIR/logs"
+    for example in "$APP_DIR"/config/*.example; do
+        [ -e "$example" ] || continue
+        target="${example%.example}"
+        [ -e "$target" ] || cp -a "$example" "$target"
+    done
+
+    # ── Ownership and modes ────────────────────────────────────────────────────
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
+
+    # The .NET apphosts. Both need +x and neither can rely on the archive to say so.
+    [ -e "$APP_DIR/ModularCA.API" ] && chmod 0755 "$APP_DIR/ModularCA.API"
+    [ -e "$APP_DIR/ModularCA.Keystore.Unlocker" ] && chmod 0755 "$APP_DIR/ModularCA.Keystore.Unlocker"
+
+    chmod 0750 "$APP_DIR"
+    # Config and keystores hold secrets and CA private key material: owner only, no group read.
+    chmod 0700 "$APP_DIR/config" "$APP_DIR/keystores"
+    find "$APP_DIR/config" -type f -exec chmod 0600 {} \;
+    find "$APP_DIR/keystores" -type f -exec chmod 0600 {} \; 2>/dev/null || true
+    chmod 0750 "$APP_DIR/logs"
+
+    # ── systemd ────────────────────────────────────────────────────────────────
+    # A unit in /etc/systemd/system takes precedence over the one this package ships in /lib, and
+    # silently. An install upgraded from the tarball will have exactly that file, left behind by
+    # packaging/install.sh, and would keep running the old unit while every change to the packaged
+    # one appeared to do nothing. Worth an explicit warning rather than a puzzle.
+    if [ -f /etc/systemd/system/modularca.service ]; then
+        cat >&2 <<'SHADOW'
+
+  WARNING: /etc/systemd/system/modularca.service exists and overrides the unit shipped by this
+  package (/lib/systemd/system/modularca.service). It is most likely left over from a tarball
+  install. Remove it, or move your changes into a drop-in:
+
+      sudo rm /etc/systemd/system/modularca.service
+      sudo mkdir -p /etc/systemd/system/modularca.service.d
+      # put local overrides in /etc/systemd/system/modularca.service.d/override.conf
+      sudo systemctl daemon-reload
+
+SHADOW
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+
+        if [ -z "$2" ]; then
+            # First install. Enable so the CA comes back after a reboot, but do NOT start: there
+            # is no database, no keystore and no configuration yet, so starting would fail-loop
+            # into the journal and StartLimitBurst would then block the operator's own first
+            # start attempt. The service comes up when the operator has bootstrapped it.
+            systemctl enable modularca.service >/dev/null 2>&1 || true
+            cat <<'FIRST'
+
+  ModularCA installed to /opt/modularca (config: /etc/modularca, logs: /var/log/modularca).
+
+  Next steps:
+    1. Edit /etc/modularca/db.yaml and /etc/modularca/config.yaml
+    2. sudo systemctl start modularca
+    3. Complete setup at https://<host>:8443/setup/
+
+  The service is enabled but not started - it has nothing to start with yet.
+
+FIRST
+        else
+            # Upgrade. Restart only if it was already running; an operator who had it stopped
+            # meant it, and an upgrade is not the moment to overrule that.
+            if systemctl is-enabled --quiet modularca.service 2>/dev/null; then
+                systemctl try-restart modularca.service >/dev/null 2>&1 || true
+            fi
+            cat <<'UPGRADED'
+
+  ModularCA upgraded. Migrations are applied by the service on start, not by this package:
+
+      systemctl status modularca
+      journalctl -u modularca -n 50
+
+UPGRADED
+        fi
+    fi
+    ;;
+
+abort-upgrade|abort-remove|abort-deconfigure)
+    :
+    ;;
+esac
+
+exit 0
