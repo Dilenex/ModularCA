@@ -272,7 +272,13 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertificateEntity>(c =>
         {
             c.HasIndex(c => new { c.SerialNumber, c.Issuer }).IsUnique();
-            c.HasIndex(c => c.SubjectDN);
+
+            // Prefix index. SubjectDN widened from 255 to 1024 so it can hold every DN the
+            // application will issue (see CertificateEntity.SubjectDnMaxLength), and InnoDB caps an
+            // index key at 3072 bytes — 768 characters under utf8mb4 — so the full column is no
+            // longer indexable. 255 characters is ample selectivity for the lookups that use this,
+            // which search for a subject rather than range over it.
+            c.HasIndex(c => c.SubjectDN).HasPrefixLength(255);
 
             // Index for CRL revoked-cert lookup by issuer FK.
             c.HasIndex(c => c.IssuerCertificateId);

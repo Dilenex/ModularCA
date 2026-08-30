@@ -343,6 +343,13 @@ namespace ModularCA.Core.Services
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
 
+            // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
+            // and cannot be undone by a failed INSERT: when this column was narrower than the DN
+            // the application permits, the certificate was signed by the production CA and then
+            // lost — no row, so never on a CRL, never revocable, invisible to OCSP. Checking before
+            // signing is the only ordering that cannot produce that outcome.
+            EnsureSubjectDnIsStorable(subjectDn);
+
             // Build and sign the certificate
             var issuedCert = await _builder.BuildCertificateAsync(
                 serialNumber, caMatch, caKeyHandle, subjectDn, subjectPublicKey,
@@ -757,6 +764,13 @@ namespace ModularCA.Core.Services
 
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
+
+            // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
+            // and cannot be undone by a failed INSERT: when this column was narrower than the DN
+            // the application permits, the certificate was signed by the production CA and then
+            // lost — no row, so never on a CRL, never revocable, invisible to OCSP. Checking before
+            // signing is the only ordering that cannot produce that outcome.
+            EnsureSubjectDnIsStorable(reissueSubjectDn);
 
             // Build and sign the certificate
             var issuedCert = await _builder.BuildCertificateAsync(
@@ -1479,6 +1493,21 @@ namespace ModularCA.Core.Services
         /// Builds a <see cref="CertificateInfoModel"/> from the issued certificate and metadata,
         /// including the serial number of the CA certificate whose public key encrypted the private key.
         /// </summary>
+        /// <summary>
+        /// Throws when a subject DN is longer than the Certificates table can store.
+        /// </summary>
+        /// <remarks>
+        /// The DN is bounded per-RDN by <c>DnComponentSanitizer</c> but not in total, so a subject
+        /// that satisfies every field rule can still exceed the column. This is deliberately a
+        /// pre-signing check: the failure it prevents is a certificate that exists and is trusted
+        /// but has no database row, which cannot be revoked or published in a CRL.
+        /// </remarks>
+        private static void EnsureSubjectDnIsStorable(X509Name subjectDn)
+        {
+            DnComponentSanitizer.ValidateSubjectDnLength(
+                subjectDn.ToString(), CertificateEntity.SubjectDnMaxLength);
+        }
+
         private static CertificateInfoModel BuildCertModel(
             X509Certificate issuedCert, string certPem,
             List<string> standardOids, List<string> extendedOids,

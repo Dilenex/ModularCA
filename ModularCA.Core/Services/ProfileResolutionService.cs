@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Core.Models;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Utils;
 using System.Text.Json;
 using System.Xml;
 
@@ -125,9 +126,9 @@ public class ProfileResolutionService : IProfileResolutionService
 
         // JSON array subset checks
         ValidateJsonArraySubset(child.KeyUsages, parent.KeyUsages,
-            "KeyUsages", errors);
+            "KeyUsages", errors, BuildUsageComparisonKey("Standard"));
         ValidateJsonArraySubset(child.ExtendedKeyUsages, parent.ExtendedKeyUsages,
-            "ExtendedKeyUsages", errors);
+            "ExtendedKeyUsages", errors, BuildUsageComparisonKey("Extended"));
         ValidateJsonArraySubset(child.AllowedKeyAlgorithms, parent.AllowedKeyAlgorithms,
             "AllowedKeyAlgorithms", errors);
         ValidateJsonArraySubset(child.AllowedKeySizes, parent.AllowedKeySizes,
@@ -319,10 +320,12 @@ public class ProfileResolutionService : IProfileResolutionService
         // ResolveCertProfileAsync, which is this path.
         var mergedKeyUsages = ClampJsonArraySubset(
             MergeJsonArray(child.KeyUsages, parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), sources),
-            parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), child.Id, parent.Id);
+            parent.KeyUsages, nameof(EffectiveCertProfile.KeyUsages), child.Id, parent.Id,
+            BuildUsageComparisonKey("Standard"));
         var mergedExtendedKeyUsages = ClampJsonArraySubset(
             MergeJsonArray(child.ExtendedKeyUsages, parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), sources),
-            parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), child.Id, parent.Id);
+            parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), child.Id, parent.Id,
+            BuildUsageComparisonKey("Extended"));
 
         var result = new EffectiveCertProfile
         {
@@ -616,7 +619,7 @@ public class ProfileResolutionService : IProfileResolutionService
     /// Empty child arrays are treated as "inherit all" and pass validation.
     /// Empty parent arrays are treated as "no restriction" so any child value is allowed.
     /// </summary>
-    private static void ValidateJsonArraySubset(string childJson, string parentJson, string fieldName, List<string> errors)
+    private static void ValidateJsonArraySubset(string childJson, string parentJson, string fieldName, List<string> errors, Func<string, string>? comparisonKey = null)
     {
         if (string.IsNullOrEmpty(childJson) || childJson == "[]")
             return; // Child inherits, no override to validate
@@ -629,8 +632,9 @@ public class ProfileResolutionService : IProfileResolutionService
             var childItems = JsonSerializer.Deserialize<List<string>>(childJson) ?? new List<string>();
             var parentItems = JsonSerializer.Deserialize<List<string>>(parentJson) ?? new List<string>();
 
-            var parentSet = new HashSet<string>(parentItems, StringComparer.OrdinalIgnoreCase);
-            var violations = childItems.Where(item => !parentSet.Contains(item)).ToList();
+            var key = comparisonKey ?? (item => item);
+            var parentSet = new HashSet<string>(parentItems.Select(key), StringComparer.OrdinalIgnoreCase);
+            var violations = childItems.Where(item => !parentSet.Contains(key(item))).ToList();
 
             if (violations.Count > 0)
             {
@@ -643,6 +647,48 @@ public class ProfileResolutionService : IProfileResolutionService
         {
             errors.Add($"{fieldName}: unable to parse JSON array values for subset comparison.");
         }
+    }
+
+    /// <summary>
+    /// Builds a function that reduces any accepted spelling of a key usage to one comparison key.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The subset comparisons below were ordinal string matches, and the two sides of the
+    /// comparison are written by different producers: the bootstrap seeder stores <b>OIDs</b>
+    /// ("1.3.6.1.5.5.7.3.1") on the system profiles that act as parents, while the admin UI's
+    /// cert-profile editor writes <b>friendly names</b> ("smartcardLogon") on the CA-scoped
+    /// children. Nothing matched.
+    /// </para>
+    /// <para>
+    /// The consequence was not a dropped entry, it was an inverted one. When no child value
+    /// matched, the clamp treated the child's list as entirely disallowed and fell back to the
+    /// parent's list — so a child profile requesting <c>clientAuth, smartcardLogon</c> under the
+    /// six-EKU bootstrap parent produced a certificate carrying the parent's six and not the two
+    /// that were asked for. The profile plainly listed Smart Card Logon; the certificate did not
+    /// have it.
+    /// </para>
+    /// <para>
+    /// This is the third time this codebase has paid for comparing usage spellings directly —
+    /// see <see cref="UsageCatalogResolver"/> and <c>IssuanceValidationService.SetupAllowedExtendedOids</c>
+    /// — so the comparison goes through the same catalog those use. Entries absent from the
+    /// catalog fall back to <see cref="UsageCatalogResolver.Canonicalize"/> so two spellings of an
+    /// unknown usage still agree with each other.
+    /// </para>
+    /// </remarks>
+    /// <param name="keyUsageKind">The OIDOptions discriminator: "Standard" or "Extended".</param>
+    private Func<string, string> BuildUsageComparisonKey(string keyUsageKind)
+    {
+        var catalog = _db.OIDOptions
+            .Where(o => o.KeyUsage == keyUsageKind)
+            .Select(o => new { o.OID, o.FriendlyName })
+            .ToList();
+
+        var lookup = UsageCatalogResolver.BuildLookup(
+            catalog.Select(e => ((string?)e.OID, (string?)e.FriendlyName)),
+            e => e.Oid!);
+
+        return raw => UsageCatalogResolver.Resolve(lookup, raw) ?? UsageCatalogResolver.Canonicalize(raw);
     }
 
     // ── CLM-002: Merge-time clamping helpers ────────────────────────────────
@@ -718,7 +764,7 @@ public class ProfileResolutionService : IProfileResolutionService
     /// allowed values. Any items in the merged set that are not in the parent set are
     /// removed and a warning is logged.
     /// </summary>
-    private string ClampJsonArraySubset(string mergedJson, string parentJson, string fieldName, Guid childId, Guid parentId)
+    private string ClampJsonArraySubset(string mergedJson, string parentJson, string fieldName, Guid childId, Guid parentId, Func<string, string>? comparisonKey = null)
     {
         if (string.IsNullOrEmpty(mergedJson) || mergedJson == "[]")
             return mergedJson;
@@ -731,8 +777,12 @@ public class ProfileResolutionService : IProfileResolutionService
             var mergedItems = JsonSerializer.Deserialize<List<string>>(mergedJson) ?? new List<string>();
             var parentItems = JsonSerializer.Deserialize<List<string>>(parentJson) ?? new List<string>();
 
-            var parentSet = new HashSet<string>(parentItems, StringComparer.OrdinalIgnoreCase);
-            var violations = mergedItems.Where(item => !parentSet.Contains(item)).ToList();
+            // Compare on a canonical key, not the raw string — see BuildUsageComparisonKey. The
+            // items themselves are returned unchanged; only the comparison is normalized, so
+            // downstream resolution still sees whatever spelling the profile author used.
+            var key = comparisonKey ?? (item => item);
+            var parentSet = new HashSet<string>(parentItems.Select(key), StringComparer.OrdinalIgnoreCase);
+            var violations = mergedItems.Where(item => !parentSet.Contains(key(item))).ToList();
 
             if (violations.Count > 0)
             {
@@ -740,7 +790,7 @@ public class ProfileResolutionService : IProfileResolutionService
                     "CLM-002: Profile '{ChildId}' {Field} contains values not allowed by parent '{ParentId}': [{Violations}]. Removing non-subset items.",
                     childId, fieldName, parentId, string.Join(", ", violations));
 
-                var clamped = mergedItems.Where(item => parentSet.Contains(item)).ToList();
+                var clamped = mergedItems.Where(item => parentSet.Contains(key(item))).ToList();
 
                 // A child whose list is entirely disallowed by the parent leaves nothing behind,
                 // and an empty list does NOT mean "nothing is permitted" downstream — every

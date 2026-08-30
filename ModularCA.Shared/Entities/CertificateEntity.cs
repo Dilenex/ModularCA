@@ -16,8 +16,26 @@ public class CertificateEntity
     public string Pem { get; set; } = string.Empty;
 
 
+    /// <summary>
+    /// Maximum stored subject DN length, matching <c>CertRequestEntity.Subject</c>.
+    /// </summary>
+    /// <remarks>
+    /// This column was varchar(255) while the request it comes from allowed 1024, and
+    /// <c>DnComponentSanitizer</c> permits CN 64 + O 128 + OU 128 and 128 per remaining RDN. A
+    /// subject well inside every application rule therefore exceeded the column: MySQL 8 defaults
+    /// to STRICT_TRANS_TABLES and nothing here overrides sql_mode, so the INSERT failed with error
+    /// 1406 — <em>after</em> the certificate had been signed by the production CA. The result was a
+    /// valid certificate with no row in Certificates: it could never appear in a CRL, never be
+    /// revoked, and OCSP would never find it.
+    ///
+    /// The two limits are tied together now so the storage cannot be narrower than what may be
+    /// requested. <c>CertificateIssuanceService</c> also refuses to sign a DN that would not fit,
+    /// because signing is not something a failed INSERT can undo.
+    /// </remarks>
+    public const int SubjectDnMaxLength = 1024;
+
     [Required]
-    [MaxLength(255)]
+    [MaxLength(SubjectDnMaxLength)]
     public string SubjectDN { get; set; } = string.Empty;
 
     public string Issuer { get; set; } = string.Empty;

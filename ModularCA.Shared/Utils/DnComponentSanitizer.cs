@@ -184,6 +184,34 @@ namespace ModularCA.Shared.Utils
         }
 
         /// <summary>
+        /// Validates that a fully-rendered subject DN fits the Certificates table.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The per-RDN rules above bound each component but nothing bounds their total, so a
+        /// subject that satisfies every field rule can still exceed the stored column. That column
+        /// was varchar(255) while CN 64 + O 128 + OU 128 already reaches ~331 characters — and
+        /// MySQL 8 defaults to STRICT_TRANS_TABLES, so the INSERT failed with error 1406 after the
+        /// certificate had been signed. The certificate existed, signed by the production CA, with
+        /// no row: never in a CRL, never revocable, invisible to OCSP.
+        /// </para>
+        /// <para>
+        /// Callers must apply this BEFORE signing. Signing is not something a failed INSERT can
+        /// undo, so checking afterwards cannot prevent the failure it is meant to catch.
+        /// </para>
+        /// </remarks>
+        /// <param name="subjectDn">The rendered DN, as it will be stored.</param>
+        /// <param name="maxLength">The storage limit, from <c>CertificateEntity.SubjectDnMaxLength</c>.</param>
+        public static void ValidateSubjectDnLength(string subjectDn, int maxLength)
+        {
+            if (subjectDn != null && subjectDn.Length > maxLength)
+                throw new InvalidOperationException(
+                    $"Subject DN is {subjectDn.Length} characters, exceeding the maximum of {maxLength} "
+                    + "that can be recorded. Refusing to issue: a certificate that cannot be stored "
+                    + "could not be revoked or published in a CRL. Shorten the subject.");
+        }
+
+        /// <summary>
         /// Validates a URI SAN value by parsing it into an absolute <see cref="Uri"/>.
         /// </summary>
         public static void ValidateUri(string uri)
