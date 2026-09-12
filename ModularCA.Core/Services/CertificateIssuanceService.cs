@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using ModularCA.Shared.Errors;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Models;
 using ModularCA.Database;
 using ModularCA.Keystore.Adapters;
@@ -130,22 +131,22 @@ namespace ModularCA.Core.Services
             bool allowCaProfile,
             CancellationToken cancellationToken = default)
         {
-            var issuanceWarnings = new List<string>();
+            var issuanceDiagnostics = new List<Diagnostic>();
             var csrEntity = await _db.CertificateRequests
                 .Include(c => c.SigningProfile)
                 .FirstOrDefaultAsync(c => c.Id == csrId);
 
             if (csrEntity == null)
-                throw new InvalidOperationException("CSR not found");
+                throw new ResourceNotFoundException("CSR", "CSR not found.");
 
             if (ValidateCsrStatus(csrEntity) == false)
-                throw new InvalidOperationException("CSR is not in a valid state for issuance");
+                throw new ResourceConflictException("CSR is not in a valid state for issuance", ErrorCodes.CsrStateNotEligible);
 
             if (csrEntity.SigningProfile == null)
-                throw new InvalidOperationException("No signing profile associated with CSR");
+                throw new ConfigurationValidationException("No signing profile associated with CSR");
 
             if (string.IsNullOrWhiteSpace(csrEntity.CSR))
-                throw new InvalidOperationException("CSR field is empty");
+                throw new InvalidRequestException("CSR field is empty", ErrorCodes.CsrEmpty);
 
             // CMP requests store a SubjectPublicKeyInfo DER instead of a PKCS#10 CSR
             bool isCmpRequest = csrEntity.CSR.Contains("-----CMP-PUBKEY-----");
@@ -180,11 +181,11 @@ namespace ModularCA.Core.Services
                 csr = csrParser.ParseFromPem(csrEntity.CSR);
 
                 if (!csr.Verify())
-                    throw new InvalidOperationException("CSR signature verification failed");
+                    throw new InvalidRequestException("CSR signature verification failed", ErrorCodes.CsrSignatureInvalid);
             }
 
             if (csrEntity.CertProfileId == null)
-                throw new InvalidOperationException("No certificate profile associated with CSR");
+                throw new ConfigurationValidationException("No certificate profile associated with CSR");
 
             // Resolve the effective (merged/inherited) cert profile instead of using the raw entity
             var effectiveCertProfile = await _profileResolver.ResolveCertProfileAsync(csrEntity.CertProfileId.Value);
@@ -198,9 +199,9 @@ namespace ModularCA.Core.Services
                 _logger.LogWarning(
                     "Blocked issuance of CA-flagged cert profile {ProfileId} through a non-CA issuance path for CSR {CsrId}.",
                     effectiveCertProfile.SourceProfileId, csrId);
-                throw new InvalidOperationException(
+                throw new ConfigurationValidationException(
                     "The selected certificate profile is a CA profile and cannot be used for certificate issuance. " +
-                    "CA certificates are created through the CA creation workflow.");
+                    "CA certificates are created through the CA creation workflow.", ErrorCodes.CaProfileOnLeafIssuance);
             }
 
             if (!_validation.NotBeyondMaximumDate(notAfter, effectiveCertProfile))
@@ -249,7 +250,7 @@ namespace ModularCA.Core.Services
             {
                 var caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
                 if (caTenant != null && !caTenant.IsEnabled)
-                    throw new InvalidOperationException("Certificate issuance is blocked — the tenant is disabled.");
+                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
 
                 // The System Signing CA signs keystore entries only — never end-entity
                 // certs or sub-CAs. A signing profile pointing at it would exfiltrate
@@ -257,7 +258,7 @@ namespace ModularCA.Core.Services
                 // every caller (admin, ACME, EST, SCEP, CMP, public enrollment) hits
                 // the same block regardless of which entry point they came through.
                 if (string.Equals(issuingCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.");
+                    throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
             }
 
             var now = DateTime.UtcNow;
@@ -282,16 +283,21 @@ namespace ModularCA.Core.Services
                 validTo = caNotAfterMargin;
                 var msg = $"Certificate validity clamped from {originalValidTo:yyyy-MM-dd} to {validTo:yyyy-MM-dd} because the issuing CA expires on {caMatch.NotAfter:yyyy-MM-dd}.";
                 _logger.LogWarning(msg);
-                issuanceWarnings.Add(msg);
+                issuanceDiagnostics.Add(Diagnostic.Warning(
+                    ErrorCodes.ValidityClampedToIssuer,
+                    "Validity shortened",
+                    msg,
+                    remediation: "Renew or replace the issuing CA to issue for the full requested period.",
+                    field: "validTo"));
 
                 // After clamping, verify the shortened validity still meets the profile's minimum.
                 if (!_validation.ValidityDurationMeetsMinimum(validFrom, validTo, effectiveCertProfile))
                 {
                     var minDuration = effectiveCertProfile.ValidityPeriodMin ?? "P0D";
-                    throw new InvalidOperationException(
+                    throw new ConfigurationValidationException(
                         $"Cannot issue certificate: the issuing CA expires on {caMatch.NotAfter:yyyy-MM-dd}, " +
                         $"which would produce a validity shorter than the profile's minimum ({minDuration}). " +
-                        $"Either reduce the profile's minimum validity, extend the CA's lifetime, or use a different CA.");
+                        $"Either reduce the profile's minimum validity, extend the CA's lifetime, or use a different CA.", ErrorCodes.IssuingCaExpiresTooSoon);
                 }
             }
 
@@ -306,7 +312,11 @@ namespace ModularCA.Core.Services
                 var startMsg = $"Certificate NotBefore raised to the issuing CA's start date ({caMatch.NotBefore:O}); "
                              + "a certificate cannot be valid before its issuer.";
                 _logger.LogWarning(startMsg);
-                issuanceWarnings.Add(startMsg);
+                issuanceDiagnostics.Add(Diagnostic.Warning(
+                    ErrorCodes.NotBeforeRaisedToIssuer,
+                    "Start date raised",
+                    startMsg,
+                    field: "validFrom"));
             }
 
             // Generate 128-bit random serial number (CA/BF BR §7.1
@@ -340,7 +350,7 @@ namespace ModularCA.Core.Services
             // Validate subject DN and SANs against issuing CA name constraints
             ValidateNameConstraints(caMatch, subjectDn.ToString(), ParseSanJson(effectiveSans));
 
-            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs);
+            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
 
             // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
@@ -414,7 +424,7 @@ namespace ModularCA.Core.Services
             // audit tables stay as additive per-protocol forensics.
             await EmitCertificateIssuedAuditAsync(csrEntity, certModel, issuingCaEntity);
 
-            return new IssuanceResult(certPem, issuanceWarnings);
+            return new IssuanceResult(certPem, issuanceDiagnostics);
         }
 
         /// <summary>
@@ -476,7 +486,7 @@ namespace ModularCA.Core.Services
         /// <returns>The PEM-encoded reissued certificate with intermediate chain and any warnings.</returns>
         public async Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter, string? newSubjectDn = null, List<string>? newSans = null)
         {
-            var issuanceWarnings = new List<string>();
+            var issuanceDiagnostics = new List<Diagnostic>();
             CertRequestEntity? csrEntity = null;
             if (certId != null)
             {
@@ -512,7 +522,7 @@ namespace ModularCA.Core.Services
             }
 
             if (csrEntity == null)
-                throw new InvalidOperationException("CSR not found for reissue.");
+                throw new ResourceNotFoundException("CSR", "CSR not found for reissue.");
 
             // The certificate being replaced. Captured here, before issuance mutates anything,
             // because it is the only trustworthy identification of the predecessor: all three
@@ -526,13 +536,13 @@ namespace ModularCA.Core.Services
                 .FirstOrDefaultAsync();
 
             if (prevCert == null)
-                throw new InvalidOperationException("Previous certificate not found for reissue.");
+                throw new ResourceNotFoundException("Certificate", "Previous certificate not found for reissue.");
 
             if (prevCert.IsReissued)
-                throw new InvalidOperationException("Certificate has already been reissued");
+                throw new ResourceConflictException("Certificate has already been reissued", ErrorCodes.AlreadyReissued);
 
             if (csrEntity == null)
-                throw new InvalidOperationException("CSR not found");
+                throw new ResourceNotFoundException("CSR", "CSR not found.");
 
             // Note: the fresh-issuance helper ValidateCsrStatus requires Status=Approved|Pending
             // AND IssuedCertificateId==null, which is correct for the initial issue path but
@@ -543,13 +553,13 @@ namespace ModularCA.Core.Services
             // unusual but harmless), and Issued (the normal case — the CSR was already used to
             // issue the cert we're now reissuing).
             if (csrEntity.Status == "Rejected")
-                throw new InvalidOperationException("CSR is in a Rejected state and cannot be reissued.");
+                throw new ResourceConflictException("CSR is in a Rejected state and cannot be reissued.", ErrorCodes.CsrStateNotEligible);
 
             if (csrEntity.SigningProfile == null)
-                throw new InvalidOperationException("No signing profile associated with CSR");
+                throw new ConfigurationValidationException("No signing profile associated with CSR");
 
             if (string.IsNullOrWhiteSpace(csrEntity.CSR))
-                throw new InvalidOperationException("CSR field is empty");
+                throw new InvalidRequestException("CSR field is empty");
 
             // Reissue has no CA-creation caller — CaCreationService issues, it never reissues — so
             // a CA-flagged profile here is always the escalation described on
@@ -567,9 +577,9 @@ namespace ModularCA.Core.Services
                     _logger.LogWarning(
                         "Blocked reissue against CA-flagged cert profile {ProfileId} (certId={CertId}, certSN={CertSN}, csrId={CsrId}).",
                         reissueProfile.SourceProfileId, certId, certSN, csrId);
-                    throw new InvalidOperationException(
+                    throw new ConfigurationValidationException(
                         "The selected certificate profile is a CA profile and cannot be used for reissuance. " +
-                        "CA certificates are managed through the CA creation workflow.");
+                        "CA certificates are managed through the CA creation workflow.", ErrorCodes.CaProfileOnLeafIssuance);
                 }
             }
 
@@ -597,14 +607,14 @@ namespace ModularCA.Core.Services
             }
 
             if (!isExpired && !allowedReissueReasons.Contains(prevCert.RevocationReason, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"Reissue is only allowed for revoked certificates with reasons:" +
-                    $" {string.Join(", ", allowedReissueReasons)} (or naturally expired).\nIn the event of a key compromise, create a new CSR.");
+                throw new ConfigurationValidationException($"Reissue is only allowed for revoked certificates with reasons:" +
+                    $" {string.Join(", ", allowedReissueReasons)} (or naturally expired).\nIn the event of a key compromise, create a new CSR.", ErrorCodes.ReissueReasonNotPermitted);
 
             var csrParser = new CsrParserService();
             var csr = csrParser.ParseFromPem(csrEntity.CSR);
 
             if (!csr.Verify())
-                throw new InvalidOperationException("CSR signature verification failed");
+                throw new InvalidRequestException("CSR signature verification failed");
 
             // CLM-007: When the previous certificate was revoked for KeyCompromise (or
             // CACompromise), the old key MUST NOT be reused — the whole point of a
@@ -624,9 +634,9 @@ namespace ModularCA.Core.Services
 
                         if (oldPubKeyDer.AsSpan().SequenceEqual(newPubKeyDer))
                         {
-                            throw new InvalidOperationException(
+                            throw new ConfigurationValidationException(
                                 "Cannot reuse the same key for a certificate that was revoked due to key compromise. " +
-                                "Generate a new key pair and submit a fresh CSR.");
+                                "Generate a new key pair and submit a fresh CSR.", ErrorCodes.KeyReuseAfterCompromise);
                         }
                     }
                 }
@@ -643,7 +653,7 @@ namespace ModularCA.Core.Services
             }
 
             if (csrEntity.CertProfileId == null)
-                throw new InvalidOperationException("No certificate profile associated with CSR");
+                throw new ConfigurationValidationException("No certificate profile associated with CSR");
 
             // Resolve the effective (merged/inherited) cert profile instead of using the raw entity
             var effectiveCertProfile = await _profileResolver.ResolveCertProfileAsync(csrEntity.CertProfileId.Value);
@@ -671,7 +681,7 @@ namespace ModularCA.Core.Services
             {
                 var caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
                 if (caTenant != null && !caTenant.IsEnabled)
-                    throw new InvalidOperationException("Certificate issuance is blocked — the tenant is disabled.");
+                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.");
             }
 
             var now = DateTime.UtcNow;
@@ -693,16 +703,21 @@ namespace ModularCA.Core.Services
                 validTo = reissueCaNotAfterMargin;
                 var msg = $"Certificate validity clamped from {originalValidTo:yyyy-MM-dd} to {validTo:yyyy-MM-dd} because the issuing CA expires on {caMatch.NotAfter:yyyy-MM-dd}.";
                 _logger.LogWarning(msg);
-                issuanceWarnings.Add(msg);
+                issuanceDiagnostics.Add(Diagnostic.Warning(
+                    ErrorCodes.ValidityClampedToIssuer,
+                    "Validity shortened",
+                    msg,
+                    remediation: "Renew or replace the issuing CA to issue for the full requested period.",
+                    field: "validTo"));
 
                 // After clamping, verify the shortened validity still meets the profile's minimum.
                 if (!_validation.ValidityDurationMeetsMinimum(validFrom, validTo, effectiveCertProfile))
                 {
                     var minDuration = effectiveCertProfile.ValidityPeriodMin ?? "P0D";
-                    throw new InvalidOperationException(
+                    throw new ConfigurationValidationException(
                         $"Cannot reissue certificate: the issuing CA expires on {caMatch.NotAfter:yyyy-MM-dd}, " +
                         $"which would produce a validity shorter than the profile's minimum ({minDuration}). " +
-                        $"Either reduce the profile's minimum validity, extend the CA's lifetime, or use a different CA.");
+                        $"Either reduce the profile's minimum validity, extend the CA's lifetime, or use a different CA.", ErrorCodes.IssuingCaExpiresTooSoon);
                 }
             }
 
@@ -717,7 +732,11 @@ namespace ModularCA.Core.Services
                 var startMsg = $"Certificate NotBefore raised to the issuing CA's start date ({caMatch.NotBefore:O}); "
                              + "a certificate cannot be valid before its issuer.";
                 _logger.LogWarning(startMsg);
-                issuanceWarnings.Add(startMsg);
+                issuanceDiagnostics.Add(Diagnostic.Warning(
+                    ErrorCodes.NotBeforeRaisedToIssuer,
+                    "Start date raised",
+                    startMsg,
+                    field: "validFrom"));
             }
 
             // 17 bytes with leading 0x00 → 128 bits of random magnitude, positive.
@@ -734,9 +753,9 @@ namespace ModularCA.Core.Services
             {
                 var parsedRdns = RequestProfileValidationService.ParseSubjectDn(newSubjectDn);
                 if (parsedRdns.Count == 0)
-                    throw new InvalidOperationException(
+                    throw new InvalidRequestException(
                         $"Reissue subject DN override could not be parsed: '{newSubjectDn}'. " +
-                        "Expected comma-separated RDNs such as 'CN=api.example.com,O=Example,C=US'.");
+                        "Expected comma-separated RDNs such as 'CN=api.example.com,O=Example,C=US'.", ErrorCodes.SubjectDnOverrideInvalid);
                 csrEntity.SubjectOverrides = JsonSerializer.Serialize(parsedRdns);
             }
 
@@ -762,7 +781,7 @@ namespace ModularCA.Core.Services
             // Validate subject DN and SANs against issuing CA name constraints
             ValidateNameConstraints(caMatch, reissueSubjectDn.ToString(), ParseSanJson(reissueEffectiveSans));
 
-            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs);
+            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
 
             // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
@@ -861,7 +880,7 @@ namespace ModularCA.Core.Services
                 _logger.LogWarning(ex, "Failed to copy ACLs from previous certificate to reissued certificate {Serial}", certModel.SerialNumber);
             }
 
-            return new IssuanceResult(certPem, issuanceWarnings);
+            return new IssuanceResult(certPem, issuanceDiagnostics);
         }
 
         /// <summary>
@@ -1106,9 +1125,9 @@ namespace ModularCA.Core.Services
             {
                 if (!allowedOids.Contains(oid))
                 {
-                    throw new InvalidOperationException(
+                    throw new InvalidRequestException(
                         $"Subject DN override produced an unsupported RDN type: OID {oid}. " +
-                        "Only standard subject fields (CN, O, OU, C, ST, L, E, SERIALNUMBER, DC, UID, T, STREET) are allowed.");
+                        "Only standard subject fields (CN, O, OU, C, ST, L, E, SERIALNUMBER, DC, UID, T, STREET) are allowed.", ErrorCodes.SubjectDnOverrideInvalid);
                 }
             }
 
@@ -1120,15 +1139,15 @@ namespace ModularCA.Core.Services
                 var colonIndex = san.IndexOf(':');
                 if (colonIndex <= 0)
                 {
-                    throw new InvalidOperationException(
-                        $"SAN override contains invalid format: '{san}'. Expected TYPE:value (e.g. DNS:example.com).");
+                    throw new InvalidRequestException(
+                        $"SAN override contains invalid format: '{san}'. Expected TYPE:value (e.g. DNS:example.com).", ErrorCodes.SanOverrideInvalid);
                 }
 
                 var sanType = san.Substring(0, colonIndex).Trim().ToUpperInvariant();
                 if (!allowedSanTypes.Contains(sanType))
                 {
-                    throw new InvalidOperationException(
-                        $"SAN override contains unsupported type '{sanType}'. Allowed types: {string.Join(", ", allowedSanTypes)}.");
+                    throw new InvalidRequestException(
+                        $"SAN override contains unsupported type '{sanType}'. Allowed types: {string.Join(", ", allowedSanTypes)}.", ErrorCodes.SanOverrideInvalid);
                 }
 
                 // Enforce CA/B Forum BR §7.1.4.2.1 wildcard rules on DNS SANs
@@ -1170,7 +1189,7 @@ namespace ModularCA.Core.Services
                 var eq = raw.IndexOf('=');
                 if (eq <= 0)
                 {
-                    throw new InvalidOperationException($"CMP subject component '{raw}' is missing '='.");
+                    throw new InvalidRequestException($"CMP subject component '{raw}' is missing '='.");
                 }
                 var field = raw[..eq].Trim();
                 var value = raw[(eq + 1)..];
@@ -1334,10 +1353,10 @@ namespace ModularCA.Core.Services
                     "Issuing CA {CaSubject} has non-DNS {Which} name constraints (IP, Email, URI, DirectoryName) "
                     + "which are not implemented — refusing to issue rather than proceeding unconstrained.",
                     issuerCert.SubjectDN, which);
-                throw new InvalidOperationException(
+                throw new ConfigurationValidationException(
                     $"The issuing CA carries non-DNS {which} name constraints (IP, Email, URI, or DirectoryName). "
                     + "Enforcement of those types is not implemented, so compliance cannot be verified and "
-                    + "issuance is refused. Use DNS-only name constraints on this CA, or remove them.");
+                    + "issuance is refused. Use DNS-only name constraints on this CA, or remove them.", ErrorCodes.NameConstraintTypeUnsupported);
             }
 
             // Validate DNS SANs against constraints
@@ -1363,8 +1382,11 @@ namespace ModularCA.Core.Services
 
                     if (!matchesPermitted)
                     {
-                        throw new InvalidOperationException(
-                            $"DNS name '{dnsName}' is not within the issuing CA's permitted name constraints [{string.Join(", ", permittedDns)}].");
+                        throw new CertificatePolicyViolationException(
+                        [
+                            $"[NameConstraints] DNS name '{dnsName}' is not within the issuing CA's "
+                            + $"permitted name constraints [{string.Join(", ", permittedDns)}]."
+                        ], ErrorCodes.NameConstraintViolation);
                     }
                 }
 
@@ -1373,8 +1395,11 @@ namespace ModularCA.Core.Services
                 {
                     if (DnsNameMatchesConstraint(dnsName, e.ToLowerInvariant()))
                     {
-                        throw new InvalidOperationException(
-                            $"DNS name '{dnsName}' falls within the issuing CA's excluded name constraints [{string.Join(", ", excludedDns)}].");
+                        throw new CertificatePolicyViolationException(
+                        [
+                            $"[NameConstraints] DNS name '{dnsName}' falls within the issuing CA's "
+                            + $"excluded name constraints [{string.Join(", ", excludedDns)}]."
+                        ], ErrorCodes.NameConstraintViolation);
                     }
                 }
             }
@@ -1422,15 +1447,15 @@ namespace ModularCA.Core.Services
 
             var canIssue = await _quotaService.CanIssueCertificateAsync(ca.Id);
             if (!canIssue)
-                throw new InvalidOperationException(
-                    $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.");
+                throw new ResourceConflictException(
+                    $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.", ErrorCodes.QuotaExceeded);
 
             // Check tenant-level quota
             if (ca.TenantId != Guid.Empty)
             {
                 var canIssueTenant = await _quotaService.CanIssueCertificateInTenantAsync(ca.TenantId);
                 if (!canIssueTenant)
-                    throw new InvalidOperationException($"Tenant certificate quota exceeded.");
+                    throw new ResourceConflictException($"Tenant certificate quota exceeded.", ErrorCodes.QuotaExceeded);
             }
         }
 
@@ -1443,7 +1468,7 @@ namespace ModularCA.Core.Services
             var refCACert = await _db.Certificates
                 .FirstOrDefaultAsync(c => c.CertificateId == signingProfile.IssuerId);
             if (refCACert == null)
-                throw new InvalidOperationException($"CA certificate not found. Is this a self-signed certificate request?");
+                throw new ConfigurationValidationException($"CA certificate not found. Is this a self-signed certificate request?");
 
             // Match the DB cert row to the in-memory trusted authority by raw DER bytes
             // (unambiguous — avoids BouncyCastle vs DB DN formatting mismatches like
@@ -1459,10 +1484,10 @@ namespace ModularCA.Core.Services
             caMatch ??= trustedCAs.Find(ca =>
                 ca.SubjectDN.ToString().Contains(refCACert.SubjectDN, StringComparison.OrdinalIgnoreCase));
             if (caMatch == null)
-                throw new InvalidOperationException($"No CA found with subject matching: {refCACert.SubjectDN}");
+                throw new ResourceNotFoundException("Certificate authority", $"No CA found with subject matching: {refCACert.SubjectDN}");
 
             var caKeyHandle = _keystore.GetPrivateKeyFor(caMatch)
-                ?? throw new InvalidOperationException($"Private key not found for CA: {caMatch.SubjectDN}");
+                ?? throw new ConfigurationValidationException($"Private key not found for CA: {caMatch.SubjectDN}", ErrorCodes.IssuingCaKeyUnavailable);
 
             return (caMatch, caKeyHandle, refCACert);
         }

@@ -362,7 +362,7 @@ const CertificateDetail: React.FC = () => {
                     </div>
                 )}
 
-                <CertificateReissueModal open={reissueOpen} onClose={() => setReissueOpen(false)} onSuccess={(msg) => { showToast('success', msg); setRefresh((r) => r + 1); }} cert={reissueTarget} />
+                <CertificateReissueModal open={reissueOpen} onClose={() => setReissueOpen(false)} onSuccess={(msg, severity) => { showToast(severity ?? 'success', msg); setRefresh((r) => r + 1); }} cert={reissueTarget} />
             </>)}
         </DetailPage>
     );

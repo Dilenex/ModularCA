@@ -7,7 +7,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, parseJsonArray, parseListField, BadgeList, MultiToggle, formatKeySizeLabel, FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName } from './profileHelpers';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, formatKeySizeLabel, FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
@@ -229,9 +229,9 @@ const CertProfileDetail: React.FC = () => {
                     <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
                     <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                     <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><BadgeList items={p.allowedKeyAlgorithms} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><BadgeList items={p.allowedKeySizes} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><BadgeList items={p.allowedSignatureAlgorithms} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><CeilingList items={p.allowedSignatureAlgorithms} noun="signature algorithm" /></div>
                     <DetailField label="Validity Period Min" value={p.validityPeriodMin} />
                     <DetailField label="Validity Period Max" value={p.validityPeriodMax} />
                     <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
@@ -267,15 +267,15 @@ const CertProfileDetail: React.FC = () => {
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={resolvedProfile.validityPeriodMax} />
                                 <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeyAlgorithms === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
                                     <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeyAlgorithms} /></div>
-                                    <BadgeList items={resolvedProfile.allowedKeyAlgorithms} />
+                                    <CeilingList items={resolvedProfile.allowedKeyAlgorithms} noun="key algorithm" />
                                 </div>
                                 <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeySizes === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
                                     <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeySizes} /></div>
-                                    <BadgeList items={resolvedProfile.allowedKeySizes} />
+                                    <CeilingList items={resolvedProfile.allowedKeySizes} noun="key size" />
                                 </div>
                                 <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedSignatureAlgorithms === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
                                     <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedSignatureAlgorithms} /></div>
-                                    <BadgeList items={resolvedProfile.allowedSignatureAlgorithms} />
+                                    <CeilingList items={resolvedProfile.allowedSignatureAlgorithms} noun="signature algorithm" />
                                 </div>
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.CtEnabled} label="CT Enabled" value={resolvedProfile.ctEnabled ? 'Yes' : 'No'} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.CtLogIds} label="CT Log IDs" value={resolvedProfile.ctLogIds} />

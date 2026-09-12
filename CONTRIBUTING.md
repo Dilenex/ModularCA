@@ -113,7 +113,18 @@ We use the [Developer Certificate of Origin](https://developercertificate.org/).
 Add a `Signed-off-by` line to each commit (`git commit -s`) to certify you wrote
 the code or otherwise have the right to submit it under the project license.
 
-## License
+## License and the CLA
 
-By contributing, you agree that your contributions will be licensed under the
-same license as this project (see [LICENSE](LICENSE)).
+ModularCA is licensed under the GNU Affero General Public License v3.0 (see
+[LICENSE](LICENSE)), and is also offered under a commercial licence to organisations
+that cannot accept the AGPL.
+
+Offering both is only possible if one party holds the necessary rights to every line.
+The Developer Certificate of Origin above certifies that you may submit your work — it
+does **not** grant the rights needed to also offer it commercially. So contributions
+additionally require a signed **Contributor License Agreement**: see [CLA.md](CLA.md).
+
+You keep the copyright in your contribution. The CLA grants a licence alongside it, so
+your work can ship under both the AGPL and the commercial licence. Without it a
+contribution cannot be merged — not out of bureaucracy, but because accepting one
+would leave part of the project unable to be licensed on the terms the rest is.

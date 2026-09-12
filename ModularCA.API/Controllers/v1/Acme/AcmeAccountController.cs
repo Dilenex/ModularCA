@@ -9,6 +9,8 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Core.Services;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -364,7 +366,7 @@ public class AcmeAccountController(
         {
             _jwsService.VerifySignature(innerProtectedB64, innerPayloadB64, innerSignatureB64, newJwkJson);
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             return AcmeError(403, "urn:ietf:params:acme:error:unauthorized", "Inner JWS signature verification failed.");
         }
@@ -473,7 +475,7 @@ public class AcmeAccountController(
                     "externalAccountBinding payload must contain the account public key.");
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             return AcmeError(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding payload JWK is not valid.");

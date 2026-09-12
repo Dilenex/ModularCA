@@ -4,12 +4,44 @@ import { useStepUp } from './StepUpMfaContext';
 import { looksLikeHostname } from '@shared/hostname';
 import { StepUpOps } from '@shared/generated';
 import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldNotices, hasFieldNotice } from '@shared/components/FieldNotice';
+import {
+    mergeNotices, unclaimedNotices, worstSeverity,
+    type Notice, type NoticeInput, type NoticeSeverity,
+} from '@shared/notifications/notice';
+import { readDiagnostics } from '@shared-auth/api/problem';
+import { diagnosticNotices, errorNotices } from '@shared-auth/api/notices';
+
+/**
+ * The names each control answers to.
+ *
+ * Three vocabularies meet on this form. The inputs are named after the X.509 fields they set
+ * (`notBefore`, `notAfter`); a diagnostic from issuance calls the same two `validFrom` and
+ * `validTo`; model state names them after the request DTO's properties, and a profile refusal
+ * names them in prose. Listing the spellings next to the control is the only place that knows all
+ * three — see `fieldMatches`, which does the comparing.
+ */
+const NOT_BEFORE_FIELDS = ['notBefore', 'validFrom'];
+const NOT_AFTER_FIELDS = ['notAfter', 'validTo'];
+const SUBJECT_FIELDS = ['newSubjectDn', 'subjectDn', 'subject', 'commonName', 'CN'];
+const SAN_FIELDS = ['newSans', 'sans', 'subjectAlternativeNames'];
+
+/** Every field this form places inline. Anything else has to fall back to the summary banner. */
+const INLINE_FIELDS = [...NOT_BEFORE_FIELDS, ...NOT_AFTER_FIELDS, ...SUBJECT_FIELDS, ...SAN_FIELDS];
 
 /// Properties for the shared CertificateReissueModal.
 export interface CertificateReissueModalProps {
     open: boolean;
     onClose: () => void;
-    onSuccess: (message: string) => void;
+    /**
+     * Reports the outcome to the host page, which toasts it.
+     *
+     * `severity` is second so the existing `(msg) => showToast('success', msg)` handlers keep
+     * compiling, but a reissue is not always a success: the certificate can come back without the
+     * extended key usages that were asked for, and announcing that in a green toast is how the
+     * operator learns to ignore green toasts.
+     */
+    onSuccess: (message: NoticeInput, severity?: NoticeSeverity) => void;
     cert: {
         id: string;                  // cert Guid
         serialNumber: string;        // for display
@@ -97,7 +129,10 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
     const { requireStepUp } = useStepUp();
     const [form, setForm] = useState<ReissueForm>(EMPTY_FORM);
     const [submitting, setSubmitting] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    // The refusal, split into the messages that belong to a control and the ones that do not,
+    // rather than the single sentence this used to keep. A rejected notAfter now appears under the
+    // Valid To box instead of only in a toast the operator has to look away from the form to read.
+    const [notices, setNotices] = useState<Notice[]>([]);
 
     // Pre-fill the form whenever the modal opens with a new cert
     useEffect(() => {
@@ -109,7 +144,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
             notBefore: '',
             notAfter: '',
         });
-        setError(null);
+        setNotices([]);
         setSubmitting(false);
     }, [open, cert]);
 
@@ -147,7 +182,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
     const handleSubmit = async () => {
         if (!cert) return;
         setSubmitting(true);
-        setError(null);
+        setNotices([]);
         try {
             const body: any = { serialNumber: cert.serialNumber };
             const newDn = buildSubjectDn(form);
@@ -174,22 +209,36 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                 StepUpOps.ReissueCert,
                 cert.serialNumber,
             );
-            const warnings = result?.warnings as string[] | undefined;
-            const msg = result?.message || `Reissued — new serial ${result?.newSerialNumber ?? 'unknown'}`;
-            onSuccess(warnings?.length ? `${msg}. Warning: ${warnings.join('; ')}` : msg);
+            const advisories = diagnosticNotices(readDiagnostics(result));
+            const headline = result?.message || `Reissued — new serial ${result?.newSerialNumber ?? 'unknown'}`;
+            // The certificate exists either way, so the modal closes either way — but a diagnostic
+            // decides the severity, and its code travels with it so the toast can offer it for
+            // copying instead of burying it in a sentence.
+            onSuccess(mergeNotices(headline, advisories), worstSeverity(advisories, 'success'));
             onClose();
         } catch (err: any) {
             if (err?.message === 'Step-up MFA cancelled') {
                 setSubmitting(false);
                 return;
             }
-            setError(err?.message || 'Reissue failed');
+            setNotices(errorNotices(err));
         } finally {
             setSubmitting(false);
         }
     };
 
     const helperClass = 'text-[11px] text-gray-600 dark:text-gray-500 mt-1';
+
+    // A control that carries a message is marked invalid and points at it, so a screen reader
+    // announces the two together; `undefined` rather than a dangling id when there is no message.
+    const describedBy = (id: string, fields: string[]) =>
+        hasFieldNotice(notices, fields) ? id : undefined;
+    const invalidClass = (fields: string[]) =>
+        hasFieldNotice(notices, fields) ? ' border-red-500 dark:border-red-500' : '';
+
+    // Whatever no control claimed: the explanation itself, plus any field the server named that
+    // this form has no box for. Dropping those would reintroduce the bug this is fixing.
+    const bannerNotices = unclaimedNotices(notices, INLINE_FIELDS);
 
     return (
         <div
@@ -256,8 +305,11 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                 value={form.CN}
                                 onChange={(e) => updateField('CN', e.target.value)}
                                 disabled={submitting}
-                                className={inputClass}
+                                aria-invalid={hasFieldNotice(notices, SUBJECT_FIELDS)}
+                                aria-describedby={describedBy('reissue-cn-notice', SUBJECT_FIELDS)}
+                                className={inputClass + invalidClass(SUBJECT_FIELDS)}
                             />
+                            <FieldNotices id="reissue-cn-notice" notices={notices} field={SUBJECT_FIELDS} />
                         </div>
                         <div>
                             <label htmlFor="reissue-o" className={labelClass}>Organization (O)</label>
@@ -327,8 +379,11 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                             disabled={submitting}
                             rows={4}
                             placeholder={'DNS:example.com\nDNS:www.example.com\nIP:10.0.0.1'}
-                            className={`${inputClass} resize-none font-mono`}
+                            aria-invalid={hasFieldNotice(notices, SAN_FIELDS)}
+                            aria-describedby={describedBy('reissue-sans-notice', SAN_FIELDS)}
+                            className={`${inputClass} resize-none font-mono${invalidClass(SAN_FIELDS)}`}
                         />
+                        <FieldNotices id="reissue-sans-notice" notices={notices} field={SAN_FIELDS} />
                         {canAddCnAsSan && (
                             <div className="mt-2">
                                 <button
@@ -363,8 +418,11 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                 value={form.notBefore}
                                 onChange={(e) => updateField('notBefore', e.target.value)}
                                 disabled={submitting}
-                                className={inputClass}
+                                aria-invalid={hasFieldNotice(notices, NOT_BEFORE_FIELDS)}
+                                aria-describedby={describedBy('reissue-not-before-notice', NOT_BEFORE_FIELDS)}
+                                className={inputClass + invalidClass(NOT_BEFORE_FIELDS)}
                             />
+                            <FieldNotices id="reissue-not-before-notice" notices={notices} field={NOT_BEFORE_FIELDS} />
                             <div className={helperClass}>Leave blank to use the current time.</div>
                         </div>
                         <div>
@@ -375,16 +433,38 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                 value={form.notAfter}
                                 onChange={(e) => updateField('notAfter', e.target.value)}
                                 disabled={submitting}
-                                className={inputClass}
+                                aria-invalid={hasFieldNotice(notices, NOT_AFTER_FIELDS)}
+                                aria-describedby={describedBy('reissue-not-after-notice', NOT_AFTER_FIELDS)}
+                                className={inputClass + invalidClass(NOT_AFTER_FIELDS)}
                             />
+                            <FieldNotices id="reissue-not-after-notice" notices={notices} field={NOT_AFTER_FIELDS} />
                             <div className={helperClass}>Leave blank to use the signing profile's default (recommended).</div>
                         </div>
                     </div>
 
-                    {/* Error */}
-                    {error && (
-                        <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded text-sm text-red-800 dark:text-red-300">
-                            {error}
+                    {/* Error — the parts of the refusal that belong to no control on this form.
+                        role="alert" because it appears in response to the operator's own click and
+                        is the reason the modal is still open; it does not move focus, so a caret
+                        left in the Valid To box stays there. */}
+                    {bannerNotices.length > 0 && (
+                        <div role="alert" className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded text-sm text-red-800 dark:text-red-300 space-y-2 max-h-60 overflow-y-auto">
+                            {bannerNotices.map((n, i) => (
+                                <div key={i} className="space-y-1">
+                                    {n.title && n.title !== n.detail && <p className="font-semibold break-words">{n.title}</p>}
+                                    {n.detail && <p className="break-words">{n.detail}</p>}
+                                    {n.items && n.items.length > 0 && (
+                                        <ul className="text-xs list-disc list-outside pl-4 space-y-0.5">
+                                            {n.items.map((item, j) => <li key={j} className="break-words">{item}</li>)}
+                                        </ul>
+                                    )}
+                                    {n.remediation && <p className="text-xs opacity-90 break-words">{n.remediation}</p>}
+                                    {(n.code || n.correlationId) && (
+                                        <p className="text-[11px] font-mono opacity-80 break-all select-all">
+                                            {[n.code, n.correlationId].filter(Boolean).join(' · ')}
+                                        </p>
+                                    )}
+                                </div>
+                            ))}
                         </div>
                     )}
                 </div>

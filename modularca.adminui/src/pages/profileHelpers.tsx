@@ -262,6 +262,52 @@ export const BadgeList: React.FC<{ items: any }> = ({ items }) => {
     );
 };
 
+/**
+ * Renders a *ceiling* list — one where an empty value means "unrestricted", not "nothing".
+ *
+ * Seven fields carry this inverted semantic: a signing profile's AllowedEKUs and
+ * AllowedAlgorithms and a cert profile's AllowedKeyAlgorithms / AllowedKeySizes /
+ * AllowedSignatureAlgorithms (all gated on `?.Count > 0` in IssuanceValidationService), plus an
+ * SSH cert profile's AllowedExtensions and AllowedPrincipalPatterns (AdminSshController).
+ * SSH RequiredExtensions is deliberately NOT one of them — it is a floor, so "None" is correct. Rendering those
+ * through the plain BadgeList printed "None", telling the operator the ceiling permitted nothing
+ * at the exact moment it permitted everything — which is how an EKU that was present in both the
+ * catalog and the cert profile could vanish at issuance with nothing on screen to explain it.
+ */
+export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = ({ items, raw, noun = 'value' }) => {
+    // A field that has not loaded yet is unknown, not unrestricted. Rendering the affirmative
+    // claim during a fetch would flash a statement about policy that may be false once the data
+    // arrives, so undefined/null is held back instead.
+    if (items === undefined || items === null) {
+        return <span className="text-xs text-gray-600 dark:text-gray-400">—</span>;
+    }
+
+    // Emptiness is decided from `raw` when supplied, because the labelled list is lossy:
+    // canonicalizeUsages drops any entry it cannot resolve against the catalog, and the catalog
+    // falls back to a hardcoded subset before its fetch resolves or if that fetch fails. Deciding
+    // from the labelled list would print an affirmative "Unrestricted" for a ceiling that does
+    // restrict — a worse failure than the "None" this replaced, because it is a confident claim
+    // rather than a vague one. When labels are unavailable, show the raw values instead.
+    // parseListField, not parseJsonArray: these fields legitimately arrive as a JSON array, as a
+    // comma-separated string, or as a real array (SigningProfileService stores AllowedAlgorithms
+    // verbatim while normalising AllowedEKUs on the adjacent line, and PolicySyncService writes
+    // operator YAML straight through). parseJsonArray returns [] for every shape but the first,
+    // which would print an affirmative "Unrestricted" over a ceiling that does restrict.
+    const source = parseListField(raw !== undefined ? raw : items);
+    if (source.length === 0) {
+        return (
+            <span className="text-xs text-amber-600 dark:text-amber-400">
+                Unrestricted — every {noun} is permitted
+            </span>
+        );
+    }
+    // Show labels only when every entry resolved. canonicalizeUsages drops what it cannot match,
+    // so a partially-resolved list (a custom OID, or the catalog fetch still in flight) would
+    // display fewer restrictions than the ceiling actually imposes.
+    const labelled = parseListField(items);
+    return <BadgeList items={labelled.length === source.length ? labelled : source} />;
+};
+
 /** Multi-select toggle buttons for an array field */
 export const MultiToggle: React.FC<{
     options: readonly string[];

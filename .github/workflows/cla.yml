@@ -1,0 +1,78 @@
+name: CLA
+
+# Refuses a pull request whose author has not signed the Contributor License Agreement.
+#
+# ModularCA is offered under the AGPL and also commercially, which is only possible if one party
+# holds sufficient rights in every line. A contribution merged without a CLA is a permanent patch
+# of code that cannot be licensed on the commercial terms the rest of the project is — and it
+# cannot be fixed later without tracking the author down and hoping they agree.
+#
+# Deliberately not a third-party CLA service. Signing happens in the repository itself, so the
+# record is a git commit with an author and a timestamp rather than a row in someone else's
+# database, and it keeps working if that service disappears.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# `pull_request` rather than `pull_request_target`: this runs with a read-only token and checks
+# out the PR's own head, which is what lets a contributor add their signature in the same pull
+# request as their code. It must never gain write permissions — it executes nothing from the
+# branch, but the smaller the token the less there is to get wrong.
+permissions:
+  contents: read
+
+jobs:
+  signature:
+    name: Contributor has signed the CLA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v4
+
+      - name: Look for the author in CLA-SIGNATURES.md
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -euo pipefail
+
+          # Dependency bumps and similar automation contribute no copyrightable authorship, so
+          # there are no rights to license and nothing for a CLA to grant. Keyed on the account
+          # type GitHub reports rather than a name allowlist, which would drift.
+          if [ "${AUTHOR_TYPE}" = "Bot" ]; then
+            echo "::notice::${AUTHOR} is a bot account; no authorship to license."
+            exit 0
+          fi
+
+          if [ ! -f CLA-SIGNATURES.md ]; then
+            echo "::error::CLA-SIGNATURES.md is missing from this branch."
+            exit 1
+          fi
+
+          # GitHub handles are case-insensitive, so the match is too. Anchored on "@handle"
+          # followed by a table delimiter or whitespace so "@ed" cannot match "@edphemeral".
+          if grep -qiE "(^|[^A-Za-z0-9_-])@${AUTHOR}([^A-Za-z0-9_-]|$)" CLA-SIGNATURES.md; then
+            echo "::notice::@${AUTHOR} has signed the CLA."
+            exit 0
+          fi
+
+          echo "::error::@${AUTHOR} has not signed the Contributor License Agreement."
+          cat <<EOF
+
+          ModularCA is licensed under the AGPL-3.0 and is also offered commercially. That is only
+          possible if one party holds sufficient rights in all of the code, so every contribution
+          needs a signed CLA before it can be merged.
+
+          You keep the copyright in your work. The CLA grants a licence alongside it.
+
+          To sign, add one line to CLA-SIGNATURES.md in this pull request:
+
+              | @${AUTHOR} | Your Full Legal Name | $(date -u +%Y-%m-%d) |
+
+          Please read CLA.md first — adding the line is how you agree to it.
+
+          Contributing on behalf of an employer? Open an issue instead; that needs a separate
+          corporate agreement.
+          EOF
+          exit 1

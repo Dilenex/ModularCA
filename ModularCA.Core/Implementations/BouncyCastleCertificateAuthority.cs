@@ -71,34 +71,33 @@ namespace ModularCA.Core.Implementations
             // parser silently scored as zero for every entry — so the root CA was issued with a
             // CRITICAL KeyUsage extension containing no bits at all, asserting that the CA key may
             // do nothing. Failing loudly is the only safe behaviour for this particular extension.
-            if (request.KeyUsages.Any())
-            {
-                var flags = KeyUsageFriendlyNames.ParseMany(request.KeyUsages);
-                if (flags == 0)
-                    throw new InvalidOperationException(
-                        "Key usages were requested but resolved to no KeyUsage bits: "
-                        + string.Join(", ", request.KeyUsages)
-                        + ". Refusing to emit an empty critical KeyUsage extension.");
+            var flags = request.KeyUsages.Any() ? KeyUsageFriendlyNames.ParseMany(request.KeyUsages) : 0;
+            if (request.KeyUsages.Any() && flags == 0)
+                throw new InvalidOperationException(
+                    "Key usages were requested but resolved to no KeyUsage bits: "
+                    + string.Join(", ", request.KeyUsages)
+                    + ". Refusing to emit an empty critical KeyUsage extension.");
 
-                // A CA key signs certificates and CRLs. It never enciphers a key or performs key
-                // agreement, and RFC 5480 §3 forbids keyEncipherment outright for id-ecPublicKey
-                // (RFC 8410 §5 likewise for Ed25519) — which is what the default install used,
-                // so the bootstrap root asserted a bit its own key type cannot carry.
-                //
-                // The caller's list is fixed now, but this is the layer that decides what ends up
-                // inside the signature, and a certificate's extensions cannot be corrected after
-                // issuance. Refuse rather than quietly strip, so a reintroduction is a failed
-                // bootstrap and not a non-compliant root nobody notices for a year.
-                const int encipherOrAgree = KeyUsage.KeyEncipherment | KeyUsage.DataEncipherment | KeyUsage.KeyAgreement;
-                if (request.IsCA && (flags & encipherOrAgree) != 0)
-                    throw new InvalidOperationException(
-                        "A CA certificate must not assert keyEncipherment, dataEncipherment or keyAgreement. "
-                        + "Requested: " + string.Join(", ", request.KeyUsages)
-                        + ". A CA key signs certificates and CRLs; RFC 5480 §3 forbids keyEncipherment "
-                        + "for EC keys and RFC 8410 §5 for Ed25519.");
+            // A CA key signs certificates and CRLs. It never enciphers a key or performs key
+            // agreement, and RFC 5480 §3 forbids keyEncipherment outright for id-ecPublicKey
+            // (RFC 8410 §5 likewise for Ed25519) — which is what the default install used,
+            // so the bootstrap root asserted a bit its own key type cannot carry.
+            //
+            // The caller's list is fixed now, but this is the layer that decides what ends up
+            // inside the signature, and a certificate's extensions cannot be corrected after
+            // issuance. Refuse rather than quietly strip, so a reintroduction is a failed
+            // bootstrap and not a non-compliant root nobody notices for a year.
+            CaCertificateRules.EnsureKeyUsagesPermitted(request.IsCA, flags, request.KeyUsages);
 
+            // keyCertSign and cRLSign are mandatory on a cA=TRUE certificate (RFC 5280
+            // §4.2.1.3). Applied here as well as on the runtime path, because a CA request
+            // that simply omits them previously produced a root with no KeyUsage extension
+            // at all — the guard above sat inside `if (request.KeyUsages.Any())`, so an empty
+            // list skipped every check rather than failing any of them.
+            flags = CaCertificateRules.ApplyRequiredKeyUsages(request.IsCA, flags, out _);
+
+            if (flags != 0)
                 certGen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(flags));
-            }
 
             // Extended Key Usage
             //
@@ -111,12 +110,7 @@ namespace ModularCA.Core.Implementations
             //
             // What the CA is permitted to ISSUE is a separate question, carried by the signing
             // profile's AllowedEKUs, and is unaffected.
-            if (request.IsCA && request.ExtendedKeyUsages.Any())
-                throw new InvalidOperationException(
-                    "A CA certificate must not carry an ExtendedKeyUsage extension. Requested: "
-                    + string.Join(", ", request.ExtendedKeyUsages)
-                    + ". An EKU on a CA constrains every certificate beneath it; put the permitted "
-                    + "issuance EKUs on the signing profile instead.");
+            CaCertificateRules.EnsureNoExtendedKeyUsage(request.IsCA, request.ExtendedKeyUsages);
 
             if (request.ExtendedKeyUsages.Any())
             {

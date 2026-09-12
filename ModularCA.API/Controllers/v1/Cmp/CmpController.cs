@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using Serilog;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Cmp;
 
@@ -66,7 +67,7 @@ public class CmpController(ICmpService cmpService) : ControllerBase
             MetricsService.ProtocolRequestDuration.WithLabels("CMP").Observe(stopwatch.Elapsed.TotalSeconds);
             return File(derResponse, CmpContentType);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // CMP errors are returned as PKIMessage error responses by the service layer.
             // This catch handles cases where the service cannot even construct a valid response

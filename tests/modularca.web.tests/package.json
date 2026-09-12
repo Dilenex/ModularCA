@@ -1,0 +1,17 @@
+{
+    "name": "modularca-web-tests",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Unit tests for the TypeScript shared by the ModularCA SPAs. Kept out of the five app packages so no app ships a test dependency.",
+    "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "typecheck": "tsc -b --force"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.0",
+        "typescript": "6.0.2",
+        "vitest": "5.0.0"
+    }
+}

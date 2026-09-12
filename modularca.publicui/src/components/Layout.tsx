@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { Link, useLocation, Outlet } from 'react-router-dom';
 import { useTheme } from '@shared/context/ThemeContext';
+import { SourceNotice } from '@shared/components/SourceNotice';
 
 const navItems = [
     { name: 'Home', path: '/' },
@@ -99,9 +100,12 @@ const Layout: React.FC = () => {
 
             {/* Footer */}
             <footer className="bg-white dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800 py-6">
-                <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between text-xs text-gray-600">
+                <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
                     <span>ModularCA - Open Source Certificate Authority</span>
-                    <span>Powered by ModularCA</span>
+                    {/* AGPL section 13. This is the unauthenticated surface, so this is the
+                        placement that actually satisfies "all users interacting with it
+                        remotely" — the copies in the authenticated SPAs are for completeness. */}
+                    <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
                 </div>
             </footer>
         </div>

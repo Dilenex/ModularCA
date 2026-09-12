@@ -14,6 +14,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.ComponentModel.DataAnnotations;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -505,8 +506,65 @@ namespace ModularCA.API.Controllers.v1.Admin
                     Log.Warning(auditEx, "Audit emission for failed intermediate CA creation failed");
                 }
 
-                return StatusCode(500, new { error = "An unexpected error occurred while creating the intermediate CA. Please try again." });
+                return DescribeCreationFailure(ex, "intermediate");
             }
+        }
+
+        /// <summary>
+        /// Chooses the response for a failed CA creation: the exception's own message when the
+        /// operator can act on it, and the sanitized 500 otherwise.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Both creation endpoints previously answered every failure with "An unexpected error
+        /// occurred … Please try again." That is not merely unhelpful, it is wrong: the failures
+        /// an operator actually hits here are configuration refusals — an ExtendedKeyUsage on a
+        /// CA certificate, a key usage RFC 5480 forbids for the chosen key type, a parent CA with
+        /// no usable private key — and retrying reproduces them exactly. The guards raising them
+        /// already carry a sentence naming the rule and the fix; the catch discarded it.
+        /// </para>
+        /// <para>
+        /// The type filter is the security control, not the message text. Only the three
+        /// exception families that mean "the request asked for something not allowed" are
+        /// forwarded; everything else keeps the sanitized 500, because arbitrary exception text
+        /// carries SQL, file paths and occasionally key material. This mirrors
+        /// <c>ReissueInfrastructure</c>, which already made the same trade for the same reason.
+        /// </para>
+        /// <para>
+        /// A <see cref="RequestValidationException"/> is rethrown rather than formatted here, so
+        /// <c>RequestValidationMiddleware</c> stays the single renderer for that family and its
+        /// per-type fields (<c>violations</c>, <c>allowed</c>, <c>parameter</c>, <c>code</c>)
+        /// survive. That is now the common case rather than a future one: the CA rules in
+        /// <c>CaCertificateRules</c> and most of <c>CaCreationService</c> raise that family, so
+        /// an EKU-on-a-CA refusal arrives as a coded 400 and only the stragglers still take the
+        /// <see cref="InvalidOperationException"/> branch below.
+        /// </para>
+        /// </remarks>
+        /// <param name="ex">The exception the creation attempt failed with.</param>
+        /// <param name="kind">"root" or "intermediate", for the fallback message.</param>
+        private IActionResult DescribeCreationFailure(Exception ex, string kind)
+        {
+            if (ex is RequestValidationException)
+            {
+                // Capture-and-throw rather than `throw ex`, which would reset the stack trace.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
+            }
+
+            if (ex is InvalidOperationException or ArgumentException or NotSupportedException)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+
+            var correlationId = HttpContext.Items.TryGetValue("CorrelationId", out var cid) && cid is string s
+                ? s
+                : HttpContext.TraceIdentifier;
+
+            return StatusCode(500, new
+            {
+                error = $"An unexpected error occurred while creating the {kind} CA. "
+                      + "Contact your administrator with the correlation id below.",
+                correlationId,
+            });
         }
 
         /// <summary>
@@ -655,7 +713,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     Log.Warning(auditEx, "Audit emission for failed root CA creation failed");
                 }
 
-                return StatusCode(500, new { error = "An unexpected error occurred while creating the root CA. Please try again." });
+                return DescribeCreationFailure(ex, "root");
             }
         }
 
@@ -732,10 +790,18 @@ namespace ModularCA.API.Controllers.v1.Admin
                     supersededRevoked = result.SupersededSerialsRevoked,
                 });
             }
-            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or NotSupportedException)
+            catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException
+                                          or ArgumentException or NotSupportedException)
             {
                 // These carry operator-actionable messages (CA revoked, no private key available,
                 // HSM-backed signer). Surface them rather than collapsing to a correlation id.
+                //
+                // RequestValidationException is listed first and deliberately: most of this
+                // path's refusals have been migrated to that family, and without it in the
+                // filter they would sail past this block to the middleware — correctly answered,
+                // but with the failure audit record silently skipped. A reissue attempt must
+                // leave a trail whether it succeeded or not, so the audit happens here either
+                // way and only the rendering differs.
                 await _audit.LogAsync(
                     AuditActionType.CertificateReissued,
                     _currentUser.User.Id, _currentUser.User.Username,
@@ -743,6 +809,14 @@ namespace ModularCA.API.Controllers.v1.Admin
                     new { Action = "ReissueInfrastructureCerts", Success = false, Error = ex.Message },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+
+                if (ex is RequestValidationException)
+                {
+                    // Let RequestValidationMiddleware render it, so the status (404 for a missing
+                    // CA, 409 for a conflict) and the per-type fields survive.
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
+                }
+
                 return BadRequest(new { error = ex.Message });
             }
         }

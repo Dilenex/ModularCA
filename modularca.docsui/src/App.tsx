@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
@@ -17,6 +17,7 @@ import CaHierarchyDiagram from './pages/CaHierarchyDiagram';
 import TenantModelDiagram from './pages/TenantModelDiagram';
 import ConfigLifecycle from './pages/ConfigLifecycle';
 import ApiCategoryPage from './pages/ApiCategoryPage';
+import { SourceNotice } from '@shared/components/SourceNotice';
 
 /** Check whether the user has a valid (non-expired) auth token in localStorage. */
 function isAuthenticated(): boolean {
@@ -273,6 +274,12 @@ function AppShell() {
                     </Routes>
                 </main>
             </div>
+
+            {/* AGPL section 13 source offer — see SourceNotice. Served same-origin with the
+                rest of the product, so docs readers are remote users of it too. */}
+            <footer className="border-t border-gray-200 dark:border-gray-800 py-4 px-4">
+                <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
+            </footer>
         </div>
     );
 }

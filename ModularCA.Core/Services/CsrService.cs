@@ -11,6 +11,7 @@ using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Core.Services;
 
@@ -391,7 +392,11 @@ public class CsrService : ICsrService
     /// by the signing profile's allowed algorithms and the certificate profile's allowed key sizes
     /// and signature algorithms.
     /// </summary>
-    private static bool IsValidKeyParameters(string algorithm, string keySize, string signatureAlgorithm, SigningProfileEntity signingProfile, CertProfileEntity certProfile)
+    /// <remarks>
+    /// <c>internal</c> rather than <c>private</c> so the empty-allow-list semantic can be pinned
+    /// directly; ModularCA.Core already grants InternalsVisibleTo to the test assembly.
+    /// </remarks>
+    internal static bool IsValidKeyParameters(string algorithm, string keySize, string signatureAlgorithm, SigningProfileEntity signingProfile, CertProfileEntity certProfile)
     {
         // Deserialize allowed values from signing profile and cert profile
         var validKeyAlgorithms = JsonSerializer.Deserialize<List<string>>(signingProfile.AllowedAlgorithms);
@@ -402,15 +407,23 @@ public class CsrService : ICsrService
         if (validKeyAlgorithms == null || validKeySizes == null || validSignatureAlgorithms == null)
             return false;
 
-        // Check if all parameters are present in the profile
-        if (!validKeyAlgorithms.Contains(algorithm, StringComparer.OrdinalIgnoreCase))
+        // An EMPTY allow-list means "unrestricted", not "permit nothing".
+        //
+        // That is the semantic every other reader of these three columns applies — see
+        // IssuanceValidationService.ValidateAgainstCertProfile / ValidateAgainstSigningProfile,
+        // which gate each check on `?.Count > 0`. This method did not, so an empty list rejected
+        // every CSR while issuance would have accepted anything: a profile could not be submitted
+        // against at all, and the error named an empty allow-list. The two paths now agree.
+        if (validKeyAlgorithms.Count > 0
+            && !validKeyAlgorithms.Contains(algorithm, StringComparer.OrdinalIgnoreCase))
             throw new ProfileValidationException("Key algorithm", algorithm, validKeyAlgorithms, "signing profile");
 
         // keySize validation only applies to RSA and ECDSA; EdDSA/PQC ignore it
-        if (!IsKeySizeIgnored(algorithm) && !validKeySizes.Contains(keySize))
+        if (!IsKeySizeIgnored(algorithm) && validKeySizes.Count > 0 && !validKeySizes.Contains(keySize))
             throw new ProfileValidationException("Key size", keySize, validKeySizes, "certificate profile");
 
-        if (!validSignatureAlgorithms.Contains(signatureAlgorithm, StringComparer.OrdinalIgnoreCase))
+        if (validSignatureAlgorithms.Count > 0
+            && !validSignatureAlgorithms.Contains(signatureAlgorithm, StringComparer.OrdinalIgnoreCase))
             throw new ProfileValidationException("Signature algorithm", signatureAlgorithm, validSignatureAlgorithms, "certificate profile");
 
         // Compatibility: for hash-then-sign (RSA/ECDSA) sig alg contains key alg name.

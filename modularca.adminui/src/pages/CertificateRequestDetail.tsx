@@ -9,6 +9,9 @@ import {
     type ApprovalRecord, csrId, csrStatus, csrStatusLabel, decisionBadgeStatus,
     parseJsonSafe, canApprove, canIssue, canCancel,
 } from './CertificateRequests';
+import { readDiagnostics } from '@shared-auth/api/problem';
+import { diagnosticNotices } from '@shared-auth/api/notices';
+import { mergeNotices, worstSeverity } from '@shared/notifications/notice';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -95,8 +98,16 @@ const CertificateRequestDetail: React.FC = () => {
             // Omit NotBefore/NotAfter so validity coalesces from the effective cert profile
             // (ValidityPeriodMax/Min, clamped to the issuing CA) rather than a fixed window.
             const result = await apiPost<any>('/api/v1/admin/certificates/issue', { csrId: id });
-            const warnings = result?.warnings as string[] | undefined;
-            showToast('success', `Certificate issued for ${csr.subjectName || csr.subject}${warnings?.length ? `. Warning: ${warnings.join('; ')}` : ''}`);
+            const advisories = diagnosticNotices(readDiagnostics(result));
+            // Severity from the diagnostics themselves rather than from whether there are any: an
+            // informational diagnostic is not a warning, and a toast that cries wolf teaches the
+            // operator to dismiss the one that is not crying wolf. The notice keeps the code in its
+            // own slot so it survives long enough to be copied into a ticket — this toast no longer
+            // auto-dismisses when a diagnostic makes it a warning.
+            showToast(
+                worstSeverity(advisories, 'success'),
+                mergeNotices(`Certificate issued for ${csr.subjectName || csr.subject}`, advisories),
+            );
             navigate('/certificates/requests');
         } catch (err: any) {
             showToast('error', err.message || 'Failed to issue certificate');

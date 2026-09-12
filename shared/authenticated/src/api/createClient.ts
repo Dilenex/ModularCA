@@ -21,9 +21,19 @@
  * client.
  */
 import { createDpopProof } from './dpop';
+import { problemNotice } from './notices';
+import { ApiError, parseProblem, type ApiProblem } from './problem';
+import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
 
-/** A toast notifier supplied by the consuming app. */
-export type ToastFn = (type: 'success' | 'error' | 'warning' | 'info', message: string) => void;
+/**
+ * A toast notifier supplied by the consuming app.
+ *
+ * `message` widened from `string` to {@link NoticeInput} so this client can hand over the problem
+ * it already parsed instead of flattening it back into one sentence. Both apps satisfy this with
+ * `globalToast`, which accepts either arm; a notifier that only accepts strings no longer
+ * type-checks, which is the intended pressure.
+ */
+export type ToastFn = (type: NoticeSeverity, message: NoticeInput, duration?: number) => void;
 
 export interface AuthClientConfig {
     /** Route basename for this SPA: '/admin' or '/user'. Used for same-origin detection and
@@ -245,35 +255,38 @@ export function createAuthClient(config: AuthClientConfig) {
           if (e instanceof Error && (e.message === 'MFA setup required' || (e as any).requiresStepUp)) throw e;
           // Not a JSON body or not MFA-related, fall through to normal error handling
         }
-        const message = body || `HTTP ${resp.status}`;
-        throw new Error(message);
+        // Deliberately not toasted: a 403 that is not an MFA sentinel is surfaced by the
+        // caller, which usually has somewhere better to put it than a corner of the screen.
+        throw new ApiError(parseProblem(resp.status, body, resp.headers));
       }
 
       if (!resp.ok) {
-        const errorBody = await resp.text();
-        let message = `HTTP ${resp.status}`;
-        if (errorBody) {
-          try {
-            const parsed = JSON.parse(errorBody);
-            if (parsed.errors) {
-              // ASP.NET validation error format: { errors: { field: ["msg"] } }
-              const details = Object.entries(parsed.errors)
-                .map(([field, msgs]) => `${field}: ${(msgs as string[]).join(', ')}`)
-                .join('; ');
-              message = parsed.title ? `${parsed.title} — ${details}` : details;
-            } else {
-              message = parsed.error || parsed.message || parsed.title || errorBody;
-            }
-          } catch {
-            message = errorBody;
-          }
-        }
-        globalToast('error', message);
-        throw new Error(message);
+        const problem = parseProblem(resp.status, await resp.text(), resp.headers);
+        // The structure, not `problem.message`. The client is holding a parsed title, detail,
+        // remediation, code and correlation id at this point, and composing them into one string
+        // here only to have the toast render that string was the last place the structure was
+        // being thrown away. `err.message` is unaffected: ApiError still carries the composed line
+        // for the call sites that catch and toast it.
+        globalToast('error', problemNotice(problem));
+        throw new ApiError(problem);
       }
 
       const text = await resp.text();
       if (!text) return undefined as T;
+
+      // Only attempt a JSON parse when the server said it sent JSON. Several endpoints return
+      // application/x-pem-file, application/pkix-cert, CSV or text/plain, and inferring the shape
+      // from whether JSON.parse happened to throw is guesswork: it silently maps a malformed JSON
+      // body to a string rather than surfacing it.
+      //
+      // This does not by itself fix the issuance shape problem. /issue and /reissue return
+      // `{pem, warnings}` when warnings exist and a bare PEM otherwise, so callers such as
+      // CertificateReissueModal read `result.newSerialNumber` off a string on the common path and
+      // always fall back to "new serial unknown". That needs the endpoints to return one shape.
+      const contentType = resp.headers.get('content-type') ?? '';
+      if (!/json/i.test(contentType)) {
+        return text as unknown as T;
+      }
 
       try {
         return JSON.parse(text) as T;
@@ -335,30 +348,21 @@ export function createAuthClient(config: AuthClientConfig) {
       }
 
       if (!resp.ok) {
-        let message = `HTTP ${resp.status}`;
-        let requiresStepUp = false;
+        let problem: ApiProblem;
         try {
-          const text = await resp.clone().text();
-          if (text) {
-            try {
-              const parsed = JSON.parse(text);
-              message = parsed.error || parsed.message || parsed.title || text;
-              // Forward the step-up sentinel so apiBlobWithMfa can retry with X-MFA-Token.
-              if (parsed.requiresStepUp === true) requiresStepUp = true;
-            } catch {
-              message = text;
-            }
-          }
+          problem = parseProblem(resp.status, await resp.clone().text(), resp.headers);
         } catch {
-          // fall through with HTTP status
+          // Reading the body failed; report the status rather than losing the error entirely.
+          problem = parseProblem(resp.status, '', resp.headers);
         }
-        if (requiresStepUp) {
-          const err = new Error(message) as any;
+        const err = new ApiError(problem);
+        // Forward the step-up sentinel so apiBlobWithMfa can retry with X-MFA-Token.
+        if ((problem.raw as { requiresStepUp?: unknown } | undefined)?.requiresStepUp === true) {
           err.requiresStepUp = true;
           throw err;
         }
-        globalToast('error', message);
-        throw new Error(message);
+        globalToast('error', problemNotice(problem));
+        throw err;
       }
 
       return resp;

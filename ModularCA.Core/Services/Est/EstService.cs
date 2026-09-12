@@ -11,6 +11,7 @@ using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Core.Services.Est;
 
@@ -157,7 +158,7 @@ public class EstService : IEstService
                 clientSans = ExtractClientCertSans(clientCert);
                 csrCn = ExtractCommonName(parsedCsr.SubjectName);
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
             {
                 await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
@@ -193,7 +194,7 @@ public class EstService : IEstService
             {
                 csrCn = ExtractCommonName(parsedCsr.SubjectName);
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
             {
                 await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
@@ -546,7 +547,7 @@ public class EstService : IEstService
         {
             csrCn = ExtractCommonName(parsedCsr.SubjectName);
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             csrCn = null;
         }

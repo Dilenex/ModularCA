@@ -1,0 +1,105 @@
+name: Build and test
+
+# The first build/test automation this repository has had. It had none for a long time not by
+# choice but because .github/ was gitignored, so no workflow could ever be committed — the tests
+# existed and simply nothing ran them.
+#
+# Two jobs rather than one `dotnet build ModularCA.sln`, because the solution includes the five
+# SPA esproj entries and building those drives Vite. Keeping the C# and web halves apart means a
+# C# failure reports in a minute instead of waiting on five npm installs.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dotnet:
+    name: .NET build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Every C# project in the solution, reached through these three roots: the test project
+      # pulls Shared, Database, Keystore, Core, Auth and Bootstrap; the API pulls the same set
+      # plus itself; KeystoreCli is referenced by neither and is named explicitly. The solution
+      # file is deliberately not used — it would drag in the SPA esproj entries.
+      - name: Restore
+        run: |
+          dotnet restore tests/ModularCA.Tests/ModularCA.Tests.csproj
+          dotnet restore ModularCA.API/ModularCA.API.csproj
+          dotnet restore ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj
+
+      # Warnings are not errors here, but they are printed and reviewed: the repository builds
+      # clean today and a new warning is worth seeing in the log rather than discovering later.
+      - name: Build
+        run: |
+          dotnet build tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-restore
+          dotnet build ModularCA.API/ModularCA.API.csproj -c Debug --no-restore
+          dotnet build ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj -c Debug --no-restore
+
+      - name: Test
+        run: dotnet test tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-build --logger "console;verbosity=normal"
+
+  web-tests:
+    name: Web unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/modularca.web.tests/package-lock.json
+
+      - run: npm ci
+        working-directory: tests/modularca.web.tests
+
+      - run: npm test
+        working-directory: tests/modularca.web.tests
+
+  typecheck:
+    name: Typecheck ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not stop at the first failure: when a change to shared/ breaks several SPAs, seeing
+      # which ones survived is the fastest route to understanding what broke.
+      fail-fast: false
+      matrix:
+        app:
+          - modularca.adminui
+          - modularca.userui
+          - modularca.publicui
+          - modularca.docsui
+          - modularca.setupui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - run: npm ci
+        working-directory: ${{ matrix.app }}
+
+      # shared/common and shared/authenticated live outside every SPA and are typechecked here,
+      # once per app, against that app's own React. That is deliberate and not redundant: a
+      # shared component must compile against the exact React each consumer bundles.
+      - name: tsc -b
+        run: npx tsc -b --force
+        working-directory: ${{ matrix.app }}

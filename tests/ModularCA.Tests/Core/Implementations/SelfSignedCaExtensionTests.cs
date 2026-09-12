@@ -3,6 +3,7 @@ using ModularCA.Shared.Models;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.X509;
 using Xunit;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Tests.Core.Implementations;
 
@@ -70,7 +71,7 @@ public class SelfSignedCaExtensionTests
             "1.3.6.1.5.5.7.3.2", // clientAuth
         });
 
-        var ex = Assert.Throws<InvalidOperationException>(() => Build(request));
+        var ex = Assert.Throws<ConfigurationValidationException>(() => Build(request));
         Assert.Contains("ExtendedKeyUsage", ex.Message);
     }
 
@@ -83,7 +84,7 @@ public class SelfSignedCaExtensionTests
             "digitalSignature", "keyEncipherment", "keyCertSign", "cRLSign",
         });
 
-        var ex = Assert.Throws<InvalidOperationException>(() => Build(request));
+        var ex = Assert.Throws<ConfigurationValidationException>(() => Build(request));
         Assert.Contains("keyEncipherment", ex.Message);
     }
 
@@ -120,5 +121,35 @@ public class SelfSignedCaExtensionTests
 
         Assert.NotNull(cert.GetExtensionValue(X509Extensions.ExtendedKeyUsage));
         Assert.True(cert.GetKeyUsage()[2], "keyEncipherment should be allowed on a leaf");
+    }
+
+    /// <summary>
+    /// A CA request declaring no key usages at all still gets keyCertSign and cRLSign.
+    /// <para>
+    /// The encipherment guard used to sit inside <c>if (request.KeyUsages.Any())</c>, so an empty
+    /// list skipped every check rather than failing any of them, and the root was signed with no
+    /// KeyUsage extension whatsoever. Absence is not equivalent to the correct bits: a CA
+    /// certificate without keyCertSign makes every chain beneath it fail path validation
+    /// (RFC 5280 &#167;4.2.1.3).
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_ca_request_with_no_declared_usages_still_gets_the_mandatory_bits()
+    {
+        var cert = Build(CaRequest(keyUsages: new List<string>()));
+
+        var usage = cert.GetKeyUsage();
+        Assert.NotNull(usage);
+        Assert.True(usage[5], "keyCertSign must be set");
+        Assert.True(usage[6], "cRLSign must be set");
+    }
+
+    /// <summary>A leaf declaring nothing must not gain a KeyUsage extension it never asked for.</summary>
+    [Fact]
+    public void A_leaf_request_with_no_declared_usages_gets_no_key_usage_extension()
+    {
+        var cert = Build(CaRequest(keyUsages: new List<string>(), isCa: false));
+
+        Assert.Null(cert.GetKeyUsage());
     }
 }

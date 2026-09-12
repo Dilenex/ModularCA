@@ -7,7 +7,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName } from './profileHelpers';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, CeilingList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 
 import RequestProfilesTab from './RequestProfiles';
@@ -154,7 +154,7 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Name" value={p.name} />
             <DetailField label="Description" value={p.description} />
             <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><BadgeList items={p.allowedKeyAlgorithms} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
             <DetailField label="Validity Min" value={p.validityPeriodMin} />
             <DetailField label="Validity Max" value={p.validityPeriodMax} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
@@ -457,7 +457,7 @@ const SigningProfilesTab: React.FC = () => {
             ),
         },
         { key: 'issuer', header: 'Issuer', defaultWidth: 180, exportValue: (p) => authorityName(p.issuerId) || '', render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{authorityName(p.issuerId) || '-'}</span> },
-        { key: 'algorithms', header: 'Algorithms', defaultWidth: 200, exportValue: (p) => parseJsonArray(p.allowedAlgorithms).join(', '), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{parseJsonArray(p.allowedAlgorithms).join(', ') || '-'}</span> },
+        { key: 'algorithms', header: 'Algorithms', defaultWidth: 200, exportValue: (p) => parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted', render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted'}</span> },
         { key: 'maxPath', header: 'Max Path', defaultWidth: 90, exportValue: (p) => (p.maxPathLength != null ? String(p.maxPathLength) : ''), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxPathLength != null ? p.maxPathLength : '-'}</span> },
     ];
 
@@ -471,8 +471,8 @@ const SigningProfilesTab: React.FC = () => {
             <DetailField label="Description" value={p.description} />
             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
             <DetailField label="Issuer" value={authorityName(p.issuerId)} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
             <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
             <p className="text-[11px] text-gray-500 pt-3">Open the full page for all settings or to edit.</p>
         </div>
@@ -966,7 +966,7 @@ const SshCertProfilesTab: React.FC = () => {
             <DetailField label="Description" value={p.description} />
             <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
             <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><BadgeList items={p.allowedExtensions} /></div>
+            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
             <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
             <p className="text-[11px] text-gray-500 pt-3">Open the full page to view principal patterns or edit.</p>
         </div>

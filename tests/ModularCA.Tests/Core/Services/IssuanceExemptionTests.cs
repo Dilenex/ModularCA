@@ -1,5 +1,6 @@
 using ModularCA.Core.Services;
 using Xunit;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Tests.Core.Services;
 

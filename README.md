@@ -119,5 +119,26 @@ Some things, done or planned, may not make sense. Please share input on any proc
 ## Contributing
 Contributors are welcome, and feature requests are too.
 
+Contributions require a signed Contributor License Agreement — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CLA.md](CLA.md).
+
+## Licensing
+ModularCA is free software under the **GNU Affero General Public License v3.0**
+(SPDX: `AGPL-3.0-only`). The full text is in [LICENSE](LICENSE).
+
+The AGPL's section 13 matters for this project specifically: if you modify ModularCA
+and let others interact with it over a network — running a CA for client
+organisations, for example — you must offer those users the source of your modified
+version. Running an unmodified copy places no such obligation on you.
+
+Some enterprise capabilities ship from a separate private repository and require a
+commercial licence. The core is complete and usable on its own: every enrollment
+protocol, the full certificate and CRL/OCSP lifecycle, SSH certificates, the key
+ceremony and quorum model, HSM support via PKCS#11, and the complete audit trail are
+all free, permanently, and are not gated behind any licence.
+
+A commercial licence for the core is available for organisations that cannot accept
+the AGPL's terms.
+
 ## AI-Generated Content Disclaimer
 Initial development was guided by AI, with the majority of code human-oriented. Toward the second half of the project, reliance on AI increased to develop functionality and frontend pages. AI is a tool and human input is still necessary to review it. I am looking towards getting more humans to review the program.

@@ -34,6 +34,7 @@ using Serilog.Events;
 using Serilog.Formatting.Compact;
 using ModularCA.Core.Logging;
 using System.Text;
+using ModularCA.Shared.Errors;
 
 // ── Serilog bootstrap logger ─────────────────────────
 // Initialized before CLI flag handling so that operator-triggered destructive
@@ -590,7 +591,23 @@ builder.Host.UseSerilog((context, services, configuration) =>
 
     // File sink (always JSON) — capped at persistentSinkMinLevel so Debug does not
     // reach rolled files when toggled globally.
-    configuration.WriteTo.File(new CompactJsonFormatter(), config.Logging.FilePath,
+    // Resolve a relative path against the binary, not the process CWD. Serilog's file sink
+    // resolves relative paths against Environment.CurrentDirectory, which under systemd is
+    // whatever WorkingDirectory= says and under `dotnet run` is the project directory. The
+    // bootstrap sink above already uses AppContext.BaseDirectory, so the two logs landed in
+    // different places and an operator tailing the app directory saw only the bootstrap file
+    // while every controller warning went somewhere else.
+    // An empty FilePath would make Path.Combine return the base directory itself, so the sink
+    // would target a directory instead of failing loudly. AdminConfigController accepts any
+    // non-null value, empty string included, so fall back to the documented default.
+    var configuredLogPath = string.IsNullOrWhiteSpace(config.Logging.FilePath)
+        ? "logs/modularca-.log"
+        : config.Logging.FilePath;
+    var resolvedLogPath = Path.IsPathRooted(configuredLogPath)
+        ? configuredLogPath
+        : Path.Combine(AppContext.BaseDirectory, configuredLogPath);
+
+    configuration.WriteTo.File(new CompactJsonFormatter(), resolvedLogPath,
         restrictedToMinimumLevel: persistentSinkMinLevel,
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: config.Logging.RetentionDays,
@@ -699,6 +716,36 @@ else
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
+
+// Entitlements are resolved once from a signed licence file and never change while the process
+// runs, so this is a singleton: installing a licence is a file drop and a restart. A missing,
+// malformed or unsigned licence degrades to the free edition and logs why — it is never a
+// startup failure, because refusing to boot a certificate authority over a licence file would
+// take issuance, CRL and OCSP down for a paperwork problem.
+//
+// Note this is deliberately NOT IFeatureFlagService. Flags live in a database table an
+// administrator can edit; an entitlement stored where the operator can flip it is not an
+// entitlement. The two compose: available = entitled && enabled.
+builder.Services.AddSingleton<ModularCA.Shared.Interfaces.IEntitlementService>(sp =>
+{
+    var licensePath = Path.Combine(AppContext.BaseDirectory, "config", "license.lic");
+    string? document = null;
+    try
+    {
+        if (File.Exists(licensePath))
+            document = File.ReadAllText(licensePath);
+    }
+    catch (Exception ex)
+    {
+        // An unreadable file is the free edition, same as an absent one. Logged via the service
+        // below rather than here so there is a single place that reports licence state.
+        Serilog.Log.Warning(ex, "Licence file at {Path} could not be read", licensePath);
+    }
+
+    return new ModularCA.Core.Services.EntitlementService(
+        document,
+        sp.GetService<Microsoft.Extensions.Logging.ILogger<ModularCA.Core.Services.EntitlementService>>());
+});
 
 // === Audit database (optional — only registered if configured) ===
 if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))

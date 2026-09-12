@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
 import { useTheme } from '@shared/context/ThemeContext';
 import { Chevron } from '@shared/components/Chevron';
+import { SourceNotice } from '@shared/components/SourceNotice';
 
 interface NavSection {
     title: string;
@@ -135,6 +136,13 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.5-1.632Z" />
                     </svg>
                 </Link>
+            </div>
+
+            {/* AGPL section 13 source offer. The legally load-bearing copy is in publicui's
+                footer, since that is the surface an unauthenticated remote user can reach; this
+                one is here because operators are remote users too. */}
+            <div className="mt-4 px-3 pb-2 border-t border-gray-200 dark:border-gray-800 pt-3">
+                <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
             </div>
         </nav>
     );

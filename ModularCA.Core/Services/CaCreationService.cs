@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using ModularCA.Shared.Errors;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
 using ModularCA.Core.Implementations;
@@ -52,7 +53,7 @@ public class CaCreationService(
     private async Task EnforceTenantCaQuotaAsync(Guid tenantId)
     {
         if (!await quotaService.CanCreateCaInTenantAsync(tenantId))
-            throw new InvalidOperationException("Tenant CA quota exceeded.");
+            throw new ResourceConflictException("Tenant CA quota exceeded.", ErrorCodes.QuotaExceeded);
     }
 
     // Shared helper used by the root/intermediate builders below to
@@ -162,8 +163,20 @@ public class CaCreationService(
         certGen.AddExtension(X509Extensions.AuthorityKeyIdentifier, false,
             X509ExtensionUtilities.CreateAuthorityKeyIdentifier(subPubKeyInfo));
 
-        certGen.AddExtension(X509Extensions.KeyUsage, true,
-            new KeyUsage(KeyUsage.KeyCertSign | KeyUsage.CrlSign | KeyUsage.DigitalSignature));
+        // Routed through the shared rules rather than trusting the literal above. This is the
+        // third place in the solution that builds a cA=TRUE certificate (the others being
+        // BouncyCastleCertificateAuthority for the bootstrap root and CertificateBuilderService
+        // for intermediates), and it is the path an operator actually takes to create a root at
+        // runtime. The bits here are hardcoded and correct today, so both calls are no-ops — the
+        // point is that a later edit to this list cannot silently produce a non-compliant root.
+        const string rootUsageDescription = "digitalSignature, keyCertSign, cRLSign";
+        var rootUsageFlags = CaCertificateRules.ApplyRequiredKeyUsages(
+            isCa: true,
+            KeyUsage.KeyCertSign | KeyUsage.CrlSign | KeyUsage.DigitalSignature,
+            out _);
+        CaCertificateRules.EnsureKeyUsagesPermitted(true, rootUsageFlags, new[] { rootUsageDescription });
+
+        certGen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(rootUsageFlags));
 
         // NameConstraints (critical) — bake the operator-supplied permitted /
         // excluded subtree lists into the CA cert at build time. The same JSON payloads
@@ -233,7 +246,10 @@ public class CaCreationService(
         if (certProfileId.HasValue)
         {
             caCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Id == certProfileId.Value && cp.IsCaProfile)
-                ?? throw new InvalidOperationException($"CA Certificate Profile '{certProfileId}' not found or is not a CA profile.");
+                ?? throw new ResourceNotFoundException(
+                    "Certificate profile",
+                    $"CA Certificate Profile '{certProfileId}' not found or is not a CA profile.",
+                    certProfileId?.ToString());
         }
         else
         {
@@ -360,7 +376,8 @@ public class CaCreationService(
         // Validate tenant exists and is enabled
         var tenant = await db.Tenants.FindAsync(tenantId);
         if (tenant == null || !tenant.IsEnabled)
-            throw new InvalidOperationException($"Tenant '{tenantId}' not found or is disabled");
+            throw new ResourceNotFoundException(
+                "Tenant", $"Tenant '{tenantId}' not found or is disabled.", tenantId.ToString());
 
         // Validate the label against a strict char set BEFORE any DB work so we
         // never persist a CA whose label can escape CDP/AIA URLs or the /ca/{label} route.
@@ -378,8 +395,8 @@ public class CaCreationService(
             .AnyAsync(c => c.TenantId == tenantId && c.Label == caLabel);
         if (existingInTenant)
         {
-            throw new InvalidOperationException(
-                $"A CA with label '{caLabel}' already exists in this tenant.");
+            throw new ResourceConflictException(
+                $"A CA with label '{caLabel}' already exists in this tenant.", ErrorCodes.NameAlreadyTaken);
         }
 
         // Export the new child-CA private key ONCE, into a buffer we own and will
@@ -576,9 +593,9 @@ public class CaCreationService(
                 // than expected.
                 if (await db.CaGroups.AnyAsync(g => g.Name == groupName))
                 {
-                    throw new InvalidOperationException(
+                    throw new ResourceConflictException(
                         $"Auto-generated group name '{groupName}' already exists. " +
-                        $"Refusing to create CA '{name}' with fewer than {templates.Length} authorization groups.");
+                        $"Refusing to create CA '{name}' with fewer than {templates.Length} authorization groups.", ErrorCodes.NameAlreadyTaken);
                 }
 
                 var group = new CaGroupEntity
@@ -920,30 +937,33 @@ public class CaCreationService(
             throw new ArgumentException("Nothing to reissue: select the OCSP responder, the TSA, or both.");
 
         var caEntity = await db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted)
-            ?? throw new InvalidOperationException("Certificate authority not found.");
+            ?? throw new ResourceNotFoundException(
+                "Certificate authority", "Certificate authority not found.", caId.ToString());
 
         if (caEntity.IsSshCa)
-            throw new InvalidOperationException("SSH CAs have no OCSP responder or TSA certificate.");
+            throw new ConfigurationValidationException("SSH CAs have no OCSP responder or TSA certificate.");
 
         var caCertEntity = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == caEntity.CertificateId)
             ?? throw new InvalidOperationException("CA certificate row not found.");
         if (caCertEntity.Revoked)
-            throw new InvalidOperationException(
-                "This CA is revoked. Reissuing its responder would produce a certificate no relying party will accept.");
+            throw new ConfigurationValidationException(
+                "This CA is revoked. Reissuing its responder would produce a certificate no relying party will accept.", ErrorCodes.IssuingCaRevoked);
 
         var caCert = CertificateUtil.ParseFromPem(caCertEntity.Pem);
 
         // The CA's own signing key must be present in the runtime registry — the new certificates
         // are signed with it.
         var caKeyHandle = keystore.GetPrivateKeyFor(caCert)
-            ?? throw new InvalidOperationException(
-                "No private key is available for this CA, so it cannot sign a new responder certificate.");
+            ?? throw new ConfigurationValidationException(
+                "No private key is available for this CA, so it cannot sign a new responder certificate.", ErrorCodes.IssuingCaKeyUnavailable);
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.
         var signingProfile = await db.SigningProfiles
             .FirstOrDefaultAsync(sp => sp.IssuerId == caEntity.CertificateId)
-            ?? throw new InvalidOperationException("Signing profile for this CA not found.");
+            ?? throw new ConfigurationValidationException(
+                "Signing profile for this CA not found. The CA cannot issue an infrastructure "
+                + "certificate until a signing profile is linked to it.");
 
         // Check the profile permits what we are about to mint BEFORE issuing or revoking
         // anything. Reissuing into a profile that forbids the usage produced a certificate that
@@ -1162,10 +1182,10 @@ public class CaCreationService(
         {
             // A profile we cannot parse is not one we can clear, and guessing here would put us
             // back to issuing a certificate that might not work.
-            throw new InvalidOperationException(
+            throw new ConfigurationValidationException(
                 "This CA's signing profile has an unreadable AllowedEKUs value, so it cannot be " +
                 "confirmed to permit the extended key usages an OCSP responder or TSA needs. " +
-                "Fix the profile before reissuing.");
+                "Fix the profile before reissuing.", ErrorCodes.SigningProfileEkusUnreadable);
         }
 
         if (allowed.Count == 0)
@@ -1186,13 +1206,13 @@ public class CaCreationService(
 
         if (missing.Count > 0)
         {
-            throw new InvalidOperationException(
+            throw new ConfigurationValidationException(
                 $"This CA's signing profile does not permit {string.Join(" or ", missing)}, so a reissued " +
                 "certificate would be issued without that extended key usage and would not work — " +
                 "OCSP would keep answering 'unauthorized'. Nothing has been changed. Add the usage to " +
                 $"the signing profile '{signingProfile.Name}' (Allowed EKUs) and reissue again. " +
                 "CAs created before this was corrected carry a narrower AllowedEKUs list than the " +
-                "bootstrap default and hit this.");
+                "bootstrap default and hit this.", ErrorCodes.SigningProfileMissingRequiredEku);
         }
     }
 
@@ -1212,11 +1232,11 @@ public class CaCreationService(
         if (ekus != null && ekus.Cast<object>().Any(o => string.Equals(o?.ToString(), requiredOid, StringComparison.Ordinal)))
             return;
 
-        throw new InvalidOperationException(
+        throw new ConfigurationValidationException(
             $"The reissued {certType} certificate was created without the required extended key usage " +
             $"({requiredOid}), so it would not work. The previous certificate has been left in place " +
             "and still points at this CA. Check the signing profile's Allowed EKUs and the " +
-            $"'{certType}' certificate profile, then reissue again.");
+            $"'{certType}' certificate profile, then reissue again.", ErrorCodes.SigningProfileMissingRequiredEku);
     }
 
     private static readonly System.Text.RegularExpressions.Regex LabelPattern =

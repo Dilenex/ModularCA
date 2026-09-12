@@ -162,6 +162,13 @@ namespace ModularCA.Core.Services
                 usageFlags = KeyUsageFriendlyNames.ParseMany(standardOids);
             }
 
+            // A CA certificate must never assert keyEncipherment / dataEncipherment / keyAgreement.
+            // Refused rather than quietly stripped: extensions are inside the signature and cannot
+            // be corrected after issuance, so a reintroduction should be a failed creation and not
+            // a non-compliant intermediate nobody notices for a year. Shared with the bootstrap
+            // self-signed path so both builders enforce one rule set.
+            CaCertificateRules.EnsureKeyUsagesPermitted(isCa, usageFlags, standardOids);
+
             // When building a CA certificate, always normalise in keyCertSign and cRLSign.
             // These bits are MANDATORY on any BasicConstraints.cA=TRUE certificate (RFC 5280
             // §4.2.1.3) — a CA cert without keyCertSign makes every chain it signs fail path
@@ -170,17 +177,12 @@ namespace ModularCA.Core.Services
             // away by restrictive profile inheritance) is still valid, and the cert is always
             // built correctly. Logged at debug only so this expected normalisation doesn't emit
             // a misleading warning on every single CA creation.
-            if (isCa)
+            usageFlags = CaCertificateRules.ApplyRequiredKeyUsages(isCa, usageFlags, out var addedCaBits);
+            if (addedCaBits != 0)
             {
-                var requiredCaBits = KeyUsage.KeyCertSign | KeyUsage.CrlSign;
-                var missing = requiredCaBits & ~usageFlags;
-                if (missing != 0)
-                {
-                    _logger.LogDebug(
-                        "Normalising mandatory CA key usages onto CA certificate (added mask 0x{Missing:X}: keyCertSign/cRLSign per RFC 5280 §4.2.1.3).",
-                        missing);
-                }
-                usageFlags |= requiredCaBits;
+                _logger.LogDebug(
+                    "Normalising mandatory CA key usages onto CA certificate (added mask 0x{Missing:X}: keyCertSign/cRLSign per RFC 5280 §4.2.1.3).",
+                    addedCaBits);
             }
 
             if (usageFlags != 0)
@@ -262,6 +264,13 @@ namespace ModularCA.Core.Services
             // the list is already safe. Criticality is sourced from the signing profile's
             // ExtendedKeyUsageCritical flag (RFC 5280 §4.2.1.12 recommends critical when the
             // cert's purpose is restricted). Default false for backwards compat.
+            //
+            // An EKU on a CA constrains every certificate beneath it, so a CA-flagged profile that
+            // lists EKUs is refused here rather than emitted. This is the runtime counterpart to
+            // the identical refusal on the bootstrap self-signed path: previously only the latter
+            // enforced it, leaving every admin-created intermediate able to carry an EKU silently.
+            CaCertificateRules.EnsureNoExtendedKeyUsage(isCa, extendedOids);
+
             bool hasOcspSigningEku = false;
             if (extendedOids.Count != 0)
             {

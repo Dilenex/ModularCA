@@ -14,6 +14,7 @@ using ModularCA.Shared.Utils;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -334,7 +335,7 @@ public class AdminWebTlsController(
                 restartRequired = false
             });
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // A Web TLS reissue failure is a security-
             // relevant event because the running TLS chain remains the previous (potentially

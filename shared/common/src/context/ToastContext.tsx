@@ -3,12 +3,28 @@
  * transport errors from outside React.
  *
  * Byte-identical in adminui and userui before this move.
+ *
+ * `showToast` now takes either a string or a structured {@link NoticeInput}, and the default
+ * lifetime comes from the severity rather than being a flat five seconds. Both are additive: the
+ * 238 existing `showToast(type, message)` calls pass a string and name no duration, so they keep
+ * compiling and keep rendering the same way — what changes is that the ones reporting a failure
+ * now wait to be dismissed instead of erasing themselves mid-sentence.
  */
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import { Toast, type ToastType } from '../components/Toast';
+import { Toast, toastViewportClass, type ToastType } from '../components/Toast';
+import { autoDismissMs, type NoticeInput } from '../notifications/notice';
 
-interface ToastItem { id: string; type: ToastType; message: string; }
-interface ToastContextValue { showToast: (type: ToastType, message: string, duration?: number) => void; }
+interface ToastItem { id: string; type: ToastType; message: NoticeInput; }
+interface ToastContextValue {
+    /**
+     * @param type Severity, which also selects the default lifetime.
+     * @param message A sentence, or a structured notice with a title, code and correlation id.
+     * @param duration Milliseconds; 0 pins the toast open. Omit to take the severity's default —
+     *                 an explicit value always wins, so a call site that wants a transient error
+     *                 or a persistent success can still say so.
+     */
+    showToast: (type: ToastType, message: NoticeInput, duration?: number) => void;
+}
 
 const ToastContext = createContext<ToastContextValue>({ showToast: () => {} });
 export const useToast = () => useContext(ToastContext);
@@ -16,7 +32,8 @@ export const useToast = () => useContext(ToastContext);
 // Global toast function for use outside React (e.g., API client)
 let _globalShowToast: ToastContextValue['showToast'] = () => {};
 export const setGlobalToast = (fn: typeof _globalShowToast) => { _globalShowToast = fn; };
-export const globalToast = (type: ToastType, message: string) => _globalShowToast(type, message);
+export const globalToast = (type: ToastType, message: NoticeInput, duration?: number) =>
+    _globalShowToast(type, message, duration);
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -25,10 +42,11 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setToasts(prev => prev.filter(t => t.id !== id));
     }, []);
 
-    const showToast = useCallback((type: ToastType, message: string, duration = 5000) => {
+    const showToast = useCallback((type: ToastType, message: NoticeInput, duration?: number) => {
         const id = crypto.randomUUID();
+        const lifetime = duration ?? autoDismissMs(type);
         setToasts(prev => [...prev, { id, type, message }]);
-        if (duration > 0) setTimeout(() => dismiss(id), duration);
+        if (lifetime > 0) setTimeout(() => dismiss(id), lifetime);
     }, [dismiss]);
 
     React.useEffect(() => { setGlobalToast(showToast); }, [showToast]);
@@ -36,7 +54,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return (
         <ToastContext.Provider value={{ showToast }}>
             {children}
-            <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
+            <div className={toastViewportClass}>
                 {toasts.map(t => <Toast key={t.id} {...t} onDismiss={dismiss} />)}
             </div>
         </ToastContext.Provider>

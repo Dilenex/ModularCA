@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    /* Mirrors modularca.adminui/tsconfig.json. A test that typechecks under looser settings
+       than the app it covers is not testing the same code: a null the app must handle would
+       slip through here unnoticed. */
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    /* DOM is in lib even though the suites run under the Node environment, because the modules
+       under test are browser code and reference DOM types (Headers, Response, localStorage).
+       Node 24 supplies real implementations of the ones the current suites exercise. */
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    /* The same two aliases the SPAs declare, re-pointed for this directory's depth. Tests and
+       app code must resolve a shared module to the identical file, or a test can pass against
+       a copy the apps do not bundle. vitest.config.ts repeats these for the runtime resolver;
+       the two lists have to be changed together. */
+    "paths": {
+      "@shared/*": ["../../shared/common/src/*"],
+      "@shared-auth/*": ["../../shared/authenticated/src/*"]
+    },
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx"
+  },
+  /* Only the test sources. The shared trees are deliberately NOT in `include`: they are
+     typechecked by each consuming SPA against that app's own React, and pulling them in here
+     would typecheck the .tsx half of them against no React at all. */
+  "include": ["src", "vitest.config.ts"]
+}

@@ -7,6 +7,8 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Core.Services;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -191,7 +193,7 @@ public class AcmeOrderController(
             Response.Headers["Location"] = $"{baseUrl}{LabelPrefix()}/order/{order.Id}";
             return Ok(order);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // Audit findings #23: ACME service throws InvalidOperationException for many
             // internal states (auth state mismatch, profile missing, CSR/identifier
@@ -294,7 +296,7 @@ public class AcmeOrderController(
 
             return Ok();
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // Audit findings #23: do not leak service-layer exception messages to anonymous
             // ACME clients (could include internal state hints, DB lookup failures, or

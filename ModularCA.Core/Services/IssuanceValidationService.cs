@@ -6,6 +6,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1.X509;
 using System.Text.Json;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Core.Services
 {
@@ -187,8 +188,19 @@ namespace ModularCA.Core.Services
         /// </summary>
         /// <param name="certProfileEkus">JSON array of EKU OIDs from the certificate profile.</param>
         /// <param name="signingProfileAllowedEkus">JSON array of allowed EKU OIDs from the signing profile.</param>
+        /// <param name="diagnostics">
+        /// Optional collector for advisories raised while resolving. Passed in rather than
+        /// injected: the only production callers are the two issuance paths, and threading one
+        /// parameter through them is cheaper and far easier to reason about than a request-scoped
+        /// ambient service that would also have to be a no-op for bootstrap, the CLI and the
+        /// background renewal jobs. Null means nobody is listening, which is the correct
+        /// behaviour for callers that only want the resolved list.
+        /// </param>
         /// <returns>List of validated EKU OID strings.</returns>
-        public List<string> SetupAllowedExtendedOids(string certProfileEkus, string signingProfileAllowedEkus)
+        public List<string> SetupAllowedExtendedOids(
+            string certProfileEkus,
+            string signingProfileAllowedEkus,
+            ICollection<Diagnostic>? diagnostics = null)
         {
             var certEkus = JsonSerializer.Deserialize<List<string>>(certProfileEkus ?? "[]", SafeJsonOptions.Default) ?? new List<string>();
             if (certEkus.Count == 0)
@@ -265,15 +277,32 @@ namespace ModularCA.Core.Services
             // Usages the signing profile's hard constraint removed. Distinct from an unresolved
             // entry: this is policy working as designed, but it still explains a certificate that
             // lacks an EKU the cert profile plainly lists.
+            //
+            // This is the drop that started the error-reporting work. It was detected here and
+            // written to the log, and the log is not where the operator who just clicked Issue is
+            // looking. The certificate came out missing smartcardLogon, Windows answered
+            // CERT_E_WRONG_USAGE, and nothing on screen joined the two. Detection was never the
+            // problem; the finding had no route to the caller.
             if (sigOids.Count > 0)
             {
                 var droppedByPolicy = certOids.Where(o => !sigOids.Contains(o)).ToList();
                 if (droppedByPolicy.Count > 0)
                 {
+                    var dropped = string.Join(", ", droppedByPolicy);
                     _logger.LogInformation(
                         "Extended key usage(s) {DroppedOids} were requested by the certificate profile but are not "
                         + "permitted by the signing profile's AllowedEKUs, so they were omitted.",
-                        string.Join(", ", droppedByPolicy));
+                        dropped);
+
+                    diagnostics?.Add(Diagnostic.Warning(
+                        ErrorCodes.ExtendedKeyUsageDropped,
+                        "Extended key usage dropped",
+                        $"The certificate profile requested {dropped}, but the signing profile's "
+                        + "AllowedEKUs does not permit it, so it was omitted from the issued "
+                        + "certificate.",
+                        remediation: "Add it to the signing profile's Allowed EKUs and reissue, "
+                                   + "or remove it from the certificate profile so the two agree.",
+                        field: "extendedKeyUsages"));
                 }
             }
 

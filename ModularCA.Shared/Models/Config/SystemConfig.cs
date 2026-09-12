@@ -37,6 +37,11 @@ namespace ModularCA.Shared.Models.Config
         public CertManagerConfig CertManager { get; set; } = new();
 
         /// <summary>
+        /// Where this deployment's source can be obtained, for the AGPL section 13 offer.
+        /// </summary>
+        public SourceCodeConfig SourceCode { get; set; } = new();
+
+        /// <summary>
         /// ICF-07 / ICF-08: optional Redis backend for distributed cache and Data Protection
         /// keyring. When enabled, MFA step-up tokens, WebAuthn challenges, and Data Protection
         /// keys are stored in Redis instead of node-local memory/filesystem, enabling multi-node

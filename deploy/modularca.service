@@ -1,0 +1,91 @@
+# ModularCA — systemd unit stub
+#
+# Install:
+#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca
+#   sudo mkdir -p /opt/modularca && sudo cp -r dist/linux-x64/* /opt/modularca/
+#   sudo chown -R modularca:modularca /opt/modularca
+#   sudo cp deploy/modularca.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca
+#
+# Logs:  journalctl -u modularca -f
+#
+# The published build is self-contained (linux-x64), so no .NET runtime is required
+# on the host. ModularCA.API is the ELF entrypoint.
+
+[Unit]
+Description=ModularCA Certificate Authority
+Documentation=https://github.com/edphemeral/modularCA
+# The CA cannot serve issuance, OCSP or CRL without its database. Ordering only —
+# add Requires= if the DB is local and the service should not start without it.
+After=network-online.target mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+# notify, not simple: the app calls builder.Host.UseSystemd() (StartModularCA.cs),
+# so it signals READY=1 only once Kestrel is actually listening. With Type=simple,
+# systemd would report the unit active while bootstrap was still running and any
+# dependent unit would start too early.
+Type=notify
+NotifyAccess=main
+
+User=modularca
+Group=modularca
+WorkingDirectory=/opt/modularca
+ExecStart=/opt/modularca/ModularCA.API
+
+# Config, keystores and backups resolve relative to AppContext.BaseDirectory, i.e. the
+# install directory — so it must stay writable by this user. See ReadWritePaths below.
+Environment=DOTNET_ENVIRONMENT=Production
+# Serilog writes structured JSON to stdout when running under systemd; journald captures it.
+Environment=DOTNET_CONSOLE_ANSI_COLOR=false
+
+Restart=on-failure
+RestartSec=5s
+# Do not thrash if the config is broken — bootstrap intentionally exits non-zero on a
+# fatal misconfiguration (bad JWT secret, mTLS enabled with no trust anchors), and
+# restarting into the same bad config just fills the journal.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
+# move Http.Port/Https.Port to 80/443. Defaults are 8080/8443, which need no capability
+# — drop this line if you keep the unprivileged defaults.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# --- Hardening -------------------------------------------------------------------
+# This process holds CA private key material. Defaults here are deliberately strict;
+# loosen only with a reason.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# ProtectSystem=strict makes the whole filesystem read-only, so every path the app
+# writes must be listed. Keystores, config and backups all live under the install dir.
+ReadWritePaths=/opt/modularca
+
+# Core dumps of this process would contain unwrapped key material.
+LimitCORE=0
+
+LimitNOFILE=65535
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

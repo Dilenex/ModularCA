@@ -6,7 +6,7 @@ import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
+import { SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, CeilingList, MultiToggle } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 
@@ -147,8 +147,8 @@ const SshCertProfileDetail: React.FC = () => {
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Principal Patterns</span><BadgeList items={p.allowedPrincipalPatterns} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><BadgeList items={p.allowedExtensions} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Principal Patterns</span><CeilingList items={p.allowedPrincipalPatterns} noun="principal" /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
                     <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
                     {p.createdAt && <DetailField label="Created" value={new Date(p.createdAt).toLocaleString()} />}
                 </DetailSection>

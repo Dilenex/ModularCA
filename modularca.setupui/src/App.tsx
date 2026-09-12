@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { ThemeProvider, useTheme } from '@shared/context/ThemeContext';
 import ErrorBoundary from './ErrorBoundary';
 import Welcome, { type WelcomeResult } from './pages/Welcome';
@@ -10,6 +10,7 @@ import SecurityFeatures, { type SecurityData } from './pages/SecurityFeatures';
 import NetworkAdvanced, { type NetworkData } from './pages/NetworkAdvanced';
 import WebTlsCertificate, { type WebTlsCertificateData } from './pages/WebTlsCertificate';
 import Review from './pages/Review';
+import { SourceNotice } from '@shared/components/SourceNotice';
 
 // Helper used by Review.tsx after a successful initialization
 // to scrub the cleartext root MySQL password and admin password from React
@@ -555,6 +556,13 @@ const WizardContent: React.FC = () => {
                         </button>
                     </div>
                 )}
+            </div>
+
+            {/* AGPL section 13 source offer. The wizard is reached over the network on first
+                boot, so its operator is a remote user like any other. Placed outside the step
+                container so it cannot shift the wizard's own layout. */}
+            <div className="mt-6 text-center">
+                <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
             </div>
         </div>
     );

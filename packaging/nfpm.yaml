@@ -1,0 +1,124 @@
+# nfpm package definition for the Ubuntu 24.04 (noble) .deb.
+#
+# Built by scripts/build-deb.sh, which stages the payload from the same publish the tarball uses
+# and then invokes nfpm. See packaging/README-PACKAGING.md for the design decisions behind the
+# layout and the uninstall behaviour.
+#
+# Why nfpm rather than debhelper: this repo is built from Windows git-bash as often as from
+# Linux, and nfpm needs no Debian toolchain. The output is a binary .deb, which is what a
+# directly-distributed package needs; a source package would only be required for a PPA or for
+# inclusion in the Ubuntu archive.
+
+name: modularca
+arch: amd64
+platform: linux
+
+# Set by build-deb.sh from the VERSION file, converted to Debian ordering.
+#
+# The conversion matters: VERSION reads "0.1.0-rc3", and in dpkg's comparison "0.1.0-rc3" sorts
+# AFTER "0.1.0" — so the eventual release would look like a downgrade and apt would refuse to
+# install it over the candidate. A tilde sorts BEFORE, which is what a pre-release means, so the
+# script rewrites it to "0.1.0~rc3".
+version: ${DEB_VERSION}
+version_schema: none
+release: "1"
+
+section: net
+priority: optional
+maintainer: ModularCA <noreply@edwardssite.com>
+homepage: https://github.com/edphemeral/modularCA
+license: AGPL-3.0-only
+
+description: |
+  Modular certificate authority with ACME, EST, SCEP, CMP and OCSP support.
+  Ships a self-contained .NET runtime, so no system .NET installation is required.
+
+# Empirically derived, not guessed: every shipped ELF was parsed for DT_NEEDED, and the two
+# libraries .NET dlopens rather than links (OpenSSL and ICU) were confirmed by the soname strings
+# embedded in libSystem.Security.Cryptography.Native.OpenSsl.so and libSystem.Globalization.Native.so.
+#
+#   linked   : libc6 (libc/libdl/libm/libpthread/librt), libgcc-s1, libstdc++6
+#   dlopened : libssl.so.3 -> libssl3t64 on noble, libicuuc/libicui18n -> libicu74 on noble
+#   bundled  : libsodium, zlib (inside libSystem.IO.Compression.Native.so) - no dependency
+#
+# Alternatives are listed so the package also installs on 22.04, where the same libraries carry
+# pre-t64 names. Noble's name is listed first so it is the one chosen there.
+#
+# liblttng-ust is deliberately NOT declared. It is referenced only by libcoreclrtraceptprovider.so,
+# which the runtime dlopens for optional LTTng tracing and does without silently.
+#
+# ca-certificates is a functional dependency rather than a linker one: without it the CA cannot
+# validate outbound TLS for ACME, LDAPS or OCSP fetching, and the failures are opaque.
+depends:
+  - libc6
+  - libgcc-s1
+  - libstdc++6
+  - libssl3t64 | libssl3
+  - libicu74 | libicu72 | libicu70
+  - ca-certificates
+  - adduser
+
+suggests:
+  # Suggests, not Recommends: apt installs Recommends by default, and a deployment pointing at a
+  # remote MariaDB would get a local server it never asked for and will never start.
+  - mariadb-server
+
+# Files carry the source mode, and on Windows every file reports 0666 — which nfpm would ship as
+# world-readable AND group-writable. A umask normalises the whole tree to 0644 without needing a
+# per-file rule. It cannot restore an executable bit, because Windows has none for nfpm to read;
+# the two apphosts are therefore listed explicitly below.
+umask: 0o022
+
+contents:
+  # The published payload.
+  - src: ${STAGE}/
+    dst: /opt/modularca
+    type: tree
+
+  # The two ELF entrypoints, declared separately so they land executable. nfpm refuses two
+  # entries for one destination, so build-deb.sh moves these out of the payload tree first.
+  # Without them the package installs a 0644 ModularCA.API and the unit fails on first start with
+  # a permission error; postinst chmods them too, so an unpack-without-configure is still correct.
+  - src: ${BINDIR}/ModularCA.API
+    dst: /opt/modularca/ModularCA.API
+    file_info:
+      mode: 0755
+  - src: ${BINDIR}/ModularCA.Keystore.Unlocker
+    dst: /opt/modularca/ModularCA.Keystore.Unlocker
+    file_info:
+      mode: 0755
+
+  # systemd unit under /lib, not /etc. /etc/systemd/system belongs to the administrator; a package
+  # that writes there fights the operator's own overrides and cannot be cleanly upgraded. Local
+  # changes belong in /etc/systemd/system/modularca.service.d/*.conf drop-ins.
+  - src: deploy/modularca.service
+    dst: /lib/systemd/system/modularca.service
+    file_info:
+      mode: 0644
+
+  # Familiar paths for operators. The application resolves config, keystores and logs relative to
+  # its own base directory (AppContext.BaseDirectory, in 84 places), so these are links to the real
+  # locations rather than the real locations themselves.
+  - src: /opt/modularca/config
+    dst: /etc/modularca
+    type: symlink
+  - src: /opt/modularca/logs
+    dst: /var/log/modularca
+    type: symlink
+
+  # Directories that must exist with the right modes before first run. Content is created at
+  # runtime and is deliberately not package-owned, so dpkg will never remove it.
+  - dst: /opt/modularca/keystores
+    type: dir
+    file_info:
+      mode: 0700
+  - dst: /opt/modularca/logs
+    type: dir
+    file_info:
+      mode: 0750
+
+scripts:
+  preinstall: packaging/debian/preinst
+  postinstall: packaging/debian/postinst
+  preremove: packaging/debian/prerm
+  postremove: packaging/debian/postrm

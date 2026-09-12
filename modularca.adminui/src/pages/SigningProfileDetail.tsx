@@ -8,7 +8,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { SIGNING_ALLOWED_ALGORITHM_OPTIONS, parseJsonArray, parseListField, BadgeList, MultiToggle, canonicalizeUsages, caCertId, caDisplayName } from './profileHelpers';
+import { SIGNING_ALLOWED_ALGORITHM_OPTIONS, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, canonicalizeUsages, caCertId, caDisplayName } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
@@ -252,8 +252,8 @@ const SigningProfileDetail: React.FC = () => {
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                     <DetailField label="Issuer" value={authorityName(p.issuerId)} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><BadgeList items={p.allowedAlgorithms} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><BadgeList items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
                     <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
                     <DetailField label="Name Constraints Permitted" value={typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : p.nameConstraintsPermitted} />
                     <DetailField label="Name Constraints Excluded" value={typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : p.nameConstraintsExcluded} />

@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using ModularCA.Core.Services;
 using Xunit;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Tests.Core.Services;
 
@@ -66,6 +67,83 @@ public class RequestValidationExceptionTests
         Assert.Equal(2, ex.Violations.Count);
         Assert.Contains("[MaxValidityDays] too long", ex.Message, StringComparison.Ordinal);
         Assert.Contains("[MinRsaKeySize] too small", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_family_answers_400_unless_a_subtype_says_otherwise()
+    {
+        // The default is what the whole family relied on before Status existed. If it drifts,
+        // every unmigrated subtype changes status at once.
+        Assert.Equal(400, new ProfileValidationException("Key size", "1024", ["2048"], "signing profile").Status);
+        Assert.Equal(400, new CertificatePolicyViolationException(["[Rule] nope"]).Status);
+        Assert.Equal(400, new ConfigurationValidationException("nope").Status);
+    }
+
+    [Fact]
+    public void A_missing_resource_answers_404_so_the_client_can_tell_it_from_a_refusal()
+    {
+        // The admin UI branches on status. While every member of this family answered 400, a
+        // "you named a CA that does not exist" was indistinguishable from "this CA refuses the
+        // operation", and the two need different handling on screen.
+        var ex = new ResourceNotFoundException(
+            "Certificate authority", "Certificate authority not found.", "9f2e");
+
+        Assert.Equal(404, ex.Status);
+        Assert.Equal("Certificate authority", ex.ResourceKind);
+        Assert.Equal("9f2e", ex.Identifier);
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+    }
+
+    [Fact]
+    public void A_collision_answers_409_because_the_same_request_will_work_once_it_is_resolved()
+    {
+        var ex = new ResourceConflictException("A CA with label 'issuing-01' already exists in this tenant.");
+
+        Assert.Equal(409, ex.Status);
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+    }
+
+    [Fact]
+    public void A_configuration_refusal_keeps_the_sentence_the_guard_wrote()
+    {
+        // The entire point of the migration: these guards name the rule, the consequence and the
+        // fix, and the catch-all used to replace all of it with "Please try again."
+        const string written =
+            "This CA's signing profile does not permit ocspSigning, so a reissued certificate "
+            + "would be issued without that extended key usage and would not work.";
+
+        var ex = new ConfigurationValidationException(written);
+
+        Assert.Equal(written, ex.Message);
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+    }
+
+    [Fact]
+    public void Every_member_of_the_family_is_a_4xx()
+    {
+        // The family's contract is "the request was at fault". A subtype answering 5xx would
+        // tell the caller their request was wrong when it was not, and would also route a
+        // server-state failure through a middleware that does not sanitize the message. The
+        // tempting future mistake is a ServerConfigurationException added here for convenience;
+        // this is the assertion that stops it.
+        var subtypes = typeof(RequestValidationException).Assembly
+            .GetTypes()
+            .Where(t => !t.IsAbstract && typeof(RequestValidationException).IsAssignableFrom(t))
+            .ToList();
+
+        Assert.NotEmpty(subtypes);
+
+        foreach (var type in subtypes)
+        {
+            // Allocated without running a constructor so the check does not need to know each
+            // subtype's parameters; Status getters are constants and do not read instance state.
+            var instance = (RequestValidationException)
+                System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
+            Assert.True(instance.Status is >= 400 and < 500,
+                $"{type.Name}.Status is {instance.Status}; every RequestValidationException must be a 4xx "
+                + "because the family means the request was at fault. Server-state failures belong "
+                + "outside this family, on the sanitized 500 path.");
+        }
     }
 }
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using Serilog;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Scep;
 
@@ -55,7 +56,7 @@ public class ScepController(IScepService scepService) : ControllerBase
                 _ => BadRequest($"Unknown SCEP operation: {operation}")
             };
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "SCEP GET operation failed");
             MetricsService.ScepRequestsTotal.WithLabels(operation, "error").Inc();
@@ -138,7 +139,7 @@ public class ScepController(IScepService scepService) : ControllerBase
             MetricsService.ProtocolRequestDuration.WithLabels("SCEP").Observe(stopwatch.Elapsed.TotalSeconds);
             return File(cmsResponse, "application/x-pki-message");
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // SCEP errors should ideally be CMS failure responses, but if we cannot
             // even parse the request we must fall back to HTTP-level errors.

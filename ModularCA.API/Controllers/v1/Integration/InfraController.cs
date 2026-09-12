@@ -10,6 +10,7 @@ using ModularCA.Shared.Models.Csr;
 using ModularCA.Shared.Utils;
 using Serilog;
 using ModularCA.Core.Helpers;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Integration;
 
@@ -118,7 +119,7 @@ public class InfraController(
                 SubjectAlternativeNames = certInfo.SubjectAlternativeNames
             });
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "Infrastructure certificate issuance failed (invalid operation)");
             return BadRequest(new { error = "Certificate issuance failed. Contact administrator if the problem persists." });

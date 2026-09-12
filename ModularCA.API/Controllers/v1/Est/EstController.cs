@@ -6,6 +6,7 @@ using ModularCA.Core.Services.Est;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using Serilog;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Est;
 
@@ -75,7 +76,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
             var base64 = Convert.ToBase64String(pkcs7Der);
             return Content(base64, $"{Pkcs7MimeType}; smime-type=certs-only");
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "EST cacerts failed");
             MetricsService.EstRequestsTotal.WithLabels("cacerts", "error").Inc();
@@ -136,7 +137,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
             MetricsService.EstRequestsTotal.WithLabels("simpleenroll", "pending").Inc();
             return StatusCode(202, "Certificate request is pending approval. Retry later.");
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "EST simple enrollment failed");
             MetricsService.EstRequestsTotal.WithLabels("simpleenroll", "error").Inc();
@@ -216,7 +217,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
             MetricsService.EstRequestsTotal.WithLabels("simplereenroll", "pending").Inc();
             return StatusCode(202, "Certificate request is pending approval. Retry later.");
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "EST simple re-enrollment failed");
             MetricsService.EstRequestsTotal.WithLabels("simplereenroll", "error").Inc();

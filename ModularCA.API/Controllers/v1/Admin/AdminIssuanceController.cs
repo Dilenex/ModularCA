@@ -171,14 +171,24 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var fileName = $"{certName}.cer";
                 return File(certDer.GetEncoded(), "application/x-x509-cert", fileName);
             }
-            else if (result.Warnings.Count > 0)
-            {
-                return Ok(new { pem = cert, warnings = result.Warnings });
-            }
-            else
+            else if (accept.Contains("application/x-pem-file"))
             {
                 var fileName = $"{certName}.pem";
                 return File(Encoding.UTF8.GetBytes(cert), "application/x-pem-file", fileName);
+            }
+            else
+            {
+                // One shape, chosen by content negotiation rather than by whether this
+                // particular issuance happened to raise a diagnostic. The previous split —
+                // JSON when warnings existed, a bare PEM file otherwise — meant the client
+                // could not know what it was about to parse, so callers read .newSerialNumber
+                // off a string on the common path and silently reported "serial unknown".
+                return Ok(new
+                {
+                    pem = cert,
+                    warnings = result.Warnings,
+                    diagnostics = result.Diagnostics,
+                });
             }
 
 
@@ -470,14 +480,24 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var fileName = $"{certName}.cer";
                 return File(certDer.GetEncoded(), "application/x-x509-cert", fileName);
             }
-            else if (reissueResult.Warnings.Count > 0)
-            {
-                return Ok(new { pem = newCertPem, warnings = reissueResult.Warnings });
-            }
-            else
+            else if (accept.Contains("application/x-pem-file"))
             {
                 var fileName = $"{certName}.pem";
                 return File(Encoding.UTF8.GetBytes(newCertPem), "application/x-pem-file", fileName);
+            }
+            else
+            {
+                // One shape, chosen by content negotiation rather than by whether this
+                // particular issuance happened to raise a diagnostic. The previous split —
+                // JSON when warnings existed, a bare PEM file otherwise — meant the client
+                // could not know what it was about to parse, so callers read .newSerialNumber
+                // off a string on the common path and silently reported "serial unknown".
+                return Ok(new
+                {
+                    pem = newCertPem,
+                    warnings = reissueResult.Warnings,
+                    diagnostics = reissueResult.Diagnostics,
+                });
             }
         }
         /// <summary>
@@ -550,14 +570,24 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var fileName = $"{certName}.cer";
                 return File(certDer.GetEncoded(), "application/x-x509-cert", fileName);
             }
-            else if (reissueResult.Warnings.Count > 0)
-            {
-                return Ok(new { pem = newCertPem, warnings = reissueResult.Warnings });
-            }
-            else
+            else if (accept.Contains("application/x-pem-file"))
             {
                 var fileName = $"{certName}.pem";
                 return File(Encoding.UTF8.GetBytes(newCertPem), "application/x-pem-file", fileName);
+            }
+            else
+            {
+                // One shape, chosen by content negotiation rather than by whether this
+                // particular issuance happened to raise a diagnostic. The previous split —
+                // JSON when warnings existed, a bare PEM file otherwise — meant the client
+                // could not know what it was about to parse, so callers read .newSerialNumber
+                // off a string on the common path and silently reported "serial unknown".
+                return Ok(new
+                {
+                    pem = newCertPem,
+                    warnings = reissueResult.Warnings,
+                    diagnostics = reissueResult.Diagnostics,
+                });
             }
         }
 
@@ -635,14 +665,24 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var fileName = $"{certName}.cer";
                 return File(certDer.GetEncoded(), "application/x-x509-cert", fileName);
             }
-            else if (reissueResult.Warnings.Count > 0)
-            {
-                return Ok(new { pem = newCertPem, warnings = reissueResult.Warnings });
-            }
-            else
+            else if (accept.Contains("application/x-pem-file"))
             {
                 var fileName = $"{certName}.pem";
                 return File(Encoding.UTF8.GetBytes(newCertPem), "application/x-pem-file", fileName);
+            }
+            else
+            {
+                // One shape, chosen by content negotiation rather than by whether this
+                // particular issuance happened to raise a diagnostic. The previous split —
+                // JSON when warnings existed, a bare PEM file otherwise — meant the client
+                // could not know what it was about to parse, so callers read .newSerialNumber
+                // off a string on the common path and silently reported "serial unknown".
+                return Ok(new
+                {
+                    pem = newCertPem,
+                    warnings = reissueResult.Warnings,
+                    diagnostics = reissueResult.Diagnostics,
+                });
             }
         }
 

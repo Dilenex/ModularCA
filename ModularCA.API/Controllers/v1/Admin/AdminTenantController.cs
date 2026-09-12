@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -13,6 +13,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Bootstrap;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Licensing;
 using Serilog;
 using System.Text.RegularExpressions;
 
@@ -33,9 +34,11 @@ public partial class AdminTenantController(
     IDistributedCache cache,
     ICaGroupAuthorizationService groupAuth,
     ITenantPolicyChangeService tenantPolicyChangeService,
-    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc,
+    IEntitlementService entitlements) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
+    private readonly IEntitlementService _entitlements = entitlements;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IAuditService _audit = audit;
     private readonly IDistributedCache _cache = cache;
@@ -155,6 +158,28 @@ public partial class AdminTenantController(
         var slugExists = await _db.Tenants.AnyAsync(t => t.Slug == slug);
         if (slugExists)
             return Conflict(new { error = $"A tenant with slug '{slug}' already exists" });
+
+        // Licence gate. Placed after the shape and uniqueness checks so a malformed request is
+        // still reported as malformed rather than as a licensing problem — telling an operator
+        // to buy something when they actually typed a duplicate name would be a poor trade.
+        var refusal = TenantCreationGate.Evaluate(
+            _entitlements, await _db.Tenants.CountAsync());
+        if (refusal is not null)
+        {
+            // Audited before it is thrown. A refused attempt to exceed a licence limit is the
+            // event a commercial dispute later turns on, so it is recorded whether or not the
+            // operator ever reads the message.
+            await _audit.LogAsync(
+                AuditActionType.TenantCreated,
+                _currentUser.User?.Id, _currentUser.User?.Username,
+                "Tenant", request.Name.Trim(),
+                new { Success = false, Refusal = refusal.Code, Error = refusal.Message },
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                success: false,
+                errorMessage: refusal.Message);
+
+            throw refusal;
+        }
 
         var tenant = new TenantEntity
         {

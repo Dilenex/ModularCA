@@ -366,7 +366,9 @@ FodyWeavers.xsd
 .keystore
 *.yaml
 !*.yaml.example
-/.github/
+# Packaging metadata is not operator config and build-deb.sh reads it, so a clean clone must
+# have it — without this negation `scripts/build-deb.sh` fails on a fresh checkout.
+!packaging/nfpm.yaml
 
 # Policy files (track examples, ignore active policies)
 config/policies/*.yaml
@@ -384,10 +386,14 @@ modularca.setupui/dist/
 # Root-anchored so it does not collide with the per-UI dist/ rules above.
 /dist/
 
-# Local deployment artifacts (systemd unit, nginx/nftables templates).
-# Operator-specific for now — paths, ports and hostnames are environment-bound.
-# Drop this rule (or `git add -f deploy/`) to start sharing them with the repo.
-/deploy/
+# deploy/ IS tracked. It was ignored as "operator-specific", but the files hold only loopback
+# addresses and commentary — no hostnames, certificate paths or secrets — while install.sh needs
+# deploy/modularca.service to register the systemd unit. Ignoring them meant a clean clone built
+# a distribution without the unit, and the installer skipped systemd in silence.
+#
+# If a deployment needs host-specific values, override them in /etc/systemd/system/ or the nginx
+# sites directory; install.sh already refuses to overwrite a unit that differs from the packaged
+# one, which is the right place for that divergence to live.
 
 # Local reference documents (reports, audits, notes) — not part of the product
 References/

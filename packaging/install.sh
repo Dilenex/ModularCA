@@ -88,16 +88,27 @@ find "$APP_DIR/keystores" -type f -exec chmod 0600 {} \; 2>/dev/null || true
 chmod 0750 "$APP_DIR/logs"
 
 # ── systemd ────────────────────────────────────────────────────────────────────
-if [[ -f "$SRC/deploy/modularca.service" ]]; then
-    if [[ -f "$UNIT" ]] && ! cmp -s "$SRC/deploy/modularca.service" "$UNIT"; then
-        note "unit file differs from the packaged one; leaving yours in place at $UNIT"
-        note "  packaged copy: $SRC/deploy/modularca.service"
-    else
-        note "installing systemd unit"
-        install -m 0644 "$SRC/deploy/modularca.service" "$UNIT"
-    fi
-    systemctl daemon-reload
+# A missing unit used to fall through this block in silence: the installer printed its success
+# banner and the service was never registered. The archive is built from a source tree where
+# deploy/ was gitignored, so this was reachable from an ordinary clean clone — an install that
+# reports success and did not do the thing. Fail loudly instead.
+if [[ ! -f "$SRC/deploy/modularca.service" ]]; then
+    echo "ERROR: $SRC/deploy/modularca.service is missing from this distribution." >&2
+    echo "       Without it the systemd unit cannot be installed and modularca will not start" >&2
+    echo "       at boot. This usually means the archive was built from a tree with no deploy/" >&2
+    echo "       directory. Rebuild with scripts/build-linux-dist.sh from a complete checkout," >&2
+    echo "       or install the unit by hand before starting the service." >&2
+    exit 1
 fi
+
+if [[ -f "$UNIT" ]] && ! cmp -s "$SRC/deploy/modularca.service" "$UNIT"; then
+    note "unit file differs from the packaged one; leaving yours in place at $UNIT"
+    note "  packaged copy: $SRC/deploy/modularca.service"
+else
+    note "installing systemd unit"
+    install -m 0644 "$SRC/deploy/modularca.service" "$UNIT"
+fi
+systemctl daemon-reload
 
 # ── Ports below 1024 ───────────────────────────────────────────────────────────
 # The unit grants CAP_NET_BIND_SERVICE, which is the right mechanism. Nothing to do here, but

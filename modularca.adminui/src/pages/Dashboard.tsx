@@ -7,10 +7,11 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { useToast } from '@shared/context/ToastContext';
+import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
 import { StepUpOps } from '@shared/generated';
 import {
     canonicalizeUsages, parseListField, keyUsageLabel,
-    KEY_USAGE_OPTIONS,
+    KEY_USAGE_OPTIONS, CeilingList,
 } from './profileHelpers';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
@@ -129,8 +130,10 @@ const Dashboard: React.FC = () => {
         }
     };
 
-    const handleReissueSuccess = (message: string) => {
-        showToast('success', message);
+    // Takes the severity the modal reports rather than assuming success: a reissue can come back
+    // with a diagnostic saying the certificate is not what was asked for, and that is not green.
+    const handleReissueSuccess = (message: NoticeInput, severity?: NoticeSeverity) => {
+        showToast(severity ?? 'success', message);
     };
 
     const [certStats, setCertStats] = useState<CertStats | null>(null);
@@ -603,8 +606,8 @@ const Dashboard: React.FC = () => {
                         <div className="space-y-1">
                             <DetailField label="Name" value={p.name} />
                             <DetailField label="Description" value={p.description} />
-                            <DetailField label="Allowed Algorithms" value={parseJsonSafe(p.allowedAlgorithms)} />
-                            <DetailField label="Allowed EKUs" value={parseJsonSafe(p.allowedEKUs || p.allowedEkus)} />
+                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
                             <DetailField label="Max Path Length" value={p.maxPathLength?.toString()} />
                             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                         </div>
@@ -634,8 +637,8 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
                             <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                             <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                            <DetailField label="Allowed Algorithms" value={parseJsonSafe(p.allowedKeyAlgorithms)} />
-                            <DetailField label="Allowed Sizes" value={parseJsonSafe(p.allowedKeySizes)} />
+                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
+                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
                             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
                         </div>
                     )}

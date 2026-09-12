@@ -6,6 +6,8 @@ using ModularCA.API.Filters;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Core.Services;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -94,7 +96,7 @@ public class AcmeChallengeController(
 
             return Ok(challenge);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // Audit findings #23: do not echo internal exception text to anonymous ACME
             // clients. Keep the original message in operator logs only.

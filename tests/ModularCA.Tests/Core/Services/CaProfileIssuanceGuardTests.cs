@@ -12,6 +12,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Xunit;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Tests.Core.Services;
 
@@ -167,10 +168,14 @@ public class CaProfileIssuanceGuardTests
         using var db = BuildContext(nameof(Issuance_refuses_a_ca_flagged_profile));
         var csrId = Seed(db, isCaProfile: true);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
             () => BuildService(db).IssueCertificateAsync(csrId, null, null));
 
         Assert.Contains("CA profile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        // Pinned as a 4xx, not merely as "some exception": this refusal is caused by the request
+        // naming a CA profile, so collapsing it back to a 500 would be the regression.
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+        Assert.Equal(400, ex.Status);
     }
 
     /// <summary>
@@ -183,10 +188,14 @@ public class CaProfileIssuanceGuardTests
         using var db = BuildContext(nameof(Issuance_with_a_preresolved_ca_refuses_a_ca_flagged_profile));
         var csrId = Seed(db, isCaProfile: true);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
             () => BuildService(db).IssueCertificateAsync(csrId, null, null, caCert: null!, caKeyHandle: null!));
 
         Assert.Contains("CA profile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        // Pinned as a 4xx, not merely as "some exception": this refusal is caused by the request
+        // naming a CA profile, so collapsing it back to a 500 would be the regression.
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+        Assert.Equal(400, ex.Status);
     }
 
     /// <summary>
@@ -200,10 +209,14 @@ public class CaProfileIssuanceGuardTests
         using var db = BuildContext(nameof(Reissue_refuses_a_ca_flagged_profile));
         var csrId = Seed(db, isCaProfile: true, withIssuedCertificate: true);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
             () => BuildService(db).ReissueCertificateAsync(null, null, csrId, null, null));
 
         Assert.Contains("CA profile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        // Pinned as a 4xx, not merely as "some exception": this refusal is caused by the request
+        // naming a CA profile, so collapsing it back to a 500 would be the regression.
+        Assert.IsAssignableFrom<RequestValidationException>(ex);
+        Assert.Equal(400, ex.Status);
     }
 
     /// <summary>

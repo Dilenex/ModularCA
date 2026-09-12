@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
@@ -35,7 +35,7 @@ public class PublicInfoController(SystemConfig config, IFeatureFlagService featu
     };
 
     /// <summary>
-    /// Returns <c>{ publicDomain, publicHttpsBaseUrl, enabledProtocols }</c>.
+    /// Returns <c>{ publicDomain, publicHttpsBaseUrl, enabledProtocols, sourceCodeUrl, license }</c>.
     /// Falls back to the request's scheme/host when <c>Https.PublicDomain</c> is
     /// unset (setup mode) so the SPA has something reasonable to render either way.
     /// <c>enabledProtocols</c> is the subset of system protocols whose feature flag
@@ -59,6 +59,17 @@ public class PublicInfoController(SystemConfig config, IFeatureFlagService featu
             publicDomain,
             publicHttpsBaseUrl = baseUrl,
             enabledProtocols,
+            // AGPL section 13: every SPA renders this as a source-code offer. Served from the
+            // anonymous endpoint on purpose — the obligation is to "all users interacting with
+            // it remotely", and a link reachable only behind a login fails for exactly the
+            // people most likely to need it.
+            //
+            // The version and commit are NOT returned here. Each SPA already carries them as
+            // build-time constants (__APP_VERSION__ / __APP_COMMIT__ from the repo-root VERSION
+            // file), so the notice identifies the running build without this endpoint
+            // disclosing a version pre-auth, which /api/v1/version deliberately does not.
+            sourceCodeUrl = _config.SourceCode.EffectiveUrl,
+            license = _config.SourceCode.License,
         });
     }
 }

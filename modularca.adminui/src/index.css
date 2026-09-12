@@ -3,3 +3,8 @@
 
 @keyframes slide-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 .animate-slide-in { animation: slide-in 0.3s ease-out; }
+/* A toast arrives unbidden while the operator is reading something else, which is exactly the
+   motion that triggers vestibular symptoms. The notification still appears and still says the
+   same thing; only the slide is dropped. Declared here rather than as a `motion-reduce:` utility
+   on the component, because this hand-written class would otherwise win on source order. */
+@media (prefers-reduced-motion: reduce) { .animate-slide-in { animation: none; } }

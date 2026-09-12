@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
@@ -6,6 +6,7 @@ import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import LogPanel from './LogPanel';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
+import { SourceNotice } from '@shared/components/SourceNotice';
 
 interface NavItem {
     name: string;
@@ -251,6 +252,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </svg>
                 </Link>
             </div>
+
         </nav>
     );
 
@@ -320,6 +322,15 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     can target the main region. */}
                 <main id="content" role="main" className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900">{children}</main>
                 <LogPanel />
+
+                {/* AGPL section 13 source offer. In the content column rather than the sidebar:
+                    sidebarContent is rendered twice (desktop rail and mobile overlay), so a copy
+                    there appears twice in the DOM. The legally load-bearing copy is publicui's,
+                    which is the surface an unauthenticated remote user can reach — this one is
+                    here because operators are remote users too. */}
+                <footer className="flex-shrink-0 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-4 py-2">
+                    <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
+                </footer>
             </div>
         </div>
     );

@@ -3,6 +3,7 @@ using ModularCA.Core.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Tests.TestUtils;
 using Xunit;
+using ModularCA.Shared.Errors;
 
 namespace ModularCA.Tests.Core.Services;
 
@@ -128,5 +129,73 @@ public class UsageResolutionTests
     {
         using var db = Seeded();
         Assert.Empty(Service(db).SetupAllowedExtendedOids("[]", $"[\"{ServerAuthOid}\"]"));
+    }
+
+    // ---- The drop that started the error-reporting work -------------------------------------
+
+    [Fact]
+    public void An_eku_removed_by_the_signing_profile_ceiling_is_reported_not_just_logged()
+    {
+        // The original incident, reproduced: the certificate profile asks for clientAuth and
+        // serverAuth, the signing profile's ceiling permits only clientAuth, and the certificate
+        // issues with serverAuth quietly absent. The drop was always detected — it went to a
+        // LogInformation — and this asserts it now leaves by a door the operator can see.
+        using var db = Seeded();
+        var diagnostics = new List<Diagnostic>();
+
+        var result = Service(db).SetupAllowedExtendedOids(
+            $"[\"{ClientAuthOid}\", \"{ServerAuthOid}\"]",
+            $"[\"{ClientAuthOid}\"]",
+            diagnostics);
+
+        Assert.Equal(new[] { ClientAuthOid }, result);
+
+        var dropped = Assert.Single(diagnostics);
+        Assert.Equal(DiagnosticSeverity.Warning, dropped.Severity);
+        Assert.Equal(ErrorCodes.ExtendedKeyUsageDropped, dropped.Code);
+        Assert.Contains(ServerAuthOid, dropped.Detail, StringComparison.Ordinal);
+        Assert.Contains("AllowedEKUs", dropped.Detail, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(dropped.Remediation));
+        Assert.Equal("extendedKeyUsages", dropped.Field);
+    }
+
+    [Fact]
+    public void Nothing_is_reported_when_the_ceiling_removes_nothing()
+    {
+        // The warning has to be absent on the ordinary path, or it becomes noise and operators
+        // learn to dismiss the one that matters.
+        using var db = Seeded();
+        var diagnostics = new List<Diagnostic>();
+
+        Service(db).SetupAllowedExtendedOids(
+            $"[\"{ClientAuthOid}\"]", $"[\"{ClientAuthOid}\", \"{ServerAuthOid}\"]", diagnostics);
+
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void An_unrestricted_ceiling_drops_nothing_and_reports_nothing()
+    {
+        using var db = Seeded();
+        var diagnostics = new List<Diagnostic>();
+
+        var result = Service(db).SetupAllowedExtendedOids(
+            $"[\"{ClientAuthOid}\", \"{ServerAuthOid}\"]", "[]", diagnostics);
+
+        Assert.Equal(2, result.Count);
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void A_caller_that_passes_no_collector_still_resolves()
+    {
+        // Bootstrap, the CLI and the renewal jobs all call this with nobody listening. Null must
+        // mean "no audience", never "crash while explaining yourself".
+        using var db = Seeded();
+
+        var result = Service(db).SetupAllowedExtendedOids(
+            $"[\"{ClientAuthOid}\", \"{ServerAuthOid}\"]", $"[\"{ClientAuthOid}\"]");
+
+        Assert.Equal(new[] { ClientAuthOid }, result);
     }
 }
