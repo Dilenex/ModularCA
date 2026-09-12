@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.RequestProfiles;
+﻿namespace ModularCA.Shared.Models.RequestProfiles;
 
 public class CreateRequestProfileRequest
 {
@@ -9,7 +9,6 @@ public class CreateRequestProfileRequest
     public List<Guid>? AllowedCertProfileIds { get; set; }
     public Guid? DefaultCertProfileId { get; set; }
     public bool RequireApproval { get; set; } = false;
-    public string? MaxValidityPeriod { get; set; }
 
     /// <summary>
     /// Optional CA scope. Null means system-wide profile.

@@ -46,6 +46,34 @@ Re-run `install.sh`. It stops the service, replaces binaries and `wwwroot`, leav
 
 Take a backup first — the CA private keys are the part you cannot recreate.
 
+## Firewall and ports
+
+The installer does not touch your firewall. Nothing in the package opens a port, so a fresh
+install on a host with a default-deny firewall starts cleanly, listens correctly, and is
+unreachable — with no error anywhere, because the packets never reach the socket.
+
+Permit whichever ports you configured:
+
+    sudo ufw allow 80/tcp && sudo ufw allow 443/tcp      # if you set Http.Port 80 / Https.Port 443
+    sudo ufw allow 8080/tcp && sudo ufw allow 8443/tcp   # if you kept the defaults
+
+**Do not also apply `deploy/nftables-modularca.conf` unless you kept the unprivileged
+defaults.** That file redirects 80 to 8080 and 443 to 8443, for deployments where the ports must
+stay unprivileged. Applied while ModularCA listens on 80/443 directly it rewrites every inbound
+connection to a port nothing is listening on, and the symptoms are misleading: the service is
+active, `ss` shows it bound, the firewall shows the ports allowed, and the application logs
+nothing at all. Read the header of that file before installing it.
+
+If the service is running and you cannot reach it, this settles it in one command — run it on the
+server while a client tries to connect:
+
+    sudo tcpdump -ni any tcp port 443 -c 20
+
+Nothing at all means the packets are not reaching the machine, so look outside it (hypervisor
+firewall, routing, VLAN). A SYN arriving with no SYN-ACK in reply means they reach the machine and
+something on it is dropping them — a firewall rule, or the redirect above. A completed handshake
+followed by silence means the network is fine and the problem is TLS.
+
 ## Things worth knowing before the first production start
 
 **`config/OIDSeed.yaml` is not shipped.** When it is absent the OID catalog falls back to

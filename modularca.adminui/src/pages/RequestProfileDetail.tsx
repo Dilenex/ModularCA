@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -66,7 +66,7 @@ const RequestProfileDetail: React.FC = () => {
     const [deleting, setDeleting] = useState(false);
 
     const emptyForm = {
-        name: '', description: '', requireApproval: false, maxValidityPeriod: '', defaultCertProfileId: '',
+        name: '', description: '', requireApproval: false, defaultCertProfileId: '',
         subjectDnRulesJson: '', sanRulesJson: '', allowedCertProfileIds: [] as string[],
         inheritsFromId: '', inheritanceEnabled: false, certificateAuthorityId: '',
     };
@@ -92,7 +92,7 @@ const RequestProfileDetail: React.FC = () => {
             if (p) {
                 const seeded = {
                     name: p.name || '', description: p.description || '', requireApproval: !!p.requireApproval,
-                    maxValidityPeriod: p.maxValidityPeriod || '', defaultCertProfileId: p.defaultCertProfileId || '',
+                    defaultCertProfileId: p.defaultCertProfileId || '',
                     subjectDnRulesJson: p.subjectDnRules ? JSON.stringify(p.subjectDnRules, null, 2) : '[]',
                     sanRulesJson: p.sanRules ? JSON.stringify(p.sanRules, null, 2) : '{}',
                     allowedCertProfileIds: Array.isArray(p.allowedCertProfileIds) ? p.allowedCertProfileIds : [],
@@ -138,7 +138,7 @@ const RequestProfileDetail: React.FC = () => {
         try { sanRules = JSON.parse(editForm.sanRulesJson); } catch { showToast('warning', 'Invalid JSON for SAN Rules'); throw new Error('Invalid JSON for SAN Rules'); }
         const body = {
             name: editForm.name, description: editForm.description || undefined, requireApproval: editForm.requireApproval,
-            maxValidityPeriod: editForm.maxValidityPeriod || undefined, defaultCertProfileId: editForm.defaultCertProfileId || undefined,
+            defaultCertProfileId: editForm.defaultCertProfileId || undefined,
             subjectDnRules, sanRules, allowedCertProfileIds: editForm.allowedCertProfileIds,
             inheritsFromId: editForm.inheritsFromId || undefined, inheritanceEnabled: editForm.inheritanceEnabled,
             certificateAuthorityId: editForm.certificateAuthorityId || undefined,
@@ -201,7 +201,6 @@ const RequestProfileDetail: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
                             <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Max Validity Period (ISO 8601)</label><input type="text" value={editForm.maxValidityPeriod} onChange={(e) => setEditForm({ ...editForm, maxValidityPeriod: e.target.value })} className={inputClass} placeholder="e.g. P365D" /></div>
                             <div>
                                 <label className={labelClass}>Default Certificate Profile</label>
                                 <select value={editForm.defaultCertProfileId} onChange={(e) => setEditForm({ ...editForm, defaultCertProfileId: e.target.value })} className={inputClass}>
@@ -256,7 +255,6 @@ const RequestProfileDetail: React.FC = () => {
                         <DetailField label="Name" value={p.name} />
                         <DetailField label="Description" value={p.description} />
                         <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
-                        <DetailField label="Max Validity Period" value={p.maxValidityPeriod} />
                         <DetailField label="Default Cert Profile" value={p.defaultCertProfileId ? resolveProfileName(p.defaultCertProfileId) : 'None'} />
                         <DetailField label="Created" value={p.createdAt ? new Date(p.createdAt).toLocaleString() : undefined} />
                         <DetailField label="Updated" value={p.updatedAt ? new Date(p.updatedAt).toLocaleString() : undefined} />
@@ -336,7 +334,6 @@ const RequestProfileDetail: React.FC = () => {
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.Name} label="Name" value={resolvedProfile.name} />
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.Description} label="Description" value={resolvedProfile.description} />
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.RequireApproval} label="Require Approval" value={resolvedProfile.requireApproval ? 'Yes' : 'No'} />
-                                <ReqSourceBorderedField source={resolvedProfile.fieldSources?.MaxValidityPeriod} label="Max Validity Period" value={resolvedProfile.maxValidityPeriod} />
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.DefaultCertProfileId} label="Default Cert Profile" value={resolvedProfile.defaultCertProfileId ? resolveProfileName(resolvedProfile.defaultCertProfileId) : 'None'} />
                             </div>
                         )}

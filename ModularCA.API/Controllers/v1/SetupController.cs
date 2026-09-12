@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -39,9 +39,15 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// when the system is unconfigured; returns 404 once bootstrap has completed.
     /// </summary>
     /// <summary>
-    /// KC-11: Defense-in-depth localhost check. Even if the setup-mode middleware is
-    /// misconfigured or bypassed, each endpoint rejects non-loopback callers directly.
-    /// Returns a 403 result when the caller is not on localhost, or null when access is allowed.
+    /// KC-11: Defense-in-depth network check. Even if the setup-mode middleware is
+    /// misconfigured or bypassed, each endpoint rejects callers from outside the permitted
+    /// networks directly. Loopback and private networks are permitted by default;
+    /// <c>--setup-loopback-only</c> narrows that to loopback. Returns a 403 result when the
+    /// caller is outside the permitted set, or null when access is allowed.
+    /// <para>
+    /// The network check is not the control that matters. Every caller, loopback included, must
+    /// also present the one-time setup token below, which exists only on the server console.
+    /// </para>
     /// Also validates the one-time setup token from the <c>X-Setup-Token</c> header when
     /// a token has been configured (i.e., the server is running in setup mode).
     /// </summary>
@@ -68,8 +74,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
         }
 
         var message = Startup.SetupNetworkMode.IsPrivateNetworkAllowed
-            ? "Setup wizard is only accessible from localhost or private networks."
-            : "Setup wizard is only accessible from localhost. Use --setup-local to allow private network access.";
+            ? "Setup wizard is reachable from this machine and from private networks only. "
+              + "Your address is neither."
+            : "Setup wizard is restricted to this machine (--setup-loopback-only). "
+              + "Restart without that flag to allow access from private networks.";
         return StatusCode(403, new { error = message });
     }
 
@@ -88,8 +96,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             return null;
 
         var message = Startup.SetupNetworkMode.IsPrivateNetworkAllowed
-            ? "Setup wizard is only accessible from localhost or private networks."
-            : "Setup wizard is only accessible from localhost. Use --setup-local to allow private network access.";
+            ? "Setup wizard is reachable from this machine and from private networks only. "
+              + "Your address is neither."
+            : "Setup wizard is restricted to this machine (--setup-loopback-only). "
+              + "Restart without that flag to allow access from private networks.";
         return StatusCode(403, new { error = message });
     }
 
@@ -139,22 +149,15 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     }
 
     /// <summary>
-    /// Checks if an IP address is in an RFC 1918 private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+    /// True when the caller is on a network that cannot be routed from the internet.
     /// </summary>
-    private static bool IsRfc1918(IPAddress ip)
-    {
-        // Handle IPv4-mapped IPv6 addresses
-        if (ip.IsIPv4MappedToIPv6)
-            ip = ip.MapToIPv4();
-
-        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
-            return false;
-
-        var bytes = ip.GetAddressBytes();
-        return bytes[0] == 10                                           // 10.0.0.0/8
-            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)   // 172.16.0.0/12
-            || (bytes[0] == 192 && bytes[1] == 168);                   // 192.168.0.0/16
-    }
+    /// <remarks>
+    /// Delegates to <see cref="PrivateNetwork.IsPrivate"/> rather than keeping a private copy:
+    /// the startup banner classifies the setup bind with the same predicate, and a banner that
+    /// says "reachable from RFC1918 networks" while this method disagrees is how the wizard
+    /// came to advertise access it then refused.
+    /// </remarks>
+    private static bool IsRfc1918(IPAddress ip) => PrivateNetwork.IsPrivate(ip);
 
     [HttpGet("fingerprint")]
     public IActionResult GetSetupFingerprint()

@@ -78,6 +78,18 @@ public sealed class IpNetwork
     /// </summary>
     public bool Contains(IPAddress address)
     {
+        // An IPv4 client reaching a dual-stack IPv6 listener is reported as ::ffff:a.b.c.d, which
+        // is sixteen bytes. Without this unwrap it hit the "can't compare IPv6 against IPv4
+        // network" branch below and every IPv4 CIDR returned false, while the IPv6 entries did
+        // not match a mapped address either — so the whole allow-list denied every IPv4 client.
+        //
+        // It was invisible until a deployment moved its listeners to 80/443, because Kestrel then
+        // bound [::] rather than 0.0.0.0 and the remote address changed shape. Loopback over a
+        // tunnel still worked, since ::1 matches ::1/128 on its own terms, so setup succeeded and
+        // the admin console was unreachable immediately afterwards from the LAN.
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+
         var addrBytes = address.GetAddressBytes();
 
         // Handle IPv4 vs IPv6 mismatch
@@ -86,7 +98,7 @@ public sealed class IpNetwork
             if (addrBytes.Length == 4 && _networkBytes.Length == 16)
                 addrBytes = MapToIPv6(addrBytes);
             else if (addrBytes.Length == 16 && _networkBytes.Length == 4)
-                return false; // Can't compare IPv6 against IPv4 network
+                return false; // A genuine IPv6 address cannot fall inside an IPv4 network.
         }
 
         for (int i = 0; i < addrBytes.Length && i < _mask.Length; i++)

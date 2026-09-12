@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import type { OrganizationData } from './Organization';
 import type { RootCaData } from './RootCaConfig';
 import type { AdminAccountData } from './AdminAccount';
@@ -60,6 +60,18 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Mirrors SystemConfig.HttpsConfig.GetPublicHttpsBaseUrl / GetPublicHttpBaseUrl: the public
+    // port falls back to the listener port when unset, and the scheme's default port is omitted.
+    // Kept in step with the server by construction — if those rules change, this preview is wrong
+    // and the operator is the one who finds out, so it is worth checking both together.
+    const httpsPublicPort = network.httpsPublicPort ?? network.httpsBindPort;
+    const httpPublicPort = network.httpPublicPort ?? network.httpPort;
+    const domain = network.publicDomain.trim();
+    const httpsBaseUrl = httpsPublicPort === 443 ? `https://${domain}` : `https://${domain}:${httpsPublicPort}`;
+    const httpBaseUrl = httpPublicPort === 80 ? `http://${domain}` : `http://${domain}:${httpPublicPort}`;
+    const portsProxied =
+        httpsPublicPort !== network.httpsBindPort || httpPublicPort !== network.httpPort;
 
     const enabledFeatures = [
         security.enableCrl && 'CRL',
@@ -296,6 +308,38 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 <SummaryRow label="Backup Retention" value={`${network.backupRetentionCount} copies`} />
                 <SummaryRow label="Log Level" value={network.logLevel} />
                 <SummaryRow label="Log Retention" value={`${network.logRetentionDays} days`} />
+            </SummaryCard>
+
+            {/* Certificate URLs — the whole reason the public ports exist.
+
+                These are computed exactly as the server computes them (PublicPort ?? Port, with
+                443/80 omitted), because the failure this card exists to prevent is invisible
+                otherwise: the values get frozen into every certificate's CDP, AIA and OCSP
+                extensions at issuance, and a wrong port there is not correctable afterwards
+                without reissuing the whole hierarchy. Showing them at the point of decision is
+                cheaper than any validation rule, because only the operator knows what the
+                network in front of this box actually looks like. */}
+            <SummaryCard title="URLs embedded in issued certificates">
+                {network.publicDomain.trim() ? (
+                    <>
+                        <SummaryRow label="Management UI" value={httpsBaseUrl} />
+                        <SummaryRow label="CRL / OCSP / AIA" value={httpBaseUrl} />
+                        {portsProxied && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                                Public ports differ from the listener ports, which assumes a proxy
+                                forwards {network.httpsBindPort}&nbsp;&rarr;&nbsp;{httpsPublicPort} and{' '}
+                                {network.httpPort}&nbsp;&rarr;&nbsp;{httpPublicPort}. If nothing does
+                                that, clients will not reach these URLs.
+                            </p>
+                        )}
+                    </>
+                ) : (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                        No public domain set, so these URLs are derived at runtime from the request
+                        host. Certificates issued before a public domain is configured may carry
+                        addresses that clients outside this host cannot resolve.
+                    </p>
+                )}
             </SummaryCard>
 
             {/* Web TLS Certificate */}

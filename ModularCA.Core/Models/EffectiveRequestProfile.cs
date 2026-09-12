@@ -1,4 +1,4 @@
-namespace ModularCA.Core.Models;
+﻿namespace ModularCA.Core.Models;
 
 /// <summary>
 /// Represents the effective (merged) request profile after resolving inheritance.
@@ -50,11 +50,6 @@ public class EffectiveRequestProfile
     /// When true, requests require manual admin approval before issuance.
     /// </summary>
     public bool RequireApproval { get; set; }
-
-    /// <summary>
-    /// Maximum validity period the requester can ask for (ISO 8601 duration).
-    /// </summary>
-    public string? MaxValidityPeriod { get; set; }
 
     /// <summary>
     /// Number of admin approvals required before a CSR can be issued.

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.RequestProfiles;
@@ -58,7 +58,6 @@ namespace ModularCA.Core.Services
                 AllowedCertProfileIds = JsonSerializer.Serialize(request.AllowedCertProfileIds ?? new List<Guid>()),
                 DefaultCertProfileId = request.DefaultCertProfileId,
                 RequireApproval = request.RequireApproval,
-                MaxValidityPeriod = request.MaxValidityPeriod,
                 CertificateAuthorityId = request.CertificateAuthorityId,
                 InheritsFromId = request.InheritsFromId,
                 InheritanceEnabled = request.InheritanceEnabled
@@ -86,7 +85,6 @@ namespace ModularCA.Core.Services
             entity.AllowedCertProfileIds = JsonSerializer.Serialize(request.AllowedCertProfileIds ?? new List<Guid>());
             entity.DefaultCertProfileId = request.DefaultCertProfileId;
             entity.RequireApproval = request.RequireApproval;
-            entity.MaxValidityPeriod = request.MaxValidityPeriod;
             entity.CertificateAuthorityId = request.CertificateAuthorityId;
             entity.InheritsFromId = request.InheritsFromId;
             entity.InheritanceEnabled = request.InheritanceEnabled;
@@ -124,7 +122,6 @@ namespace ModularCA.Core.Services
             AllowedCertProfileIds = JsonSerializer.Deserialize<List<Guid>>(entity.AllowedCertProfileIds) ?? new(),
             DefaultCertProfileId = entity.DefaultCertProfileId,
             RequireApproval = entity.RequireApproval,
-            MaxValidityPeriod = entity.MaxValidityPeriod,
             CreatedAt = entity.CreatedAt,
             UpdatedAt = entity.UpdatedAt,
             CertificateAuthorityId = entity.CertificateAuthorityId,

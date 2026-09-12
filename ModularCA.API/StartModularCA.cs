@@ -137,10 +137,19 @@ if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
     }
     Environment.Exit(exitCode);
 }
-if (args.Contains("--setup-local", StringComparer.OrdinalIgnoreCase))
+// Private networks are the default. --setup-loopback-only restores the stricter posture for a
+// CA on a network the operator does not trust; the one-time setup token is required either way.
+if (args.Contains("--setup-loopback-only", StringComparer.OrdinalIgnoreCase))
 {
-    Log.Information("Setup wizard will accept connections from RFC 1918 private networks (--setup-local)");
-    ModularCA.API.Startup.SetupNetworkMode.AllowPrivateNetworks();
+    Log.Information("Setup wizard restricted to loopback callers (--setup-loopback-only)");
+    ModularCA.API.Startup.SetupNetworkMode.RestrictToLoopback();
+}
+else if (args.Contains("--setup-local", StringComparer.OrdinalIgnoreCase))
+{
+    // Kept because it appears in existing runbooks and scripts. It asked for what is now the
+    // default, so it does nothing; saying so is better than silently accepting it forever.
+    Log.Information("--setup-local is no longer needed: private-network access is the default. "
+                  + "Pass --setup-loopback-only to restrict the wizard to this machine.");
 }
 
 if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
@@ -1422,16 +1431,11 @@ if (isSetupMode)
     bool setupBindIsWildcard =
         setupBindAddress.Equals(System.Net.IPAddress.Any) ||
         setupBindAddress.Equals(System.Net.IPAddress.IPv6Any);
-    bool setupBindIsRfc1918 = false;
-    if (!setupBindIsLoopback && !setupBindIsWildcard &&
-        setupBindAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-    {
-        byte[] bindBytes = setupBindAddress.GetAddressBytes();
-        setupBindIsRfc1918 =
-            bindBytes[0] == 10 ||                                  // 10.0.0.0/8
-            (bindBytes[0] == 172 && (bindBytes[1] & 0xF0) == 16) || // 172.16.0.0/12
-            (bindBytes[0] == 192 && bindBytes[1] == 168);           // 192.168.0.0/16
-    }
+    // Shared with SetupController so the banner and the access check can never disagree about
+    // what "private" means.
+    bool setupBindIsRfc1918 =
+        !setupBindIsLoopback && !setupBindIsWildcard &&
+        ModularCA.Shared.Utils.PrivateNetwork.IsPrivate(setupBindAddress);
     bool setupBindIsPublicInterface =
         !setupBindIsLoopback && !setupBindIsWildcard && !setupBindIsRfc1918;
 
@@ -1490,13 +1494,27 @@ if (isSetupMode)
             Console.WriteLine($"      use an SSH port-forward: ssh -L {port}:127.0.0.1:{port} <host>");
             Console.WriteLine("      Or re-launch with: --setup-bind <address>");
         }
+        else if (!ModularCA.API.Startup.SetupNetworkMode.IsPrivateNetworkAllowed)
+        {
+            // The listener is open but the access check is not: say so plainly, because the
+            // symptom otherwise is a 403 from an address the banner appeared to bless.
+            Console.WriteLine();
+            Console.WriteLine("  (i) Setup listener is bound broadly, but access is restricted to");
+            Console.WriteLine("      this machine (--setup-loopback-only). Callers from the LAN");
+            Console.WriteLine($"      will receive 403. For remote access use an SSH port-forward:");
+            Console.WriteLine($"      ssh -L {port}:127.0.0.1:{port} <host>");
+            Console.WriteLine("      Or restart without --setup-loopback-only.");
+        }
         else
         {
             Console.WriteLine();
-            Console.WriteLine("  (i) Setup listener is reachable from RFC1918 networks.");
-            Console.WriteLine("     IpWhitelistMiddleware gates /api/v1/setup/* to RFC1918+loopback");
-            Console.WriteLine("     sources by default. Verify the fingerprint above matches the");
-            Console.WriteLine("     browser cert warning before entering any credentials.");
+            Console.WriteLine("  (i) Setup wizard accepts this machine and private networks");
+            Console.WriteLine("      (RFC 1918, link-local, IPv6 unique-local). Every caller must");
+            Console.WriteLine("      still present the one-time token printed below, so reaching");
+            Console.WriteLine("      the port is not enough to use the wizard.");
+            Console.WriteLine("      Restrict to this machine with: --setup-loopback-only");
+            Console.WriteLine("      Verify the fingerprint above matches the browser cert warning");
+            Console.WriteLine("      before entering any credentials.");
         }
         Console.WriteLine("================================================================");
         Console.WriteLine();

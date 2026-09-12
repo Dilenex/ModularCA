@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ModularCA.Shared.Entities;
@@ -51,14 +51,6 @@ public class RequestProfileEntity
     /// When false, requests are auto-approved and issued immediately.
     /// </summary>
     public bool RequireApproval { get; set; } = false;
-
-    /// <summary>
-    /// Maximum validity period the requester can ask for (ISO 8601 duration).
-    /// Clamped against the cert profile's max validity at issuance time.
-    /// Null means no additional constraint beyond the cert profile.
-    /// </summary>
-    [MaxLength(50)]
-    public string? MaxValidityPeriod { get; set; }
 
     /// <summary>
     /// Number of admin approvals required before a CSR can be issued.

@@ -20,6 +20,13 @@ Documentation=https://github.com/edphemeral/modularCA
 After=network-online.target mysql.service mariadb.service
 Wants=network-online.target
 
+# These belong in [Unit], not [Service]: they moved in systemd 229 and a modern systemd ignores
+# them under [Service] with an "Unknown key name" warning. That was survivable while Restart was
+# on-failure; with Restart=always it is not, because an app that fails at startup would retry
+# every 5s forever. Five attempts in 300s, then systemd gives up and leaves the unit failed.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 # notify, not simple: the app calls builder.Host.UseSystemd() (StartModularCA.cs),
 # so it signals READY=1 only once Kestrel is actually listening. With Type=simple,
@@ -39,13 +46,21 @@ Environment=DOTNET_ENVIRONMENT=Production
 # Serilog writes structured JSON to stdout when running under systemd; journald captures it.
 Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 
-Restart=on-failure
+# always, not on-failure: the setup wizard finishes by calling StopApplication() so the
+# process comes back up outside setup mode, and that is a CLEAN exit. Under on-failure systemd
+# read status 0 as "job done" and left the CA stopped — while the server logged "Application
+# will restart into production mode" and the wizard told the operator the same thing. Both
+# promised a restart the unit would not perform.
+#
+# The thrash protection that on-failure was chosen for is provided by the start limit below,
+# which applies to every restart cause: bootstrap still exits non-zero on a fatal
+# misconfiguration (bad JWT secret, mTLS enabled with no trust anchors), and systemd still gives
+# up after 5 attempts in 300s rather than filling the journal with the same failure.
+#
+# A `systemctl stop` is unaffected — that is a stop job, not a service exit, and always does not
+# override it.
+Restart=always
 RestartSec=5s
-# Do not thrash if the config is broken — bootstrap intentionally exits non-zero on a
-# fatal misconfiguration (bad JWT secret, mTLS enabled with no trust anchors), and
-# restarting into the same bad config just fills the journal.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
 # move Http.Port/Https.Port to 80/443. Defaults are 8080/8443, which need no capability

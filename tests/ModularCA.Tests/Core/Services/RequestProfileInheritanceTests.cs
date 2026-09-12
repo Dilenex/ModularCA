@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Tests.TestUtils;
@@ -10,7 +10,7 @@ namespace ModularCA.Tests.Core.Services;
 /// Proves request-profile inheritance reaches the enrollment path.
 /// <para>
 /// <c>ProfileResolutionService.ResolveRequestProfileAsync</c> holds all the CLM-002 clamping for
-/// RequireApproval, RequiredApprovalCount, MaxValidityPeriod, AllowedCertProfileIds,
+/// RequireApproval, RequiredApprovalCount, AllowedCertProfileIds,
 /// SubjectDnRules and SanRules — and it had exactly one caller in the entire repository, an admin
 /// preview endpoint. Every enrollment path (EST, SCEP, CMP, ACME, public token enrollment) read
 /// the raw RequestProfileEntity instead, so MergeRequestProfiles was dead code at runtime and a

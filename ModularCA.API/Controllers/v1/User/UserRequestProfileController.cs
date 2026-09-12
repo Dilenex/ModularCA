@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
@@ -62,7 +62,6 @@ public class UserRequestProfileController(
             p.SanRules,
             p.AllowedCertProfileIds,
             p.RequireApproval,
-            p.MaxValidityPeriod,
             p.DefaultCertProfileId,
             p.CertificateAuthorityId,
             p.RequiredApprovalCount,

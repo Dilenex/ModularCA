@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -320,7 +320,6 @@ public class PolicySyncService : IPolicySyncService
                         Name = yamlProfile.Name,
                         Description = yamlProfile.Description,
                         RequireApproval = yamlProfile.RequireApproval,
-                        MaxValidityPeriod = yamlProfile.MaxValidityPeriod,
                         RequiredApprovalCount = yamlProfile.RequiredApprovalCount,
                         SubjectDnRules = yamlProfile.SubjectDnRules ?? "[]",
                         SanRules = yamlProfile.SanRules ?? "{}",
@@ -334,7 +333,6 @@ public class PolicySyncService : IPolicySyncService
                 {
                     existing.Description = yamlProfile.Description;
                     existing.RequireApproval = yamlProfile.RequireApproval;
-                    existing.MaxValidityPeriod = yamlProfile.MaxValidityPeriod;
                     existing.RequiredApprovalCount = yamlProfile.RequiredApprovalCount;
                     existing.SubjectDnRules = yamlProfile.SubjectDnRules ?? "[]";
                     existing.SanRules = yamlProfile.SanRules ?? "{}";
@@ -398,7 +396,6 @@ public class PolicySyncService : IPolicySyncService
     {
         return existing.Description != yaml.Description
             || existing.RequireApproval != yaml.RequireApproval
-            || existing.MaxValidityPeriod != yaml.MaxValidityPeriod
             || existing.RequiredApprovalCount != yaml.RequiredApprovalCount
             || existing.SubjectDnRules != (yaml.SubjectDnRules ?? "[]")
             || existing.SanRules != (yaml.SanRules ?? "{}")
@@ -473,7 +470,6 @@ public class PolicySyncService : IPolicySyncService
         public string Name { get; set; } = string.Empty;
         public string? Description { get; set; }
         public bool RequireApproval { get; set; }
-        public string? MaxValidityPeriod { get; set; }
         public int RequiredApprovalCount { get; set; } = 1;
         public string? SubjectDnRules { get; set; }
         public string? SanRules { get; set; }

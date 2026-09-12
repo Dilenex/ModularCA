@@ -1,4 +1,4 @@
-using ModularCA.Core.Authorization;
+﻿using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -303,7 +303,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = false,
-            MaxValidityPeriod = "P397D",
         };
         db.RequestProfiles.Add(webServer);
         profiles["WebServer"] = webServer;
@@ -340,7 +339,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = false,
-            MaxValidityPeriod = "P397D",
         };
         db.RequestProfiles.Add(webTlsInternal);
         profiles["WebTlsInternal"] = webTlsInternal;
@@ -371,7 +369,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = false,
-            MaxValidityPeriod = "P1Y",
         };
         db.RequestProfiles.Add(enterpriseServer);
         profiles["EnterpriseServer"] = enterpriseServer;
@@ -399,7 +396,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = false,
-            MaxValidityPeriod = "P1Y",
         };
         db.RequestProfiles.Add(mdmDevice);
         profiles["MdmDevice"] = mdmDevice;
@@ -427,7 +423,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = true,
-            MaxValidityPeriod = "P2Y",
         };
         db.RequestProfiles.Add(enterpriseUser);
         profiles["EnterpriseUser"] = enterpriseUser;
@@ -451,7 +446,6 @@ public static class BootstrapProfileSeeder
             }),
             AllowedCertProfileIds = "[]",
             RequireApproval = true,
-            MaxValidityPeriod = "P3Y",
         };
         db.RequestProfiles.Add(codeSigning);
         profiles["CodeSigning"] = codeSigning;

@@ -139,8 +139,12 @@ const initialData: WizardData = {
     },
     network: {
         publicDomain: '',
-        httpsPublicPort: 8443,
-        httpPublicPort: 8080,
+        // Null means "same as the listener port". The backend contract is PublicPort ?? Port,
+        // so sending a concrete value here defeats it: these used to be hardcoded to 8443/8080
+        // and never followed the bind ports, so an operator who moved the listeners to 443/80
+        // still got :8443 and :8080 baked into every certificate's CDP, AIA and OCSP URLs.
+        httpsPublicPort: null,
+        httpPublicPort: null,
         httpPort: 8080,
         httpsBindPort: 8443,
         listenAddress: '0.0.0.0',

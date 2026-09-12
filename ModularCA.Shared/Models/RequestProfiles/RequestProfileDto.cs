@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Models.RequestProfiles;
+﻿namespace ModularCA.Shared.Models.RequestProfiles;
 
 public class RequestProfileDto
 {
@@ -10,7 +10,6 @@ public class RequestProfileDto
     public List<Guid> AllowedCertProfileIds { get; set; } = new();
     public Guid? DefaultCertProfileId { get; set; }
     public bool RequireApproval { get; set; }
-    public string? MaxValidityPeriod { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

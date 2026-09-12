@@ -636,7 +636,9 @@ public class ReissueWebTlsRequest
 
     /// <summary>
     /// Optional explicit validity period in days. When null the cert profile's
-    /// <c>MaxValidityPeriod</c> applies inside the issuance service.
+    /// the certificate profile's <c>ValidityPeriodMax</c> applies inside the issuance service.
+    /// The request profile carried a <c>MaxValidityPeriod</c> of its own until it was removed: it
+    /// duplicated that ceiling and, unlike it, was read by nothing.
     /// </summary>
     public int? ValidityDays { get; set; }
 

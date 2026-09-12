@@ -167,10 +167,6 @@ public class ProfileResolutionService : IProfileResolutionService
             return errors;
         }
 
-        // MaxValidityPeriod: child must be <= parent
-        ValidateMaxDuration(child.MaxValidityPeriod, parent.MaxValidityPeriod,
-            "MaxValidityPeriod", errors);
-
         // AllowedCertProfileIds: child must be subset of parent
         ValidateJsonArraySubset(child.AllowedCertProfileIds, parent.AllowedCertProfileIds,
             "AllowedCertProfileIds", errors);
@@ -230,7 +226,6 @@ public class ProfileResolutionService : IProfileResolutionService
             AllowedCertProfileIds = entity.AllowedCertProfileIds,
             DefaultCertProfileId = entity.DefaultCertProfileId,
             RequireApproval = entity.RequireApproval,
-            MaxValidityPeriod = entity.MaxValidityPeriod,
             RequiredApprovalCount = entity.RequiredApprovalCount,
             FieldSources = new Dictionary<string, string>()
         };
@@ -390,11 +385,6 @@ public class ProfileResolutionService : IProfileResolutionService
             effectiveRequireApproval = true;
         }
 
-        // CLM-002: Enforce MaxValidityPeriod — child must be <= parent (shorter or equal)
-        var mergedMaxValidity = MergeNullableString(child.MaxValidityPeriod, parent.MaxValidityPeriod, nameof(EffectiveRequestProfile.MaxValidityPeriod), sources);
-        mergedMaxValidity = ClampMaxDuration(mergedMaxValidity, parent.MaxValidityPeriod,
-            nameof(EffectiveRequestProfile.MaxValidityPeriod), child.Id, parent.Id);
-
         // CLM-002: Enforce RequiredApprovalCount — child must be >= parent (stricter)
         var effectiveApprovalCount = child.RequiredApprovalCount > 0 ? child.RequiredApprovalCount : parent.RequiredApprovalCount;
         if (child.RequiredApprovalCount > 0 && child.RequiredApprovalCount < parent.RequiredApprovalCount)
@@ -421,9 +411,6 @@ public class ProfileResolutionService : IProfileResolutionService
 
             // Boolean fields — clamped above
             RequireApproval = effectiveRequireApproval,
-
-            // Nullable string fields — clamped above
-            MaxValidityPeriod = mergedMaxValidity,
 
             // JSON fields
             SubjectDnRules = MergeJsonArray(child.SubjectDnRules, parent.SubjectDnRules, nameof(EffectiveRequestProfile.SubjectDnRules), sources),

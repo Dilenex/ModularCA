@@ -497,7 +497,6 @@ export interface CreateRequestProfileRequest {
     allowedCertProfileIds?: string[] | null;
     defaultCertProfileId?: string | null;
     requireApproval: boolean;
-    maxValidityPeriod?: string | null;
     certificateAuthorityId?: string | null;
     inheritsFromId?: string | null;
     inheritanceEnabled: boolean;
@@ -715,7 +714,6 @@ export interface IpWhitelistConfig {
 /** From `ModularCA.Shared/Models/IssuanceResult.cs`. */
 export interface IssuanceResult {
     pem: string;
-    warnings: string[];
 }
 
 /** From `ModularCA.Shared/Models/Issuance/IssueCertificateRequest.cs`. */
@@ -922,7 +920,6 @@ export interface RequestProfileDto {
     allowedCertProfileIds: string[];
     defaultCertProfileId?: string | null;
     requireApproval: boolean;
-    maxValidityPeriod?: string | null;
     createdAt: string;
     updatedAt: string;
     certificateAuthorityId?: string | null;
@@ -1183,6 +1180,12 @@ export interface SigningProfileDto {
     inheritanceEnabled: boolean;
 }
 
+/** From `ModularCA.Shared/Models/Config/SourceCodeConfig.cs`. */
+export interface SourceCodeConfig {
+    url: string;
+    license: string;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface SshCaConfig {
     sshKeygenPath: string;
@@ -1256,6 +1259,7 @@ export interface SystemConfig {
     integrationApi: IntegrationApiConfig;
     policySync: PolicySyncConfig;
     certManager: CertManagerConfig;
+    sourceCode: SourceCodeConfig;
     redis: RedisConfig;
     audit: AuditConfig;
 }

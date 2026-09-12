@@ -1,10 +1,12 @@
-import React from 'react';
+﻿import React from 'react';
 import { useAutoFocus } from '../hooks/useAutoFocus';
 
 export interface NetworkData {
     publicDomain: string;
-    httpsPublicPort: number;
-    httpPublicPort: number;
+    /** Null means "same as httpsBindPort" — see the backend's PublicPort ?? Port fallback. */
+    httpsPublicPort: number | null;
+    /** Null means "same as httpPort". */
+    httpPublicPort: number | null;
     httpPort: number;
     httpsBindPort: number;
     listenAddress: string;
@@ -209,12 +211,12 @@ const NetworkAdvanced: React.FC<NetworkAdvancedProps> = ({ data, onChange }) => 
                                 id="httpsPublicPort"
                                 type="text"
                                 inputMode="numeric"
-                                value={data.httpsPublicPort}
-                                onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, httpsPublicPort: v === '' ? ('' as any) : parseInt(v) }); }}
-                                onBlur={() => { if (!data.httpsPublicPort && data.httpsPublicPort !== 0) onChange({ ...data, httpsPublicPort: data.httpsBindPort }); }}
+                                value={data.httpsPublicPort ?? ''}
+                                placeholder={String(data.httpsBindPort)}
+                                onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, httpsPublicPort: v === '' ? null : parseInt(v) }); }}
                                 className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             />
-                            <p className="text-xs text-gray-600 mt-1">Port clients connect to for HTTPS. Set to 443 if the proxy listens on 443. Default: same as HTTPS Port above.</p>
+                            <p className="text-xs text-gray-600 mt-1">Port clients connect to for HTTPS. Leave blank to follow the HTTPS Port above — only set it if a proxy terminates on a different port.</p>
                         </div>
                         <div>
                             <label htmlFor="httpPublicPort" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -224,12 +226,12 @@ const NetworkAdvanced: React.FC<NetworkAdvancedProps> = ({ data, onChange }) => 
                                 id="httpPublicPort"
                                 type="text"
                                 inputMode="numeric"
-                                value={data.httpPublicPort}
-                                onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, httpPublicPort: v === '' ? ('' as any) : parseInt(v) }); }}
-                                onBlur={() => { if (!data.httpPublicPort && data.httpPublicPort !== 0) onChange({ ...data, httpPublicPort: data.httpPort }); }}
+                                value={data.httpPublicPort ?? ''}
+                                placeholder={String(data.httpPort)}
+                                onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, httpPublicPort: v === '' ? null : parseInt(v) }); }}
                                 className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             />
-                            <p className="text-xs text-gray-600 mt-1">Port clients connect to for CRL/OCSP/AIA. Set to 80 if the proxy listens on 80. Default: same as HTTP Port above.</p>
+                            <p className="text-xs text-gray-600 mt-1">Port clients connect to for CRL/OCSP/AIA. Leave blank to follow the HTTP Port above — only set it if a proxy terminates on a different port.</p>
                         </div>
                     </div>
                 </details>
