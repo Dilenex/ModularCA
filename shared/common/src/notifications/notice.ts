@@ -110,22 +110,26 @@ export function noticeText(value: NoticeInput): string {
  * Success and info keep the historical five seconds: they confirm that what was asked for is what
  * happened, so the message is a receipt and re-reading it changes nothing.
  *
- * Errors and warnings do not auto-dismiss, and warnings for the same reason as errors rather than
- * as a softer version of them. The difference between the two is only whether a certificate came
- * out the other end — not whether the operator got what they asked for. `MCA-ISS-003` reports a
- * certificate that was issued *without* the extended key usages that were requested: the artifact
- * exists, it is already signed, and it will fail in production for a reason nothing else will
- * explain. That is the single most valuable sentence this system produces and it was disappearing
- * on a five-second timer alongside "Saved". Both severities now persist until the operator
- * dismisses them, which is also the only way the code stays on screen long enough to be copied.
+ * Errors and warnings get much longer, and warnings for the same reason as errors rather than as a
+ * softer version of them. The difference between the two is only whether a certificate came out the
+ * other end — not whether the operator got what they asked for. `MCA-ISS-003` reports a certificate
+ * that was issued *without* the extended key usages that were requested: the artifact exists, it is
+ * already signed, and it will fail in production for a reason nothing else will explain. That is
+ * the single most valuable sentence this system produces and it was disappearing on a five-second
+ * timer alongside "Saved".
  *
- * This applies to every existing warning call site, including the incidental ones, and that is
- * accepted: a sticky toast that did not need to be sticky costs one click, whereas the reverse
- * costs a reissue. Any call site that genuinely wants a transient warning can still pass an
- * explicit duration, which always wins.
+ * These were briefly pinned open instead — lifetime 0, dismissed only by a click. That was the
+ * wrong correction. It fixed the message that mattered by making every incidental refusal into
+ * litter the operator had to clear by hand, and during a bulk action a screenful of them. The
+ * timers below are long enough to read a policy refusal and copy a code out of it, and
+ * {@link Toast} suspends its timer while the pointer is over the toast or focus is inside it, so
+ * anything actually being read or copied from stays until it is let go. A call site that wants a
+ * toast pinned regardless can still pass 0, which always wins.
  */
 export function autoDismissMs(severity: NoticeSeverity): number {
-    return severity === 'error' || severity === 'warning' ? 0 : 5000;
+    if (severity === 'error') return 15000;
+    if (severity === 'warning') return 12000;
+    return 5000;
 }
 
 /**

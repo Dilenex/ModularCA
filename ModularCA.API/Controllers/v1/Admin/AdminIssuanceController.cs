@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
@@ -39,7 +40,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         ICsrService csrService,
         IKeyWrappingPassphraseProvider passphraseProvider,
         IDistributedCache cache,
-        ICaGroupAuthorizationService authService) : ControllerBase
+        ICaGroupAuthorizationService authService,
+        IValidityCeilingService validityCeiling) : ControllerBase
     {
         private readonly ModularCADbContext _dbContext = dbContext;
         private readonly ICertificateIssuanceService _certificateIssuanceService = certificateIssuanceService;
@@ -51,6 +53,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly IKeyWrappingPassphraseProvider _passphraseProvider = passphraseProvider;
         private readonly IDistributedCache _cache = cache;
         private readonly ICaGroupAuthorizationService _authService = authService;
+        private readonly IValidityCeilingService _validityCeiling = validityCeiling;
 
         /// <summary>
         /// Resolve the CA via CSR → SigningProfile → IssuerId → CA, then
@@ -113,6 +116,65 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
+        /// Pre-flight: reports the longest validity a given signing profile / certificate profile
+        /// pairing could actually issue for, and which of the three layers — certificate profile,
+        /// tenant, issuing CA — is the one setting it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This exists so that the clamp never fires for an operator at a keyboard. Until now
+        /// nothing told them about any ceiling: they picked profiles, typed a Not After, submitted,
+        /// and found out afterwards — from an <c>MCA-ISS-004</c> advisory attached to a certificate
+        /// that already exists and already has a serial — that they got something shorter. Fixing
+        /// that means revoke and reissue. Answering the same question before submission costs three
+        /// indexed reads.
+        /// </para>
+        /// <para>
+        /// It names the binding layer because the number alone is not actionable. "Max 730 days"
+        /// sends an operator to whichever screen they guess first, and the wrong guess costs a
+        /// profile edit, a reload, and the same 730 days.
+        /// </para>
+        /// <para>
+        /// Same tenant fence and the same <c>profile.use</c> checks as issuance: the answer reveals
+        /// a tenant's configured ceiling and a CA's expiry, so it must not be readable by someone
+        /// who could not have issued under those profiles anyway.
+        /// </para>
+        /// <para>
+        /// Returns <see cref="ValidityCeilingPreflight"/> unmapped. The shared-type generator emits
+        /// a matching TypeScript interface from that record, so a hand-written projection here
+        /// would be a second contract able to drift from the one the browser compiles against.
+        /// </para>
+        /// </remarks>
+        /// <param name="signingProfileId">The signing profile, which determines the issuing CA and tenant.</param>
+        /// <param name="certProfileId">The certificate profile whose maximum validity is the baseline.</param>
+        /// <param name="notBefore">Optional proposed start; defaults to what issuance would use.</param>
+        [HttpGet("validity-ceiling")]
+        public async Task<IActionResult> GetValidityCeiling(
+            [FromQuery] Guid signingProfileId,
+            [FromQuery] Guid certProfileId,
+            [FromQuery] DateTime? notBefore = null)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+                return Unauthorized();
+
+            var fence = EnforceTenantFence(await ResolveCaFromSigningProfileAsync(signingProfileId));
+            if (fence != null)
+                return fence;
+
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "SigningProfile", signingProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this signing profile." });
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "CertProfile", certProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this certificate profile." });
+
+            var preflight = await _validityCeiling.ResolveAsync(signingProfileId, certProfileId, notBefore, HttpContext.RequestAborted);
+            if (preflight == null)
+                return NotFound(new { error = "Signing profile or certificate profile not found." });
+
+            return Ok(preflight);
+        }
+
+        /// <summary>
         /// Issues a certificate from an approved CSR. Enforces tenant access and profile.use
         /// capability checks before delegating to the issuance service.
         /// </summary>
@@ -141,10 +203,16 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Select(c => new { c.RequestedNotBefore, c.RequestedNotAfter })
                 .FirstOrDefaultAsync();
 
+            // HonourTenantPolicy: this is the interactive admin path, so a tenant configured to
+            // refuse over-long validity refuses here rather than handing back a certificate quietly
+            // shorter than the operator asked for. They can see the ceiling (the pre-flight endpoint
+            // below tells them before they submit) and they can act on the refusal — neither of
+            // which is true of ACME, EST, SCEP, CMP or the renewal jobs, which always shorten.
             var result = await _certificateIssuanceService.IssueCertificateAsync(
                 req.CsrId,
                 req.NotBefore ?? requested?.RequestedNotBefore,
-                req.NotAfter ?? requested?.RequestedNotAfter);
+                req.NotAfter ?? requested?.RequestedNotAfter,
+                ValidityCeilingEnforcement.HonourTenantPolicy);
             var cert = result.Pem;
             var certDer = CertificateUtil.ParseFromPem(cert);
             var certName = CertificateUtil.ParseCnFromPem(cert);
@@ -435,6 +503,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.CertificateId.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            // Interactive admin reissue: same reasoning as the issue path above — an operator who
+            // can see the tenant ceiling is refused by it rather than handed a shorter certificate.
             var reissueResult = await _certificateIssuanceService.ReissueCertificateAsync(
                 request.CertificateId,
                 null,
@@ -442,7 +512,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotBefore,
                 request.NotAfter,
                 request.NewSubjectDn,
-                request.NewSans);
+                request.NewSans,
+                ValidityCeilingEnforcement.HonourTenantPolicy);
             var newCertPem = reissueResult.Pem;
 
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
@@ -525,6 +596,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.SerialNumber))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            // Interactive admin reissue; see ReissueCertId.
             var reissueResult = await _certificateIssuanceService.ReissueCertificateAsync(
                 null,
                 request.SerialNumber,
@@ -532,7 +604,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotBefore,
                 request.NotAfter,
                 request.NewSubjectDn,
-                request.NewSans);
+                request.NewSans,
+                ValidityCeilingEnforcement.HonourTenantPolicy);
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
@@ -617,6 +690,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.CsrId.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            // Interactive admin reissue; see ReissueCertId.
             var reissueResult = await _certificateIssuanceService.ReissueCertificateAsync(
                 null,
                 null,
@@ -624,7 +698,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotBefore,
                 request.NotAfter,
                 request.NewSubjectDn,
-                request.NewSans);
+                request.NewSans,
+                ValidityCeilingEnforcement.HonourTenantPolicy);
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);

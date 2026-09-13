@@ -274,7 +274,7 @@ public sealed class ProfileValidationException : RequestValidationException
 
 /// <summary>
 /// Raised when a certificate would violate one or more system certificate-policy rules — for
-/// example a validity period longer than <c>CertPolicy.MaxValidityDays</c>.
+/// example an RSA key below <c>CertPolicy.MinRsaKeySize</c>, or a forbidden signature algorithm.
 /// </summary>
 /// <remarks>
 /// Policy rules are deliberate limits, so tripping one is a normal answer to an over-reaching

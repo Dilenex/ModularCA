@@ -65,8 +65,9 @@ namespace ModularCA.Core.Services
         public string CertProfileName { get; set; } = string.Empty;
 
         /// <summary>
-        /// When true, this is an infrastructure certificate (TSA, OCSP, Web TLS) that should
-        /// skip the global MaxValidityDays policy (which targets leaf TLS certs per BR rules).
+        /// When true, this is an infrastructure certificate (TSA, OCSP, Web TLS). These are
+        /// exempt from several issuance-time limits, including the tenant validity ceiling —
+        /// their validity is governed by their cert profile and clamped to the issuing CA.
         /// </summary>
         public bool IsInfrastructureCert { get; set; } = false;
     }

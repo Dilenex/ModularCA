@@ -128,6 +128,8 @@ public class AdminQuotaController(
                 t.MaxCertificateAuthorities,
                 t.MaxCertificatesTotal,
                 t.MaxUsers,
+                t.MaxValidityDays,
+                t.ValidityCeilingBehavior,
                 t.RequireKeyCeremony,
                 t.CeremonyRequiredApprovals,
                 CaCount = tenantCas.Count,

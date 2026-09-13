@@ -145,6 +145,12 @@ const CertificateRequests: React.FC = () => {
     // Loop the (no-step-up) per-request endpoints; approve/deny share one message, issue takes an
     // optional per-cert validity. Never abort on a single failure — collect each failure's reason
     // (e.g. "You cannot approve your own request") and surface them in the summary toast.
+    //
+    // Every call passes `toast: false`. The client's own error toast is per-request and correct for
+    // a single action, but here it fires once per failed row and then the summary below says the
+    // same thing again in aggregate — approving twelve requests of which eight fail would raise
+    // nine toasts for one click. The summary is the better report because it counts and
+    // deduplicates, so it is the one that survives.
     const runBulk = async () => {
         if (!bulk) return;
         const { type, rows } = bulk;
@@ -156,14 +162,14 @@ const CertificateRequests: React.FC = () => {
         for (const c of rows) {
             const cid = csrId(c);
             try {
-                if (type === 'approve') await apiPost(`/api/v1/admin/requests/${cid}/approve`, { comment: msg });
-                else if (type === 'deny') await apiPost(`/api/v1/admin/requests/${cid}/reject`, { reason: msg });
+                if (type === 'approve') await apiPost(`/api/v1/admin/requests/${cid}/approve`, { comment: msg }, { toast: false });
+                else if (type === 'deny') await apiPost(`/api/v1/admin/requests/${cid}/reject`, { reason: msg }, { toast: false });
                 // Optional per-cert "valid until" (end of the chosen day); blank → omit so the backend
                 // coalesces validity from the effective cert profile (clamped to the issuing CA).
                 else await apiPost('/api/v1/admin/certificates/issue', {
                     csrId: cid,
                     ...(issueValidity[cid] ? { notAfter: new Date(`${issueValidity[cid]}T23:59:59Z`).toISOString() } : {}),
-                });
+                }, { toast: false });
                 ok++;
             } catch (err: any) {
                 failReasons.push(err?.message || 'Failed');

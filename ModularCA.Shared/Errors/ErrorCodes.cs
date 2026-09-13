@@ -152,6 +152,34 @@ public static class ErrorCodes
     /// </summary>
     public const string ExtendedKeyUsageDropped = "MCA-ISS-003";
 
+    /// <summary>
+    /// Validity was shortened because the owning tenant caps how long its certificates may live.
+    /// Distinct from <see cref="ValidityClampedToIssuer"/> because the remedies have nothing in
+    /// common: a CA that expires first is fixed by renewing the CA, whereas this is a deliberate
+    /// policy ceiling and the only way through it is for someone with tenant authority to raise it.
+    /// </summary>
+    public const string ValidityClampedToTenant = "MCA-ISS-004";
+
+    /// <summary>
+    /// Issuance was refused because the request asked for longer validity than the owning tenant
+    /// permits, and that tenant is configured to refuse rather than shorten.
+    /// <para>
+    /// The one refusal in a block of advisories, and the distinction from
+    /// <see cref="ValidityClampedToTenant"/> is the tenant's <c>ValidityCeilingBehavior</c> and
+    /// nothing else: the same request, against the same ceiling, raises MCA-ISS-004 and a
+    /// certificate on a tenant set to Shorten, and this with no certificate on a tenant set to
+    /// Refuse. It lives here rather than in the CFG block so that an operator who has seen
+    /// MCA-ISS-004 finds its counterpart next to it — severity is a separate axis from identity,
+    /// which is the same reason this block already shares the catalog with the refusal codes.
+    /// </para>
+    /// <para>
+    /// It reaches interactive and admin issuance only. ACME, EST, SCEP, CMP and the renewal jobs
+    /// always shorten, so a client that sees this code came from a path where a human can shorten
+    /// the request or raise the tenant ceiling — which is exactly the remedy.
+    /// </para>
+    /// </summary>
+    public const string ValidityExceedsTenantCeiling = "MCA-ISS-005";
+
     // ---- LIC: the installation is not licensed for what was asked --------------------------
     //
     // Distinct from CFG on purpose. A configuration refusal is fixed by changing a profile; a

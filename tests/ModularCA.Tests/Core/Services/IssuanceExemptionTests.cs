@@ -56,7 +56,7 @@ public class IssuanceExemptionTests
 
     /// <summary>
     /// Whether issuance grants the infrastructure exemptions — skipping quota, the
-    /// minimum-validity check, and the global MaxValidityDays ceiling.
+    /// minimum-validity check, and the tenant validity ceiling.
     /// </summary>
     private static bool IsExempt(bool isInfrastructureCert) => isInfrastructureCert;
 
@@ -65,7 +65,7 @@ public class IssuanceExemptionTests
     {
         // Auto-renewal used GenerateInfrastructureCsrAsync for every renewal, so a subscriber
         // certificate held to 398 days at first issuance renewed straight to its profile's P3Y
-        // maximum, past the global policy, and past the tenant quota.
+        // maximum, past the tenant ceiling, and past the tenant quota.
         const bool originalWasInfrastructure = false;
         Assert.False(IsExempt(originalWasInfrastructure));
     }

@@ -23,7 +23,8 @@
        the two lists have to be changed together. */
     "paths": {
       "@shared/*": ["../../shared/common/src/*"],
-      "@shared-auth/*": ["../../shared/authenticated/src/*"]
+      "@shared-auth/*": ["../../shared/authenticated/src/*"],
+      "@adminui/*": ["../../modularca.adminui/src/*"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

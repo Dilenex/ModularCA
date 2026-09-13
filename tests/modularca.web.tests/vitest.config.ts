@@ -30,6 +30,10 @@ export default defineConfig({
             // shorter `@shared` prefix — the trailing slash in the pattern is load-bearing.
             { find: /^@shared\//, replacement: fromHere('../../shared/common/src/') },
             { find: /^@shared-auth\//, replacement: fromHere('../../shared/authenticated/src/') },
+            // adminui is reached only for modules with no JSX and no React import — the pure halves
+            // of a component, split out precisely so they can be covered here. Importing a .tsx
+            // through this alias would drag React into a test project that deliberately has none.
+            { find: /^@adminui\//, replacement: fromHere('../../modularca.adminui/src/') },
         ],
     },
     test: {

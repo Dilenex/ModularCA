@@ -2829,6 +2829,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("MaxUsers")
                         .HasColumnType("int");
 
+                    b.Property<int>("MaxValidityDays")
+                        .HasColumnType("int");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -2843,6 +2846,9 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("varchar(255)");
 
                     b.Property<int?>("UserCeremonyRequiredApprovals")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ValidityCeilingBehavior")
                         .HasColumnType("int");
 
                     b.HasKey("Id");

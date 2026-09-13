@@ -194,6 +194,49 @@ public class FeatureCatalogTests
         Assert.Null(FeatureCatalog.IntroducedOn("some.future.feature"));
         Assert.False(FeatureCatalog.CoveredByMaintenance("some.future.feature", new DateOnly(2099, 1, 1)));
     }
+
+    [Fact]
+    public void The_catalogue_is_exactly_the_set_of_keys_that_have_been_offered()
+    {
+        // Pinned as a whole rather than asserted per key, because the dangerous edit here is a
+        // DELETION and nothing else would catch one. Adding a key is harmless — an older build
+        // ignores names it does not know. Removing one silently revokes a feature from every
+        // customer holding a licence that names it, and it fails nowhere: the licence still
+        // verifies, the entitlement is still listed in its claims, and IsEntitled simply starts
+        // answering false. Four keys were removed while this list was still safe to change
+        // (LDAP publishing, CT submission, policy sync, lifecycle notifications — all of them
+        // already implemented in the open tree, so unenforceable against a fork of this commit,
+        // and all of them table stakes the free tier is better for including). Once a licence
+        // has been issued naming a key, that window is closed and this test is the reminder.
+        var expected = new[]
+        {
+            "tenancy.multi",
+            "backup.orchestration",
+            "compliance.reporting",
+            "identity.federation",
+            "hsm.fleet",
+            "ha.clustering",
+        };
+
+        Assert.Equal(
+            expected.OrderBy(k => k, StringComparer.Ordinal),
+            FeatureCatalog.AllKeys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void No_feature_gates_the_volume_of_certificates_or_authorities()
+    {
+        // A standing rule, not an observation about today's list. This is a security product: a
+        // ceiling on how many certificates or CAs may exist pays the operator to reuse
+        // certificates, skip rotations and let expiries slide — it charges for exactly the
+        // behaviour the product exists to encourage. Gate on organisational boundaries instead.
+        foreach (var key in FeatureCatalog.AllKeys)
+        {
+            Assert.DoesNotContain("count", key, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("quota", key, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("volume", key, StringComparison.OrdinalIgnoreCase);
+        }
+    }
 }
 
 /// <summary>

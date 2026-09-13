@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { copyText } from '../clipboard';
 import {
     isNotice, toNotice, type Notice, type NoticeInput, type NoticeSeverity,
@@ -25,6 +25,8 @@ export interface ToastProps {
     type: ToastType;
     /** A plain sentence, as before, or the structured form. */
     message: NoticeInput;
+    /** Milliseconds before this toast dismisses itself. 0 pins it open. */
+    duration?: number;
     onDismiss: (id: string) => void;
 }
 
@@ -90,17 +92,36 @@ const CopyableToken: React.FC<{ label: string; value: string }> = ({ label, valu
     );
 };
 
-export const Toast: React.FC<ToastProps> = ({ id, type, message, onDismiss }) => {
+export const Toast: React.FC<ToastProps> = ({ id, type, message, duration = 0, onDismiss }) => {
     const notice: Notice = toNotice(message, type);
+
+    // The dismiss timer lives here rather than in the provider so it can be suspended. A toast on a
+    // fixed timer is fine for "Saved" and hostile for a policy refusal: the operator is reading a
+    // remediation, or dragging across a correlation id to copy it, and the thing they are reading
+    // deletes itself out from under the pointer. While the pointer is over this toast, or focus is
+    // inside it, the clock stops; the remaining time resumes when they leave.
+    const [paused, setPaused] = useState(false);
+    const remaining = useRef(duration);
+    const startedAt = useRef(0);
+
+    useEffect(() => {
+        if (duration <= 0 || paused || remaining.current <= 0) return;
+        startedAt.current = Date.now();
+        const timer = setTimeout(() => onDismiss(id), remaining.current);
+        return () => {
+            clearTimeout(timer);
+            remaining.current = Math.max(0, remaining.current - (Date.now() - startedAt.current));
+        };
+    }, [duration, paused, id, onDismiss]);
     // A bare string keeps the old single-paragraph rendering; only a structured notice gets the
     // title/detail/remediation split. Nothing about the 238 string call sites changes visually.
     const structured = isNotice(message);
     const showTitle = structured && notice.title && notice.title !== notice.detail;
 
-    // Assertive for the two severities that now persist: they report that the operator did not get
-    // what they asked for, which is worth interrupting a screen reader for. Success and info are
-    // receipts and wait their turn. Neither form takes focus — the operator may be mid-word in a
-    // field, and a toast that moves the caret would be a worse bug than the one it is reporting.
+    // Assertive for the two severities that report the operator did not get what they asked for,
+    // which is worth interrupting a screen reader for. Success and info are receipts and wait their
+    // turn. Neither form takes focus — the operator may be mid-word in a field, and a toast that
+    // moves the caret would be a worse bug than the one it is reporting.
     const urgent = type === 'error' || type === 'warning';
 
     return (
@@ -108,6 +129,13 @@ export const Toast: React.FC<ToastProps> = ({ id, type, message, onDismiss }) =>
             role={urgent ? 'alert' : 'status'}
             aria-live={urgent ? 'assertive' : 'polite'}
             aria-atomic="true"
+            // Pointer and focus both suspend the timer. Focus matters as much as hover here: a
+            // keyboard user tabbing to the copy button has no pointer to hold the toast open with,
+            // and onFocus/onBlur see descendants because React's versions of both bubble.
+            onMouseEnter={() => setPaused(true)}
+            onMouseLeave={() => setPaused(false)}
+            onFocus={() => setPaused(true)}
+            onBlur={() => setPaused(false)}
             // Escape closes the toast once focus is inside it — reached by tabbing to the dismiss
             // button. Deliberately not a document-level handler: Escape belongs to whichever modal
             // or menu the operator is actually in, and stealing it here would close two things at

@@ -47,32 +47,19 @@ public static class TenantCreationGate
     /// <param name="existingTenantCount">How many tenants already exist.</param>
     public static LicensingException? Evaluate(IEntitlementService entitlements, int existingTenantCount)
     {
-        var denial = entitlements.Explain(FeatureKeys.MultiTenancy);
-        if (denial is not null)
-        {
-            var code = denial.Reason == EntitlementDenialReason.MaintenanceLapsed
-                ? ErrorCodes.MaintenanceLapsed
-                : ErrorCodes.FeatureNotEntitled;
+        // Entitlement before headroom. Telling an operator their tenant limit is reached, when the
+        // actual position is that they have no multi-tenancy entitlement at all, sends them to
+        // negotiate a bigger number for something they have not bought.
+        const string unaffected =
+            "Existing tenants are unaffected and continue to issue certificates normally.";
 
-            return new LicensingException(
-                "Creating additional tenants requires a multi-tenancy entitlement. "
-                + $"The {FreeEditionTenantCeiling} tenants created at installation are unaffected "
-                + $"and continue to issue certificates normally. {denial.Detail}",
-                code,
-                denial.Remediation);
-        }
-
-        var limit = entitlements.GetLimit(LicenseLimits.MaxTenants);
-        if (limit is { } max && existingTenantCount >= max)
-        {
-            return new LicensingException(
-                $"This licence permits {max} tenant(s) and {existingTenantCount} already exist. "
-                + "Existing tenants are unaffected and continue to issue certificates.",
-                ErrorCodes.LicenseLimitReached,
-                "Raise the tenant limit on your licence, or disable a tenant you no longer need. "
-                + "Tenants are never removed automatically.");
-        }
-
-        return null;
+        return FeatureGate.Require(
+                   entitlements, FeatureKeys.MultiTenancy,
+                   "Creating additional tenants",
+                   $"The {FreeEditionTenantCeiling} tenants created at installation are unaffected "
+                   + "and continue to issue certificates normally.")
+               ?? FeatureGate.RequireHeadroom(
+                   entitlements, LicenseLimits.MaxTenants, existingTenantCount,
+                   "tenant", unaffected);
     }
 }

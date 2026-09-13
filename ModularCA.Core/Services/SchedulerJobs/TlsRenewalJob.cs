@@ -197,7 +197,10 @@ public class TlsRenewalJob : SingletonCronJob
             subjectDn, "ECDSA", 256, certProfileId, dbCert.SigningProfileId.Value);
 
         // Issue through the standard pipeline — CA is in the keystore at renewal time
-        var result = await _issuanceService.IssueCertificateAsync(csrId, null, null, cancellationToken);
+        // Named argument: the tenant validity-ceiling enforcement mode now sits ahead of the token,
+        // and the default (always shorten) is what a scheduled renewal must have. A refusal here
+        // would let a tenant setting quietly stop the CA renewing its own TLS certificate.
+        var result = await _issuanceService.IssueCertificateAsync(csrId, null, null, cancellationToken: cancellationToken);
 
         if (result.Warnings.Count > 0)
             foreach (var w in result.Warnings)

@@ -6,6 +6,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { SystemQuorumCard } from '../components/UserQuorumPanel';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { labelClass as labelCls } from '@shared/components/forms';
+import type { ValidityCeilingBehavior } from '@shared/generated';
 
 /* ── shared helpers (re-used by TenantDetail) ─────────────────────────────── */
 export function formatDate(d: string | null) {
@@ -50,6 +51,8 @@ export interface Tenant {
     maxCertificateAuthorities: number;
     maxCertificatesTotal: number;
     maxUsers: number;
+    maxValidityDays: number;
+    validityCeilingBehavior: ValidityCeilingBehavior;
     requireKeyCeremony: boolean;
     ceremonyRequiredApprovals: number;
     caCount: number;
@@ -131,7 +134,7 @@ const TenantsAndQuotas: React.FC = () => {
 
     // create-tenant form
     const [showCreate, setShowCreate] = useState(false);
-    const [createForm, setCreateForm] = useState({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0 });
+    const [createForm, setCreateForm] = useState({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior });
     const [creating, setCreating] = useState(false);
 
     const load = useCallback(() => {
@@ -154,9 +157,11 @@ const TenantsAndQuotas: React.FC = () => {
                 maxCertificateAuthorities: createForm.maxCAs,
                 maxCertificatesTotal: createForm.maxCertificates,
                 maxUsers: createForm.maxUsers,
+                maxValidityDays: createForm.maxValidityDays,
+                validityCeilingBehavior: createForm.validityCeilingBehavior,
             });
             setShowCreate(false);
-            setCreateForm({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0 });
+            setCreateForm({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' });
             load();
         } catch (err: any) {
             showToast('error', err.message || 'Failed to create tenant');
@@ -242,6 +247,16 @@ const TenantsAndQuotas: React.FC = () => {
                             <input inputMode="numeric" value={createForm.maxCertificates} onChange={(e) => setCreateForm({ ...createForm, maxCertificates: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
                         <div><label className={labelCls}>Max Users</label>
                             <input inputMode="numeric" value={createForm.maxUsers} onChange={(e) => setCreateForm({ ...createForm, maxUsers: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
+                        <div><label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
+                            <input inputMode="numeric" value={createForm.maxValidityDays} onChange={(e) => setCreateForm({ ...createForm, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} /></div>
+                        <div><label className={labelCls}>Over the ceiling</label>
+                            <select value={createForm.validityCeilingBehavior}
+                                onChange={(e) => setCreateForm({ ...createForm, validityCeilingBehavior: e.target.value as ValidityCeilingBehavior })}
+                                className={numInput}>
+                                <option value="Shorten">Shorten to the ceiling</option>
+                                <option value="Refuse">Refuse the request</option>
+                            </select>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">Refuse applies to admin issuance only; ACME/EST/SCEP/CMP enrollments and automatic renewals always shorten.</p></div>
                     </div>
                     <button type="submit" disabled={creating} className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">{creating ? 'Creating…' : 'Create'}</button>
                 </form>

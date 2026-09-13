@@ -1,3 +1,4 @@
+using ModularCA.Shared.Enums;
 using ModularCA.Shared.Models;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.X509;
@@ -14,7 +15,19 @@ namespace ModularCA.Shared.Interfaces
         /// along with any warnings (e.g. validity clamped to issuing CA expiry).
         /// The stored PEM includes the leaf certificate and all intermediate CA certificates (excludes root).
         /// </summary>
-        Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter, CancellationToken cancellationToken = default);
+        /// <param name="csrId">The approved CSR to issue against.</param>
+        /// <param name="notBefore">Optional explicit start; defaults to now, backdated for clock skew.</param>
+        /// <param name="notAfter">Optional explicit expiry; defaults to the cert profile's maximum.</param>
+        /// <param name="ceilingEnforcement">
+        /// Whether this call site lets the tenant's <c>ValidityCeilingBehavior</c> refuse an
+        /// over-reaching request. Leave at the default on any path whose caller cannot see or
+        /// change the tenant ceiling — which is every enrollment protocol and every scheduled
+        /// renewal. See <see cref="ValidityCeilingEnforcement"/>.
+        /// </param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
+            ValidityCeilingEnforcement ceilingEnforcement = ValidityCeilingEnforcement.AlwaysShorten,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Issues a certificate using a pre-resolved CA cert and key handle. Used for infrastructure
@@ -46,6 +59,19 @@ namespace ModularCA.Shared.Interfaces
         /// <paramref name="newSubjectDn"/> and <paramref name="newSans"/> override the original CSR's
         /// subject and SANs respectively; both still flow through profile validation before signing.
         /// </summary>
-        Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter, string? newSubjectDn = null, List<string>? newSans = null);
+        /// <param name="certId">Reissue by certificate id.</param>
+        /// <param name="certSN">Reissue by serial number.</param>
+        /// <param name="csrId">Reissue by CSR id.</param>
+        /// <param name="notBefore">Optional explicit start.</param>
+        /// <param name="notAfter">Optional explicit expiry.</param>
+        /// <param name="newSubjectDn">Optional replacement subject DN.</param>
+        /// <param name="newSans">Optional replacement SAN list.</param>
+        /// <param name="ceilingEnforcement">
+        /// Whether this call site lets the tenant's <c>ValidityCeilingBehavior</c> refuse an
+        /// over-reaching request; see <see cref="ValidityCeilingEnforcement"/>. The default never
+        /// refuses.
+        /// </param>
+        Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter, string? newSubjectDn = null, List<string>? newSans = null,
+            ValidityCeilingEnforcement ceilingEnforcement = ValidityCeilingEnforcement.AlwaysShorten);
     }
 }

@@ -40,7 +40,6 @@ namespace ModularCA.Core.Services
 
             CheckMinRsaKeySize(context, violations);
             CheckForbiddenAlgorithms(context, violations);
-            CheckMaxValidityDays(context, violations);
             CheckRequireSans(context, violations);
             CheckAlgorithmSunsetRules(context, violations);
 
@@ -82,29 +81,6 @@ namespace ModularCA.Core.Services
                     Rule = "ForbiddenAlgorithm",
                     Severity = "Error",
                     Message = $"Signature algorithm \"{context.SignatureAlgorithm}\" is forbidden by system policy."
-                });
-            }
-        }
-
-        /// <summary>
-        /// Checks whether the certificate validity period exceeds the maximum allowed days.
-        /// </summary>
-        private void CheckMaxValidityDays(CertificateIssuanceContext context, List<PolicyViolation> violations)
-        {
-            // Infrastructure certs (TSA, OCSP, Web TLS) are exempt from the global
-            // MaxValidityDays policy — their validity is governed by their cert profile's
-            // ValidityPeriodMax and clamped to the issuing CA's NotAfter.
-            if (context.IsInfrastructureCert)
-                return;
-
-            var validityDays = (context.NotAfter - context.NotBefore).TotalDays;
-            if (validityDays > _config.MaxValidityDays)
-            {
-                violations.Add(new PolicyViolation
-                {
-                    Rule = "MaxValidityDays",
-                    Severity = "Error",
-                    Message = $"Certificate validity period of {validityDays:F0} days exceeds the maximum allowed {_config.MaxValidityDays} days."
                 });
             }
         }

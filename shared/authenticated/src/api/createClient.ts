@@ -24,6 +24,7 @@ import { createDpopProof } from './dpop';
 import { problemNotice } from './notices';
 import { ApiError, parseProblem, type ApiProblem } from './problem';
 import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
+import { noteReported } from '@shared/notifications/reported';
 
 /**
  * A toast notifier supplied by the consuming app.
@@ -34,6 +35,24 @@ import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
  * type-checks, which is the intended pressure.
  */
 export type ToastFn = (type: NoticeSeverity, message: NoticeInput, duration?: number) => void;
+
+/**
+ * Per-request options: everything `fetch` accepts, plus this client's own.
+ *
+ * `toast` is not a `RequestInit` key and is ignored by `fetch`, so the whole object can still be
+ * spread straight into the call rather than being split apart at every use.
+ */
+export interface ApiRequestOptions extends RequestInit {
+    /**
+     * Set false to suppress the automatic error toast for this request.
+     *
+     * For callers that report the failure themselves in a form this client cannot produce — a bulk
+     * action that runs N requests and wants one sentence about the batch rather than N toasts. A
+     * caller that simply re-reports the same failure does NOT need this: the duplicate is already
+     * suppressed. See shared/common/src/notifications/reported.ts.
+     */
+    toast?: boolean;
+}
 
 export interface AuthClientConfig {
     /** Route basename for this SPA: '/admin' or '/user'. Used for same-origin detection and
@@ -198,7 +217,7 @@ export function createAuthClient(config: AuthClientConfig) {
       return headers;
     }
 
-    async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+    async function api<T = any>(path: string, options: ApiRequestOptions = {}): Promise<T> {
       const token = await refreshIfNeeded();
 
       const headers: Record<string, string> = {
@@ -262,12 +281,21 @@ export function createAuthClient(config: AuthClientConfig) {
 
       if (!resp.ok) {
         const problem = parseProblem(resp.status, await resp.text(), resp.headers);
-        // The structure, not `problem.message`. The client is holding a parsed title, detail,
-        // remediation, code and correlation id at this point, and composing them into one string
-        // here only to have the toast render that string was the last place the structure was
-        // being thrown away. `err.message` is unaffected: ApiError still carries the composed line
-        // for the call sites that catch and toast it.
-        globalToast('error', problemNotice(problem));
+        // `toast: false` is for a caller that reports the failure itself in a form this cannot
+        // produce — a bulk action summarising "3 of 12 failed" wants one sentence about the batch,
+        // not one toast per request. Everything else keeps the safety net.
+        if (options.toast !== false) {
+          // The structure, not `problem.message`. The client is holding a parsed title, detail,
+          // remediation, code and correlation id at this point, and composing them into one string
+          // here only to have the toast render that string was the last place the structure was
+          // being thrown away. `err.message` is unaffected: ApiError still carries the composed line
+          // for the call sites that catch and toast it.
+          globalToast('error', problemNotice(problem));
+          // ...and having toasted it, record the composed line so that the call site catching this
+          // error and toasting `err.message` — which about a hundred of them do — does not put the
+          // same failure on screen a second time in a strictly worse form.
+          noteReported(problem.message);
+        }
         throw new ApiError(problem);
       }
 
@@ -295,26 +323,28 @@ export function createAuthClient(config: AuthClientConfig) {
       }
     }
 
-    function apiGet<T = any>(path: string): Promise<T> {
-      return api<T>(path, { method: 'GET' });
+    function apiGet<T = any>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+      return api<T>(path, { ...options, method: 'GET' });
     }
 
-    function apiPost<T = any>(path: string, body?: object): Promise<T> {
+    function apiPost<T = any>(path: string, body?: object, options: ApiRequestOptions = {}): Promise<T> {
       return api<T>(path, {
+        ...options,
         method: 'POST',
         body: body ? JSON.stringify(body) : undefined,
       });
     }
 
-    function apiPut<T = any>(path: string, body?: object): Promise<T> {
+    function apiPut<T = any>(path: string, body?: object, options: ApiRequestOptions = {}): Promise<T> {
       return api<T>(path, {
+        ...options,
         method: 'PUT',
         body: body ? JSON.stringify(body) : undefined,
       });
     }
 
-    function apiDelete(path: string): Promise<void> {
-      return api<void>(path, { method: 'DELETE' });
+    function apiDelete(path: string, options: ApiRequestOptions = {}): Promise<void> {
+      return api<void>(path, { ...options, method: 'DELETE' });
     }
 
     /**
@@ -326,7 +356,7 @@ export function createAuthClient(config: AuthClientConfig) {
      */
     async function apiBlob(
       path: string,
-      options: RequestInit = {},
+      options: ApiRequestOptions = {},
     ): Promise<Response> {
       await refreshIfNeeded();
 
@@ -361,7 +391,10 @@ export function createAuthClient(config: AuthClientConfig) {
           err.requiresStepUp = true;
           throw err;
         }
-        globalToast('error', problemNotice(problem));
+        if (options.toast !== false) {
+          globalToast('error', problemNotice(problem));
+          noteReported(problem.message);
+        }
         throw err;
       }
 

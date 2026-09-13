@@ -11,6 +11,7 @@ import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/User
 import { Tenant, CaQuotaRow, formatDate, numInput } from './TenantsAndQuotas';
 import { labelClass as labelCls } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
+import type { ValidityCeilingBehavior } from '@shared/generated';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));
 
@@ -35,7 +36,7 @@ const TenantDetail: React.FC = () => {
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; confirmClass?: string; action: () => Promise<void> } | null>(null);
 
     // ── edit buffers (seeded from source on load / Cancel) ──
-    const blankForm = { description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, requireKeyCeremony: false, ceremonyRequiredApprovals: 1 };
+    const blankForm = { description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior, requireKeyCeremony: false, ceremonyRequiredApprovals: 1 };
     const [form, setForm] = useState(blankForm);
     const [quotaEdits, setQuotaEdits] = useState<Record<string, { maxCertificates: number; maxPendingRequests: number }>>({});
     const [tenantQuorum, setTenantQuorum] = useState('');                 // '' = inherit
@@ -47,6 +48,8 @@ const TenantDetail: React.FC = () => {
             maxCAs: t.maxCertificateAuthorities ?? 0,
             maxCertificates: t.maxCertificatesTotal ?? 0,
             maxUsers: t.maxUsers ?? 0,
+            maxValidityDays: t.maxValidityDays ?? 0,
+            validityCeilingBehavior: t.validityCeilingBehavior ?? 'Shorten',
             requireKeyCeremony: t.requireKeyCeremony ?? false,
             ceremonyRequiredApprovals: t.ceremonyRequiredApprovals ?? 1,
         });
@@ -97,6 +100,8 @@ const TenantDetail: React.FC = () => {
         form.maxCAs !== (t.maxCertificateAuthorities ?? 0) ||
         form.maxCertificates !== (t.maxCertificatesTotal ?? 0) ||
         form.maxUsers !== (t.maxUsers ?? 0) ||
+        form.maxValidityDays !== (t.maxValidityDays ?? 0) ||
+        form.validityCeilingBehavior !== (t.validityCeilingBehavior ?? 'Shorten') ||
         form.requireKeyCeremony !== (t.requireKeyCeremony ?? false) ||
         form.ceremonyRequiredApprovals !== (t.ceremonyRequiredApprovals ?? 1);
     const quotaDirty = cas.some((ca) => {
@@ -123,6 +128,8 @@ const TenantDetail: React.FC = () => {
                 maxCertificateAuthorities: form.maxCAs,
                 maxCertificatesTotal: form.maxCertificates,
                 maxUsers: form.maxUsers,
+                maxValidityDays: form.maxValidityDays,
+                validityCeilingBehavior: form.validityCeilingBehavior,
                 requireKeyCeremony: form.requireKeyCeremony,
                 ceremonyRequiredApprovals: form.ceremonyRequiredApprovals,
                 applyUserQuorums: quorum != null,
@@ -208,6 +215,23 @@ const TenantDetail: React.FC = () => {
                                     <input inputMode="numeric" value={form.maxCertificates} onChange={(e) => setForm({ ...form, maxCertificates: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
                                 <div><label className={labelCls}>Max Users (0 = unlimited)</label>
                                     <input inputMode="numeric" value={form.maxUsers} onChange={(e) => setForm({ ...form, maxUsers: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
+                                <div>
+                                    <label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
+                                    <input inputMode="numeric" value={form.maxValidityDays} onChange={(e) => setForm({ ...form, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} />
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">Infrastructure and CA certificates are exempt from this ceiling.</p>
+                                </div>
+                                <div>
+                                    <label className={labelCls}>When a request exceeds the ceiling</label>
+                                    <select value={form.validityCeilingBehavior}
+                                        onChange={(e) => setForm({ ...form, validityCeilingBehavior: e.target.value as ValidityCeilingBehavior })}
+                                        className={numInput}>
+                                        <option value="Shorten">Shorten it (warn with MCA-ISS-004)</option>
+                                        <option value="Refuse">Refuse it (MCA-ISS-005)</option>
+                                    </select>
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">
+                                        Refuse governs admin and interactive issuance only. ACME, EST, SCEP and CMP enrollments and automatic renewals <strong>always shorten</strong>, whatever this is set to — an enrolling client can neither see this ceiling nor change its own request, so refusing it would fail enrollments nobody at the other end can fix.
+                                    </p>
+                                </div>
                                 <div className="flex items-center gap-2 pt-2">
                                     <input type="checkbox" id={`cer-${t.id}`} checked={form.requireKeyCeremony}
                                         onChange={(e) => setForm({ ...form, requireKeyCeremony: e.target.checked })}
@@ -233,6 +257,12 @@ const TenantDetail: React.FC = () => {
                             <DetailField label="Max CAs" value={t.maxCertificateAuthorities || 'Unlimited'} />
                             <DetailField label="Max Certificates" value={t.maxCertificatesTotal || 'Unlimited'} />
                             <DetailField label="Max Users" value={t.maxUsers || 'Unlimited'} />
+                            <DetailField label="Max Cert Validity" value={t.maxValidityDays ? `${t.maxValidityDays} days` : 'Unlimited'} />
+                            <DetailField label="Over the ceiling" value={t.maxValidityDays
+                                ? (t.validityCeilingBehavior === 'Refuse'
+                                    ? 'Refuse admin requests (protocol enrollments still shorten)'
+                                    : 'Shorten and warn')
+                                : 'n/a — no ceiling set'} />
                             <DetailField label="Key Ceremony Required" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approvals)` : 'No'} />
                             <DetailField label="Created" value={formatDate(t.createdAt)} />
                         </div>

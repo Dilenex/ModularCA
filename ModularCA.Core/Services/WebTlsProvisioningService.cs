@@ -75,7 +75,11 @@ public class WebTlsProvisioningService(
             // Issue the cert through the standard pipeline
             var notBefore = _timeProvider.GetUtcNow().UtcDateTime;
             var notAfter = notBefore.AddDays(validityDays);
-            var result = await issuanceService.IssueCertificateAsync(csrId, notBefore, notAfter, cancellationToken);
+            // Named argument because the tenant validity-ceiling enforcement mode now sits ahead of
+            // the token. The default — always shorten — is the right one here: this runs
+            // unattended, there is nobody to read a refusal, and the Web TLS certificate this
+            // provisions is what the admin UI itself is served over.
+            var result = await issuanceService.IssueCertificateAsync(csrId, notBefore, notAfter, cancellationToken: cancellationToken);
 
             if (result.Warnings.Count > 0)
             {

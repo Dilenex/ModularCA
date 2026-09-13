@@ -129,6 +129,28 @@ export const RoleLevel = {
 } as const;
 export type RoleLevel = (typeof RoleLevel)[keyof typeof RoleLevel];
 
+/** From `ModularCA.Shared/Enums/ValidityCeilingBehavior.cs`. */
+export const ValidityCeilingBehavior = {
+    Shorten: 'Shorten',
+    Refuse: 'Refuse',
+} as const;
+export type ValidityCeilingBehavior = (typeof ValidityCeilingBehavior)[keyof typeof ValidityCeilingBehavior];
+
+/** From `ModularCA.Shared/Enums/ValidityCeilingEnforcement.cs`. */
+export const ValidityCeilingEnforcement = {
+    AlwaysShorten: 'AlwaysShorten',
+    HonourTenantPolicy: 'HonourTenantPolicy',
+} as const;
+export type ValidityCeilingEnforcement = (typeof ValidityCeilingEnforcement)[keyof typeof ValidityCeilingEnforcement];
+
+/** From `ModularCA.Shared/Models/Issuance/ValidityCeilingResolution.cs`. */
+export const ValidityCeilingSource = {
+    CertProfile: 'CertProfile',
+    Tenant: 'Tenant',
+    IssuingCa: 'IssuingCa',
+} as const;
+export type ValidityCeilingSource = (typeof ValidityCeilingSource)[keyof typeof ValidityCeilingSource];
+
 /** From `ModularCA.Shared/Enums/WhitelistScope.cs`. */
 export const WhitelistScope = {
     System: 'System',

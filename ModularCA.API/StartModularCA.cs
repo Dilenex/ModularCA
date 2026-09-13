@@ -1253,6 +1253,9 @@ builder.Services.AddSwaggerGen(c =>
 
 builder.Services.AddScoped<ICertProfileService, CertProfileService>();
 builder.Services.AddScoped<IProfileResolutionService, ProfileResolutionService>();
+// Pre-flight for the validity ceiling: same three limits issuance applies, answered before the
+// operator submits so the clamp never fires for someone who could have avoided it.
+builder.Services.AddScoped<IValidityCeilingService, ValidityCeilingService>();
 
 builder.Services.AddScoped<ICertificateStore, CertificateStore>();
 

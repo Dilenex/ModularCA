@@ -332,7 +332,6 @@ export interface CertManagerConfig {
 export interface CertPolicyConfig {
     enabled: boolean;
     minRsaKeySize: number;
-    maxValidityDays: number;
     forbiddenAlgorithms: string[];
     requireSans: boolean;
     rsaSignaturePadding: string;
@@ -1392,6 +1391,31 @@ export interface ValidateAgainstProfileResponse {
     valid: boolean;
     fieldResults: FieldValidationResult[];
     sanResults: SanValidationResult[];
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ValidityCeilingPreflight.cs`. */
+export interface ValidityCeilingPreflight {
+    resolution: ValidityCeilingResolution;
+    signingProfileName: string;
+    certProfileName: string;
+    certProfileValidityPeriodMax?: string | null;
+    issuingCaName?: string | null;
+    issuingCaNotAfter?: string | null;
+    tenantName?: string | null;
+    tenantMaxValidityDays: number;
+    tenantBehavior: E.ValidityCeilingBehavior;
+    tenantCeilingApplies: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ValidityCeilingResolution.cs`. */
+export interface ValidityCeilingResolution {
+    notBefore: string;
+    effectiveNotAfter: string;
+    effectiveMaxDays: number;
+    boundBy: E.ValidityCeilingSource;
+    certProfileNotAfter: string;
+    tenantNotAfter?: string | null;
+    issuingCaNotAfter?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

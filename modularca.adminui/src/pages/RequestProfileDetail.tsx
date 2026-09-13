@@ -9,6 +9,10 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { caRowId, caDisplayName } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
+import {
+    RequestProfileRulesEditor, emptyRules, parseRules, serializeRules,
+    type RequestProfileRules,
+} from '../components/RequestProfileRulesEditor';
 
 const REQUEST_TAB = `/profiles?tab=${encodeURIComponent('Request Profiles')}`;
 
@@ -62,12 +66,16 @@ const RequestProfileDetail: React.FC = () => {
     const [validationResult, setValidationResult] = useState<{ isValid: boolean; errors: string[] } | null>(null);
     const [validationLoading, setValidationLoading] = useState(false);
 
+    // Set by the rules editor's JSON escape hatch while its contents do not parse. Saving then
+    // would write the last valid value while the operator looks at the invalid text they typed.
+    const [rulesError, setRulesError] = useState<string | null>(null);
+
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
 
     const emptyForm = {
         name: '', description: '', requireApproval: false, defaultCertProfileId: '',
-        subjectDnRulesJson: '', sanRulesJson: '', allowedCertProfileIds: [] as string[],
+        rules: emptyRules() as RequestProfileRules, allowedCertProfileIds: [] as string[],
         inheritsFromId: '', inheritanceEnabled: false, certificateAuthorityId: '',
     };
     const [editForm, setEditForm] = useState(emptyForm);
@@ -93,8 +101,7 @@ const RequestProfileDetail: React.FC = () => {
                 const seeded = {
                     name: p.name || '', description: p.description || '', requireApproval: !!p.requireApproval,
                     defaultCertProfileId: p.defaultCertProfileId || '',
-                    subjectDnRulesJson: p.subjectDnRules ? JSON.stringify(p.subjectDnRules, null, 2) : '[]',
-                    sanRulesJson: p.sanRules ? JSON.stringify(p.sanRules, null, 2) : '{}',
+                    rules: parseRules(p),
                     allowedCertProfileIds: Array.isArray(p.allowedCertProfileIds) ? p.allowedCertProfileIds : [],
                     inheritsFromId: p.inheritsFromId || '', inheritanceEnabled: !!p.inheritanceEnabled,
                     certificateAuthorityId: p.certificateAuthorityId || '',
@@ -133,13 +140,14 @@ const RequestProfileDetail: React.FC = () => {
     };
 
     const handleSave = async () => {
-        let subjectDnRules, sanRules;
-        try { subjectDnRules = JSON.parse(editForm.subjectDnRulesJson); } catch { showToast('warning', 'Invalid JSON for Subject DN Rules'); throw new Error('Invalid JSON for Subject DN Rules'); }
-        try { sanRules = JSON.parse(editForm.sanRulesJson); } catch { showToast('warning', 'Invalid JSON for SAN Rules'); throw new Error('Invalid JSON for SAN Rules'); }
+        // The rules are held structured now, so there is nothing left to parse here and no way to
+        // arrive at save with a body that will not serialize. The JSON escape hatch inside the
+        // editor reports its own parse failures through rulesError, which disables the button.
         const body = {
             name: editForm.name, description: editForm.description || undefined, requireApproval: editForm.requireApproval,
             defaultCertProfileId: editForm.defaultCertProfileId || undefined,
-            subjectDnRules, sanRules, allowedCertProfileIds: editForm.allowedCertProfileIds,
+            ...serializeRules(editForm.rules),
+            allowedCertProfileIds: editForm.allowedCertProfileIds,
             inheritsFromId: editForm.inheritsFromId || undefined, inheritanceEnabled: editForm.inheritanceEnabled,
             certificateAuthorityId: editForm.certificateAuthorityId || undefined,
         };
@@ -192,7 +200,7 @@ const RequestProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name}
+            saveDisabled={!dirty || !editForm.name || !!rulesError}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
@@ -227,8 +235,11 @@ const RequestProfileDetail: React.FC = () => {
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
-                        <div><label className={labelClass}>Subject DN Rules (JSON)</label><textarea rows={6} value={editForm.subjectDnRulesJson} onChange={(e) => setEditForm({ ...editForm, subjectDnRulesJson: e.target.value })} className={inputClass + ' font-mono text-xs'} /></div>
-                        <div><label className={labelClass}>SAN Rules (JSON)</label><textarea rows={4} value={editForm.sanRulesJson} onChange={(e) => setEditForm({ ...editForm, sanRulesJson: e.target.value })} className={inputClass + ' font-mono text-xs'} /></div>
+                        <RequestProfileRulesEditor
+                            value={editForm.rules}
+                            onChange={(rules) => setEditForm({ ...editForm, rules })}
+                            onErrorChange={setRulesError}
+                        />
                         <div>
                             <label className={labelClass}>Allowed Cert Profiles</label>
                             <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">

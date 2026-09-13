@@ -13,8 +13,9 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { Toast, toastViewportClass, type ToastType } from '../components/Toast';
 import { autoDismissMs, type NoticeInput } from '../notifications/notice';
+import { consumeReported } from '../notifications/reported';
 
-interface ToastItem { id: string; type: ToastType; message: NoticeInput; }
+interface ToastItem { id: string; type: ToastType; message: NoticeInput; duration: number; }
 interface ToastContextValue {
     /**
      * @param type Severity, which also selects the default lifetime.
@@ -43,11 +44,16 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, []);
 
     const showToast = useCallback((type: ToastType, message: NoticeInput, duration?: number) => {
+        // The API client toasts every failure it parses and then throws, and the call site that
+        // catches it usually toasts `err.message` too — the same failure, flattened to one line.
+        // A string that exactly matches one the client just reported is that echo; drop it and
+        // leave the structured original standing. See notifications/reported.ts.
+        if (typeof message === 'string' && consumeReported(message)) return;
+
         const id = crypto.randomUUID();
-        const lifetime = duration ?? autoDismissMs(type);
-        setToasts(prev => [...prev, { id, type, message }]);
-        if (lifetime > 0) setTimeout(() => dismiss(id), lifetime);
-    }, [dismiss]);
+        // The timer belongs to the toast, which suspends it on hover and focus.
+        setToasts(prev => [...prev, { id, type, message, duration: duration ?? autoDismissMs(type) }]);
+    }, []);
 
     React.useEffect(() => { setGlobalToast(showToast); }, [showToast]);
 

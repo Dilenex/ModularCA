@@ -279,8 +279,8 @@ public class CsrService : ICsrService
             SubmittedAt = DateTime.UtcNow,
             Status = "Approved",
             // The infrastructure flag is a POLICY EXEMPTION, not a bookkeeping label: at
-            // issuance it skips the tenant/CA quota, the minimum-validity check, and the global
-            // CertPolicy.MaxValidityDays ceiling. Auto-renewal used this method for ordinary
+            // issuance it skips the tenant/CA quota, the minimum-validity check, and the
+            // tenant validity ceiling. Auto-renewal used this method for ordinary
             // subscriber certificates and therefore renewed them straight past limits their
             // original issuance had been held to — a profile capped at 398 days renewing to its
             // P3Y profile maximum — while also detaching the certificate from its owner, who

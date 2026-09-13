@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 import { Toast, toastViewportClass, type ToastType } from '@shared/components/Toast';
 import { autoDismissMs, type NoticeInput } from '@shared/notifications/notice';
 
-interface ToastItem { id: string; type: ToastType; message: NoticeInput; }
+interface ToastItem { id: string; type: ToastType; message: NoticeInput; duration: number; }
 /** `message` also accepts a structured notice; `duration` defaults to the severity's lifetime. */
 interface ToastContextValue { showToast: (type: ToastType, message: NoticeInput, duration?: number) => void; }
 
@@ -18,11 +18,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const showToast = useCallback((type: ToastType, message: NoticeInput, duration?: number) => {
         const id = crypto.randomUUID();
-        // Errors and warnings pin themselves open; see autoDismissMs.
-        const lifetime = duration ?? autoDismissMs(type);
-        setToasts(prev => [...prev, { id, type, message }]);
-        if (lifetime > 0) setTimeout(() => dismiss(id), lifetime);
-    }, [dismiss]);
+        // The timer belongs to the toast, which suspends it on hover and focus; see autoDismissMs
+        // for the lifetimes and why errors are long rather than pinned.
+        setToasts(prev => [...prev, { id, type, message, duration: duration ?? autoDismissMs(type) }]);
+    }, []);
 
     return (
         <ToastContext.Provider value={{ showToast }}>

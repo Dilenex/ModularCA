@@ -9,9 +9,9 @@ namespace ModularCA.Tests.Core.Services;
 /// Pins that request-caused issuance failures are reportable as 4xx.
 /// <para>
 /// Profile and policy rejections used to throw bare <c>Exception</c> / <c>InvalidOperationException</c>
-/// out of the service layer, so "this profile does not allow RSA-PSS" and "you asked for 1096
-/// days, the ceiling is 825" both arrived as HTTP 500 with a full stack trace — in the journal,
-/// indistinguishable from the CA actually being broken.
+/// out of the service layer, so "this profile does not allow RSA-PSS" and "this key is below the
+/// minimum size" both arrived as HTTP 500 with a full stack trace — in the journal, indistinguishable
+/// from the CA actually being broken.
 /// </para>
 /// </summary>
 public class RequestValidationExceptionTests
@@ -32,7 +32,7 @@ public class RequestValidationExceptionTests
     public void A_policy_violation_is_catchable_as_a_request_validation_failure()
     {
         var ex = new CertificatePolicyViolationException(
-            ["[MaxValidityDays] Certificate validity period of 1096 days exceeds the maximum allowed 825 days."]);
+            ["[MinRsaKeySize] RSA key size of 1024 bits is below the minimum allowed 2048 bits."]);
 
         Assert.IsAssignableFrom<RequestValidationException>(ex);
     }
@@ -62,10 +62,10 @@ public class RequestValidationExceptionTests
     [Fact]
     public void A_policy_violation_lists_every_rule_that_tripped()
     {
-        var ex = new CertificatePolicyViolationException(["[MaxValidityDays] too long", "[MinRsaKeySize] too small"]);
+        var ex = new CertificatePolicyViolationException(["[RequireSans] no SANs supplied", "[MinRsaKeySize] too small"]);
 
         Assert.Equal(2, ex.Violations.Count);
-        Assert.Contains("[MaxValidityDays] too long", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("[RequireSans] no SANs supplied", ex.Message, StringComparison.Ordinal);
         Assert.Contains("[MinRsaKeySize] too small", ex.Message, StringComparison.Ordinal);
     }
 

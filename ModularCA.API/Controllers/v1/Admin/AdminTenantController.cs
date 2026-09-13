@@ -84,6 +84,8 @@ public partial class AdminTenantController(
             t.MaxCertificateAuthorities,
             t.MaxCertificatesTotal,
             t.MaxUsers,
+            t.MaxValidityDays,
+            t.ValidityCeilingBehavior,
             t.RequireKeyCeremony,
             t.CeremonyRequiredApprovals,
             CaCount = caCounts.GetValueOrDefault(t.Id, 0),
@@ -128,6 +130,8 @@ public partial class AdminTenantController(
             tenant.MaxCertificateAuthorities,
             tenant.MaxCertificatesTotal,
             tenant.MaxUsers,
+            tenant.MaxValidityDays,
+            tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
             tenant.CeremonyRequiredApprovals,
             CaCount = caCount,
@@ -189,7 +193,11 @@ public partial class AdminTenantController(
             IsEnabled = true,
             MaxCertificateAuthorities = request.MaxCertificateAuthorities ?? 0,
             MaxCertificatesTotal = request.MaxCertificatesTotal ?? 0,
-            MaxUsers = request.MaxUsers ?? 0
+            MaxUsers = request.MaxUsers ?? 0,
+            MaxValidityDays = request.MaxValidityDays ?? 0,
+            // Shorten unless the caller asks otherwise: a new tenant behaves exactly as every
+            // tenant did before this setting existed.
+            ValidityCeilingBehavior = request.ValidityCeilingBehavior ?? ValidityCeilingBehavior.Shorten
         };
 
         _db.Tenants.Add(tenant);
@@ -243,6 +251,8 @@ public partial class AdminTenantController(
             tenant.MaxCertificateAuthorities,
             tenant.MaxCertificatesTotal,
             tenant.MaxUsers,
+            tenant.MaxValidityDays,
+            tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
             tenant.CeremonyRequiredApprovals
         });
@@ -343,6 +353,17 @@ public partial class AdminTenantController(
             tenant.MaxCertificatesTotal = request.MaxCertificatesTotal.Value;
         if (request.MaxUsers.HasValue)
             tenant.MaxUsers = request.MaxUsers.Value;
+        if (request.MaxValidityDays.HasValue)
+        {
+            // Negative is rejected rather than coerced: 0 already means unlimited, so there is no
+            // reading of -1 that the caller could have meant and every reading is a bug worth
+            // hearing about at the boundary instead of at issuance.
+            if (request.MaxValidityDays.Value < 0)
+                return BadRequest(new { error = "MaxValidityDays must be 0 (unlimited) or a positive number of days." });
+            tenant.MaxValidityDays = request.MaxValidityDays.Value;
+        }
+        if (request.ValidityCeilingBehavior.HasValue)
+            tenant.ValidityCeilingBehavior = request.ValidityCeilingBehavior.Value;
         if (request.IsEnabled.HasValue)
             tenant.IsEnabled = request.IsEnabled.Value;
 
@@ -422,6 +443,8 @@ public partial class AdminTenantController(
                     tenant.MaxCertificateAuthorities,
                     tenant.MaxCertificatesTotal,
                     tenant.MaxUsers,
+                    tenant.MaxValidityDays,
+                    tenant.ValidityCeilingBehavior,
                     tenant.RequireKeyCeremony,
                     tenant.CeremonyRequiredApprovals
                 }
@@ -439,6 +462,8 @@ public partial class AdminTenantController(
             tenant.MaxCertificateAuthorities,
             tenant.MaxCertificatesTotal,
             tenant.MaxUsers,
+            tenant.MaxValidityDays,
+            tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
             tenant.CeremonyRequiredApprovals
         });
@@ -542,6 +567,23 @@ public partial class AdminTenantController(
         if (request.MaxCertificateAuthorities.HasValue) tenant.MaxCertificateAuthorities = request.MaxCertificateAuthorities.Value;
         if (request.MaxCertificatesTotal.HasValue) tenant.MaxCertificatesTotal = request.MaxCertificatesTotal.Value;
         if (request.MaxUsers.HasValue) tenant.MaxUsers = request.MaxUsers.Value;
+        // MaxValidityDays was missing here from the day the tenant ceiling landed, so the tenant
+        // detail page — whose one Save posts to this sub-resource, not to PUT /tenants/{id} — sent
+        // the field and had it silently dropped. The only way to set a tenant ceiling was the raw
+        // API. Same negative guard as Update: 0 already means unlimited, so a negative value has no
+        // reading the caller could have intended.
+        if (request.MaxValidityDays.HasValue)
+        {
+            if (request.MaxValidityDays.Value < 0)
+                return BadRequest(new { error = "MaxValidityDays must be 0 (unlimited) or a positive number of days." });
+            tenant.MaxValidityDays = request.MaxValidityDays.Value;
+        }
+        // Not ceremony-gated. Refuse is the *stricter* of the two behaviours — it issues fewer
+        // certificates, not more — and it cannot reach the enrollment protocols or the renewal
+        // jobs, so turning it on cannot take a fleet offline. Gating it would put a quorum in front
+        // of tightening a policy, which is the wrong way round.
+        if (request.ValidityCeilingBehavior.HasValue)
+            tenant.ValidityCeilingBehavior = request.ValidityCeilingBehavior.Value;
 
         var ceremonyWasRequired = tenant.RequireKeyCeremony;
 
@@ -717,6 +759,22 @@ public class CreateTenantRequest
 
     /// <summary>Maximum users. 0 = unlimited.</summary>
     public int? MaxUsers { get; set; }
+
+    /// <summary>
+    /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.
+    /// 0 = unlimited. Exceeding it shortens the certificate and raises MCA-ISS-004 rather than
+    /// refusing issuance; see TenantEntity.MaxValidityDays.
+    /// </summary>
+    public int? MaxValidityDays { get; set; }
+
+    /// <summary>
+    /// What to do when a request exceeds <see cref="MaxValidityDays"/>: <c>Shorten</c> (the
+    /// default, and the behaviour the ceiling shipped with) or <c>Refuse</c>. Refuse governs
+    /// interactive and admin issuance only — ACME, EST, SCEP, CMP and the renewal jobs always
+    /// shorten, because the enrolling client can neither see the tenant ceiling nor change its
+    /// own request. See TenantEntity.ValidityCeilingBehavior.
+    /// </summary>
+    public ValidityCeilingBehavior? ValidityCeilingBehavior { get; set; }
 }
 
 /// <summary>
@@ -741,6 +799,22 @@ public class UpdateTenantRequest
 
     /// <summary>New maximum users. 0 = unlimited.</summary>
     public int? MaxUsers { get; set; }
+
+    /// <summary>
+    /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.
+    /// 0 = unlimited. Exceeding it shortens the certificate and raises MCA-ISS-004 rather than
+    /// refusing issuance; see TenantEntity.MaxValidityDays.
+    /// </summary>
+    public int? MaxValidityDays { get; set; }
+
+    /// <summary>
+    /// What to do when a request exceeds <see cref="MaxValidityDays"/>: <c>Shorten</c> (the
+    /// default, and the behaviour the ceiling shipped with) or <c>Refuse</c>. Refuse governs
+    /// interactive and admin issuance only — ACME, EST, SCEP, CMP and the renewal jobs always
+    /// shorten, because the enrolling client can neither see the tenant ceiling nor change its
+    /// own request. See TenantEntity.ValidityCeilingBehavior.
+    /// </summary>
+    public ValidityCeilingBehavior? ValidityCeilingBehavior { get; set; }
 
     /// <summary>Enable or disable the tenant. Used to re-enable a previously disabled tenant.</summary>
     public bool? IsEnabled { get; set; }
@@ -775,6 +849,23 @@ public class UpdateTenantSettingsRequest
 
     /// <summary>New maximum users. 0 = unlimited.</summary>
     public int? MaxUsers { get; set; }
+
+    /// <summary>
+    /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.
+    /// 0 = unlimited. Absent from this request type until now, which meant the tenant detail
+    /// page's Save posted the field and the server dropped it — see the apply block in
+    /// <c>UpdateSettings</c>.
+    /// </summary>
+    public int? MaxValidityDays { get; set; }
+
+    /// <summary>
+    /// What to do when a request exceeds <see cref="MaxValidityDays"/>: <c>Shorten</c> (the
+    /// default, and the behaviour the ceiling shipped with) or <c>Refuse</c>. Refuse governs
+    /// interactive and admin issuance only — ACME, EST, SCEP, CMP and the renewal jobs always
+    /// shorten, because the enrolling client can neither see the tenant ceiling nor change its
+    /// own request. See TenantEntity.ValidityCeilingBehavior.
+    /// </summary>
+    public ValidityCeilingBehavior? ValidityCeilingBehavior { get; set; }
 
     /// <summary>Whether CA creation in this tenant requires a key ceremony.</summary>
     public bool? RequireKeyCeremony { get; set; }

@@ -22,11 +22,21 @@ describe('autoDismissMs', () => {
         expect(autoDismissMs('info')).toBe(5000);
     });
 
-    it('pins errors and warnings open', () => {
-        // The point of the change. A warning means a certificate was issued that is not the one
-        // that was asked for; five seconds is not long enough to read it, let alone copy the code.
-        expect(autoDismissMs('error')).toBe(0);
-        expect(autoDismissMs('warning')).toBe(0);
+    it('gives errors and warnings long enough to read and copy from', () => {
+        // A warning means a certificate was issued that is not the one that was asked for; five
+        // seconds is not long enough to read it, let alone copy the code out of it.
+        expect(autoDismissMs('error')).toBeGreaterThanOrEqual(10000);
+        expect(autoDismissMs('warning')).toBeGreaterThanOrEqual(10000);
+    });
+
+    it('still dismisses every severity on its own', () => {
+        // These were briefly pinned open (lifetime 0). That turned every incidental refusal into
+        // litter the operator had to clear by hand, a screenful of it after a bulk action. The
+        // message that mattered is kept on screen by length plus Toast's hover/focus pause, not by
+        // refusing to leave. A call site can still pass 0 explicitly.
+        for (const severity of ['success', 'info', 'warning', 'error'] as const) {
+            expect(autoDismissMs(severity), `${severity} must not be pinned open`).toBeGreaterThan(0);
+        }
     });
 });
 

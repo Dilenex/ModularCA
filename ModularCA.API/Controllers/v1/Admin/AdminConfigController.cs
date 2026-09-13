@@ -498,20 +498,17 @@ public class AdminConfigController(
         // ICF-09: bounds validation
         if (update.MinRsaKeySize < 2048)
             return BadRequest(new { error = "MinRsaKeySize must be >= 2048." });
-        if (update.MaxValidityDays < 1)
-            return BadRequest(new { error = "MaxValidityDays must be >= 1." });
 
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
         _config.CertPolicy.Enabled = update.Enabled;
         if (update.MinRsaKeySize >= 2048) _config.CertPolicy.MinRsaKeySize = update.MinRsaKeySize;
-        if (update.MaxValidityDays > 0) _config.CertPolicy.MaxValidityDays = update.MaxValidityDays;
         _config.CertPolicy.RequireSans = update.RequireSans;
         if (update.ForbiddenAlgorithms != null) _config.CertPolicy.ForbiddenAlgorithms = update.ForbiddenAlgorithms;
         if (update.AlgorithmSunsetRules != null) _config.CertPolicy.AlgorithmSunsetRules = update.AlgorithmSunsetRules;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("CertPolicy", new { update.Enabled, update.MinRsaKeySize, update.MaxValidityDays, update.RequireSans });
+        await AuditConfigChange("CertPolicy", new { update.Enabled, update.MinRsaKeySize, update.RequireSans });
         return Ok(new { message = "Certificate policy updated", config = _config.CertPolicy });
     }
 

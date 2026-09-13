@@ -9,38 +9,10 @@ import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/compone
 import { StepUpOps } from '@shared/generated';
 import { caRowId, caDisplayName } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
-
-const DN_FIELD_OPTIONS = ['CN', 'O', 'OU', 'L', 'ST', 'C', 'DC'];
-const REQUIREMENT_OPTIONS = ['Required', 'Optional', 'Forbidden'];
-// UPN must be selectable here or it can never be used: profile validation rejects any SAN whose
-// type is absent from a profile's allowedTypes, on the server and in the browser. It is off by
-// default on every existing profile, which is the intended posture — a UPN asserts an Active
-// Directory identity, so permitting it should be a deliberate per-profile choice.
-const SAN_TYPE_OPTIONS = ['DNS', 'IP', 'Email', 'URI', 'UPN'];
-
-
-interface SubjectDnFieldRule {
-    field: string;
-    requirement: string;
-    fixedValue?: string;
-    regex?: string;
-    maxLength?: number | null;
-    defaultValue?: string;
-}
-
-interface SanRulesModel {
-    allowedTypes: string[];
-    required: boolean;
-    rules: Record<string, { regex?: string; maxCount: number }>;
-}
-
-const emptyDnRule = (): SubjectDnFieldRule => ({
-    field: 'CN', requirement: 'Required', fixedValue: '', regex: '', maxLength: null, defaultValue: '',
-});
-
-const emptySanRules = (): SanRulesModel => ({
-    allowedTypes: ['DNS', 'IP'], required: false, rules: {},
-});
+import {
+    RequestProfileRulesEditor, emptyRules, serializeRules,
+    type RequestProfileRules,
+} from '../components/RequestProfileRulesEditor';
 
 /* read-only drawer for a request profile row */
 const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | null) => string | undefined }> = ({ profile: p, parentName }) => (
@@ -77,16 +49,14 @@ const RequestProfiles: React.FC = () => {
     const [form, setForm] = useState({
         name: '', description: '', requireApproval: false, maxValidityPeriod: '',
         defaultCertProfileId: '',
-        subjectDnRules: [emptyDnRule()] as SubjectDnFieldRule[],
-        sanRules: emptySanRules(),
+        rules: emptyRules() as RequestProfileRules,
         inheritsFromId: '', inheritanceEnabled: false, certificateAuthorityId: '',
     });
 
     const resetForm = () => setForm({
         name: '', description: '', requireApproval: false, maxValidityPeriod: '',
         defaultCertProfileId: '',
-        subjectDnRules: [emptyDnRule()],
-        sanRules: emptySanRules(),
+        rules: emptyRules(),
         inheritsFromId: '', inheritanceEnabled: false, certificateAuthorityId: '',
     });
 
@@ -124,12 +94,10 @@ const RequestProfiles: React.FC = () => {
                 requireApproval: form.requireApproval,
                 maxValidityPeriod: form.maxValidityPeriod || undefined,
                 defaultCertProfileId: form.defaultCertProfileId || undefined,
-                subjectDnRules: form.subjectDnRules.map((r) => ({
-                    field: r.field, requirement: r.requirement,
-                    fixedValue: r.fixedValue || undefined, regex: r.regex || undefined,
-                    maxLength: r.maxLength || undefined, defaultValue: r.defaultValue || undefined,
-                })),
-                sanRules: { allowedTypes: form.sanRules.allowedTypes, required: form.sanRules.required, rules: {} },
+                // serializeRules, not a hand-rolled projection: this form used to post
+                // `rules: {}` unconditionally, so a per-SAN-type regex or maxCount could not be
+                // created here at all and had to be added afterwards through the edit page's JSON.
+                ...serializeRules(form.rules),
                 inheritsFromId: form.inheritsFromId || undefined,
                 inheritanceEnabled: form.inheritanceEnabled,
                 certificateAuthorityId: form.certificateAuthorityId || undefined,
@@ -158,23 +126,6 @@ const RequestProfiles: React.FC = () => {
             setDeleting(false);
             setConfirmDelete(null);
         }
-    };
-
-    // --- Subject DN Rules builder helpers ---
-    const updateDnRule = (index: number, updates: Partial<SubjectDnFieldRule>) => {
-        const rules = [...form.subjectDnRules];
-        rules[index] = { ...rules[index], ...updates };
-        setForm({ ...form, subjectDnRules: rules });
-    };
-    const addDnRule = () => setForm({ ...form, subjectDnRules: [...form.subjectDnRules, emptyDnRule()] });
-    const removeDnRule = (index: number) => {
-        const rules = form.subjectDnRules.filter((_, i) => i !== index);
-        setForm({ ...form, subjectDnRules: rules.length > 0 ? rules : [emptyDnRule()] });
-    };
-    const toggleSanType = (type: string) => {
-        const current = form.sanRules.allowedTypes;
-        const next = current.includes(type) ? current.filter((t) => t !== type) : [...current, type];
-        setForm({ ...form, sanRules: { ...form.sanRules, allowedTypes: next } });
     };
 
     const columns: DataTableColumn<any>[] = [
@@ -267,57 +218,11 @@ const RequestProfiles: React.FC = () => {
                         </label>
                     </div>
 
-                    {/* Subject DN Rules builder */}
-                    <div>
-                        <div className="flex items-center justify-between mb-2">
-                            <label className={labelClass}>Subject DN Rules</label>
-                            <button type="button" onClick={addDnRule} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">+ Add Rule</button>
-                        </div>
-                        <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
-                                        <th className="px-2 py-2 text-left">Field</th><th className="px-2 py-2 text-left">Requirement</th><th className="px-2 py-2 text-left">Fixed Value</th><th className="px-2 py-2 text-left">Regex</th><th className="px-2 py-2 text-left">Max Length</th><th className="px-2 py-2 text-left">Default</th><th className="px-2 py-2"></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {form.subjectDnRules.map((rule, idx) => (
-                                        <tr key={idx} className="border-b border-gray-200 dark:border-gray-800">
-                                            <td className="px-2 py-1"><select value={rule.field} onChange={(e) => updateDnRule(idx, { field: e.target.value })} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-16">{DN_FIELD_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}</select></td>
-                                            <td className="px-2 py-1"><select value={rule.requirement} onChange={(e) => updateDnRule(idx, { requirement: e.target.value })} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-24">{REQUIREMENT_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></td>
-                                            <td className="px-2 py-1"><input type="text" value={rule.fixedValue || ''} onChange={(e) => updateDnRule(idx, { fixedValue: e.target.value })} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-24" placeholder="Optional" /></td>
-                                            <td className="px-2 py-1"><input type="text" value={rule.regex || ''} onChange={(e) => updateDnRule(idx, { regex: e.target.value })} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-24" placeholder="e.g. ^[a-z]+$" /></td>
-                                            <td className="px-2 py-1"><input type="text" inputMode="numeric" value={rule.maxLength ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); updateDnRule(idx, { maxLength: v ? parseInt(v) : null }); }} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-16" placeholder="64" /></td>
-                                            <td className="px-2 py-1"><input type="text" value={rule.defaultValue || ''} onChange={(e) => updateDnRule(idx, { defaultValue: e.target.value })} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs w-24" placeholder="Optional" /></td>
-                                            <td className="px-2 py-1"><button type="button" onClick={() => removeDnRule(idx)} className="text-red-800 dark:text-red-400 hover:text-red-300 text-xs px-1">X</button></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+                    <RequestProfileRulesEditor
+                        value={form.rules}
+                        onChange={(rules) => setForm({ ...form, rules })}
+                    />
 
-                    {/* SAN Rules */}
-                    <div>
-                        <label className={labelClass}>SAN Rules</label>
-                        <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-2">
-                            <div>
-                                <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">Allowed Types:</span>
-                                <div className="inline-flex flex-wrap gap-2 mt-1">
-                                    {SAN_TYPE_OPTIONS.map((type) => {
-                                        const active = form.sanRules.allowedTypes.includes(type);
-                                        return (
-                                            <button key={type} type="button" onClick={() => toggleSanType(type)} className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>{type}</button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                                <input type="checkbox" checked={form.sanRules.required} onChange={(e) => setForm({ ...form, sanRules: { ...form.sanRules, required: e.target.checked } })} className="w-4 h-4 rounded" />
-                                SAN Required
-                            </label>
-                        </div>
-                    </div>
 
                     <button onClick={handleCreate} disabled={creating || !form.name} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}

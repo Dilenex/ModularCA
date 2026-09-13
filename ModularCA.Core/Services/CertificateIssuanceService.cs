@@ -107,28 +107,40 @@ namespace ModularCA.Core.Services
         /// <param name="notAfter">Optional explicit NotAfter date (defaults to profile max).</param>
         /// <returns>The PEM-encoded certificate with intermediate chain and any issuance warnings.</returns>
         /// <inheritdoc />
-        public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, null, allowCaProfile: false, cancellationToken);
+        public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
+            ValidityCeilingEnforcement ceilingEnforcement = ValidityCeilingEnforcement.AlwaysShorten,
+            CancellationToken cancellationToken = default)
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, null, allowCaProfile: false, ceilingEnforcement, cancellationToken);
 
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: false, cancellationToken);
+            // No enforcement parameter: this overload exists for infrastructure certificates issued
+            // before the CA is registered in the keystore, and those are exempt from the tenant
+            // ceiling altogether, so there is nothing for a tenant policy to refuse.
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: false, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
 
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCaCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: true, cancellationToken);
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: true, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
 
         /// <param name="allowCaProfile">
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
         /// entry point; only <see cref="IssueCaCertificateAsync"/> passes true. See
-        /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why.
+        /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why. It doubles as
+        /// one of the three tenant-ceiling exemptions — see <see cref="ApplyTenantValidityCeiling"/>.
+        /// </param>
+        /// <param name="ceilingEnforcement">
+        /// Whether the caller is one that may be refused by a tenant configured to refuse
+        /// over-reaching validity. Every path through this method passes it explicitly rather than
+        /// relying on a default, so that adding an entry point forces the question to be answered.
         /// </param>
         private async Task<IssuanceResult> IssueCertificateInternalAsync(
             Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate? preResolvedCaCert, IPrivateKeyHandle? preResolvedCaKeyHandle,
             bool allowCaProfile,
+            ValidityCeilingEnforcement ceilingEnforcement,
             CancellationToken cancellationToken = default)
         {
             var issuanceDiagnostics = new List<Diagnostic>();
@@ -246,9 +258,11 @@ namespace ModularCA.Core.Services
             // Check tenant is enabled — block issuance if the CA's tenant has been disabled
             var issuingCaEntity = await _db.CertificateAuthorities
                 .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId, cancellationToken);
+            // Hoisted out of the block below because the validity ceiling further down needs it too.
+            TenantEntity? caTenant = null;
             if (issuingCaEntity != null)
             {
-                var caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
+                caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
                 if (caTenant != null && !caTenant.IsEnabled)
                     throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
 
@@ -271,6 +285,15 @@ namespace ModularCA.Core.Services
             // see the same instant the certificate will carry. See CertificateValidityUtil.AsUtc.
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
+
+            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // certificate limited by both reports both reasons rather than only the tighter one.
+            validTo = ApplyTenantValidityCeiling(
+                validTo, validFrom, caTenant,
+                csrEntity.IsInfrastructureCert,
+                isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile,
+                ceilingEnforcement,
+                issuanceDiagnostics);
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin
             // for clock skew. Both auto-generated and explicitly requested dates are clamped
@@ -483,8 +506,12 @@ namespace ModularCA.Core.Services
         /// <param name="newSans">Optional new SAN list (entries formatted as "DNS:host" / "IP:1.2.3.4") that
         /// overrides whatever SAN overrides were stored on the original CSR. The list is JSON-serialized into the
         /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile.</param>
+        /// <param name="ceilingEnforcement">Whether the tenant's validity-ceiling behaviour may refuse
+        /// this caller rather than shorten it; see <see cref="ValidityCeilingEnforcement"/>. Defaults to
+        /// shortening, so an automated reissue path added later cannot start refusing by omission.</param>
         /// <returns>The PEM-encoded reissued certificate with intermediate chain and any warnings.</returns>
-        public async Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter, string? newSubjectDn = null, List<string>? newSans = null)
+        public async Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter, string? newSubjectDn = null, List<string>? newSans = null,
+            ValidityCeilingEnforcement ceilingEnforcement = ValidityCeilingEnforcement.AlwaysShorten)
         {
             var issuanceDiagnostics = new List<Diagnostic>();
             CertRequestEntity? csrEntity = null;
@@ -677,9 +704,11 @@ namespace ModularCA.Core.Services
             // Check tenant is enabled — block reissuance if the CA's tenant has been disabled
             var reissueCaEntity = await _db.CertificateAuthorities
                 .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId);
+            // Hoisted out of the block below because the validity ceiling further down needs it too.
+            TenantEntity? caTenant = null;
             if (reissueCaEntity != null)
             {
-                var caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
+                caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
                 if (caTenant != null && !caTenant.IsEnabled)
                     throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.");
             }
@@ -694,6 +723,19 @@ namespace ModularCA.Core.Services
             // see the same instant the certificate will carry. See CertificateValidityUtil.AsUtc.
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
+
+            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // certificate limited by both reports both reasons rather than only the tighter one.
+            // isCaCertificate is the resolved profile flag alone: reissue has no CA-creation caller
+            // and refuses a CA-flagged profile outright further up, so this can only ever be false
+            // here — it is passed for the same reason the guard above exists, so that a future
+            // change which admits a CA profile to this path does not silently shorten it.
+            validTo = ApplyTenantValidityCeiling(
+                validTo, validFrom, caTenant,
+                csrEntity.IsInfrastructureCert,
+                isCaCertificate: effectiveCertProfile.IsCaProfile,
+                ceilingEnforcement,
+                issuanceDiagnostics);
 
             // Clamp certificate validity to the issuing CA's NotAfter with a 5-minute margin.
             var reissueCaNotAfterMargin = caMatch.NotAfter - TimeSpan.FromMinutes(5);
@@ -1198,6 +1240,117 @@ namespace ModularCA.Core.Services
                 rebuilt.Add($"{field}={sanitized}");
             }
             return string.Join(",", rebuilt);
+        }
+
+        /// <summary>
+        /// Applies the owning tenant's validity ceiling to a certificate's expiry: shortens it and
+        /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a tenant configured to
+        /// refuse — throws <c>MCA-ISS-005</c> instead of issuing something shorter than was asked
+        /// for.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Shortening is the default and the only behaviour the ceiling originally had. Every
+        /// enrollment protocol — ACME, EST, SCEP, CMP — and both renewal jobs derive their requested
+        /// expiry from the certificate profile's <c>ValidityPeriodMax</c> without any knowledge of
+        /// the tenant, so a profile that out-reaches its tenant would refuse every enrollment and
+        /// every renewal against it, for a condition the enrolling client can neither see nor fix.
+        /// Those callers pass <see cref="ValidityCeilingEnforcement.AlwaysShorten"/>, which is also
+        /// the default, so a call site added later cannot start refusing by omission. The
+        /// certificate an operator gets is still not the one they asked for, which is precisely what
+        /// <c>MCA-ISS-004</c> exists to say out loud.
+        /// </para>
+        /// <para>
+        /// Refusal exists because a human at the admin form is in the opposite position from an ACME
+        /// client: they can see the ceiling, they can shorten the request, and a certificate that
+        /// comes back quietly shorter than asked for is a defect that surfaces years later as an
+        /// unexpected expiry. It fires only when the caller passes
+        /// <see cref="ValidityCeilingEnforcement.HonourTenantPolicy"/> <em>and</em> the tenant is set
+        /// to <see cref="ValidityCeilingBehavior.Refuse"/> — both conditions, never either.
+        /// </para>
+        /// <para>
+        /// <b>Three exemptions, and the reason there are three.</b> Infrastructure certificates (TSA,
+        /// OCSP, Web TLS) are exempt for the same reason they skip the other issuance limits: they
+        /// are artifacts of the CA's own lifecycle rather than subscriber certificates. CA
+        /// certificates are exempt because shortening one is the worst outcome this whole feature can
+        /// produce — a ten-year intermediate silently reissued as a two-year one takes every
+        /// certificate beneath it down with it when it expires, years after anyone remembers this
+        /// setting was changed. CA issuance was previously exempt only <em>incidentally</em>:
+        /// <c>CaCreationService</c> happens to build its CSR through
+        /// <c>GenerateInfrastructureCsrAsync</c>, which defaults <c>isInfrastructure: true</c>, and a
+        /// CA-creation path that forgot that flag would have been shortened without a word. So the
+        /// exemption is now stated twice more, in terms that cannot be forgotten by a new call site:
+        /// the resolved profile's <c>IsCaProfile</c> flag, and the <c>allowCaProfile</c> entry-point
+        /// gate that <see cref="IssueCaCertificateAsync"/> is the only caller of. Sub-CAs are still
+        /// clamped to the parent CA's expiry, which <c>CaCreationService</c> does itself before
+        /// calling in.
+        /// </para>
+        /// </remarks>
+        /// <param name="validTo">The expiry resolved so far.</param>
+        /// <param name="validFrom">The certificate's start, which the ceiling is measured from.</param>
+        /// <param name="tenant">The issuing CA's tenant, or null when it could not be resolved.</param>
+        /// <param name="isInfrastructureCert">True for a TSA/OCSP/Web TLS certificate; exempt.</param>
+        /// <param name="isCaCertificate">True when this issuance produces a CA certificate; exempt.</param>
+        /// <param name="enforcement">Whether this caller may be refused by the tenant's behaviour.</param>
+        /// <param name="diagnostics">Collects the advisory when the expiry is shortened.</param>
+        /// <returns>The expiry to use, never later than the one passed in.</returns>
+        /// <exception cref="ConfigurationValidationException">
+        /// The request exceeds the ceiling, the tenant refuses rather than shortens, and the caller
+        /// is one that can act on a refusal.
+        /// </exception>
+        private DateTime ApplyTenantValidityCeiling(
+            DateTime validTo,
+            DateTime validFrom,
+            TenantEntity? tenant,
+            bool isInfrastructureCert,
+            bool isCaCertificate,
+            ValidityCeilingEnforcement enforcement,
+            List<Diagnostic> diagnostics)
+        {
+            // No tenant resolved means no ceiling to apply — a system-wide signing profile with no
+            // CA behind it, which the decision function has no way to represent.
+            if (tenant is null)
+                return validTo;
+
+            // The decision — exemptions, enforcement mode, tenant behaviour, clamp — is a pure
+            // function so that the tests cover the real rule rather than a restatement of it. What
+            // is left here is the reporting.
+            var decision = CertificateValidityUtil.DecideValidityCeiling(
+                validTo, validFrom, tenant.MaxValidityDays,
+                tenant.ValidityCeilingBehavior, enforcement,
+                isInfrastructureCert, isCaCertificate);
+
+            if (decision.Outcome == ValidityCeilingOutcome.Unchanged)
+                return validTo;
+
+            var requestedDays = (int)Math.Round((validTo - validFrom).TotalDays);
+
+            if (decision.Outcome == ValidityCeilingOutcome.Refused)
+            {
+                var refusal =
+                    $"Requested validity of {requestedDays} days exceeds the {tenant.MaxValidityDays}-day ceiling on " +
+                    $"tenant '{tenant.Name}', which is configured to refuse over-long requests rather than shorten them.";
+                _logger.LogWarning(
+                    "Refused issuance: requested {RequestedDays} days exceeds tenant '{Tenant}' ceiling of {CeilingDays} days.",
+                    requestedDays, tenant.Name, tenant.MaxValidityDays);
+                throw new ConfigurationValidationException(
+                    refusal,
+                    ErrorCodes.ValidityExceedsTenantCeiling,
+                    remediation: $"Request at most {tenant.MaxValidityDays} days, raise the ceiling on tenant " +
+                                 $"'{tenant.Name}', or set that tenant to shorten instead of refuse.");
+            }
+
+            var msg = $"Certificate validity shortened from {requestedDays} days to {tenant.MaxValidityDays} days " +
+                      $"because tenant '{tenant.Name}' caps certificate validity at {tenant.MaxValidityDays} days.";
+            _logger.LogWarning(msg);
+            diagnostics.Add(Diagnostic.Warning(
+                ErrorCodes.ValidityClampedToTenant,
+                "Validity shortened",
+                msg,
+                remediation: $"Raise the validity ceiling on tenant '{tenant.Name}', or request a shorter validity period.",
+                field: "validTo"));
+
+            return decision.NotAfter;
         }
 
         /// <summary>

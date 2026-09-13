@@ -1131,9 +1131,11 @@ namespace ModularCA.Shared.Models.Config
         /// Validity threshold in days used by the compliance scanner to flag
         /// over-long certificates in its report. This is a <b>warning threshold only</b> —
         /// the scanner emits a finding when a certificate's total validity exceeds this
-        /// value, but the certificate remains valid and in use. Hard issuance limits live
-        /// on <see cref="CertPolicyConfig.MaxValidityDays"/>; this knob intentionally does
-        /// not block anything. Default tracks the CA/Browser Forum baseline at 825 days.
+        /// value, but the certificate remains valid and in use. The enforced ceiling lives on
+        /// <see cref="ModularCA.Shared.Entities.TenantEntity.MaxValidityDays"/>; this knob
+        /// intentionally does not block anything, and the two are independent on purpose — a
+        /// tenant may legitimately issue past a compliance baseline it is not claiming to meet.
+        /// Default tracks the CA/Browser Forum baseline at 825 days.
         /// </summary>
         public int WarnOverValidityDays { get; set; } = 825;
 
@@ -1157,8 +1159,13 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>Minimum acceptable RSA key size in bits. Keys smaller than this block issuance.</summary>
         public int MinRsaKeySize { get; set; } = 2048;
 
-        /// <summary>Maximum certificate validity period in days. Certificates exceeding this are blocked.</summary>
-        public int MaxValidityDays { get; set; } = 825;
+        // MaxValidityDays used to live here, defaulting to 825 and blocking every leaf in the
+        // installation that exceeded it. It moved to TenantEntity.MaxValidityDays, where the
+        // remarks explain why; see also ComplianceConfig.WarnOverValidityDays for the reporting
+        // half, which never blocked and did not move. Removing the property outright is safe for
+        // existing config files because YamlAppConfigLoader is built with
+        // IgnoreUnmatchedProperties, so a leftover `MaxValidityDays:` key is ignored rather than
+        // failing the load — but it is also no longer honoured, which is the point.
 
         /// <summary>Signature algorithms that are forbidden. Certificates using these are blocked at issuance.</summary>
         public List<string> ForbiddenAlgorithms { get; set; } = new() { "SHA1WithRSA", "MD5WithRSA" };

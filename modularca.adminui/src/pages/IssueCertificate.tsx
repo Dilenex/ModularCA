@@ -4,6 +4,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
 import { inputClass, labelClass } from '@shared/components/forms';
+import type { ValidityCeilingPreflight } from '@shared/generated';
+import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from './validityCeiling';
 
 // --- Types ---
 
@@ -114,6 +116,10 @@ const IssueCertificate: React.FC = () => {
     const [selectedCertProfile, setSelectedCertProfile] = useState('');
     const [notBefore, setNotBefore] = useState('');
     const [notAfter, setNotAfter] = useState('');
+    // The effective validity ceiling for the selected profile pair, and which layer sets it.
+    // Null until the first answer arrives, and again whenever a profile changes — "unknown" must
+    // not render as "no ceiling", which would be the one reading that is actively misleading.
+    const [ceiling, setCeiling] = useState<ValidityCeilingPreflight | null>(null);
     // Generate key pair state
     const [keyAlgorithm, setKeyAlgorithm] = useState('RSA');
     const [keySize, setKeySize] = useState('2048');
@@ -152,18 +158,42 @@ const IssueCertificate: React.FC = () => {
         // with local wall-clock components. toISOString() returns UTC: seeding from it put a
         // UTC clock reading into a local-time field, so the form opened pre-filled with a
         // notBefore one UTC-offset in the future, and the certificate was issued starting
-        // then — invalid to every relying party until that time arrived.
-        const toLocalInputValue = (d: Date) => {
-            const pad = (v: number) => String(v).padStart(2, '0');
-            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-                + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-        };
+        // then — invalid to every relying party until that time arrived. The conversion now
+        // lives in validityCeiling.ts, where it is covered, because the ceiling's `max`
+        // attribute is read the same way and would be wrong in the same direction.
         const now = new Date();
         const oneYear = new Date(now);
         oneYear.setFullYear(oneYear.getFullYear() + 1);
-        setNotBefore(toLocalInputValue(now));
-        setNotAfter(toLocalInputValue(oneYear));
+        setNotBefore(toDatetimeLocalValue(now));
+        setNotAfter(toDatetimeLocalValue(oneYear));
     }, []);
+
+    // --- Validity ceiling pre-flight ---
+    // Re-asked whenever the profile pair changes, because both selections feed the answer: the
+    // signing profile determines the issuing CA and therefore the tenant, and the cert profile
+    // supplies the baseline maximum. Deliberately NOT re-asked as notBefore is typed — the server
+    // measures the tenant ceiling from notBefore, but a request per keystroke to move a number by
+    // a few hours is not worth it, and the default start is what nearly every request uses.
+    useEffect(() => {
+        if (!selectedSigningProfile || !selectedCertProfile) {
+            setCeiling(null);
+            return;
+        }
+        let cancelled = false;
+        apiGet<ValidityCeilingPreflight>(
+            `/api/v1/admin/certificates/validity-ceiling?signingProfileId=${encodeURIComponent(selectedSigningProfile)}`
+            + `&certProfileId=${encodeURIComponent(selectedCertProfile)}`)
+            .then((data) => { if (!cancelled) setCeiling(data); })
+            // Silently unknown rather than an error banner: the pre-flight is an aid, and the
+            // server still enforces the real ceiling at issuance either way. An operator who is
+            // told nothing is no worse off than they were before this existed; one shown a red
+            // failure for an advisory call would reasonably stop trusting the form.
+            .catch(() => { if (!cancelled) setCeiling(null); });
+        return () => { cancelled = true; };
+    }, [selectedSigningProfile, selectedCertProfile]);
+
+    const ceilingNotice = ceiling ? describeCeiling(ceiling) : null;
+    const notAfterExceedsCeiling = exceedsCeiling(notAfter, ceiling);
 
     // --- CSR parsing ---
     const parseCsr = useCallback(async (pem: string) => {
@@ -894,8 +924,27 @@ const IssueCertificate: React.FC = () => {
                             type="datetime-local"
                             value={notAfter}
                             onChange={(e) => setNotAfter(e.target.value)}
+                            // Bound to the effective ceiling so the picker cannot offer a date
+                            // issuance would shorten. Browsers differ on whether they block an
+                            // out-of-range value or merely flag it, so the explicit check below
+                            // still runs — max is a convenience, not the enforcement.
+                            max={ceilingNotice?.maxInputValue || undefined}
                             className={inputClass}
                         />
+                        {ceilingNotice && (
+                            <p className={`text-[11px] mt-1 ${ceilingNotice.tone === 'warn'
+                                ? 'text-amber-700 dark:text-amber-400'
+                                : 'text-gray-600 dark:text-gray-400'}`}>
+                                {ceilingNotice.text}
+                            </p>
+                        )}
+                        {notAfterExceedsCeiling && ceiling && (
+                            <p className="text-[11px] mt-1 text-red-700 dark:text-red-400">
+                                {ceiling.tenantBehavior === 'Refuse' && ceiling.tenantCeilingApplies && ceiling.resolution.boundBy === 'Tenant'
+                                    ? 'This exceeds the ceiling above and will be refused.'
+                                    : 'This exceeds the ceiling above and will be shortened at issuance.'}
+                            </p>
+                        )}
                     </div>
                 </div>
             </div>}

@@ -867,13 +867,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Certificate Policy */}
                     <div className={cardClass}>
                         <SectionHeader title="Certificate Policy" expanded={expanded === 'certPolicy'} onToggle={() => toggle('certPolicy')}
-                            description={config.certPolicy?.enabled ? `Min RSA ${config.certPolicy.minRsaKeySize || 2048}, Max ${config.certPolicy.maxValidityDays || 825}d` : 'Disabled'} tag="live" />
+                            description={config.certPolicy?.enabled ? `Min RSA ${config.certPolicy.minRsaKeySize || 2048}` : 'Disabled'} tag="live" />
                         {expanded === 'certPolicy' && (
                             <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certPolicy?.enabled ?? false} onChange={(v) => update('certPolicy', 'enabled', v)} />
                                     <ConfigNumber label="Min RSA Key Size" value={config.certPolicy?.minRsaKeySize} onChange={(v) => update('certPolicy', 'minRsaKeySize', v)} fallback={0} />
-                                    <ConfigNumber label="Max Validity Days" value={config.certPolicy?.maxValidityDays} onChange={(v) => update('certPolicy', 'maxValidityDays', v)} fallback={0} />
                                     <ConfigToggle label="Require SANs" checked={config.certPolicy?.requireSans ?? false} onChange={(v) => update('certPolicy', 'requireSans', v)} />
                                     <div className="md:col-span-2">
                                         <ConfigInput label="Forbidden Algorithms (comma-separated)" value={listToStr(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', strToList(v))} placeholder="MD5, SHA1" />
@@ -947,7 +946,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     </div>
                                     <div>
                                         <ConfigNumber label="Warn Over Validity Days" value={config.complianceScan?.warnOverValidityDays} onChange={(v) => update('complianceScan', 'warnOverValidityDays', v)} fallback={0} />
-                                        <p className="text-[10px] text-gray-600 mt-1">Policy: {config.certPolicy?.enabled ? `caps validity at ${config.certPolicy?.maxValidityDays || 'unset'}d` : 'enforcement off'}</p>
+                                        <p className="text-[10px] text-gray-600 mt-1">Reports only — it never blocks issuance. The enforced ceiling is per tenant, under Tenants &amp; Quotas.</p>
                                     </div>
                                     <div className="md:col-span-2">
                                         <ConfigInput label="Deprecated Algorithms (comma-separated)" value={listToStr(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', strToList(v))} placeholder="MD5, SHA1, RSA-1024" />

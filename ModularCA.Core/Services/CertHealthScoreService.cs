@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Shared.Models.Config;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using Org.BouncyCastle.Crypto;
@@ -19,16 +20,26 @@ public class CertHealthScoreService : ICertHealthScoreService
 {
     private readonly ModularCADbContext _db;
     private readonly ILogger<CertHealthScoreService> _logger;
+    private readonly ComplianceScanConfig _compliance;
+
+    /// <summary>
+    /// The CA/Browser Forum maximum for publicly trusted TLS. A fixed property of public web PKI
+    /// rather than a setting of this installation, so it stays a constant — but it is only applied
+    /// to certificates that are actually TLS certificates.
+    /// </summary>
+    private const int PublicTlsMaxValidityDays = 398;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CertHealthScoreService"/> class.
     /// </summary>
     /// <param name="db">Database context for certificate and vulnerability lookups.</param>
     /// <param name="logger">Logger for diagnostic output.</param>
-    public CertHealthScoreService(ModularCADbContext db, ILogger<CertHealthScoreService> logger)
+    /// <param name="systemConfig">Supplies the compliance scanner's validity threshold.</param>
+    public CertHealthScoreService(ModularCADbContext db, ILogger<CertHealthScoreService> logger, SystemConfig systemConfig)
     {
         _db = db;
         _logger = logger;
+        _compliance = systemConfig.ComplianceScan;
     }
 
     /// <inheritdoc />
@@ -177,30 +188,39 @@ public class CertHealthScoreService : ICertHealthScoreService
         }
 
         // --- Validity period checks ---
+        // Both thresholds used to be literals — 825 and 398 — applied to every certificate in the
+        // installation. That is public web PKI's rulebook scoring a private CA's work: a five-year
+        // device identity, entirely legitimate and deliberately issued, was marked unhealthy
+        // forever with no setting anywhere to say otherwise. The upper bound now comes from the
+        // compliance scanner's own configured threshold, and the public TLS limit is applied only
+        // to certificates that are actually TLS certificates.
         var validityDays = (cert.NotAfter - cert.NotBefore).TotalDays;
-        if (validityDays > 825)
+        var complianceThreshold = _compliance.WarnOverValidityDays;
+        bool isTls = IsTlsCertificate(cert);
+
+        if (complianceThreshold > 0 && validityDays > complianceThreshold)
         {
             factors.Add(new CertHealthFactor
             {
-                Name = "OverLongValidity825",
+                Name = "OverLongValidity",
                 Points = 25,
-                Description = $"Validity period is {(int)validityDays} days, exceeding the 825-day limit.",
+                Description = $"Validity period is {(int)validityDays} days, exceeding the configured {complianceThreshold}-day compliance threshold.",
                 Severity = "Warning"
             });
         }
-        else if (validityDays > 398)
+        else if (isTls && validityDays > PublicTlsMaxValidityDays)
         {
             factors.Add(new CertHealthFactor
             {
-                Name = "OverLongValidity398",
+                Name = "OverLongValidityPublicTls",
                 Points = 15,
-                Description = $"Validity period is {(int)validityDays} days, exceeding the 398-day public TLS limit.",
+                Description = $"Validity period is {(int)validityDays} days, exceeding the {PublicTlsMaxValidityDays}-day CA/Browser Forum limit for publicly trusted TLS.",
                 Severity = "Warning"
             });
         }
 
         // --- SAN check for TLS certificates ---
-        bool isTlsCert = IsTlsCertificate(cert);
+        bool isTlsCert = isTls;
         if (isTlsCert)
         {
             var hasSans = !string.IsNullOrWhiteSpace(cert.SubjectAlternativeNamesJson)
