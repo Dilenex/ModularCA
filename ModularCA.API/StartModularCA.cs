@@ -2408,7 +2408,41 @@ if (Directory.Exists(webRoot) && config.Backup != null && !string.IsNullOrEmpty(
 }
 
 app.UseMiddleware<ModularCA.API.Middleware.CsrfProtectionMiddleware>();
-app.UseStaticFiles();
+
+// Cache the fingerprinted bundles forever; never cache the documents that point at them.
+//
+// Vite emits every chunk under assets/ with a content hash in its filename, so those files are
+// immutable by construction and can be cached indefinitely. index.html is the opposite: it is
+// the only mutable file, it names which hashed bundles to load, and a stale copy pins a browser
+// to a build that is no longer deployed. With no directives at all the browser applies heuristic
+// caching to both, which is the wrong answer for each.
+//
+// This was not theoretical. A staging deployment served a superseded bundle to a browser holding
+// a cached index.html, and hours went into debugging source that was not the source running.
+// Pairs with install.sh, which now clears wwwroot on upgrade so a superseded chunk is not left
+// on disk to be served even if something does ask for it.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        var headers = ctx.Context.Response.Headers;
+
+        if (ctx.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+        {
+            headers.CacheControl = "no-cache, must-revalidate";
+        }
+        else if (ctx.Context.Request.Path.Value?.Contains("/assets/", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            headers.CacheControl = "public, max-age=31536000, immutable";
+        }
+        else
+        {
+            // Favicons, vite.svg, root-level assets: mutable but rarely changed. Revalidate
+            // cheaply rather than pinning them or forcing a re-download every navigation.
+            headers.CacheControl = "no-cache";
+        }
+    }
+});
 
 app.UseMiddleware<ModularCA.API.Middleware.SetupRedirectMiddleware>();
 

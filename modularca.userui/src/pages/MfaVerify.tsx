@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { API_BASE } from '../api/client';
 import { createDpopProof } from '@shared-auth/api/dpop';
@@ -151,7 +151,7 @@ const MfaVerify: React.FC = () => {
 
             // Decode challenge and allowCredentials from base64url
             options.challenge = base64urlToBuffer(options.challenge);
-            if (options.allowCredentials) {
+            if (Array.isArray(options.allowCredentials)) {
                 options.allowCredentials = options.allowCredentials.map((c: any) => ({
                     ...c,
                     id: base64urlToBuffer(c.id),

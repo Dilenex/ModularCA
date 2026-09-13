@@ -48,11 +48,27 @@ fi
 note "installing to $APP_DIR"
 mkdir -p "$APP_DIR"
 
-# Binaries and static assets are replaced wholesale. config/ and keystores/ are NOT in this
-# list: they hold the install's identity and secrets, and an upgrade must never touch them.
+# Binaries and static assets are replaced. config/ and keystores/ are NOT in this list: they
+# hold the install's identity and secrets, and an upgrade must never touch them.
+#
+# Note the copy below MERGES rather than replaces, so a file the new build no longer ships
+# survives on disk. That is handled for wwwroot (removed first, below). Stale runtime
+# assemblies in the app directory are a known remaining gap.
 for item in ModularCA.API ModularCA.Keystore.Unlocker wwwroot; do
     [[ -e "$SRC/$item" ]] || die "missing from archive: $item"
 done
+
+# wwwroot is removed before the copy rather than merged into.
+#
+# `cp -a` merges directories: it overwrites what exists in both and leaves behind anything the
+# new build no longer ships. Vite names every chunk by content hash, so a new release overwrites
+# nothing and only adds — the old chunks stay on disk and stay served. A browser holding a cached
+# index.html then keeps fetching a bundle from several releases ago, successfully, and the
+# operator debugs behaviour from code that is no longer deployed.
+#
+# Safe to delete outright: everything under wwwroot is build output shipped in this archive.
+# config/, keystores/ and logs/ are excluded from the copy below and are never touched.
+rm -rf "$APP_DIR/wwwroot"
 
 find "$SRC" -maxdepth 1 -mindepth 1 \
      ! -name config ! -name keystores ! -name logs ! -name deploy \

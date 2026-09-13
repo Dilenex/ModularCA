@@ -284,7 +284,7 @@ export function createAuthClient(config: AuthClientConfig) {
       // CertificateReissueModal read `result.newSerialNumber` off a string on the common path and
       // always fall back to "new serial unknown". That needs the endpoints to return one shape.
       const contentType = resp.headers.get('content-type') ?? '';
-      if (!/json/i.test(contentType)) {
+      if (!/json/i.test(contentType)) {
         return text as unknown as T;
       }
 

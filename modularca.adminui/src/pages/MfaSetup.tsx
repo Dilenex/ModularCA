@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { isAuthenticated, isMfaSetupRequired, setMfaSetupRequired } from '../components/auth';
 import { apiGet, apiPost, apiLogout, apiBlob, clearTokens } from '../api/client';
@@ -41,8 +41,14 @@ const MfaSetup: React.FC = () => {
     useEffect(() => {
         apiGet<AllowedCa[]>('/auth/mtls/allowed-cas')
             .then((cas) => {
-                setMtlsCas(cas || []);
-                if (cas && cas.length > 0) setMtlsSelectedCa(cas[0].caId);
+                // Array.isArray, not a truthiness check. `cas || []` accepted anything truthy,
+                // and the API client returns the raw body as a string when a response does not
+                // declare itself JSON — a string passes `||`, satisfies `.length > 1`, and then
+                // has no `.map`, which crashed the whole page at render. The admin UI showed its
+                // error boundary; the user UI, which has none, showed a white screen.
+                const list = Array.isArray(cas) ? cas : [];
+                setMtlsCas(list);
+                if (list.length > 0) setMtlsSelectedCa(list[0].caId);
             })
             .catch(() => setMtlsCas([]));
     }, []);
@@ -111,7 +117,9 @@ const MfaSetup: React.FC = () => {
             if (options.user?.id) {
                 options.user.id = base64urlToBuffer(options.user.id);
             }
-            if (options.excludeCredentials) {
+            // Same defect one step later: a truthy non-array would reach .map and throw from
+            // inside the registration handler.
+            if (Array.isArray(options.excludeCredentials)) {
                 options.excludeCredentials = options.excludeCredentials.map((c: any) => ({
                     ...c,
                     id: base64urlToBuffer(c.id),
