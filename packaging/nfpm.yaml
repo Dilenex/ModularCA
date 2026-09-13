@@ -75,6 +75,15 @@ contents:
     dst: /opt/modularca
     type: tree
 
+  # Debian expects a package's licensing at /usr/share/doc/<package>/. They are already in
+  # /opt/modularca via the payload tree above, but an operator or an automated licence
+  # scanner looks where the convention says to look, and a disclosure nobody finds has not
+  # been made.
+  - src: LICENSE
+    dst: /usr/share/doc/modularca/copyright
+  - src: THIRD-PARTY-NOTICES.md
+    dst: /usr/share/doc/modularca/THIRD-PARTY-NOTICES.md
+
   # The two ELF entrypoints, declared separately so they land executable. nfpm refuses two
   # entries for one destination, so build-deb.sh moves these out of the payload tree first.
   # Without them the package installs a 0644 ModularCA.API and the unit fails on first start with

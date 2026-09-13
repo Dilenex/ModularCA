@@ -23,36 +23,12 @@ import React from 'react';
  * is not.
  */
 
-/** Canonical upstream repository, mirroring `SourceCodeConfig.UpstreamUrl` on the server. */
-export const UPSTREAM_SOURCE_URL = 'https://github.com/Dilenex/ModularCA';
-
-/** Default SPDX identifier, mirroring `SourceCodeConfig.License`. */
-export const DEFAULT_LICENSE = 'AGPL-3.0-only';
-
-/** The subset of `/api/v1/public/info` this component needs. */
-export interface SourceInfo {
-    /** Where the Corresponding Source for the running build can be obtained. */
-    sourceCodeUrl: string;
-    /** SPDX identifier of the terms this deployment is offered under. */
-    license: string;
-}
-
-/**
- * Builds a link that identifies the running build rather than a moving branch.
- *
- * For a GitHub or GitLab URL a known commit becomes a permalink to that exact tree. Anything
- * else — a self-hosted Gitea, a tarball, a plain directory listing — is returned untouched,
- * because guessing another forge's URL layout would produce confidently broken links. The commit
- * is still displayed beside it either way, so the reader can always tell what to ask for.
- */
-export function sourceUrlForCommit(baseUrl: string, commit: string): string {
-    const url = (baseUrl || UPSTREAM_SOURCE_URL).replace(/\/+$/, '');
-    if (!commit || commit === 'unknown') return url;
-
-    if (/^https:\/\/(www\.)?github\.com\//i.test(url)) return `${url}/tree/${commit}`;
-    if (/^https:\/\/(www\.)?gitlab\.com\//i.test(url)) return `${url}/-/tree/${commit}`;
-    return url;
-}
+export {
+    UPSTREAM_SOURCE_URL, DEFAULT_LICENSE, sourceUrlForCommit, noticesUrlForCommit,
+    type SourceInfo,
+} from './sourceUrls';
+import { UPSTREAM_SOURCE_URL, DEFAULT_LICENSE, sourceUrlForCommit, noticesUrlForCommit } from './sourceUrls';
+import type { SourceInfo } from './sourceUrls';
 
 /** Props for {@link SourceNotice}. */
 export interface SourceNoticeProps {
@@ -129,6 +105,21 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
             )}
             <span aria-hidden="true"> · </span>
             <span>{license}</span>
+            {/* The components inside this build are MIT, BSD and Apache-2.0, and each of those
+                permits redistribution on the condition that its notice travels with the binary.
+                The notices ship in the distribution, but a file in /opt that nobody opens is a
+                disclosure only in theory — this is the version a reader can actually reach. The
+                link follows the same commit as the source link above, so it describes the build
+                being run rather than whatever is on the default branch today. */}
+            <span aria-hidden="true"> · </span>
+            <a
+                href={noticesUrlForCommit(sourceCodeUrl, commit ?? '')}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-gray-900 dark:hover:text-gray-100"
+            >
+                Third-party notices
+            </a>
         </div>
     );
 };

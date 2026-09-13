@@ -81,6 +81,16 @@ if [[ -d deploy ]]; then
     cp deploy/modularca.service deploy/nginx-modularca.conf deploy/nftables-modularca.conf \
        "$STAGE/deploy/" 2>/dev/null || true
 fi
+# LICENSE and THIRD-PARTY-NOTICES.md are not optional extras. This archive is a binary
+# distribution of AGPL-3.0 software containing MIT, BSD and Apache-2.0 components, and every
+# one of those licences permits redistribution only on the condition that its notice travels
+# with the binary. Shipping the payload without them is the omission nobody notices until
+# somebody does.
+cp LICENSE THIRD-PARTY-NOTICES.md "$STAGE/" || {
+    echo "REFUSING: LICENSE or THIRD-PARTY-NOTICES.md missing. Regenerate with:" >&2
+    echo "  node scripts/generate-third-party-notices.mjs" >&2
+    exit 1
+}
 cp packaging/install.sh packaging/README-DEPLOY.md "$STAGE/" 2>/dev/null || {
     echo "WARNING: packaging/install.sh not found — the archive will have no installer" >&2
 }
@@ -92,7 +102,7 @@ chmod 0755 "$STAGE/install.sh" 2>/dev/null || true
 
 # Sanity: refuse to ship an archive missing a piece, or carrying a host-platform binary.
 note "verifying payload"
-for required in ModularCA.API ModularCA.Keystore.Unlocker wwwroot/admin/index.html \
+for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/user/index.html wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }

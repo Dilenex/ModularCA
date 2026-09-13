@@ -93,6 +93,15 @@ jobs:
       - name: Soak window and production advisories
         run: node scripts/check-dependency-policy.mjs
 
+      # A licence disclosure that has stopped describing the binary beside it is worse than none,
+      # because it asserts something untrue. This fails when the committed file no longer matches
+      # the resolved dependency graph — which is what happens the first time someone adds a
+      # package and does not regenerate.
+      - name: Third-party notices are current
+        run: |
+          dotnet restore ModularCA.API/ModularCA.API.csproj
+          node scripts/generate-third-party-notices.mjs --check
+
   typecheck:
     name: Typecheck ${{ matrix.app }}
     runs-on: ubuntu-latest
