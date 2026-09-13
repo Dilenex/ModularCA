@@ -163,6 +163,50 @@ public static class FeatureCatalog
             [FeatureKeys.HighAvailability] = new DateOnly(2026, 1, 1),
         };
 
+    /// <summary>
+    /// What each feature is called in a sentence an operator reads.
+    /// </summary>
+    /// <remarks>
+    /// A key identifies; a name explains — the same division of labour as
+    /// <see cref="ModularCA.Shared.Errors.ErrorCodes"/> and the messages beside them. A refusal
+    /// reading "requires the 'tenancy.multi' entitlement" makes the reader decode an identifier
+    /// before they can tell whether it is relevant to them; one reading "requires the multi-tenancy
+    /// license entitlement: 'tenancy.multi'" tells them what it is and still gives them the string
+    /// to quote in a ticket.
+    /// <para>
+    /// Centralised rather than passed in at each gate, because every call site inventing its own
+    /// noun is exactly the drift <see cref="FeatureGate"/> exists to prevent — and because the
+    /// admin UI that lists entitlements needs the same names.
+    /// </para>
+    /// <para>
+    /// Unlike the keys and the dates, these are <b>not</b> append-only. A name is prose and may be
+    /// reworded freely; nothing is keyed on it.
+    /// </para>
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> DisplayNames =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [FeatureKeys.MultiTenancy] = "multi-tenancy",
+            [FeatureKeys.BackupOrchestration] = "backup orchestration",
+            [FeatureKeys.ComplianceReporting] = "compliance reporting",
+            [FeatureKeys.SingleSignOn] = "identity federation",
+            [FeatureKeys.HsmFleet] = "HSM fleet",
+            [FeatureKeys.HighAvailability] = "high-availability clustering",
+        };
+
+    /// <summary>
+    /// The human-readable name for <paramref name="featureKey"/>, falling back to the key itself
+    /// when this build does not know it.
+    /// </summary>
+    /// <remarks>
+    /// Falls back rather than throwing, for the same reason <see cref="IntroducedOn"/> tolerates an
+    /// unknown key: a licence issued for a newer release may name features this build has never
+    /// heard of, and a missing display name must not be the thing that takes down the page listing
+    /// a customer's entitlements.
+    /// </remarks>
+    public static string DisplayName(string featureKey)
+        => DisplayNames.TryGetValue(featureKey, out var name) ? name : featureKey;
+
     /// <summary>Every feature key the catalogue knows, discovered from the declarations.</summary>
     public static IReadOnlyList<string> AllKeys { get; } =
         typeof(FeatureKeys)

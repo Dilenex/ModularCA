@@ -29,10 +29,18 @@ namespace ModularCA.Shared.Licensing;
 public static class TenantCreationGate
 {
     /// <summary>
-    /// Tenants the bootstrap creates on a fresh install — the system tenant and the operator's
-    /// own organisation. The free edition keeps both; it simply cannot add a third.
+    /// How many tenants the free edition may have.
     /// </summary>
-    public const int FreeEditionTenantCeiling = 2;
+    /// <remarks>
+    /// Bootstrap creates two on a fresh install — the system tenant and the operator's own
+    /// organisation — so this is three more than the product needs to run, deliberately. Separating
+    /// home, lab and a side project is three tenants and is nobody's commercial use of anything;
+    /// setting the ceiling where bootstrap happens to land caught exactly the self-hosting operator
+    /// the free edition exists for, which is the wrong person to send to a pricing page. An MSP
+    /// running forty client organisations is still obviously outside it, and that is the boundary
+    /// this is meant to draw.
+    /// </remarks>
+    public const int FreeEditionTenantCeiling = 5;
 
     /// <summary>
     /// Returns the refusal to throw, or <see langword="null"/> when creation may proceed.
@@ -47,19 +55,28 @@ public static class TenantCreationGate
     /// <param name="existingTenantCount">How many tenants already exist.</param>
     public static LicensingException? Evaluate(IEntitlementService entitlements, int existingTenantCount)
     {
-        // Entitlement before headroom. Telling an operator their tenant limit is reached, when the
-        // actual position is that they have no multi-tenancy entitlement at all, sends them to
-        // negotiate a bigger number for something they have not bought.
         const string unaffected =
             "Existing tenants are unaffected and continue to issue certificates normally.";
 
-        return FeatureGate.Require(
-                   entitlements, FeatureKeys.MultiTenancy,
-                   "Creating additional tenants",
-                   $"The {FreeEditionTenantCeiling} tenants created at installation are unaffected "
-                   + "and continue to issue certificates normally.")
-               ?? FeatureGate.RequireHeadroom(
-                   entitlements, LicenseLimits.MaxTenants, existingTenantCount,
-                   "tenant", unaffected);
+        // The entitlement is only consulted once the free ceiling is reached. Checking it first
+        // would refuse an unlicensed installation its second tenant, which is what this gate used
+        // to do — the ceiling existed only in the message and never in the decision.
+        if (existingTenantCount >= FreeEditionTenantCeiling)
+        {
+            var refusal = FeatureGate.Require(
+                entitlements, FeatureKeys.MultiTenancy,
+                "Creating additional tenants",
+                $"The free edition includes {FreeEditionTenantCeiling} tenants and this "
+                + $"installation has {existingTenantCount}. {unaffected}");
+
+            if (refusal is not null)
+                return refusal;
+        }
+
+        // Entitlement satisfied, or not yet needed. A licence may still name its own ceiling, and
+        // that one applies from the first tenant rather than from the free threshold.
+        return FeatureGate.RequireHeadroom(
+            entitlements, LicenseLimits.MaxTenants, existingTenantCount,
+            "tenant", unaffected);
     }
 }

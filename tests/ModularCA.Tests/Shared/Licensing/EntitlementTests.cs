@@ -343,7 +343,7 @@ public class EntitlementServiceTests
     // ---- TenantCreationGate ------------------------------------------------------------------
 
     [Fact]
-    public void The_free_edition_cannot_create_a_third_tenant()
+    public void The_free_edition_refuses_once_its_ceiling_is_reached()
     {
         var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
 
@@ -355,6 +355,36 @@ public class EntitlementServiceTests
         Assert.Contains("unaffected", refusal.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void The_free_edition_may_create_tenants_below_its_ceiling(int existing)
+    {
+        // The behaviour the ceiling constant describes. It used to be decoration: the gate consulted
+        // the entitlement first and refused an unlicensed installation its third tenant regardless,
+        // while the message quoted a number the decision never read. A self-hoster separating home,
+        // lab and a side project is the person the free edition exists for, and sending them to a
+        // pricing page was the wrong answer to the wrong question.
+        Assert.Null(TenantCreationGate.Evaluate(Free(), existing));
+    }
+
+    [Fact]
+    public void A_refusal_names_the_feature_before_its_key()
+    {
+        // The name tells the reader whether this concerns them; the key is what they quote in a
+        // ticket. An identifier alone makes them decode it first to find out if it is relevant.
+        var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
+
+        Assert.NotNull(refusal);
+        var nameAt = refusal!.Message.IndexOf("multi-tenancy", StringComparison.Ordinal);
+        var keyAt = refusal.Message.IndexOf(FeatureKeys.MultiTenancy, StringComparison.Ordinal);
+
+        Assert.True(nameAt >= 0, $"refusal does not name the feature: {refusal.Message}");
+        Assert.True(keyAt >= 0, $"refusal does not carry the key: {refusal.Message}");
+        Assert.True(nameAt < keyAt, $"the key precedes the name: {refusal.Message}");
+    }
+
     [Fact]
     public void A_lapsed_licence_refuses_with_the_renewal_code_not_the_purchase_code()
     {
@@ -362,8 +392,12 @@ public class EntitlementServiceTests
         // paying customer down the purchase path is the failure this separation exists to avoid.
         var lapsed = Licensed(FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value.AddDays(-1));
 
-        var refusal = TenantCreationGate.Evaluate(lapsed, 2);
+        // At the ceiling, so the entitlement is actually consulted. This was a literal 2, which
+        // silently meant "the ceiling" until the ceiling moved and the test started dereferencing
+        // a null refusal instead of reading a code.
+        var refusal = TenantCreationGate.Evaluate(lapsed, TenantCreationGate.FreeEditionTenantCeiling);
 
+        Assert.NotNull(refusal);
         Assert.Equal(ErrorCodes.MaintenanceLapsed, refusal!.Code);
     }
 

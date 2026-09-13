@@ -78,8 +78,13 @@ public static class FeatureGate
             ? ErrorCodes.MaintenanceLapsed
             : ErrorCodes.FeatureNotEntitled;
 
+        // Name first, key second. The name is what tells the reader whether this concerns them; the
+        // key is what they paste into a ticket or search the catalogue for. "the" rather than "a"
+        // because it has to be grammatical in front of every name in the catalogue, including the
+        // ones starting with a vowel sound.
         return new LicensingException(
-            $"{whatIsGated} requires the '{featureKey}' entitlement. {whatIsUnaffected} {denial.Detail}",
+            $"{whatIsGated} requires the {FeatureCatalog.DisplayName(featureKey)} "
+            + $"license entitlement: '{featureKey}'. {whatIsUnaffected} {denial.Detail}",
             code,
             denial.Remediation);
     }
