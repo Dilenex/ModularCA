@@ -24,7 +24,7 @@ import React from 'react';
  */
 
 /** Canonical upstream repository, mirroring `SourceCodeConfig.UpstreamUrl` on the server. */
-export const UPSTREAM_SOURCE_URL = 'https://github.com/Ephemeral-Intel/ModularCA';
+export const UPSTREAM_SOURCE_URL = 'https://github.com/Dilenex/ModularCA';
 
 /** Default SPDX identifier, mirroring `SourceCodeConfig.License`. */
 export const DEFAULT_LICENSE = 'AGPL-3.0-only';

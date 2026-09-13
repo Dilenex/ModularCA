@@ -34,7 +34,7 @@ public class SourceCodeConfig
     /// footer that silently offers nothing, and that is not a failure anyone would notice by
     /// looking at the page.
     /// </remarks>
-    public const string UpstreamUrl = "https://github.com/Ephemeral-Intel/ModularCA";
+    public const string UpstreamUrl = "https://github.com/Dilenex/ModularCA";
 
     /// <summary>
     /// URL where the Corresponding Source for the running build can be obtained.

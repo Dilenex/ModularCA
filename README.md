@@ -49,7 +49,7 @@ Planned for exploration:
 
 1. Clone the repository
 ```
-git clone https://github.com/Ephemeral-Intel/ModularCA.git
+git clone https://github.com/Dilenex/ModularCA.git
 cd ModularCA
 ```
 
