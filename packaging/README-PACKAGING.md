@@ -7,6 +7,32 @@ Target: **Ubuntu 24.04 (noble)**, distributed as a **bare `.deb`** — no apt re
 ./scripts/build-deb.sh --from-tarball  # repackage an existing dist/*.tar.gz
 ```
 
+The tarball it packages comes from `./scripts/build-linux-dist.sh`, which can be run on its own.
+
+## Release and Staging
+
+```
+./scripts/build-linux-dist.sh                          # dist/modularca-<VERSION>-linux-x64.tar.gz
+./scripts/build-linux-dist.sh --configuration Staging  # ...-linux-x64-staging.tar.gz
+```
+
+Staging is Release **plus JavaScript sourcemaps** — roughly 90 `.map` files and about 2 MB. It is
+the configuration to deploy to a box you expect to debug on: a minified stack like
+`te.map is not a function` at `index-DbKwh5kT.js:14` costs most of a day to trace on a deployed
+host, and a filename with a line number costs minutes. The IL is identical, because
+`Directory.Build.props` sets `Optimize=true` for Staging — without it the SDK would fall through to
+its Debug-side defaults for any configuration it does not recognise by name, and the artifact would
+quietly carry unoptimized code while looking like a release build.
+
+The two archives are named differently on purpose. Knowing which one is on a host is the entire
+point of shipping maps to it, and two files that differ in what they contain must not be
+indistinguishable on disk. `build-deb.sh` always builds Release; the `.deb` is a release artifact
+and there is no staging variant of it.
+
+Anything other than `Release` or `Staging` is rejected. `Debug` in particular skips the
+`BuildWebUIs` target entirely, so it would publish a full self-contained payload and only then fail
+the `wwwroot` check at the end.
+
 Requires [nfpm](https://nfpm.goreleaser.com/install/), a single static binary. No Debian
 toolchain is needed, which is what lets this run from Windows git-bash as well as from Linux.
 

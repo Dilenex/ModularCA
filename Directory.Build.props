@@ -21,6 +21,31 @@
   </PropertyGroup>
 
   <!--
+    The Staging configuration.
+
+    Staging exists for one reason: it is Release plus JavaScript sourcemaps. ModularCA.API.csproj
+    sets MODULARCA_SOURCEMAP=1 when Configuration is Staging, each vite.config.ts reads it, and
+    scripts/build-linux-dist.sh packages the result when given that configuration. A minified stack like
+    `te.map is not a function` at `index-DbKwh5kT.js:14` costs most of a day to trace on a deployed
+    host; a filename and a line number costs minutes.
+
+    These two properties are what keep the rest of the build identical. The SDK applies its Release
+    defaults by testing `'$(Configuration)' == 'Release'` literally, so an unrecognised configuration
+    name silently inherits the *Debug* side of those defaults instead — Optimize would be false and
+    TRACE would be undefined, and a "staging" artifact would then carry unoptimized IL while looking
+    for all the world like a release build. Set them explicitly so the only difference that reaches
+    the host is the .map files.
+
+    Deliberately NOT a solution configuration: ModularCA.sln lists Debug and Release only. Staging is
+    a packaging concern, driven by the build script publishing the two projects directly, and adding
+    it to the solution would put a third option in front of every developer in the IDE to no purpose.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Staging'">
+    <Optimize>true</Optimize>
+    <DefineConstants>$(DefineConstants);TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <!--
     Supply-chain vulnerability gate (NuGet audit).
 
     Rationale: a certificate authority is a trust anchor. A known-vulnerable dependency shipping in a

@@ -1,2 +1,12 @@
 @import "tailwindcss";
+
+/* Tailwind v4 builds the stylesheet from the class names it finds by scanning source files, and
+   its automatic detection only reaches this package. All five SPAs render components from
+   ../../shared, so any utility used *only* there was never generated: the markup shipped and the
+   styling did not. It cost an evening — DataTable’s column-resize handle is a 6px strip sized by
+   `w-1.5` and anchored by `right-0`, so with neither rule emitted it became a zero-width element
+   that could not be grabbed, and the table simply looked like it had no resize at all. 117 classes
+   were missing in adminui, most of them `dark:` variants and focus rings. Keep these in step with
+   the `@shared` / `@shared-auth` aliases in vite.config.ts and tsconfig.json. */
+@source "../../shared/common/src";
 @custom-variant dark (&:where(.dark, .dark *));

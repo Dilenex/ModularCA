@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+﻿import { defineConfig } from 'vite';
 import plugin from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -53,7 +53,16 @@ export default defineConfig({
     base: '/public/',
     define: versionDefine(),
     build: {
-        sourcemap: false,
+        // Sourcemaps are built when MODULARCA_SOURCEMAP=1, which the csproj sets for the
+        // Staging configuration only. Release stays lean.
+        //
+        // Worth having: a minified stack like `te.map is not a function` at
+        // `index-DbKwh5kT.js:14` cost hours of reverse-engineering bundles by hand to reach a
+        // one-line bug. With a sourcemap it is a filename and a line number. The usual argument
+        // against shipping them — exposing source — does not apply here: this project is
+        // AGPL-3.0 and the source is published. Size is the only real cost, which is why it is
+        // off for Release rather than off entirely.
+        sourcemap: process.env.MODULARCA_SOURCEMAP === '1',
     },
     server: {
         port: 53017,

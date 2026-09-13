@@ -60,6 +60,16 @@
     <Content Remove="wwwroot/setup/**" />
   </ItemGroup>
 
+  <!-- Staging builds carry sourcemaps; Release does not.
+
+       The five vite.config.ts files read MODULARCA_SOURCEMAP, so the decision is visible where a
+       reader looks for it rather than buried in a CLI flag here. Set only for Staging: the cost
+       is artifact size, and the benefit is that a production-style build on a staging box
+       produces stacks that name a file and a line instead of a minified chunk offset. -->
+  <PropertyGroup>
+    <ViteSourcemapEnv Condition="'$(Configuration)' == 'Staging'">MODULARCA_SOURCEMAP=1</ViteSourcemapEnv>
+  </PropertyGroup>
+
   <!-- Build web UIs in Staging/Release configurations -->
   <Target Name="BuildWebUIs" BeforeTargets="Build" Condition="'$(Configuration)' == 'Staging' OR '$(Configuration)' == 'Release'">
     <!-- Keep every UI's package.json "version" in sync with the canonical repo-root VERSION file
@@ -79,31 +89,31 @@
     <Message Text="Building Admin UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
-    <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
+    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
 
     <!-- Public UI -->
     <Message Text="Building Public UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
-    <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
+    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
 
     <!-- User UI -->
     <Message Text="Building User UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.userui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.userui" />
-    <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.userui" />
+    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.userui" />
 
     <!-- Setup UI -->
     <Message Text="Building Setup UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
-    <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
+    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.setupui" />
 
     <!-- Docs UI -->
     <Message Text="Building Docs UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
-    <Exec Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
+    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.docsui" />
   </Target>
 
   <!-- Copy built web UIs to both source wwwroot and output directory -->

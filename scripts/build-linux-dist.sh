@@ -8,35 +8,59 @@
 #
 #   ./scripts/build-linux-dist.sh
 #   ./scripts/build-linux-dist.sh --rid linux-arm64
+#   ./scripts/build-linux-dist.sh --configuration Staging
 #
 # Output: dist/modularca-<VERSION>-linux-x64.tar.gz plus a .sha256 alongside it.
+#
+# --configuration Staging builds the same payload with JS sourcemaps included (the csproj sets
+# MODULARCA_SOURCEMAP=1 for that configuration only, which each vite.config.ts reads). It exists
+# because a minified stack like `te.map is not a function` at `index-DbKwh5kT.js:14` is most of a
+# day's work to trace on a deployed host, and a filename and line number is not. Directory.Build.props
+# sets Optimize=true for Staging, so the IL matches Release and the maps are the only difference.
+#
+# A Staging archive is named ...-staging.tar.gz rather than sharing the Release name. Two artifacts
+# that differ in what they ship must not be indistinguishable on disk — the point of the maps is to
+# know what is running, and an archive you cannot identify defeats that before it starts.
 set -euo pipefail
 
 RID=linux-x64
+CONFIG=Release
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rid) RID="$2"; shift 2 ;;
+        -c|--configuration) CONFIG="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+case "$CONFIG" in
+    Release|Staging) ;;
+    # Debug is rejected rather than allowed through: it skips BuildWebUIs entirely, so the payload
+    # check below would fail on a missing wwwroot after a full self-contained publish had run.
+    *) echo "unsupported configuration: $CONFIG (expected Release or Staging)" >&2; exit 1 ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="$(tr -d ' \r\n' < VERSION)"
-STAGE="$(mktemp -d)/modularca-${VERSION}-${RID}"
+# Release keeps the bare name so build-deb.sh and every existing deploy instruction still resolve it.
+SUFFIX=""
+[[ "$CONFIG" != "Release" ]] && SUFFIX="-$(printf '%s' "$CONFIG" | tr '[:upper:]' '[:lower:]')"
+NAME="modularca-${VERSION}-${RID}${SUFFIX}"
+STAGE="$(mktemp -d)/${NAME}"
 OUT="$ROOT/dist"
-TARBALL="$OUT/modularca-${VERSION}-${RID}.tar.gz"
+TARBALL="$OUT/${NAME}.tar.gz"
 
 note() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 mkdir -p "$STAGE" "$OUT"
 
-# Release configuration triggers the BuildWebUIs target, so all five SPAs are typechecked and
+# Release and Staging both trigger the BuildWebUIs target, so all five SPAs are typechecked and
 # bundled as part of this publish rather than needing a separate step.
-note "publishing ModularCA.API ($RID, self-contained)"
+note "publishing ModularCA.API ($CONFIG, $RID, self-contained)"
 dotnet publish ModularCA.API/ModularCA.API.csproj \
-    -c Release -r "$RID" --self-contained true \
+    -c "$CONFIG" -r "$RID" --self-contained true \
     -o "$STAGE" -v minimal --nologo
 
 # The break-glass unlocker is a separate executable and a separate publish. Into the SAME
@@ -46,7 +70,7 @@ dotnet publish ModularCA.API/ModularCA.API.csproj \
 # collides with the API's.
 note "publishing ModularCA.KeystoreCli"
 dotnet publish ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj \
-    -c Release -r "$RID" --self-contained true \
+    -c "$CONFIG" -r "$RID" --self-contained true \
     -o "$STAGE" -v minimal --nologo
 
 note "staging config, deploy files and installer"
