@@ -111,14 +111,33 @@ public class EstService : IEstService
     /// Performs EST simple enrollment by decoding the base64-encoded CSR, resolving the CA context
     /// and certificate/signing profiles, issuing the certificate, and returning the result as PKCS#7.
     /// </summary>
-    public async Task<byte[]> SimpleEnrollAsync(string base64Csr, string? caLabel = null, string? sourceIp = null,
+    public Task<byte[]> SimpleEnrollAsync(string base64Csr, string? caLabel = null, string? sourceIp = null,
         System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert = null, bool isAuthenticated = false,
         string? callerUsername = null)
+        => SimpleEnrollCoreAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername,
+            presentedCertVerified: false);
+
+    /// <summary>
+    /// The enrollment pipeline shared by <see cref="SimpleEnrollAsync"/> and
+    /// <see cref="SimpleReenrollAsync"/>.
+    /// </summary>
+    /// <param name="presentedCertVerified">
+    /// True when the caller has already proven that <paramref name="clientCert"/> chains to the
+    /// target CA and is unrevoked, as re-enrollment does before it gets here. False for a direct
+    /// enrollment, which must prove it itself. Before this flag existed, direct enrollment never
+    /// proved it at all: the TLS handshake had validated the certificate against <em>some</em>
+    /// trust anchor, and this method trusted that a certificate was present. A human login
+    /// certificate satisfied <c>EstRequireClientCert</c>; a device certificate from one CA
+    /// enrolled at another; a revoked certificate enrolled a replacement for itself.
+    /// </param>
+    private async Task<byte[]> SimpleEnrollCoreAsync(string base64Csr, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, bool isAuthenticated,
+        string? callerUsername, bool presentedCertVerified)
     {
         var csrPem = DecodeCsrFromBase64(base64Csr);
 
         // Enrollment authorization check
-        var (allowed, authError) = await _enrollmentAuth.ValidateAsync("EST", caLabel, csrPem, clientCert, isAuthenticated);
+        var (allowed, authError) = await _enrollmentAuth.ValidateAsync("EST", caLabel, csrPem, clientCert, isAuthenticated, callerUsername);
         if (!allowed)
         {
             // Surface authorization denials on the EST audit tab — previously these threw
@@ -141,6 +160,17 @@ public class EstService : IEstService
         string? basicBoundUsername = null;
         if (clientCert != null)
         {
+            // The identity binding below trusts this certificate's CN and SANs. That trust is only
+            // warranted once the certificate is known to have been issued by the CA being enrolled
+            // against, and not since revoked. The handshake cannot establish either: it validates
+            // against an anchor set, not a target, and runs revocation Offline with unknown status
+            // tolerated.
+            if (!presentedCertVerified)
+            {
+                await VerifyPresentedCertificateAsync(clientCert, caLabel,
+                    reason => ThrowEnrollRejectedAsync(reason, caLabel, sourceIp, clientCert));
+            }
+
             var csrSanValues = parsedCsr.SubjectAlternativeNames
                 .Select(s => s.Contains(':') ? s.Split(':', 2)[1] : s)
                 .ToList();
@@ -379,90 +409,10 @@ public class EstService : IEstService
         if (now < clientCert.NotBefore)
             await ThrowReenrollRejectedAsync("Client certificate is not yet valid.", caLabel, sourceIp, clientCert);
 
-        // 2. Prove the target CA actually issued this certificate, cryptographically.
-        //    This runs *before* the revocation lookup on purpose: a serial number is only unique
-        //    per issuer, so the revocation query below is only meaningful once we know which
-        //    issuer's namespace the serial belongs to.
-        var context = await _caResolver.ResolveAsync(caLabel, "EST");
-        var signingProfile = await _db.SigningProfiles.FindAsync(context.SigningProfileId);
-        if (signingProfile?.IssuerId == null)
-            await ThrowReenrollRejectedAsync(
-                "The EST signing profile has no issuing CA configured, so the presenting certificate's issuer cannot be verified.",
-                caLabel, sourceIp, clientCert);
-
-        var caCertEntity = await _db.Certificates
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CertificateId == signingProfile!.IssuerId);
-        if (caCertEntity == null)
-            await ThrowReenrollRejectedAsync(
-                "The issuing CA certificate configured for this EST signing profile is missing, so issuance cannot be verified.",
-                caLabel, sourceIp, clientCert);
-
-        System.Security.Cryptography.X509Certificates.X509Certificate2? caCert = null;
-        try
-        {
-            caCert = LoadIssuerCertificate(caCertEntity!);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "EST re-enrollment could not load the issuing CA certificate {CertificateId}; rejecting the renewal.",
-                caCertEntity!.CertificateId);
-        }
-        if (caCert == null)
-            await ThrowReenrollRejectedAsync(
-                "The issuing CA certificate could not be parsed, so issuance cannot be verified.",
-                caLabel, sourceIp, clientCert);
-
-        Guid verifiedIssuerCertificateId;
-        // Bound to a non-nullable local because ThrowReenrollRejectedAsync always throws but,
-        // being an awaited Task-returning method, cannot tell the compiler so — leaving caCert
-        // flagged as possibly-null at the chain call below. Asserting once here is clearer than
-        // a null-forgiving operator on the argument, where it would read as suppressing exactly
-        // the fail-open this method exists to close.
-        using (var anchorCert = caCert!)
-        {
-            // Honour the same operator switch the mTLS login path uses. When OCSP is not
-            // required we still catch revocation through the DB gate immediately below.
-            var requireRevocationCheck = (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck;
-            if (!X509ChainValidationUtil.ValidateAgainstAnchor(
-                    clientCert, anchorCert, requireRevocationCheck, out var chainErrors))
-            {
-                _logger.LogWarning(
-                    "EST re-enrollment chain validation failed for subject '{Subject}' against CA '{CaSubject}': {ChainErrors}",
-                    clientCert.Subject, caCertEntity!.SubjectDN, chainErrors);
-                await ThrowReenrollRejectedAsync(
-                    "Client certificate does not chain to the CA being re-enrolled against.", caLabel, sourceIp, clientCert);
-            }
-            verifiedIssuerCertificateId = caCertEntity!.CertificateId;
-        }
-
-        // 3. Verify the client certificate is not revoked (check our DB).
-        //    Scoped to the issuer we just verified: serial numbers are unique only within one
-        //    issuer's namespace, so the old "first row whose SerialNumber matches" lookup could
-        //    land on an unrelated CA's row. Where two rows share a serial that meant the revoked
-        //    one could be passed over - an evasion - and it could also reject a healthy renewal
-        //    because some other CA revoked the same serial. Rows with no IssuerCertificateId
-        //    (legacy, pre-FK) are still considered so the check fails closed for them.
-        //    The serial must also be normalized to the form the Certificates table stores
-        //    (CertificateUtil.FormatSerialNumber — BigInteger minimal hex). .NET renders the DER
-        //    integer octets at fixed width, so any serial whose leading nibble is zero was
-        //    compared as "0A1B2…" against a stored "A1B2…" and matched nothing. Since a miss here
-        //    means "not revoked", a revoked client certificate could renew itself — and with
-        //    SecurityPolicyEntity.RequireMtlsOcspCheck defaulting to false the chain build above
-        //    does no revocation checking either, so this was the only gate.
-        var clientSerialHex = CertificateUtil.NormalizeSerialForLookup(clientCert.SerialNumber);
-        if (!string.IsNullOrEmpty(clientSerialHex))
-        {
-            var serialMatches = await _db.Certificates
-                .AsNoTracking()
-                .Where(c => c.SerialNumber == clientSerialHex)
-                .Select(c => new { c.IssuerCertificateId, c.Revoked })
-                .ToListAsync();
-            if (serialMatches.Any(c => c.Revoked
-                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
-                await ThrowReenrollRejectedAsync("Client certificate has been revoked and cannot be used for re-enrollment.", caLabel, sourceIp, clientCert);
-        }
+        // 2-3. Prove the target CA issued this certificate, and that it has not been revoked.
+        //       Shared with direct enrollment; see VerifyPresentedCertificateAsync.
+        await VerifyPresentedCertificateAsync(clientCert, caLabel,
+            reason => ThrowReenrollRejectedAsync(reason, caLabel, sourceIp, clientCert));
 
         // 4. Only allow re-enrollment within the last 30% of the validity period
         var totalValidity = clientCert.NotAfter - clientCert.NotBefore;
@@ -489,7 +439,8 @@ public class EstService : IEstService
             await ThrowReenrollRejectedAsync(
                 "CSR subject must match the original certificate subject for re-enrollment.", caLabel, sourceIp, clientCert);
 
-        return await SimpleEnrollAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername);
+        return await SimpleEnrollCoreAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername,
+            presentedCertVerified: true);
     }
 
     /// <summary>
@@ -585,6 +536,108 @@ public class EstService : IEstService
     /// The renewal-gating checks in <see cref="SimpleReenrollAsync"/> previously threw with
     /// no audit row, so rejected renewals never appeared on the EST tab. Always throws.
     /// </summary>
+    /// <summary>
+    /// Proves that a presented client certificate was issued by the CA being enrolled against and
+    /// has not been revoked. Calls <paramref name="reject"/> (which must throw) on any failure.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the certificate-side counterpart of the username membership check in
+    /// <c>EnrollmentAuthorizationService</c>: possession of a certificate proves who is asking,
+    /// and chaining to the target CA proves they may ask here. Extracted from re-enrollment,
+    /// which had always done this, so that direct enrollment does it too.
+    /// </para>
+    /// <para>
+    /// Chain validation runs before the revocation lookup on purpose: a serial number is unique
+    /// only per issuer, so the revocation query is meaningful only once the issuer is known.
+    /// </para>
+    /// <para>
+    /// RFC 7030 section 3.3.2 does allow a client to authenticate initial enrollment with a
+    /// certificate from a third party, such as a manufacturer-installed identity. That is a
+    /// deliberately narrower policy here: a third-party certificate is accepted only where an
+    /// operator has made that CA an EST-enabled CA of this system. Deployments that need
+    /// manufacturer certificates bootstrap with HTTP Basic or an enrollment token instead.
+    /// </para>
+    /// </remarks>
+    /// <returns>The <c>CertificateId</c> of the verified issuing CA certificate.</returns>
+    private async Task<Guid> VerifyPresentedCertificateAsync(
+        System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert,
+        string? caLabel,
+        Func<string, Task> reject)
+    {
+        var context = await _caResolver.ResolveAsync(caLabel, "EST");
+        var signingProfile = await _db.SigningProfiles.FindAsync(context.SigningProfileId);
+        if (signingProfile?.IssuerId == null)
+            await reject("The EST signing profile has no issuing CA configured, so the presenting certificate's issuer cannot be verified.");
+
+        var caCertEntity = await _db.Certificates
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CertificateId == signingProfile!.IssuerId);
+        if (caCertEntity == null)
+            await reject("The issuing CA certificate configured for this EST signing profile is missing, so issuance cannot be verified.");
+
+        System.Security.Cryptography.X509Certificates.X509Certificate2? caCert = null;
+        try
+        {
+            caCert = LoadIssuerCertificate(caCertEntity!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "EST could not load the issuing CA certificate {CertificateId}; rejecting the request.",
+                caCertEntity!.CertificateId);
+        }
+        if (caCert == null)
+            await reject("The issuing CA certificate could not be parsed, so issuance cannot be verified.");
+
+        using (var anchorCert = caCert!)
+        {
+            // Honour the same operator switch the mTLS login path uses. When OCSP is not
+            // required, revocation is still caught by the database gate immediately below.
+            var requireRevocationCheck = (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck;
+            if (!X509ChainValidationUtil.ValidateAgainstAnchor(
+                    clientCert, anchorCert, requireRevocationCheck, out var chainErrors))
+            {
+                _logger.LogWarning(
+                    "EST chain validation failed for subject '{Subject}' against CA '{CaSubject}': {ChainErrors}",
+                    clientCert.Subject, caCertEntity!.SubjectDN, chainErrors);
+                await reject("Client certificate does not chain to the CA being enrolled against.");
+            }
+        }
+        var verifiedIssuerCertificateId = caCertEntity!.CertificateId;
+
+        // Scoped to the issuer just verified: serial numbers are unique only within one issuer's
+        // namespace. Rows with no IssuerCertificateId (legacy, pre-FK) are still considered so the
+        // check fails closed for them. The serial is normalised to the stored form; a miss here
+        // means "not revoked", so a formatting mismatch would be a revocation bypass.
+        var clientSerialHex = CertificateUtil.NormalizeSerialForLookup(clientCert.SerialNumber);
+        if (!string.IsNullOrEmpty(clientSerialHex))
+        {
+            var serialMatches = await _db.Certificates
+                .AsNoTracking()
+                .Where(c => c.SerialNumber == clientSerialHex)
+                .Select(c => new { c.IssuerCertificateId, c.Revoked })
+                .ToListAsync();
+            if (serialMatches.Any(c => c.Revoked
+                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
+                await reject("Client certificate has been revoked and cannot be used for enrollment.");
+        }
+
+        return verifiedIssuerCertificateId;
+    }
+
+    /// <summary>
+    /// Audits a rejected direct enrollment on the EST protocol tab and throws. Always throws.
+    /// </summary>
+    private async Task ThrowEnrollRejectedAsync(string reason, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert)
+    {
+        await _protocolAudit.LogEstAsync("EstEnrollRejected", clientCert.Subject, null,
+            null, null, caLabel, sourceIp, success: false, errorMessage: reason,
+            callerPrincipal: $"mtls:{clientCert.Subject}");
+        throw new InvalidOperationException(reason);
+    }
+
     private async Task ThrowReenrollRejectedAsync(string reason, string? caLabel, string? sourceIp,
         System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert)
     {

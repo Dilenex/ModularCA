@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
 using System.Security.Cryptography.X509Certificates;
 
@@ -12,43 +13,77 @@ namespace ModularCA.Core.Services;
 /// </summary>
 public interface IEnrollmentAuthorizationService
 {
+    /// <summary>
+    /// Decides whether an enrollment request is authorized for the CA it addresses.
+    /// </summary>
+    /// <param name="protocol">Protocol name, e.g. "EST".</param>
+    /// <param name="caLabel">CA label from the route, or null for the default CA.</param>
+    /// <param name="csrPem">The CSR, where the protocol carries its credential inside it (SCEP).</param>
+    /// <param name="clientCert">The TLS client certificate, if one was presented.</param>
+    /// <param name="isAuthenticated">Whether the request carries a verified HTTP or message-level credential.</param>
+    /// <param name="callerUsername">
+    /// The username behind <paramref name="isAuthenticated"/>, when the credential names one.
+    /// Required for EST HTTP authentication so the caller's entitlement on the target CA can be
+    /// checked; a password proves identity, not membership.
+    /// </param>
     Task<(bool Allowed, string? Error)> ValidateAsync(
         string protocol, string? caLabel, string? csrPem,
-        X509Certificate2? clientCert, bool isAuthenticated);
+        X509Certificate2? clientCert, bool isAuthenticated, string? callerUsername = null);
 }
 
 public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
 {
     private readonly ModularCADbContext _db;
     private readonly IEnrollmentTokenService _tokenService;
+    private readonly ICaResolverService _caResolver;
+    private readonly IEnrollmentPrincipalAuthorizer _principalAuthorizer;
     private readonly ILogger<EnrollmentAuthorizationService> _logger;
 
     public EnrollmentAuthorizationService(
         ModularCADbContext db,
         IEnrollmentTokenService tokenService,
+        ICaResolverService caResolver,
+        IEnrollmentPrincipalAuthorizer principalAuthorizer,
         ILogger<EnrollmentAuthorizationService> logger)
     {
         _db = db;
         _tokenService = tokenService;
+        _caResolver = caResolver;
+        _principalAuthorizer = principalAuthorizer;
         _logger = logger;
     }
 
+    /// <inheritdoc />
     public async Task<(bool Allowed, string? Error)> ValidateAsync(
         string protocol, string? caLabel, string? csrPem,
-        X509Certificate2? clientCert, bool isAuthenticated)
+        X509Certificate2? clientCert, bool isAuthenticated, string? callerUsername = null)
     {
-        var protocolConfig = await _db.CaProtocolConfigs
-            .Include(c => c.Ca)
-            .FirstOrDefaultAsync(c =>
-                c.Protocol == protocol &&
-                (caLabel == null || c.Ca.Label == caLabel));
-
-        if (protocolConfig == null)
-            return (false, "No protocol configuration found for this CA. EST enrollment is not enabled.");
-
-        return protocol.ToUpperInvariant() switch
+        // Resolve the CA first, through the same selection the issuance path uses, and only then
+        // read that CA's protocol row. This used to be one query: FirstOrDefault over every
+        // protocol row matching the label, with no ordering and no IsEnabled filter. For a
+        // label-less request that returned whichever CA's row the database listed first, disabled
+        // or not, while CaResolverService independently issued from the default CA. A lab CA's
+        // "Basic is enough" policy could authorise issuance from the production CA that required
+        // a client certificate, and the two lookups could disagree on which CA was even meant.
+        var ca = await _caResolver.ResolveCaEntityAsync(caLabel);
+        if (ca == null)
         {
-            "EST" => ValidateEst(protocolConfig, clientCert, isAuthenticated),
+            return (false, caLabel != null
+                ? $"CA '{caLabel}' not found or disabled."
+                : "No enabled Certificate Authority found.");
+        }
+
+        var protocolUpper = protocol.ToUpperInvariant();
+        var protocolConfig = await _db.CaProtocolConfigs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CaId == ca.Id && c.Protocol == protocolUpper);
+
+        if (protocolConfig == null || !protocolConfig.IsEnabled)
+            return (false, $"{protocolUpper} is not enabled for CA '{ca.Label}'.");
+
+        return protocolUpper switch
+        {
+            "EST" => await ValidateEstAsync(protocolConfig, ca, clientCert, isAuthenticated, callerUsername),
             "SCEP" => await ValidateScep(protocolConfig, csrPem),
             "CMP" => ValidateCmp(protocolConfig, clientCert, isAuthenticated),
             "ACME" => (true, null), // ACME handles its own authorization via challenges
@@ -58,29 +93,70 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
     }
 
     /// <summary>
-    /// Validates EST enrollment authorization. When both client certificate and HTTP authentication
-    /// are configured, both must be satisfied. When only one is configured, only that one is required.
+    /// Validates EST enrollment authorization against the CA that will issue. When both client
+    /// certificate and HTTP authentication are configured, both must be satisfied; when only one
+    /// is configured, only that one is required.
     /// </summary>
-    private static (bool, string?) ValidateEst(
-        CaProtocolConfigEntity config, X509Certificate2? clientCert, bool isAuthenticated)
+    /// <remarks>
+    /// <para>
+    /// HTTP authentication is satisfied only when the authenticated account holds the enrollment
+    /// capability on <paramref name="ca"/>. Before this, the check was <c>isAuthenticated</c>
+    /// alone, which the default bearer scheme sets for every valid session token: any user in any
+    /// tenant could enroll at any EST-enabled CA. A password proves who is asking, not whether they
+    /// may ask here.
+    /// </para>
+    /// <para>
+    /// The client-certificate branch checks only presence. Whether the certificate chains to
+    /// <paramref name="ca"/> and is unrevoked is proven by <c>EstService</c> before issuance;
+    /// that needs the CA's certificate and a chain build, which do not belong in a policy switch.
+    /// </para>
+    /// </remarks>
+    private async Task<(bool, string?)> ValidateEstAsync(
+        CaProtocolConfigEntity config, CertificateAuthorityEntity ca,
+        X509Certificate2? clientCert, bool isAuthenticated, string? callerUsername)
     {
-        // If both auth methods are required, both must be present
+        var httpAuthSatisfied = false;
+        if (isAuthenticated)
+        {
+            if (string.IsNullOrWhiteSpace(callerUsername))
+            {
+                // Authenticated but nameless: nothing to check membership for. Refuse rather than
+                // fall through. This is the shape of a mis-wired scheme, and the controller's own
+                // CN binding already refuses the same case for the same reason.
+                _logger.LogWarning("EST HTTP authentication for CA {CaLabel} carried no username; refusing.", ca.Label);
+            }
+            else if (await _principalAuthorizer.MayEnrollAsync(callerUsername, ca.Id))
+            {
+                httpAuthSatisfied = true;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "EST HTTP authentication refused: user {Username} lacks {Capability} on CA {CaLabel}.",
+                    callerUsername, Shared.Authorization.Capabilities.CertRequest, ca.Label);
+            }
+        }
+
         if (config.EstRequireClientCert && config.EstHttpAuthEnabled)
         {
-            if (clientCert != null && isAuthenticated)
+            if (clientCert != null && httpAuthSatisfied)
                 return (true, null);
             return (false, "EST enrollment requires both client certificate AND HTTP authentication");
         }
 
-        // If only client cert required
         if (config.EstRequireClientCert)
             return clientCert != null ? (true, null) : (false, "EST enrollment requires a client certificate (mTLS)");
 
-        // If only HTTP auth required
         if (config.EstHttpAuthEnabled)
-            return isAuthenticated ? (true, null) : (false, "EST enrollment requires HTTP authentication");
+        {
+            if (httpAuthSatisfied)
+                return (true, null);
+            return isAuthenticated
+                ? (false, "EST enrollment refused: the authenticated account is not entitled to request certificates from this CA")
+                : (false, "EST enrollment requires HTTP authentication");
+        }
 
-        // Neither required — SECURITY: refuse to issue to anonymous callers.
+        // Neither required. SECURITY: refuse to issue to anonymous callers.
         // A misconfigured EST protocol config with both EstRequireClientCert=false
         // AND EstHttpAuthEnabled=false must not allow unauthenticated certificate
         // issuance. The controller-level precondition is the primary guard; this

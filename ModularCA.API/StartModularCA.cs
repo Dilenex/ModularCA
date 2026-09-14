@@ -940,8 +940,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             NameClaimType = "username"
         };
 
-    });
+    })
+    // HTTP Basic for EST, per RFC 7030 section 3.2.3. Added as a NAMED scheme and never as the
+    // default or a fallback: only EstController asks for it by name, so a Basic header presented
+    // to any other endpoint still authenticates nothing. Making it a default would give every
+    // authenticated route in the product a password-only, MFA-free entry path.
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions,
+               ModularCA.API.Auth.EstBasicAuthenticationHandler>(
+        ModularCA.API.Auth.EstBasicAuthenticationHandler.SchemeName, _ => { });
 
+// Shared credential verification for protocols that carry no session. Extracted from
+// AuthController.Login so EST's Basic path gets the same lockout counters, account-state gating
+// and audit records rather than a weaker parallel implementation.
+builder.Services.AddScoped<ModularCA.Auth.Services.IProtocolCredentialService,
+                           ModularCA.Auth.Services.ProtocolCredentialService>();
 
 builder.Services.AddScoped<ModularCA.Auth.Authorization.ICaGroupAuthorizationService, ModularCA.Auth.Authorization.CaGroupAuthorizationService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
@@ -1278,6 +1290,7 @@ builder.Services.AddScoped<ModularCA.Core.Services.BootstrapAuditReplayService>(
 builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
+builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAuthorizer, ModularCA.Auth.Authorization.EnrollmentPrincipalAuthorizer>();
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
 builder.Services.AddScoped<ICertificateExportService, CertificateExportService>();
@@ -1750,15 +1763,99 @@ else
             // Pre-compute the effective mTLS auth subdomain FQDN so the
             // per-connection callback does a case-insensitive string compare
             // with zero allocations per request.
-            string? authSubdomainFqdn = null;
-            if (!string.IsNullOrWhiteSpace(config.Mtls.AuthSubdomain))
+            var authSubdomainFqdn = ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(
+                config.Mtls.AuthSubdomain, config.Https.PublicDomain);
+
+            // EST enrollment gets its own SNI hostname, on the same listener and port. It is not the
+            // mTLS login subdomain and must not be pointed at the same name: that hostname REQUIRES
+            // a client certificate and validates against the CAs that issue human login
+            // credentials, while EST must only REQUEST one (RFC 7030 section 4.1 makes /cacerts the
+            // unauthenticated bootstrap step, and a device holds no certificate until after it
+            // enrolls) and must validate against the CAs that issued the devices.
+            var estSubdomainFqdn = ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(
+                config.Est.AuthSubdomain, config.Https.PublicDomain);
+
+            // EST client-certificate trust anchors. Deliberately a separate, refreshable set rather
+            // than a reuse of mtlsTrustedCas: those are the CAs that sign human login certificates
+            // (CaGroups.MtlsSigningCaId), whereas an EST client authenticates with the certificate
+            // this CA previously issued to the device (RFC 7030 section 4.2.2). Sharing one set
+            // would let a login certificate enroll as a device and stop devices re-enrolling at all.
+            ModularCA.Core.Services.Est.EstTrustAnchorCache? estTrustAnchors = null;
+            if (!isSetupMode && !string.IsNullOrEmpty(estSubdomainFqdn))
             {
-                var raw = config.Mtls.AuthSubdomain.Trim();
-                authSubdomainFqdn = raw.Contains('.')
-                    ? raw
-                    : !string.IsNullOrWhiteSpace(config.Https.PublicDomain)
-                        ? $"{raw}.{config.Https.PublicDomain.Trim()}"
-                        : raw;
+                var estDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
+                    .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                    .Options;
+
+                estTrustAnchors = new ModularCA.Core.Services.Est.EstTrustAnchorCache(
+                    () => new ModularCADbContext(estDbOptions),
+                    TimeSpan.FromSeconds(config.Est.TrustAnchorRefreshSeconds),
+                    message => Log.Warning("[EST] Trust-anchor load problem: {Message}", message));
+
+                var estAnchorCount = estTrustAnchors.LoadNow();
+                if (estAnchorCount == 0)
+                {
+                    // Not fatal, unlike the mTLS equivalent. EST can be authenticated by HTTP Basic
+                    // instead, /cacerts must answer regardless, and a CA may have EST enabled only
+                    // moments from now — the cache will pick it up. But say so, because the
+                    // alternative is a client-certificate handshake that rejects everything with no
+                    // explanation anywhere.
+                    Console.WriteLine($"[EST] Subdomain '{estSubdomainFqdn}' is gated, but no CA currently has EST enabled —");
+                    Console.WriteLine("      client certificates presented there will be rejected until one does.");
+                    Console.WriteLine($"      Anchors re-read every {config.Est.TrustAnchorRefreshSeconds}s; no restart needed.");
+                }
+                else
+                {
+                    Console.WriteLine($"[EST] Client-cert requested (not required) on SNI '{estSubdomainFqdn}'; {estAnchorCount} EST-enabled CA anchor(s) loaded.");
+                }
+            }
+
+            // Two SNI gates on one listener must not name one hostname. The mTLS branch is
+            // evaluated first and REQUIRES a client certificate, so a shared name silently turns
+            // EST's unauthenticated /cacerts bootstrap into a handshake failure — and the operator
+            // sees devices that cannot fetch the CA chain, with both settings looking correct.
+            if (!isSetupMode
+                && !string.IsNullOrEmpty(estSubdomainFqdn)
+                && !string.IsNullOrEmpty(authSubdomainFqdn)
+                && string.Equals(estSubdomainFqdn, authSubdomainFqdn, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"[FATAL] Est.AuthSubdomain and Mtls.AuthSubdomain both resolve to '{estSubdomainFqdn}'.");
+                Console.Error.WriteLine("        These hostnames have incompatible handshake policies: the mTLS login name");
+                Console.Error.WriteLine("        requires a client certificate and validates it against the login-signing CAs,");
+                Console.Error.WriteLine("        while EST requests one without requiring it and validates against the");
+                Console.Error.WriteLine("        EST-enabled CAs. Sharing a name breaks EST's unauthenticated /cacerts step.");
+                Console.Error.WriteLine("        Give them separate names (for example 'mtls' and 'est').");
+                Log.Warning("[SECURITY] Startup aborted: Est.AuthSubdomain and Mtls.AuthSubdomain collide on {Fqdn}.", estSubdomainFqdn);
+                Environment.Exit(1);
+            }
+
+            // The listener serves one certificate for every SNI name. A gated hostname missing from
+            // its SANs fails in the browser or client as a name mismatch, before any of the
+            // client-certificate logic above is reached — so the operator debugging "mTLS login
+            // doesn't work" or "EST can't connect" is looking at the wrong layer entirely. Warn
+            // rather than refuse: the certificate is replaceable at runtime, and a CA that cannot
+            // start cannot issue the certificate that would fix this.
+            if (!isSetupMode)
+            {
+                var serverCert = apiCertProvider.GetCertificate();
+                foreach (var (setting, fqdn) in new[]
+                         {
+                             ("Mtls.AuthSubdomain", authSubdomainFqdn),
+                             ("Est.AuthSubdomain", estSubdomainFqdn),
+                         })
+                {
+                    if (string.IsNullOrEmpty(fqdn) || serverCert == null)
+                        continue;
+
+                    if (ModularCA.Shared.Utils.CertificateSanUtil.CoversHostname(serverCert, fqdn))
+                        continue;
+
+                    Console.WriteLine($"[TLS WARNING] {setting} is '{fqdn}', but the HTTPS server certificate does not");
+                    Console.WriteLine($"              list that name (subject: {serverCert.Subject}). Clients will fail with a");
+                    Console.WriteLine("              hostname mismatch before any client-certificate exchange happens.");
+                    Console.WriteLine("              Reissue the web TLS certificate with that name in its SANs.");
+                    Log.Warning("[TLS] {Setting} hostname {Fqdn} is not covered by the HTTPS server certificate SANs.", setting, fqdn);
+                }
             }
 
             // Fail-fast: mTLS gating without trust anchors is not a working configuration.
@@ -1816,15 +1913,72 @@ else
                     OnConnection = ctx =>
                     {
                         var sni = ctx.ClientHelloInfo.ServerName;
-                        var isMtlsSubdomain = !string.IsNullOrEmpty(authSubdomainFqdn)
-                            && string.Equals(sni, authSubdomainFqdn, StringComparison.OrdinalIgnoreCase);
+                        var isMtlsSubdomain = ModularCA.Shared.Utils.SubdomainUtil.MatchesSni(sni, authSubdomainFqdn);
+
+                        // EST is gated separately and never falls back to the mTLS branch: if both
+                        // settings somehow name the same hostname, mTLS wins and EST's /cacerts
+                        // bootstrap would break, so the startup check below refuses that pairing.
+                        var isEstSubdomain = !isMtlsSubdomain
+                            && estTrustAnchors != null
+                            && ModularCA.Shared.Utils.SubdomainUtil.MatchesSni(sni, estSubdomainFqdn);
 
                         var options = new System.Net.Security.SslServerAuthenticationOptions
                         {
                             ServerCertificate = apiCertProvider.GetCertificate(),
                             EnabledSslProtocols = sslProtocols,
-                            ClientCertificateRequired = isMtlsSubdomain,
+
+                            // True on the EST subdomain as well, but it means something different
+                            // there: this flag is what puts a CertificateRequest on the wire, and
+                            // the EST validation callback below accepts a client that answers it
+                            // with nothing. Without the flag no certificate is ever offered and
+                            // EstRequireClientCert can never be satisfied — the defect this
+                            // subdomain exists to fix.
+                            ClientCertificateRequired = isMtlsSubdomain || isEstSubdomain,
                         };
+
+                        if (isEstSubdomain)
+                        {
+                            options.RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
+                            {
+                                // Anonymous is allowed here, and must be. RFC 7030 section 4.1 makes
+                                // /cacerts the unauthenticated bootstrap step: a device fetches the
+                                // CA chain before it has any certificate of its own, so failing the
+                                // handshake on an empty client Certificate would break enrollment
+                                // at its first step. Whether anonymity is acceptable for the
+                                // request that follows is EnrollmentAuthorizationService's call,
+                                // per CA, where EstRequireClientCert and EstHttpAuthEnabled live.
+                                if (cert == null)
+                                    return true;
+
+                                // A certificate that IS presented must be real. EstService reads
+                                // this certificate's CN and SANs and binds the CSR to them, but
+                                // never checks who issued it — it trusts this callback to have
+                                // done so. Waving an unvalidated certificate through here means a
+                                // self-signed CN=root-admin enrolls as CN=root-admin, with every
+                                // downstream binding check confirming the forgery against itself.
+                                var anchors = estTrustAnchors!.Current;
+                                var accepted = ModularCA.Core.Services.Est.EstClientCertValidator.IsIssuedByEstCa(
+                                    cert as System.Security.Cryptography.X509Certificates.X509Certificate2,
+                                    anchors.EstCaCerts,
+                                    anchors.ChainCerts);
+
+                                if (!accepted)
+                                {
+                                    // Logged because the client sees only a TLS alert. Without this
+                                    // line the operator has a device that "cannot connect" and no
+                                    // way to tell a wrong-CA certificate from a network fault.
+                                    Log.Warning(
+                                        "[EST] Client certificate rejected at handshake on {Sni}: subject {Subject}, issuer {Issuer}. "
+                                        + "{AnchorCount} EST-enabled CA anchor(s) in effect.",
+                                        sni,
+                                        (cert as System.Security.Cryptography.X509Certificates.X509Certificate2)?.Subject ?? "?",
+                                        (cert as System.Security.Cryptography.X509Certificates.X509Certificate2)?.Issuer ?? "?",
+                                        anchors.EstCaCerts.Count);
+                                }
+
+                                return accepted;
+                            };
+                        }
 
                         if (isMtlsSubdomain)
                         {
@@ -1850,6 +2004,15 @@ else
                                 buildChain.ChainPolicy.TrustMode = System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust;
                                 foreach (var ca in mtlsTrustedCas)
                                     buildChain.ChainPolicy.CustomTrustStore.Add(ca);
+
+                                // Only certificates usable for client authentication. The login
+                                // CAs may also issue other kinds; a TLS server certificate must
+                                // not double as a login credential. Absence of the EKU extension
+                                // still passes (RFC 5280 section 4.2.1.12: absent means
+                                // unrestricted), so existing login certificates are unaffected.
+                                buildChain.ChainPolicy.ApplicationPolicy.Add(
+                                    new System.Security.Cryptography.Oid(
+                                        ModularCA.Core.Services.Est.EstClientCertValidator.ClientAuthEkuOid));
 
                                 // Revocation: Offline, matching MtlsMiddleware's chain policy.
                                 // A revoked client certificate must not survive the handshake

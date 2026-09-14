@@ -390,6 +390,17 @@ public class WhitelistService : IWhitelistService
     /// </summary>
     private PathBucket? TryDeriveSigningProtocolBucket(string path)
     {
+        // RFC 7030 section 3.2.2 path. Added to the router after the other two forms, and for a
+        // while known only to the feature gate, so a rule that confined EST to a device VLAN
+        // still let the standard path through as a System-bucket request. Three classifiers
+        // (this, the rate limiter, the feature gate) must agree on what is an EST path.
+        const string estWellKnown = "/.well-known/est/";
+        if (StartsWith(path, estWellKnown))
+        {
+            var label = ExtractFirstSegment(path, estWellKnown);
+            return new PathBucket(WhitelistScope.ShortUrl, ResolveLabel(label), "EST", true);
+        }
+
         foreach (var proto in SigningProtocols)
         {
             var apiPrefix = $"/api/v1/{proto.ToLowerInvariant()}/";

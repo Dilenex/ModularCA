@@ -28,6 +28,13 @@
          Explicit Relational pin matches what the production csproj uses so MSBuild doesn't
          flag a 9.0.0 vs 9.0.14 transitive conflict from Pomelo's older transitive reference. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.14" />
+    <!-- Relational provider for tests of code paths the InMemory provider cannot execute:
+         ExecuteUpdate/ExecuteUpdateAsync (used in 20+ places for atomic counter updates) is
+         unsupported there, so lockout and similar logic was untestable without it. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
+    <!-- EF Core 9.0.14 resolves SQLitePCLRaw 2.1.10, which carries GHSA-2m69-gcr7-jv3q.
+         Pinned forward to the patched 2.1.13 rather than suppressing NU1903. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
 
     <!-- Microsoft.Extensions.* doubles. Used to inject a NullLogger or fake TimeProvider into

@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
@@ -60,6 +61,34 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// defect. The claim name matches the rest of the codebase (<c>AuthController</c>).
     /// </remarks>
     /// <returns>The caller's username, or null when no authenticated username is present.</returns>
+    /// <summary>
+    /// Attempts HTTP Basic authentication for this request and adopts the result.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called explicitly rather than through an <c>[Authorize]</c> attribute because EST is
+    /// <c>[AllowAnonymous]</c> by design — <c>/cacerts</c> and <c>/csrattrs</c> must answer without
+    /// credentials, and <c>EnrollmentAuthorizationService</c> decides per CA whether an
+    /// unauthenticated enrollment is acceptable. An attribute would refuse before that decision
+    /// could be made.
+    /// </para>
+    /// <para>
+    /// Naming the scheme is what keeps Basic confined to EST: it is not the default and not a
+    /// fallback, so the same header presented to an admin route authenticates nothing.
+    /// </para>
+    /// <para>
+    /// A failed attempt is not an error here. The caller may be authenticating by client
+    /// certificate instead, or may legitimately be anonymous; leaving the principal untouched lets
+    /// the authorization service give the accurate refusal rather than this method guessing.
+    /// </para>
+    /// </remarks>
+    private async Task TryBasicAuthenticationAsync()
+    {
+        var result = await HttpContext.AuthenticateAsync(ModularCA.API.Auth.EstBasicAuthenticationHandler.SchemeName);
+        if (result.Succeeded && result.Principal != null)
+            HttpContext.User = result.Principal;
+    }
+
     private string? ResolveCallerUsername()
     {
         var name = HttpContext.User?.Identity?.Name;
@@ -111,6 +140,10 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     [RequestSizeLimit(MaxCsrBodySize)]
     public async Task<IActionResult> SimpleEnroll(string? caLabel = null)
     {
+        // Before the precondition check, so a caller presenting Basic credentials is already
+        // authenticated when EnrollmentAuthorizationService evaluates EstHttpAuthEnabled.
+        await TryBasicAuthenticationAsync();
+
         var authPrecondition = await EnsureEstAuthConfiguredAsync(caLabel);
         if (authPrecondition != null) return authPrecondition;
 
@@ -183,6 +216,10 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     [RequestSizeLimit(MaxCsrBodySize)]
     public async Task<IActionResult> SimpleReenroll(string? caLabel = null)
     {
+        // Before the precondition check, so a caller presenting Basic credentials is already
+        // authenticated when EnrollmentAuthorizationService evaluates EstHttpAuthEnabled.
+        await TryBasicAuthenticationAsync();
+
         var authPrecondition = await EnsureEstAuthConfiguredAsync(caLabel);
         if (authPrecondition != null) return authPrecondition;
 

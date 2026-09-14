@@ -601,6 +601,12 @@ export interface EmailConfig {
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface EstConfig {
+    authSubdomain: string;
+    trustAnchorRefreshSeconds: number;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface EventLogConfig {
     source: string;
     logName: string;
@@ -1249,6 +1255,7 @@ export interface SystemConfig {
     webhook: WebhookConfig;
     mtls: MtlsConfig;
     acme: AcmeConfig;
+    est: EstConfig;
     backup: BackupConfig;
     webAuthn: WebAuthnConfig;
     alert: AlertConfig;

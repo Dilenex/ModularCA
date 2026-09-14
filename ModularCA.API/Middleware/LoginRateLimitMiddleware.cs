@@ -76,6 +76,22 @@ public class LoginRateLimitMiddleware
     };
 
     /// <summary>
+    /// Per-IP budget for EST enrollment requests that carry HTTP Basic credentials.
+    /// </summary>
+    /// <remarks>
+    /// EST Basic verifies passwords with the interactive login's rules, including the shared
+    /// failed-attempt counter and lockout. That is deliberate: a lockout at the login page must
+    /// not be walkable-around via EST. But it means EST is also a lockout oracle, and EST requests
+    /// sit in the protocol rate bucket (around 100 per minute per IP) rather than the login one
+    /// (10 per 5 minutes). Ten wrong passwords from any internal address locked an admin account
+    /// for fifteen minutes, at a cost of a few hundred milliseconds. Requests that present Basic
+    /// credentials on an EST enrollment endpoint now draw from the login budget as well.
+    /// </remarks>
+    private static readonly (int maxAttempts, int windowMinutes) EstBasicBudget = (10, 5);
+
+    private static readonly string[] EstEnrollmentPrefixes = ["/api/v1/est", "/est/", "/.well-known/est/"];
+
+    /// <summary>
     /// Paths where a per-username bucket should also be applied (on top of the
     /// per-IP bucket). Covers both login and forced password-change flows.
     /// </summary>
@@ -112,6 +128,17 @@ public class LoginRateLimitMiddleware
             // Map /auth/* to /api/v1/auth/* so the existing allow-lists above stay
             // authoritative and cover both route shapes.
             requestPath = NormalizeAuthPath(requestPath);
+
+            if (IsEstBasicAttempt(requestPath, context.Request.Headers.Authorization.ToString()))
+            {
+                var ip = GetClientIp(context);
+                var window = TimeSpan.FromMinutes(EstBasicBudget.windowMinutes);
+                if (ip != null && await IsRateLimitedAsync(context, $"rl:ip:{ip}:est-basic", EstBasicBudget.maxAttempts, window))
+                {
+                    await Write429(context, window);
+                    return;
+                }
+            }
 
             foreach (var (pathPrefix, (maxAttempts, windowMinutes)) in RateLimitedPaths)
             {
@@ -150,6 +177,28 @@ public class LoginRateLimitMiddleware
         }
 
         await _next(context);
+    }
+
+    /// <summary>
+    /// Whether a request is an EST enrollment carrying HTTP Basic credentials, and so a password
+    /// attempt in disguise.
+    /// </summary>
+    internal static bool IsEstBasicAttempt(string requestPath, string? authorizationHeader)
+    {
+        if (string.IsNullOrEmpty(authorizationHeader)
+            || !authorizationHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!requestPath.EndsWith("/simpleenroll", StringComparison.OrdinalIgnoreCase)
+            && !requestPath.EndsWith("/simplereenroll", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        foreach (var prefix in EstEnrollmentPrefixes)
+        {
+            if (requestPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private static async Task Write429(HttpContext context, TimeSpan window)

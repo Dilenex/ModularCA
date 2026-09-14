@@ -24,6 +24,7 @@ namespace ModularCA.Shared.Models.Config
         public WebhookConfig Webhook { get; set; } = new();
         public MtlsConfig Mtls { get; set; } = new();
         public AcmeConfig Acme { get; set; } = new();
+        public EstConfig Est { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
         public WebAuthnConfig WebAuthn { get; set; } = new();
         public AlertConfig Alert { get; set; } = new();
@@ -910,6 +911,61 @@ namespace ModularCA.Shared.Models.Config
     /// <summary>
     /// ACME protocol configuration including External Account Binding (EAB) settings.
     /// </summary>
+    /// <summary>
+    /// Host-level EST (RFC 7030) settings. Per-CA enablement and authentication policy live in
+    /// <c>CaProtocolConfigEntity</c>; this covers only what belongs to the listener.
+    /// </summary>
+    public class EstConfig
+    {
+        /// <summary>
+        /// SNI hostname on which EST enrollment requests are offered a client certificate, either a
+        /// short prefix ("est", completed from <see cref="HttpsConfig.PublicDomain"/>) or a
+        /// complete FQDN ("est.ca.example.com"). Empty disables the gate.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// EST client-certificate authentication cannot work without this. Kestrel emits a TLS
+        /// CertificateRequest only for SNI names the handshake callback gates, and the main
+        /// hostname is deliberately not one of them — the public portal must not prompt every
+        /// browser visitor for a certificate. A CA with <c>EstRequireClientCert</c> set but no EST
+        /// subdomain configured therefore refuses every enrollment with "EST enrollment requires a
+        /// client certificate (mTLS)" while the client never had the chance to send one. Confirmed
+        /// against a live deployment before this setting existed.
+        /// </para>
+        /// <para>
+        /// <b>Distinct from <see cref="MtlsConfig.AuthSubdomain"/>, and deliberately so.</b> That
+        /// hostname *requires* a client certificate and validates it against the CAs that issue
+        /// human login credentials. This one *requests* a certificate without requiring it, because
+        /// RFC 7030 section 4.1 makes <c>/cacerts</c> the bootstrap step and a device has no
+        /// certificate until after it enrolls — a required handshake would break the clients the
+        /// subdomain exists for. It validates against the EST-enabled CAs' own certificates,
+        /// because re-enrollment (section 4.2.2) authenticates with the certificate this CA
+        /// previously issued to the device. Pointing both settings at one hostname would let a
+        /// human login certificate enroll as a device, and stop a device from re-enrolling at all.
+        /// </para>
+        /// <para>
+        /// The HTTPS server certificate must carry this name in its SANs, or clients get a
+        /// hostname-mismatch failure before any of the above applies. Startup checks and reports
+        /// this rather than leaving it to be discovered by a client.
+        /// </para>
+        /// </remarks>
+        public string AuthSubdomain { get; set; } = string.Empty;
+
+        /// <summary>
+        /// How long the EST client-certificate trust anchors are cached before being re-read from
+        /// the database. Defaults to 60 seconds; values below 5 seconds are treated as 5.
+        /// </summary>
+        /// <remarks>
+        /// The anchor set is "the certificates of the CAs that currently have EST enabled", which an
+        /// administrator changes at runtime from the admin UI. A startup-only snapshot would mean
+        /// enabling EST on a CA appears to work while every device under it fails the handshake
+        /// until someone restarts the service — with nothing in the logs connecting the two. The
+        /// refresh runs off the handshake path, so a stale-but-present set answers the connection
+        /// and the next one sees the new anchors.
+        /// </remarks>
+        public int TrustAnchorRefreshSeconds { get; set; } = 60;
+    }
+
     public class AcmeConfig
     {
         /// <summary>

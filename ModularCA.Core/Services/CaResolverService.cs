@@ -80,7 +80,8 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
         };
     }
 
-    private async Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel)
+    /// <inheritdoc />
+    public async Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel)
     {
         if (!string.IsNullOrWhiteSpace(caLabel))
         {

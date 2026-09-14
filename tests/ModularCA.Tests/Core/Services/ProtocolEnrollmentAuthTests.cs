@@ -101,7 +101,14 @@ public class ProtocolEnrollmentAuthTests
     }
 
     private static EnrollmentAuthorizationService Service(ModularCA.Database.ModularCADbContext db)
-        => new(db, new EnrollmentTokenServiceStub(), NullLogger<EnrollmentAuthorizationService>.Instance);
+        => new(db, new EnrollmentTokenServiceStub(), new CaResolverService(db),
+            new DenyAllPrincipalAuthorizer(), NullLogger<EnrollmentAuthorizationService>.Instance);
+
+    /// <summary>CMP never authenticates by username, so membership is never consulted here.</summary>
+    private sealed class DenyAllPrincipalAuthorizer : ModularCA.Shared.Interfaces.IEnrollmentPrincipalAuthorizer
+    {
+        public Task<bool> MayEnrollAsync(string username, Guid caId) => Task.FromResult(false);
+    }
 
     /// <summary>
     /// An unprotected CMP message must be refused. This previously returned success whenever

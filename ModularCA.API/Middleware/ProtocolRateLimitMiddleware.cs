@@ -46,6 +46,11 @@ public class ProtocolRateLimitMiddleware
         // enrollment surface was unthrottled while its alias was limited. The other short
         // prefixes below (OCSP/TSA/CRL/CA) already had this treatment; enrollment was missed.
         { "EST_SHORT", "/est/" },
+        // RFC 7030 section 3.2.2 form. Same omission as the short prefixes above, one route later.
+        { "EST_WELLKNOWN", "/.well-known/est/" },
+        // Anonymous CSR parsing behind a URL token. The token is 256-bit so guessing is not the
+        // concern; unbounded ASN.1 parsing from any source is.
+        { "PUBLIC_ENROLL", "/api/v1/public/enroll" },
         { "SCEP_SHORT", "/scep/" },
         { "CMP_SHORT", "/cmp/" },
         { "ACME", "/api/v1/acme" },
@@ -77,6 +82,8 @@ public class ProtocolRateLimitMiddleware
         // so a client that respects one should never notice the other. Not seeded into
         // ProtocolRateLimits, so these defaults are the live values unless an operator adds rows.
         { "EST_SHORT", (100, 1) },
+        { "EST_WELLKNOWN", (100, 1) },
+        { "PUBLIC_ENROLL", (30, 1) },
         { "SCEP_SHORT", (50, 1) },
         { "CMP_SHORT", (100, 1) },
         { "ACME", (200, 1) },
