@@ -363,7 +363,21 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # Program specific files
-.keystore
+# Private key material and secrets. These never belong in the repo; the app writes them at
+# runtime under config/ and keystores/. Ignored broadly so an accidental `git add` on a public
+# repo cannot expose a key. *.yaml below already covers config.yaml, db.yaml and keystore.yaml.
+*.keystore
+*.key
+config/backup.key
+config/backup-password.key
+config/dp-keys/
+config/ssh-ca-keys/
+keystores/
+# Vite reads .env at build time; the only value is VITE_API_URL. Track an example, not the file,
+# so a real value someone adds locally is never committed.
+.env
+.env.*
+!.env.example
 *.yaml
 !*.yaml.example
 # Packaging metadata is not operator config and build-deb.sh reads it, so a clean clone must

@@ -72,7 +72,7 @@ public class ForwardedHeaderHopLimitTests
     {
         // The two correct configurations. A warning that fires on a healthy install is a warning
         // people learn to scroll past, which costs more than it saves.
-        Assert.False(WarnsAboutSilentBypass(behindProxy: true, trustedCidrs: "10.100.105.2/32"));
+        Assert.False(WarnsAboutSilentBypass(behindProxy: true, trustedCidrs: "203.0.113.2/32"));
         Assert.False(WarnsAboutSilentBypass(behindProxy: false, trustedCidrs: ""));
     }
 

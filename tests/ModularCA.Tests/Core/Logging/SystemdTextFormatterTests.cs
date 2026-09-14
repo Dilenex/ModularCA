@@ -146,7 +146,7 @@ public class SystemdTextFormatterTests
             properties: new[]
             {
                 ("RequestMethod", (object)"GET"),
-                ("RequestPath", "/acme/maroongang-ca-s1/directory"),
+                ("RequestPath", "/acme/example-ca/directory"),
                 ("StatusCode", 200),
                 ("Elapsed", 8.108654),
                 ("SourceContext", "Serilog.AspNetCore.RequestLoggingMiddleware"),

@@ -10,8 +10,8 @@
 # completely correct in its service and still be unusable by every real client, and that is not a
 # theoretical worry: see the EST HTTP-auth case below.
 #
-#   ./scripts/test-enrollment-protocols.sh https://ca4.maroongang.net my-ca-label
-#   ./scripts/test-enrollment-protocols.sh https://ca4.maroongang.net my-ca-label \
+#   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label
+#   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
 #        --client-cert client.pem --client-key client.key   # EST mTLS enrolment
 #
 # NOTE on the mTLS probe: Kestrel asks for a client certificate only when the TLS SNI matches
@@ -19,7 +19,7 @@
 # server-auth handshake in which the certificate is never requested, and EST then refuses with
 # "requires a client certificate (mTLS)". That is the server's SNI gate, not a fault in the
 # certificate or this script — pass the mTLS hostname as the base URL to exercise it.
-#   ./scripts/test-enrollment-protocols.sh https://ca4.maroongang.net my-ca-label \
+#   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
 #        --cmp-secret 'shared-secret'                       # CMP PBM enrolment
 #
 # Exit status is the number of checks that failed, so this is usable from CI once a disposable CA
