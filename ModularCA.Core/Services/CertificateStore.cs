@@ -99,9 +99,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             RevocationReason = entity.RevocationReason ?? string.Empty,
             RevocationDate = entity.RevocationDate,
             SigningProfileId = entity.SigningProfileId ?? Guid.Empty,
-            SubjectAlternativeNames = string.IsNullOrWhiteSpace(entity.SubjectAlternativeNamesJson)
-    ? new List<string>()
-    : JsonSerializer.Deserialize<List<string>>(entity.SubjectAlternativeNamesJson)!,
+            SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(entity.SubjectAlternativeNamesJson),
 
             KeyUsages = string.IsNullOrWhiteSpace(entity.KeyUsagesJson)
     ? new List<string>()
@@ -137,9 +135,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
                 RevocationReason = c.RevocationReason ?? string.Empty,
                 RevocationDate = c.RevocationDate,
                 SigningProfileId = c.SigningProfileId ?? Guid.Empty,
-                SubjectAlternativeNames = string.IsNullOrWhiteSpace(c.SubjectAlternativeNamesJson)
-                    ? new List<string>()
-                    : JsonSerializer.Deserialize<List<string>>(c.SubjectAlternativeNamesJson)!,
+                SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(c.SubjectAlternativeNamesJson),
                 KeyUsages = string.IsNullOrWhiteSpace(c.KeyUsagesJson)
                     ? new List<string>()
                     : JsonSerializer.Deserialize<List<string>>(c.KeyUsagesJson)!,
@@ -229,9 +225,7 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             RevocationReason = c.RevocationReason ?? string.Empty,
             RevocationDate = c.RevocationDate,
             SigningProfileId = c.SigningProfileId ?? Guid.Empty,
-            SubjectAlternativeNames = string.IsNullOrWhiteSpace(c.SubjectAlternativeNamesJson)
-    ? new List<string>()
-    : JsonSerializer.Deserialize<List<string>>(c.SubjectAlternativeNamesJson)!,
+            SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(c.SubjectAlternativeNamesJson),
 
             KeyUsages = string.IsNullOrWhiteSpace(c.KeyUsagesJson)
     ? new List<string>()

@@ -277,7 +277,12 @@ public class CmpService : ICmpService
         {
             // Signature-based protection (RFC 4210 §5.1.3.3).
             reqCtx.ProtectionMode = CmpProtectionMode.Signature;
-            var sigError = await VerifySignatureProtectionAsync(request, header, body, caCert, reqCtx);
+            // Verify the client's signing certificate against the ISSUING CA, not against whatever
+            // signs our responses. When a dedicated CMP signer is configured, caCert is that signer
+            // (subject "... CMP Signer") and SignerIssuerCert holds the real CA; verifying the
+            // client cert's issuer against the signer's subject would reject every legitimate kur.
+            var verificationCaCert = SelectRequestVerificationCert(caCert, reqCtx.SignerIssuerCert);
+            var sigError = await VerifySignatureProtectionAsync(request, header, body, verificationCaCert, reqCtx);
             if (sigError != null)
             {
                 return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
@@ -501,6 +506,22 @@ public class CmpService : ICmpService
     /// signing cert's subject to match the CertTemplate subject (key-identity binding).
     /// Returns null on success or a public-safe error string on failure.
     /// </summary>
+    /// <summary>
+    /// Chooses the certificate a signature-protected request is verified against: the issuing CA,
+    /// never the certificate that signs our responses.
+    /// </summary>
+    /// <remarks>
+    /// <c>ResolveSignerForCaAsync</c> returns the response signer as its first element, which is the
+    /// dedicated CMP signer when one is configured. That signer's subject is "... CMP Signer", not
+    /// the CA, so verifying an incoming client certificate's issuer against it rejects every
+    /// legitimate signature-protected request (kur, or a signed ir). The real CA travels alongside
+    /// as <paramref name="signerIssuer"/> whenever a delegated signer is in use, and is null when
+    /// the CA signs directly — in which case <paramref name="responseSigner"/> is already the CA.
+    /// </remarks>
+    internal static X509Certificate SelectRequestVerificationCert(
+        X509Certificate responseSigner, X509Certificate? signerIssuer)
+        => signerIssuer ?? responseSigner;
+
     private async Task<string?> VerifySignatureProtectionAsync(
         PkiMessage request, PkiHeader header, PkiBody body, X509Certificate caCert, CmpRequestContext reqCtx)
     {

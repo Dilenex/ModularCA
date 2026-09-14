@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
 
@@ -126,6 +128,76 @@ public static class UpnSanEncoding
     }
 
     /// <summary>Maps a GeneralName tag to the type prefix used in stored SAN strings.</summary>
+    // Leading ASN.1 tag markers BouncyCastle prints for a tagged value, e.g. "[CONTEXT 0]",
+    // possibly nested. Stripped when recovering the value from a legacy rendering.
+    private static readonly Regex LeadingTagMarkers =
+        new(@"^(\s*\[(?:CONTEXT|APPLICATION|PRIVATE|BER|DER)[^\]]*\]\s*)+", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Repairs a Subject Alternative Name string that was stored in BouncyCastle's raw
+    /// <c>GeneralName</c> rendering rather than the clean <c>TYPE:value</c> form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Before <see cref="Describe"/> handled otherName, an otherName SAN was stored as
+    /// <c>Other:[1.3.6.1.4.1.311.20.2.3, [CONTEXT 0]user@domain]</c> — the sequence's own
+    /// ToString. The value is baked into <c>SubjectAlternativeNamesJson</c>, so a certificate
+    /// issued then still displays that way however the reader is fixed. This recovers the OID and
+    /// value from that rendering and returns the same <c>UPN:value</c> a freshly parsed
+    /// certificate produces. Only otherName was ever ugly; DNS, IP, email and URI rendered as
+    /// their plain value even by the old code, so a string that does not start with
+    /// <c>Other:[</c> is already clean and returned unchanged.
+    /// </para>
+    /// <para>
+    /// A read-time repair rather than a data migration: it fixes existing rows wherever they are
+    /// displayed, is a no-op on the clean strings every new certificate writes, and cannot corrupt
+    /// a row it does not recognise.
+    /// </para>
+    /// </remarks>
+    public static string NormalizeStoredSan(string? stored)
+    {
+        if (string.IsNullOrEmpty(stored) || !stored.StartsWith("Other:[", StringComparison.Ordinal))
+            return stored ?? string.Empty;
+
+        var inner = stored["Other:[".Length..];
+        // Drop the single trailing ']' that closes the sequence rendering.
+        if (inner.EndsWith(']')) inner = inner[..^1];
+
+        var comma = inner.IndexOf(',');
+        if (comma < 0)
+            return stored; // Not the shape we know; leave it rather than mangle it.
+
+        var oid = inner[..comma].Trim();
+        var value = LeadingTagMarkers.Replace(inner[(comma + 1)..].Trim(), string.Empty).Trim();
+
+        if (oid == UpnOid)
+            return $"{UpnPrefix}:{value}";
+        // A non-UPN otherName: still clearer than the sequence dump, and distinguishable.
+        return $"OTHER:{oid}:{value}";
+    }
+
+    /// <summary>Normalizes each SAN in a stored list; see <see cref="NormalizeStoredSan"/>.</summary>
+    public static List<string> NormalizeStoredSans(IEnumerable<string>? stored)
+        => stored?.Select(NormalizeStoredSan).ToList() ?? new List<string>();
+
+    /// <summary>
+    /// Deserializes a <c>SubjectAlternativeNamesJson</c> column and repairs any legacy renderings.
+    /// Returns an empty list for null, blank, or unparseable JSON rather than throwing.
+    /// </summary>
+    public static List<string> DeserializeStoredSans(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return new List<string>();
+        try
+        {
+            return NormalizeStoredSans(JsonSerializer.Deserialize<List<string>>(json));
+        }
+        catch (JsonException)
+        {
+            return new List<string>();
+        }
+    }
+
     public static string TypeName(int tag) => tag switch
     {
         GeneralName.DnsName => "DNS",

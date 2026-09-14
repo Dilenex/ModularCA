@@ -239,9 +239,7 @@ public class AdminCertificateController(
                 KeyAlgorithm = certKeyAlgo,
                 KeySize = certKeySize,
                 SignatureAlgorithm = certSigAlgo,
-                SubjectAlternativeNames = string.IsNullOrWhiteSpace(c.SubjectAlternativeNamesJson)
-                    ? new List<string>()
-                    : JsonSerializer.Deserialize<List<string>>(c.SubjectAlternativeNamesJson)!,
+                SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(c.SubjectAlternativeNamesJson),
                 KeyUsages = string.IsNullOrWhiteSpace(c.KeyUsagesJson)
                     ? new List<string>()
                     : JsonSerializer.Deserialize<List<string>>(c.KeyUsagesJson)!,
