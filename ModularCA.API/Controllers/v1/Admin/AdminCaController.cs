@@ -266,6 +266,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ca.IsEnabled,
                     ca.ParentCaId,
                     ca.OcspResponderCertificateId,
+                    ca.CmpSigningCertificateId,
                     ca.CertificateId,
                     Certificate = ca.Certificate != null ? new
                     {
@@ -755,8 +756,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await _groupAuth.HasCaCapabilityAsync(_currentUser.User.Id, ca.Id, ModularCA.Shared.Authorization.Capabilities.CaManage))
                 return StatusCode(403, new { error = "You are not authorized to manage this certificate authority." });
 
-            if (!request.ReissueOcspResponder && !request.ReissueTsa)
-                return BadRequest(new { error = "Select the OCSP responder, the TSA, or both." });
+            if (!request.ReissueOcspResponder && !request.ReissueTsa && !request.ReissueCmpSigner)
+                return BadRequest(new { error = "Select the OCSP responder, the TSA, the CMP signer, or any combination." });
 
             try
             {
@@ -764,7 +765,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     caId,
                     request.ReissueOcspResponder,
                     request.ReissueTsa,
-                    request.RevokeSuperseded);
+                    request.RevokeSuperseded,
+                    request.ReissueCmpSigner);
 
                 await _audit.LogAsync(
                     AuditActionType.CertificateReissued,
@@ -776,6 +778,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                         result.CaLabel,
                         result.NewOcspResponderSerial,
                         result.NewTsaSerial,
+                        result.NewCmpSignerSerial,
                         SupersededRevoked = result.SupersededSerialsRevoked,
                     },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -787,6 +790,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     caLabel = result.CaLabel,
                     newOcspResponderSerial = result.NewOcspResponderSerial,
                     newTsaSerial = result.NewTsaSerial,
+                    newCmpSignerSerial = result.NewCmpSignerSerial,
                     supersededRevoked = result.SupersededSerialsRevoked,
                 });
             }
@@ -969,6 +973,13 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>Reissue the TSA signer certificate.</summary>
         public bool ReissueTsa { get; set; }
+
+        /// <summary>
+        /// Issue or reissue the dedicated CMP message-signing certificate. Not issued at CA
+        /// creation; see <c>CertificateAuthorityEntity.CmpSigningCertificateId</c> for why one is
+        /// needed at all.
+        /// </summary>
+        public bool ReissueCmpSigner { get; set; }
 
         /// <summary>
         /// Revoke the certificate being replaced when it is still valid. Leave true unless you

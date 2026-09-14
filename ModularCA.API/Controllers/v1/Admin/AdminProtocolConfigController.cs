@@ -73,6 +73,10 @@ public class AdminProtocolConfigController(
                 // SCEP
                 c.ScepChallengeRequired,
                 c.CmpRequireSignature,
+                // Whether the CA has a dedicated CMP message signer. Without one, signature-protected
+                // responses are signed with the CA certificate, which OpenSSL-based clients reject; the
+                // UI shows that beside the CMP toggle rather than leaving it to be found by a client.
+                CmpSignerConfigured = ca.CmpSigningCertificateId != null,
                 // ACME
                 c.AcmeRequireEab,
                 c.AcmeAllowedChallengeTypes,

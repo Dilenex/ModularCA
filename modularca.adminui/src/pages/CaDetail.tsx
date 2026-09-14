@@ -49,6 +49,9 @@ const CaDetail: React.FC = () => {
     // reason to be here; TSA defaults off because reissuing it is rarer and not free.
     const [reissueOcsp, setReissueOcsp] = useState(true);
     const [reissueTsa, setReissueTsa] = useState(false);
+    // Off by default like the TSA: most CAs never serve signature-protected CMP, and a signer that
+    // exists is a signer that has to be rotated.
+    const [reissueCmp, setReissueCmp] = useState(false);
     const [revokeSuperseded, setRevokeSuperseded] = useState(true);
     const [reissuing, setReissuing] = useState(false);
     const [reissueResult, setReissueResult] = useState<any | null>(null);
@@ -62,7 +65,7 @@ const CaDetail: React.FC = () => {
         try {
             const res = await apiPostWithMfa<any>(
                 `/api/v1/admin/authorities/${caKey(ca)}/reissue-infrastructure`,
-                { reissueOcspResponder: reissueOcsp, reissueTsa, revokeSuperseded },
+                { reissueOcspResponder: reissueOcsp, reissueTsa, reissueCmpSigner: reissueCmp, revokeSuperseded },
                 requireStepUp,
                 StepUpOps.ReissueInfrastructureCerts,
                 caKey(ca),
@@ -207,10 +210,24 @@ const CaDetail: React.FC = () => {
                 <DetailSection title="Infrastructure Certificates">
                     <div className="space-y-3">
                         <p className="text-xs text-gray-600 dark:text-gray-400 max-w-3xl">
-                            Reissues this CA's delegated OCSP responder and/or TSA certificate, repoints
-                            the CA at the new certificate, and registers it with the running service.
-                            The responder is live immediately — no restart.
+                            Issues or reissues this CA's delegated OCSP responder, TSA certificate and CMP
+                            signing certificate, repoints the CA at the new certificate, and registers it
+                            with the running service. The new certificate is live immediately — no restart.
                         </p>
+
+                        {/* The CMP signer is the one of the three that is not issued at CA creation, so
+                            its absence is a state the operator has to be told about here. */}
+                        {!ca.cmpSigningCertificateId && (
+                            <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
+                                <p className="text-xs text-amber-900 dark:text-amber-300">
+                                    <strong>No CMP signing certificate.</strong> If CMP is enabled on this CA, its
+                                    signature-protected responses are signed with the CA certificate, which carries no
+                                    <code> digitalSignature</code> key usage and is rejected by OpenSSL-based clients.
+                                    Shared-secret (PBMAC) clients are unaffected. Tick <em>CMP signer</em> below and
+                                    reissue to create one.
+                                </p>
+                            </div>
+                        )}
                         <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
                             <p className="text-xs text-amber-900 dark:text-amber-300">
                                 <strong>Use this rather than the generic certificate Reissue action.</strong> That
@@ -231,6 +248,12 @@ const CaDetail: React.FC = () => {
                                 TSA signer
                             </label>
                             <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                                <input type="checkbox" checked={reissueCmp} onChange={(e) => setReissueCmp(e.target.checked)} />
+                                <span title="Dedicated certificate that signs CMP responses (RFC 4210). Needed for signature-protected CMP; PBMAC clients do not use it.">
+                                    CMP signer{ca.cmpSigningCertificateId ? '' : ' (not yet issued)'}
+                                </span>
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
                                 <input type="checkbox" checked={revokeSuperseded} onChange={(e) => setRevokeSuperseded(e.target.checked)} />
                                 <span title="Leave on unless you have a reason to keep two valid responders for this CA. A predecessor that is already revoked is untouched either way.">
                                     Revoke the replaced certificate
@@ -240,7 +263,7 @@ const CaDetail: React.FC = () => {
 
                         <button
                             onClick={handleReissueInfrastructure}
-                            disabled={reissuing || (!reissueOcsp && !reissueTsa)}
+                            disabled={reissuing || (!reissueOcsp && !reissueTsa && !reissueCmp)}
                             className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                             {reissuing ? 'Reissuing…' : 'Reissue Infrastructure Certificates'}
                         </button>
@@ -256,6 +279,11 @@ const CaDetail: React.FC = () => {
                                 {reissueResult.newTsaSerial && (
                                     <p className="text-xs text-green-900 dark:text-green-300 font-mono">
                                         New TSA: {reissueResult.newTsaSerial}
+                                    </p>
+                                )}
+                                {reissueResult.newCmpSignerSerial && (
+                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                        New CMP signer: {reissueResult.newCmpSignerSerial}
                                     </p>
                                 )}
                                 {reissueResult.supersededRevoked?.length > 0 && (

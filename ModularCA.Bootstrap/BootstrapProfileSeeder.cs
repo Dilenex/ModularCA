@@ -904,6 +904,36 @@ public static class BootstrapProfileSeeder
             Console.WriteLine($"✓ Certificate profile '{ocspProfile.Name}' seeded.");
         }
 
+        // CMP Signer Certificate Profile.
+        //
+        // RFC 4210 section 5.1.3.3 signature protection needs a signer with the digitalSignature
+        // key usage and no particular EKU. The CA certificate cannot serve: its key usage is
+        // keyCertSign and cRLSign, and OpenSSL refuses it as a message signer. Existing installs
+        // get this profile on first use from CaCreationService.EnsureCmpSignerProfileAsync, which
+        // creates the same row; keep the two in step.
+        if (!db.CertProfiles.Any(c => c.Name == "CMP Signer Certificate Profile"))
+        {
+            var cmpKeyUsages = SetupAllowedStandardOidsJson(new[] { "Digital Signature" }, db);
+            var cmpProfile = new CertProfileEntity
+            {
+                Name = "CMP Signer Certificate Profile",
+                Description = "Profile for dedicated CMP message-signing certificates (RFC 4210 section 5.1.3.3). digitalSignature only; no EKU.",
+                IsCaProfile = false,
+                KeyUsages = cmpKeyUsages,
+                ExtendedKeyUsages = "[]",
+                AllowedKeyAlgorithms = keyAlgorithms,
+                AllowedKeySizes = keySizes,
+                AllowedSignatureAlgorithms = sigAlgorithms,
+                ValidityPeriodMin = "P1D",
+                ValidityPeriodMax = "P10Y",
+                CanBeDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+            };
+            db.CertProfiles.Add(cmpProfile);
+            db.SaveChanges();
+            Console.WriteLine($"✓ Certificate profile '{cmpProfile.Name}' seeded.");
+        }
+
         // Web TLS Certificate Profile
         if (!db.CertProfiles.Any(c => c.Name == "Web TLS Certificate Profile"))
         {

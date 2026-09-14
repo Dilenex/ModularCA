@@ -196,6 +196,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         scepChallengeRequired: true,
         // CMP
         cmpRequireSignature: false,
+        cmpSignerConfigured: true,
         // ACME
         acmeRequireEab: false,
         acmeAllowedChallengeTypes: '',
@@ -215,6 +216,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 estHttpAuthEnabled: config.estHttpAuthEnabled ?? false,
                 scepChallengeRequired: config.scepChallengeRequired ?? true,
                 cmpRequireSignature: config.cmpRequireSignature ?? false,
+                cmpSignerConfigured: config.cmpSignerConfigured ?? true,
                 acmeRequireEab: config.acmeRequireEab ?? false,
                 acmeAllowedChallengeTypes: config.acmeAllowedChallengeTypes || '',
                 acmeAllowPrivateAddressValidation: config.acmeAllowPrivateAddressValidation ?? false,
@@ -226,7 +228,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 isPublicVisible: true,
                 estRequireClientCert: false, estHttpAuthEnabled: false,
                 scepChallengeRequired: true,
-                cmpRequireSignature: false,
+                cmpRequireSignature: false, cmpSignerConfigured: true,
                 acmeRequireEab: false, acmeAllowedChallengeTypes: '',
                 acmeAllowPrivateAddressValidation: false,
                 ocspSignResponses: true,
@@ -347,6 +349,16 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
 
                         {protocol === 'CMP' && (
                             <div className="space-y-3">
+                                {form.enabled && !form.cmpSignerConfigured && (
+                                    <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3">
+                                        <p className="text-xs text-amber-900 dark:text-amber-300">
+                                            <strong>This CA has no CMP signing certificate.</strong> Signature-protected
+                                            responses are signed with the CA certificate, which OpenSSL-based clients reject.
+                                            Shared-secret (PBMAC) clients work without it. Issue one from the CA's detail page
+                                            under Infrastructure Certificates.
+                                        </p>
+                                    </div>
+                                )}
                                 <ToggleField size="md" labelSide="left" label="Require Signature Protection" description="When enabled, only signature-based protection is accepted (client cert required). When disabled, PBMAC (shared secret) is also accepted." checked={form.cmpRequireSignature} onChange={(v) => setForm({ ...form, cmpRequireSignature: v })} />
                                 <p className="text-[10px] text-gray-600 mt-1">
                                     PBMAC shared secrets are issued per client from{' '}

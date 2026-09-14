@@ -112,6 +112,13 @@ public class CmpService : ICmpService
         public CmpProtectionMode ProtectionMode { get; set; } = CmpProtectionMode.None;
 
         /// <summary>
+        /// The CA certificate, when responses are signed by a dedicated CMP signer rather than the
+        /// CA itself. Attached to <c>extraCerts</c> so a client holding only the CA as its trust
+        /// anchor can chain the signer. Null when the CA signs directly.
+        /// </summary>
+        public X509Certificate? SignerIssuerCert { get; set; }
+
+        /// <summary>
         /// SANs held by the signing certificate, in <c>TYPE:value</c> form, for signature-protected
         /// requests. What a request may ask for is bounded by these.
         /// </summary>
@@ -186,8 +193,9 @@ public class CmpService : ICmpService
     {
         var reqCtx = new CmpRequestContext { SourceIp = sourceIp, CaLabel = caLabel };
         var context = await _caResolver.ResolveAsync(caLabel, "CMP");
-        var (caCert, caKeyHandle) = await ResolveSignerForCaAsync(context)
+        var (caCert, caKeyHandle, signerIssuer) = await ResolveSignerForCaAsync(context)
             ?? throw new InvalidOperationException("No CA signer available for CMP.");
+        reqCtx.SignerIssuerCert = signerIssuer;
 
         PkiMessage request;
         try
@@ -1423,6 +1431,11 @@ public class CmpService : ICmpService
 
         // Include the CA cert in extraCerts so the client can verify the signature
         builder.AddCmpCertificate(caCert);
+        // With a delegated signer, the client needs the issuer as well to chain it to the trust
+        // anchor it holds (RFC 4210 section 5.1.3.3 asks the sender to include what the recipient
+        // needs to verify).
+        if (reqCtx.SignerIssuerCert != null)
+            builder.AddCmpCertificate(reqCtx.SignerIssuerCert);
 
         // Sign with the CA private key using the same algorithm as the CA cert
         var sigAlg = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caCert.GetPublicKey()));
@@ -1571,11 +1584,32 @@ public class CmpService : ICmpService
         return pkiMessage.GetDerEncoded();
     }
 
+    // CAs already warned about signing CMP responses directly, so the warning is once per CA per
+    // process rather than once per request. A CA can serve thousands of requests an hour.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> DirectSignerWarned = new();
+
     /// <summary>
-    /// Resolves the CA certificate and private key handle for signing CMP responses.
+    /// Resolves the certificate and private key that sign CMP responses for the addressed CA:
+    /// the dedicated CMP signer when one is configured and usable, otherwise the CA itself.
     /// Returns the key handle directly (supports HSM-backed keys).
     /// </summary>
-    private async Task<(X509Certificate cert, IPrivateKeyHandle keyHandle)?> ResolveSignerForCaAsync(ResolvedCaContext context)
+    /// <remarks>
+    /// <para>
+    /// The CA certificate's key usage is <c>keyCertSign, cRLSign</c>; it does not carry
+    /// <c>digitalSignature</c>, and OpenSSL refuses such a certificate as a CMP message signer
+    /// ("no suitable sender cert"). Every signature-protected exchange therefore failed at the
+    /// client while PBMAC exchanges, whose responses are MAC-protected, worked. A dedicated signer
+    /// issued from the CA detail page carries the right bit and is rotated without touching the
+    /// CA certificate. The CA-direct path is kept as the fallback so an unconfigured CA still
+    /// answers PBMAC clients; it warns once per process so the gap is visible.
+    /// </para>
+    /// <para>
+    /// The third element is the CA certificate when a delegated signer is in use, for
+    /// <c>extraCerts</c>: a client that trusts only the CA needs the issuer alongside the signer
+    /// to build the chain.
+    /// </para>
+    /// </remarks>
+    private async Task<(X509Certificate cert, IPrivateKeyHandle keyHandle, X509Certificate? signerIssuer)?> ResolveSignerForCaAsync(ResolvedCaContext context)
     {
         if (context.Ca != null)
         {
@@ -1583,9 +1617,43 @@ public class CmpService : ICmpService
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
+
+                if (context.Ca.CmpSigningCertificateId != null)
+                {
+                    var signerEntity = await _db.Certificates.AsNoTracking()
+                        .FirstOrDefaultAsync(c => c.CertificateId == context.Ca.CmpSigningCertificateId && !c.Revoked);
+                    if (signerEntity != null)
+                    {
+                        var signerCert = CertificateUtil.ParseFromPem(signerEntity.Pem);
+                        var now = DateTime.UtcNow;
+                        var signerKey = now >= signerCert.NotBefore && now <= signerCert.NotAfter
+                            ? _keystore.GetPrivateKeyFor(signerCert)
+                            : null;
+                        if (signerKey != null)
+                            return (signerCert, signerKey, caCert);
+
+                        _logger.LogWarning(
+                            "CMP signer {SignerId} for CA {CaLabel} is expired or its key is not registered; signing responses with the CA certificate instead.",
+                            context.Ca.CmpSigningCertificateId, context.Ca.Label);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "CMP signer {SignerId} for CA {CaLabel} is missing or revoked; signing responses with the CA certificate instead.",
+                            context.Ca.CmpSigningCertificateId, context.Ca.Label);
+                    }
+                }
+                else if (DirectSignerWarned.TryAdd(context.Ca.Id, 0))
+                {
+                    _logger.LogWarning(
+                        "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate, " +
+                        "which lacks digitalSignature and is rejected by OpenSSL-based clients. Issue one from the CA detail page.",
+                        context.Ca.Label);
+                }
+
                 var keyHandle = _keystore.GetPrivateKeyFor(caCert);
                 if (keyHandle != null)
-                    return (caCert, keyHandle);
+                    return (caCert, keyHandle, null);
             }
         }
 
@@ -1595,7 +1663,7 @@ public class CmpService : ICmpService
             var cert = signer.PublicCertificate;
             var keyHandle = _keystore.GetPrivateKeyFor(cert);
             if (keyHandle != null)
-                return (cert, keyHandle);
+                return (cert, keyHandle, null);
         }
         return null;
     }

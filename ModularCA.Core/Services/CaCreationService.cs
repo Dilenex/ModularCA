@@ -921,6 +921,12 @@ public class CaCreationService(
     /// <param name="caId">The CA whose infrastructure certificates should be reissued.</param>
     /// <param name="reissueOcsp">Reissue the delegated OCSP responder.</param>
     /// <param name="reissueTsa">Reissue the TSA signer.</param>
+    /// <param name="reissueCmpSigner">
+    /// Issue or reissue the dedicated CMP message-signing certificate. Unlike the other two this
+    /// is not issued at CA creation: most CAs never serve CMP, and a signer that exists is a
+    /// signer that must be rotated. Without one, signature-protected CMP responses are signed
+    /// with the CA certificate, which OpenSSL rejects as a message signer.
+    /// </param>
     /// <param name="revokeSuperseded">
     /// Revoke the certificate being replaced when it is still valid. Default true: two
     /// simultaneously-valid responders for one CA is not a state worth having to reason about.
@@ -931,17 +937,18 @@ public class CaCreationService(
         Guid caId,
         bool reissueOcsp,
         bool reissueTsa,
-        bool revokeSuperseded = true)
+        bool revokeSuperseded = true,
+        bool reissueCmpSigner = false)
     {
-        if (!reissueOcsp && !reissueTsa)
-            throw new ArgumentException("Nothing to reissue: select the OCSP responder, the TSA, or both.");
+        if (!reissueOcsp && !reissueTsa && !reissueCmpSigner)
+            throw new ArgumentException("Nothing to reissue: select the OCSP responder, the TSA, the CMP signer, or any combination.");
 
         var caEntity = await db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted)
             ?? throw new ResourceNotFoundException(
                 "Certificate authority", "Certificate authority not found.", caId.ToString());
 
         if (caEntity.IsSshCa)
-            throw new ConfigurationValidationException("SSH CAs have no OCSP responder or TSA certificate.");
+            throw new ConfigurationValidationException("SSH CAs have no OCSP responder, TSA or CMP signer certificate.");
 
         var caCertEntity = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == caEntity.CertificateId)
             ?? throw new InvalidOperationException("CA certificate row not found.");
@@ -970,17 +977,23 @@ public class CaCreationService(
         // could never work, having already revoked the one it replaced.
         EnsureSigningProfilePermitsInfrastructureEkus(signingProfile, reissueOcsp, reissueTsa);
 
+        // The CMP signer profile is created on first use so installs that predate it need no
+        // migration; the seeder creates the same row on fresh installs.
+        if (reissueCmpSigner)
+            await EnsureCmpSignerProfileAsync();
+
         // Captured before IssueInfrastructureCertAsync overwrites them.
         var previousOcspId = caEntity.OcspResponderCertificateId;
         var previousTsaId = caEntity.TsaCertificateId;
+        var previousCmpId = caEntity.CmpSigningCertificateId;
 
         var ksPath = Path.Combine(AppContext.BaseDirectory, "keystores");
         var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
         var (systemSigner, systemSignerDer) = ResolveSystemSignerForKeystoreWrite();
 
-        X509Certificate? newTsaCert = null, newOcspCert = null;
-        byte[]? tsaDer = null, ocspDer = null;
-        AsymmetricKeyParameter? tsaKey = null, ocspKey = null;
+        X509Certificate? newTsaCert = null, newOcspCert = null, newCmpCert = null;
+        byte[]? tsaDer = null, ocspDer = null, cmpDer = null;
+        AsymmetricKeyParameter? tsaKey = null, ocspKey = null, cmpKey = null;
 
         try
         {
@@ -1004,17 +1017,27 @@ public class CaCreationService(
                     caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
                     "OCSP Responder Certificate Profile", "OCSP Responder", logger);
             }
+            if (reissueCmpSigner)
+            {
+                (newCmpCert, cmpDer, cmpKey) = await IssueInfrastructureCertAsync(
+                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                    CmpSignerProfileName, CmpSignerCertType, logger);
+            }
 
             // What came out of issuance is the only thing that matters to a relying party, so
             // check the certificate itself and not just the profile it was issued under.
             if (newTsaCert != null) EnsureIssuedCertCarriesEku(newTsaCert, IdKpTimeStampingOid, "TSA");
             if (newOcspCert != null) EnsureIssuedCertCarriesEku(newOcspCert, IdKpOcspSigningOid, "OCSP Responder");
+            // The CMP signer needs no EKU, but it is useless without digitalSignature: that bit is
+            // the whole reason it exists rather than the CA certificate signing directly.
+            if (newCmpCert != null) EnsureIssuedCertCarriesDigitalSignature(newCmpCert, CmpSignerCertType);
 
             // Keystore writes come after issuance so a failure above leaves no orphaned key.
             var privateKeys = new List<byte[]>();
             var publicCerts = new List<byte[]>();
             if (tsaDer != null) { privateKeys.Add(tsaDer); publicCerts.Add(newTsaCert!.GetEncoded()); }
             if (ocspDer != null) { privateKeys.Add(ocspDer); publicCerts.Add(newOcspCert!.GetEncoded()); }
+            if (cmpDer != null) { privateKeys.Add(cmpDer); publicCerts.Add(newCmpCert!.GetEncoded()); }
 
             KeystoreService.AppendEntries(
                 Path.Combine(ksPath, "ca-certs.keystore"), yamlPath, "ca-certs.keystore",
@@ -1027,6 +1050,7 @@ public class CaCreationService(
         {
             if (tsaDer != null) CryptographicOperations.ZeroMemory(tsaDer);
             if (ocspDer != null) CryptographicOperations.ZeroMemory(ocspDer);
+            if (cmpDer != null) CryptographicOperations.ZeroMemory(cmpDer);
             CryptographicOperations.ZeroMemory(systemSignerDer);
         }
 
@@ -1039,6 +1063,8 @@ public class CaCreationService(
                 registry.RegisterSigner(new CertificateAuthorityIdentity(newTsaCert!, new SoftwarePrivateKeyHandle(tsaKey)));
             if (ocspKey != null)
                 registry.RegisterSigner(new CertificateAuthorityIdentity(newOcspCert!, new SoftwarePrivateKeyHandle(ocspKey)));
+            if (cmpKey != null)
+                registry.RegisterSigner(new CertificateAuthorityIdentity(newCmpCert!, new SoftwarePrivateKeyHandle(cmpKey)));
         }
         else
         {
@@ -1052,7 +1078,7 @@ public class CaCreationService(
         var supersededRevoked = new List<string>();
         if (revokeSuperseded)
         {
-            foreach (var (oldId, wasReissued) in new[] { (previousOcspId, reissueOcsp), (previousTsaId, reissueTsa) })
+            foreach (var (oldId, wasReissued) in new[] { (previousOcspId, reissueOcsp), (previousTsaId, reissueTsa), (previousCmpId, reissueCmpSigner) })
             {
                 if (!wasReissued || oldId == null) continue;
                 var old = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == oldId);
@@ -1067,14 +1093,15 @@ public class CaCreationService(
         }
 
         logger.LogInformation(
-            "Infrastructure certificates reissued for CA {Label}: ocsp={Ocsp} tsa={Tsa} supersededRevoked={Count}",
-            caEntity.Label, reissueOcsp, reissueTsa, supersededRevoked.Count);
+            "Infrastructure certificates reissued for CA {Label}: ocsp={Ocsp} tsa={Tsa} cmp={Cmp} supersededRevoked={Count}",
+            caEntity.Label, reissueOcsp, reissueTsa, reissueCmpSigner, supersededRevoked.Count);
 
         return new InfrastructureReissueResult(
             caEntity.Label ?? caEntity.Name,
             newOcspCert == null ? null : CertificateUtil.FormatSerialNumber(newOcspCert.SerialNumber),
             newTsaCert == null ? null : CertificateUtil.FormatSerialNumber(newTsaCert.SerialNumber),
-            supersededRevoked);
+            supersededRevoked,
+            newCmpCert == null ? null : CertificateUtil.FormatSerialNumber(newCmpCert.SerialNumber));
     }
 
     /// <summary>
@@ -1138,17 +1165,92 @@ public class CaCreationService(
     /// <param name="SupersededSerialsRevoked">
     /// Serials of predecessors revoked as Superseded. Excludes ones that were already revoked.
     /// </param>
+    /// <param name="NewCmpSignerSerial">Serial of the new CMP signer, or null if not reissued.</param>
     public record InfrastructureReissueResult(
         string CaLabel,
         string? NewOcspResponderSerial,
         string? NewTsaSerial,
-        IReadOnlyList<string> SupersededSerialsRevoked);
+        IReadOnlyList<string> SupersededSerialsRevoked,
+        string? NewCmpSignerSerial = null);
 
 
 
     // OIDs the infrastructure certificates are useless without.
     private const string IdKpOcspSigningOid = "1.3.6.1.5.5.7.3.9";
     private const string IdKpTimeStampingOid = "1.3.6.1.5.5.7.3.8";
+
+    /// <summary>Name of the seeded certificate profile the CMP signer is issued under.</summary>
+    public const string CmpSignerProfileName = "CMP Signer Certificate Profile";
+
+    /// <summary>The certType tag that routes an issued infrastructure certificate to <c>CmpSigningCertificateId</c>.</summary>
+    internal const string CmpSignerCertType = "CMP Signer";
+
+    /// <summary>
+    /// Creates the CMP signer certificate profile when an install predates it.
+    /// </summary>
+    /// <remarks>
+    /// The seeder creates this row on fresh installs; existing installs would otherwise need a
+    /// data migration that hand-writes a CertProfiles row, and every column that row needs is
+    /// easier to get right here, with the same catalog lookup the seeder uses. Keep the two in
+    /// step: <c>BootstrapProfileSeeder</c> is the other copy.
+    /// </remarks>
+    private async Task EnsureCmpSignerProfileAsync()
+    {
+        if (await db.CertProfiles.AnyAsync(cp => cp.Name == CmpSignerProfileName))
+            return;
+
+        var catalog = (await db.OIDOptions
+                .Where(o => o.KeyUsage == "Standard")
+                .Select(o => new { o.OID, o.FriendlyName })
+                .ToListAsync())
+            .Select(o => ((string?)o.OID, (string?)o.FriendlyName));
+        var lookup = UsageCatalogResolver.BuildLookup(catalog, e => e.FriendlyName!);
+        var digitalSignature = UsageCatalogResolver.Resolve(lookup, "Digital Signature")
+            ?? throw new ConfigurationValidationException(
+                "The OID catalog has no 'digitalSignature' key usage, so the CMP signer profile cannot be created. " +
+                "Apply the OID catalog backfill migration and try again.");
+
+        // Mirrors the OCSP responder profile the seeder writes, minus the EKU.
+        var ocspTemplate = await db.CertProfiles.AsNoTracking()
+            .FirstOrDefaultAsync(cp => cp.Name == "OCSP Responder Certificate Profile");
+
+        db.CertProfiles.Add(new CertProfileEntity
+        {
+            Name = CmpSignerProfileName,
+            Description = "Profile for dedicated CMP message-signing certificates (RFC 4210 section 5.1.3.3). digitalSignature only; no EKU.",
+            IsCaProfile = false,
+            KeyUsages = JsonSerializer.Serialize(new[] { digitalSignature }),
+            ExtendedKeyUsages = "[]",
+            AllowedKeyAlgorithms = ocspTemplate?.AllowedKeyAlgorithms ?? "[]",
+            AllowedKeySizes = ocspTemplate?.AllowedKeySizes ?? "[]",
+            AllowedSignatureAlgorithms = ocspTemplate?.AllowedSignatureAlgorithms ?? "[]",
+            ValidityPeriodMin = "P1D",
+            ValidityPeriodMax = "P10Y",
+            CanBeDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        logger.LogInformation("Certificate profile '{Name}' created on first use.", CmpSignerProfileName);
+    }
+
+    /// <summary>
+    /// Confirms an issued CMP signer carries the digitalSignature key usage, without which no
+    /// client will accept it as a message signer. Same failure shape as the EKU check: the
+    /// predecessor is left in place and the operator is told what to fix.
+    /// </summary>
+    internal static void EnsureIssuedCertCarriesDigitalSignature(X509Certificate cert, string certType)
+    {
+        var keyUsage = cert.GetKeyUsage();
+        // BouncyCastle returns the KeyUsage bits as a bool array indexed by bit position;
+        // digitalSignature is bit 0.
+        if (keyUsage != null && keyUsage.Length > 0 && keyUsage[0])
+            return;
+        throw new ConfigurationValidationException(
+            $"The reissued {certType} certificate was created without the digitalSignature key usage, " +
+            "so no CMP client would accept it as a message signer. The previous certificate has been " +
+            $"left in place. Check the '{CmpSignerProfileName}' certificate profile and the signing " +
+            "profile's allowed key usages, then reissue again.", ErrorCodes.SigningProfileMissingRequiredEku);
+    }
 
     /// <summary>
     /// Confirms the CA's signing profile actually permits the EKU an infrastructure certificate
@@ -1294,6 +1396,7 @@ public class CaCreationService(
         // Remove TSA cert row if any
         var ca = await db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caEntityId);
         Guid? tsaCertId = ca?.TsaCertificateId;
+        Guid? cmpCertId = ca?.CmpSigningCertificateId;
 
         // Remove CA entity + signing profile + cert row
         if (ca != null) db.CertificateAuthorities.Remove(ca);
@@ -1305,6 +1408,11 @@ public class CaCreationService(
         {
             var tsaCert = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == tsaCertId.Value);
             if (tsaCert != null) db.Certificates.Remove(tsaCert);
+        }
+        if (cmpCertId != null)
+        {
+            var cmpCert = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == cmpCertId.Value);
+            if (cmpCert != null) db.Certificates.Remove(cmpCert);
         }
 
         var cert = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == certificateId);
@@ -1472,6 +1580,8 @@ public class CaCreationService(
                 caEntity.TsaCertificateId = csrEntity.IssuedCertificateId;
             else if (certType == "OCSP Responder")
                 caEntity.OcspResponderCertificateId = csrEntity.IssuedCertificateId;
+            else if (certType == CmpSignerCertType)
+                caEntity.CmpSigningCertificateId = csrEntity.IssuedCertificateId;
             await db.SaveChangesAsync();
         }
 

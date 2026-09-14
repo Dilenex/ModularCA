@@ -29,17 +29,26 @@ set -uo pipefail
 BASE="${1:-}"
 CA_LABEL="${2:-}"
 [ -z "$BASE" ] || [ -z "$CA_LABEL" ] && {
-    echo "usage: $0 <base-url> <ca-label> [--client-cert F --client-key F] [--cmp-secret S] [--insecure]" >&2
+    echo "usage: $0 <base-url> <ca-label> [--client-cert F --client-key F] [--basic-netrc F] [--cmp-secret S | --cmp-secret-file F] [--cmp-ref R] [--insecure]" >&2
     exit 2
 }
 shift 2
 
-CLIENT_CERT=""; CLIENT_KEY=""; CMP_SECRET=""; INSECURE=""
+CLIENT_CERT=""; CLIENT_KEY=""; CMP_SECRET=""; INSECURE=""; BASIC_NETRC=""; CMP_REF="cmp-probe"
 while [ $# -gt 0 ]; do
     case "$1" in
         --client-cert) CLIENT_CERT="$2"; shift 2 ;;
         --client-key)  CLIENT_KEY="$2";  shift 2 ;;
+        # A netrc file rather than --basic-user/--basic-pass: the credentials then never appear
+        # on a command line, in shell history, or in whatever transcript is driving this script.
+        # Format: machine <host> login <user> password <pw>
+        --basic-netrc) BASIC_NETRC="$2"; shift 2 ;;
         --cmp-secret)  CMP_SECRET="$2";  shift 2 ;;
+        # The secret from a file, so it never appears on a command line or in a transcript.
+        --cmp-secret-file) CMP_SECRET="$(tr -d '[:space:]' < "$2")"; shift 2 ;;
+        # The reference value (senderKID) the credential was created with. It selects which
+        # shared secret the server verifies the MAC against.
+        --cmp-ref)     CMP_REF="$2";     shift 2 ;;
         --insecure)    INSECURE="1";     shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -163,8 +172,15 @@ enroll() {   # $1 = label, remaining = extra curl args
         printf '%s' "$payload" | tr -d '\r\n' | base64 -d > "$WORK/est.p7b" 2>/dev/null
         if openssl pkcs7 -inform DER -in "$WORK/est.p7b" -print_certs -noout >/dev/null 2>&1; then
             pass "$label — certificate issued"
+            # The PKCS#7 may carry the chain as well as the leaf, and openssl x509 reads only the
+            # first certificate it sees, which was the CA. Print each one, leaf and chain alike.
             openssl pkcs7 -inform DER -in "$WORK/est.p7b" -print_certs 2>/dev/null \
-                | openssl x509 -noout -subject -issuer -dates 2>/dev/null | sed 's/^/        /'
+                | awk -v w="$WORK" '/BEGIN CERT/{n++} {print > (w "/est-cert-" n ".pem")}'
+            for c in "$WORK"/est-cert-*.pem; do
+                [ -s "$c" ] || continue
+                openssl x509 -in "$c" -noout -subject -issuer -dates 2>/dev/null | sed 's/^/        /'
+                note "--"
+            done
             return 0
         fi
         fail "$label — HTTP 200 but the response is not a parseable PKCS#7"
@@ -195,21 +211,48 @@ if [ -n "$CLIENT_CERT" ] && [ -n "$CLIENT_KEY" ]; then
     fi
 else
     note "SKIPPED /simpleenroll over mTLS — pass --client-cert and --client-key to run it."
-    note "mTLS is currently the ONLY working EST authentication path; see below."
+    note "mTLS also needs Est.AuthSubdomain configured on the server and the client pointed at it."
 fi
 
 # HTTP Basic is what RFC 7030 section 3.2.3 designates as the baseline client authentication and
-# what most EST clients send by default. ModularCA registers exactly one authentication scheme —
-# JwtBearer — so a Basic header never authenticates, HttpContext.User.Identity.IsAuthenticated
-# stays false, and EnrollmentAuthorizationService.ValidateEst refuses. The CaProtocolConfig field
-# that turns this on is documented as "EST accepts HTTP Basic/Digest authentication for
-# enrollment", which is a promise nothing in the pipeline keeps.
-#
-# This probe is expected to fail today. It is here so the failure is visible and dated rather than
-# discovered by a customer whose EST client cannot enrol.
+# what most EST clients send by default. It is served by a named scheme confined to the EST
+# controller; the account must hold cert.request on the CA, and its password must not be flagged
+# for change or expired. Until the scheme existed this probe was expected to fail and said so;
+# it now expects to succeed when credentials are supplied, and the CSR's CN must equal the
+# username because the service binds the two.
+if [ -n "$BASIC_NETRC" ]; then
+    if [ ! -r "$BASIC_NETRC" ]; then
+        fail "--basic-netrc file is not readable: $BASIC_NETRC"
+    else
+        BASIC_USER=$(awk '/login/ { for (i = 1; i <= NF; i++) if ($i == "login") print $(i + 1) }' "$BASIC_NETRC" | head -1)
+        if [ -z "$BASIC_USER" ]; then
+            fail "--basic-netrc file has no 'login' entry"
+        else
+            # Re-key the CSR with the username as CN: EST binds the CSR subject to the caller.
+            openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+                -keyout "$WORK/est-basic.key" -out "$WORK/est-basic.csr" \
+                -subj "${SUBJ_PREFIX}CN=${BASIC_USER}" >/dev/null 2>&1
+            openssl req -in "$WORK/est-basic.csr" -outform DER 2>/dev/null | base64 | tr -d '\n' > "$WORK/est.b64"
+            enroll "/simpleenroll with HTTP Basic (CN=${BASIC_USER})" --netrc-file "$BASIC_NETRC" || true
+        fi
+    fi
+else
+    note "SKIPPED /simpleenroll with HTTP Basic — pass --basic-netrc FILE to run it."
+    note "The file holds 'machine <host> login <user> password <pw>'; the account needs cert.request on the CA."
+fi
+
+# A wrong password must be refused without revealing anything, and must land in the audit trail
+# as a UserLoginFailed row with protocol EST. Run regardless of credentials.
 note ""
-note "Probing HTTP Basic (expected to fail — no Basic scheme is registered):"
-enroll "/simpleenroll with HTTP Basic" -u "est-probe:est-probe" || true
+note "Probing HTTP Basic with a wrong password (expected to be refused):"
+if out=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -u "est-probe-nobody:not-the-password" \
+        -H 'Content-Type: application/pkcs10' --data-binary "@$WORK/est.b64" \
+        "$BASE/est/$CA_LABEL/simpleenroll" 2>/dev/null); then
+    case "$out" in
+        200) fail "wrong Basic credentials were accepted (HTTP 200)" ;;
+        *)   pass "wrong Basic credentials refused (HTTP $out); check the audit log for UserLoginFailed / protocol EST" ;;
+    esac
+fi
 
 # ── CMP ──────────────────────────────────────────────────────────────────────
 fi
@@ -221,21 +264,47 @@ if ! openssl cmp -help >/dev/null 2>&1; then
     fail "this openssl has no 'cmp' command — need OpenSSL 3.0 or newer"
     note "openssl version: $(openssl version 2>/dev/null)"
 elif [ -z "$CMP_SECRET" ]; then
-    note "SKIPPED — pass --cmp-secret to run an initial request."
+    note "SKIPPED — pass --cmp-secret-file (or --cmp-secret) and --cmp-ref to run an initial request."
     note "CMP treats its own message protection as authentication (PBM or signature), so a"
     note "shared secret is all that is needed; no HTTP credentials are involved."
 else
     # -cmd ir is the initial request: no prior certificate, authenticated by PBMAC over the
     # shared secret. This is the flow a device uses on first contact with a CA.
+    # -newkey names an existing key file; openssl cmp does not generate one. EC P-256, as the
+    # EST probe uses, so the two exercise the same issuance path.
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/cmp.key" >/dev/null 2>&1
+    # The server signs its responses, error responses included, with the CA key; the client
+    # will not even display an ERROR body until it can verify that signature, so it needs the CA
+    # certificate as a trust anchor. The EST section already fetched it via /cacerts.
+    TRUSTED_ARGS=()
+    if [ -s "$WORK/cacerts.p7b" ] && openssl pkcs7 -inform DER -in "$WORK/cacerts.p7b" -print_certs > "$WORK/ca.pem" 2>/dev/null; then
+        TRUSTED_ARGS=(-trusted "$WORK/ca.pem")
+    fi
     if openssl cmp -cmd ir \
         -server "$BASE/cmp/$CA_LABEL" \
-        -ref "cmp-probe" -secret "pass:$CMP_SECRET" \
-        -subject "/CN=cmp-probe.example.test" \
+        -ref "$CMP_REF" -secret "pass:$CMP_SECRET" "${TRUSTED_ARGS[@]}" -unprotected_errors \
+        -subject "${SUBJ_PREFIX}CN=cmp-probe.example.test" \
         -newkey "$WORK/cmp.key" -certout "$WORK/cmp.crt" \
         ${INSECURE:+-tls_used -no_check_time} \
         >"$WORK/cmp.log" 2>&1; then
         pass "initial request (ir) — certificate issued"
         openssl x509 -in "$WORK/cmp.crt" -noout -subject -issuer -dates 2>/dev/null | sed 's/^/        /'
+
+        # Key update (kur), signed with the certificate just issued. This is the signature-protected
+        # exchange: the request is signed by the client certificate, and the RESPONSE is signed by the
+        # server, so it is the one path that exercises the CA's CMP signing certificate. Without a
+        # dedicated signer the server signs with the CA certificate, whose key usage lacks
+        # digitalSignature, and openssl refuses the response with "no suitable sender cert".
+        note ""
+        note "Probing key update (kur) signed with the issued certificate:"
+        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/cmp2.key" >/dev/null 2>&1
+        if openssl cmp -cmd kur             -server "$BASE/cmp/$CA_LABEL"             -cert "$WORK/cmp.crt" -key "$WORK/cmp.key"             -newkey "$WORK/cmp2.key" -certout "$WORK/cmp2.crt" "${TRUSTED_ARGS[@]}" -unprotected_errors             ${INSECURE:+-tls_used -no_check_time}             >"$WORK/cmp-kur.log" 2>&1; then
+            pass "key update (kur) — certificate reissued; the server's CMP signing certificate verified"
+            openssl x509 -in "$WORK/cmp2.crt" -noout -subject -issuer -dates 2>/dev/null | sed 's/^/        /'
+        else
+            fail "key update (kur) failed"
+            grep -E "CMP (error|info: received)|no suitable sender|PKIStatus" "$WORK/cmp-kur.log" | tail -6 | sed 's/^/        /'
+        fi
     else
         fail "initial request (ir) failed"
         tail -12 "$WORK/cmp.log" | sed 's/^/        /'

@@ -94,6 +94,21 @@ namespace ModularCA.Shared.Entities
         public Guid? TsaCertificateId { get; set; }
 
         /// <summary>
+        /// Dedicated CMP message-signing certificate. When set, signature-protected CMP responses
+        /// (RFC 4210 section 5.1.3.3) are signed with this certificate's key instead of the CA key,
+        /// and the certificate is sent in <c>extraCerts</c> so the client can chain it.
+        /// </summary>
+        /// <remarks>
+        /// Without one, responses are signed with the CA certificate itself, whose key usage is
+        /// <c>keyCertSign, cRLSign</c> and nothing else. OpenSSL refuses a CMP message signer that
+        /// lacks <c>digitalSignature</c> ("no suitable sender cert"), so every signature-protected
+        /// exchange failed at the client while PBMAC exchanges, whose responses are MAC-protected,
+        /// worked. Found by running <c>openssl cmp</c> against a live CA. Issued on demand from the
+        /// CA detail page, beside the OCSP responder and TSA signer.
+        /// </remarks>
+        public Guid? CmpSigningCertificateId { get; set; }
+
+        /// <summary>
         /// Key storage backend: "Software" (encrypted keystore file) or "Pkcs11" (HSM).
         /// </summary>
         [MaxLength(20)]

@@ -1872,6 +1872,38 @@ else
                 }
             }
 
+            // CMP without a dedicated signer answers PBMAC clients fine and signature-protected
+            // clients not at all: responses are signed with the CA certificate, which carries no
+            // digitalSignature key usage, and OpenSSL refuses it as a message signer. The gap is
+            // invisible from the server side, so say so at boot for every CA it applies to.
+            if (!isSetupMode)
+            {
+                try
+                {
+                    var cmpDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
+                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .Options;
+                    using var cmpDb = new ModularCADbContext(cmpDbOptions);
+                    var unsignedCmpCas = (from cfg in cmpDb.CaProtocolConfigs.AsNoTracking()
+                                          join ca in cmpDb.CertificateAuthorities.AsNoTracking() on cfg.CaId equals ca.Id
+                                          where cfg.Protocol == "CMP" && cfg.IsEnabled && ca.IsEnabled && !ca.IsDeleted
+                                                && ca.CmpSigningCertificateId == null
+                                          select ca.Label ?? ca.Name).ToList();
+                    foreach (var label in unsignedCmpCas)
+                    {
+                        Console.WriteLine($"[CMP WARNING] CA '{label}' has CMP enabled but no CMP signing certificate.");
+                        Console.WriteLine("              Signature-protected responses will be signed with the CA certificate, which");
+                        Console.WriteLine("              OpenSSL-based clients reject. Issue one from the CA's detail page (Infrastructure");
+                        Console.WriteLine("              Certificates -> CMP signer). PBMAC clients are unaffected.");
+                        Log.Warning("[CMP] CA {CaLabel} has CMP enabled with no CMP signing certificate.", label);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "[CMP] Could not check CAs for a CMP signing certificate at startup.");
+                }
+            }
+
             // Fail-fast: mTLS gating without trust anchors is not a working configuration.
             //
             // The handshake callback below rejects every client certificate when the
