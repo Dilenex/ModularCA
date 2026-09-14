@@ -71,6 +71,11 @@ public class AcmeAccountController(
         var baseUrl = GetBaseUrl();
         var labelPrefix = LabelPrefix();
 
+        // Global setting OR the addressed CA's own AcmeRequireEab. The per-CA flag was stored
+        // and shown and read by nothing, so an operator who required EAB on one CA and left the
+        // global switch off got anonymous account creation anyway.
+        var eabRequired = await EabRequiredAsync(HttpContext.Request.RouteValues["caLabel"] as string);
+
         // Check if account exists AND verify its status before
         // returning the fast path body. Deactivated accounts must be rejected
         // with unauthorized regardless of whether the client asked for
@@ -84,7 +89,7 @@ public class AcmeAccountController(
                 // returning the existing account body. RFC 8555 §7.3.4 permits
                 // this, and it matches Let's Encrypt Boulder behaviour: clients
                 // without valid EAB can't observe which keys have accounts.
-                if (_config.Acme.ExternalAccountRequired)
+                if (eabRequired)
                 {
                     // Pull the stored JWK for the existing account so EAB's
                     // thumbprint check compares against the canonical value,
@@ -135,7 +140,7 @@ public class AcmeAccountController(
         var thumbprint = _jwsService.ComputeThumbprint(jwkJson);
 
         // Validate External Account Binding if required (RFC 8555 section 7.3.4)
-        if (_config.Acme.ExternalAccountRequired)
+        if (eabRequired)
         {
             var eabResult = await ValidateExternalAccountBindingAsync(payload, jwkJson);
             if (eabResult != null)
@@ -154,7 +159,7 @@ public class AcmeAccountController(
             caLabel: caLabel);
 
         // Mark EAB key as used if present
-        if (_config.Acme.ExternalAccountRequired && payload.ExternalAccountBinding.HasValue)
+        if (eabRequired && payload.ExternalAccountBinding.HasValue)
         {
             await MarkEabKeyUsedAsync(payload.ExternalAccountBinding.Value, account.Id);
         }
@@ -551,4 +556,26 @@ public class AcmeAccountController(
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>
+    /// Whether external account binding is required for accounts under the given CA.
+    /// </summary>
+    private async Task<bool> EabRequiredAsync(string? caLabel)
+    {
+        if (_config.Acme.ExternalAccountRequired)
+            return true;
+
+        var cas = _db.CertificateAuthorities.AsNoTracking().Where(c => c.IsEnabled);
+        cas = string.IsNullOrWhiteSpace(caLabel)
+            ? cas.OrderByDescending(c => c.IsDefault)
+            : cas.Where(c => c.Label == caLabel);
+        var caId = await cas.Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
+        if (caId == null)
+            return false;
+
+        return await _db.CaProtocolConfigs.AsNoTracking()
+            .Where(c => c.CaId == caId && c.Protocol == "ACME")
+            .Select(c => c.AcmeRequireEab)
+            .FirstOrDefaultAsync();
+    }
 }

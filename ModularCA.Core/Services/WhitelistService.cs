@@ -57,6 +57,11 @@ public class WhitelistService : IWhitelistService
     /// <inheritdoc />
     public bool IsWarm => _isWarm;
 
+    private volatile bool _hasSnapshot;
+
+    /// <inheritdoc />
+    public bool HasSnapshot => _hasSnapshot;
+
     /// <inheritdoc />
     public async Task ReloadAsync(CancellationToken ct = default)
     {
@@ -101,6 +106,7 @@ public class WhitelistService : IWhitelistService
             _snapshot = newSnapshot;
             _caLabelMap = newLabelMap;
             _isWarm = true;
+            _hasSnapshot = true;
 
             _logger.LogInformation(
                 "WhitelistService reloaded with {Count} rules.",
@@ -108,12 +114,13 @@ public class WhitelistService : IWhitelistService
         }
         catch (Exception ex)
         {
-            // Keep the last-known-good snapshot if one exists. On the very
-            // first call (pre-bootstrap) _snapshot is already empty so this
-            // is a no-op. On later reloads we deliberately avoid clobbering
-            // the live snapshot — failing closed for Setup (via IsWarm=false
-            // routing the middleware to the hardcoded fallback) and open
-            // with stale data for every other gated bucket.
+            // Keep the last-known-good snapshot if one exists. IsWarm drops so the
+            // middleware knows the data may be stale; HasSnapshot stays true so it
+            // keeps evaluating against that data rather than passing traffic
+            // through. Before HasSnapshot existed the middleware treated "not
+            // warm" as "pre-bootstrap" and let every non-admin path through
+            // unchecked, for as long as the next successful reload took, which
+            // with no re-warm timer was the life of the process.
             _isWarm = false;
             _logger.LogWarning(
                 "WhitelistService reload failed — staying on previous snapshot (IsWarm=false). Error: {Message}",
@@ -307,7 +314,13 @@ public class WhitelistService : IWhitelistService
         // Admin surface — SPA routes and admin API. Seeded closed by default so
         // public deployments don't expose the admin console to the internet.
         if (StartsWith(path, "/api/v1/admin/") || StartsWith(path, "/admin/")
-            || Equals(path, "/api/v1/admin") || Equals(path, "/admin"))
+            || Equals(path, "/api/v1/admin") || Equals(path, "/admin")
+            // The documentation SPA is meant for signed-in users, but a browser navigation
+            // carries no bearer token, so the server cannot gate its static files on a session;
+            // DocsAuthMiddleware can only refuse a request that volunteers an invalid header.
+            // Classifying it with the admin surface gives it the admin rule's reach, internal-only
+            // by default, which is the honest scope for a page that describes every admin endpoint.
+            || StartsWith(path, "/docs/") || Equals(path, "/docs"))
         {
             return new PathBucket(WhitelistScope.Admin, null, null, false);
         }

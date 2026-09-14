@@ -1,3 +1,4 @@
+using ModularCA.Shared.Utils;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.Config;
@@ -85,7 +86,8 @@ public class RequestAuditMiddleware
             return;
         }
 
-        var path = context.Request.Path.Value ?? "";
+        // Enrollment tokens travel in the path; the audit must not keep them.
+        var path = AuditPathRedaction.Redact(context.Request.Path.Value);
 
         // Check if this path should be logged
         if (!ShouldLog(path))

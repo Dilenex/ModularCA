@@ -552,7 +552,24 @@ public class MtlsController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // mTLS is the only factor here. For a member of a system group that is not enough:
+        // Login computes the same flag and MfaEnrollmentMiddleware confines a token that
+        // carries it to enrollment until a second factor exists. These certificate-primary
+        // paths minted an unrestricted token instead, so an admin whose only factor was a
+        // .p12 had full API access on one possession factor, and a restricted admin could
+        // enrol a .p12 and certificate-login around the restriction.
+        var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
+        var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
+            && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
+        if (mfaEnforcedForGroup)
+        {
+            return StatusCode(403, new
+            {
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                requiresMfaEnrollment = true
+            });
+        }
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
         // Plaintext is returned to the client; DB stores the hash.
@@ -669,16 +686,17 @@ public class MtlsController : ControllerBase
     /// </remarks>
     [AllowAnonymous]
     [HttpGet("verify-redirect")]
-    public async Task<IActionResult> VerifyRedirect([FromQuery(Name = "mfaToken")] string? mfaTokenFromQuery = null)
+    public async Task<IActionResult> VerifyRedirect()
     {
         var mainOrigin = ResolveMainOrigin();
 
         // Prefer the cookie set by PrepareRedirect; fall back to the query parameter so a
         // direct deep link (e.g. ops debugging) still works in environments without the
         // shared-parent-domain cookie scope.
+        // Cookie only. A query-string fallback survived the introduction of the cookie handoff
+        // and undid it: the SPA never sent the query form, but anyone holding a token from a
+        // log line could.
         var mfaToken = Request.Cookies[MfaHandoffCookie];
-        if (string.IsNullOrWhiteSpace(mfaToken))
-            mfaToken = mfaTokenFromQuery;
 
         // Always clear the handoff cookie on the way through so a refresh of this URL
         // doesn't accidentally re-attempt with a stale token.
@@ -767,7 +785,24 @@ public class MtlsController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // mTLS is the only factor here. For a member of a system group that is not enough:
+        // Login computes the same flag and MfaEnrollmentMiddleware confines a token that
+        // carries it to enrollment until a second factor exists. These certificate-primary
+        // paths minted an unrestricted token instead, so an admin whose only factor was a
+        // .p12 had full API access on one possession factor, and a restricted admin could
+        // enrol a .p12 and certificate-login around the restriction.
+        var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
+        var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
+            && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
+        if (mfaEnforcedForGroup)
+        {
+            return StatusCode(403, new
+            {
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                requiresMfaEnrollment = true
+            });
+        }
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
@@ -888,7 +923,18 @@ public class MtlsController : ControllerBase
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(mfaSessionTtl)
                 });
 
-            return Redirect($"{mainOrigin}/admin/mfa-verify?mfaToken={Uri.EscapeDataString(mfaToken)}");
+            // Handed back through a one-time code, exactly as the full-login branch below hands
+            // back its tokens. This used to redirect to /admin/mfa-verify?mfaToken=..., which put
+            // the MFA session secret in browser history, proxy logs and same-origin referers, and
+            // the page it landed on reads only navigation state, so the flow also did not work.
+            var mfaMethods = new List<string>();
+            if (hasTotp) mfaMethods.Add("totp");
+            if (hasWebAuthn) mfaMethods.Add("webauthn");
+            var mfaAuthCode = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+            await _cache.SetStringAsync($"mtls-code:{mfaAuthCode}",
+                JsonSerializer.Serialize(new { RequiresMfa = true, MfaToken = mfaToken, AvailableMethods = mfaMethods }),
+                new Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30) });
+            return Redirect($"{mainOrigin}/admin/mfa-callback?code={mfaAuthCode}");
         }
 
         // No other MFA — mTLS is the sole factor. Issue full JWT.
@@ -898,7 +944,24 @@ public class MtlsController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // mTLS is the only factor here. For a member of a system group that is not enough:
+        // Login computes the same flag and MfaEnrollmentMiddleware confines a token that
+        // carries it to enrollment until a second factor exists. These certificate-primary
+        // paths minted an unrestricted token instead, so an admin whose only factor was a
+        // .p12 had full API access on one possession factor, and a restricted admin could
+        // enrol a .p12 and certificate-login around the restriction.
+        var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
+        var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
+            && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
+        if (mfaEnforcedForGroup)
+        {
+            return StatusCode(403, new
+            {
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                requiresMfaEnrollment = true
+            });
+        }
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
@@ -976,6 +1039,24 @@ public class MtlsController : ControllerBase
         try
         {
             var data = JsonSerializer.Deserialize<JsonElement>(cached);
+
+            // A certificate that identified a user who also has TOTP or WebAuthn does not get
+            // tokens here; it gets the MFA session to finish on the main origin.
+            if (data.TryGetProperty("RequiresMfa", out var requiresMfa) && requiresMfa.GetBoolean())
+            {
+                var methods = data.GetProperty("AvailableMethods").EnumerateArray()
+                    .Select(m => m.GetString() ?? string.Empty)
+                    .Where(m => m.Length > 0)
+                    .ToList();
+                return Ok(new
+                {
+                    requiresMfa = true,
+                    mfaToken = data.GetProperty("MfaToken").GetString(),
+                    method = methods.Count == 1 ? methods[0] : null,
+                    availableMethods = methods
+                });
+            }
+
             return Ok(new
             {
                 token = data.GetProperty("Token").GetString(),

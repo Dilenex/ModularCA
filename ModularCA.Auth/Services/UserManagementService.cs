@@ -55,6 +55,19 @@ namespace ModularCA.Auth.Services
                 return (false, $"Email '{request.Email}' already exists");
             }
 
+            // Every other path that sets a password runs it through the policy: setup, the
+            // bootstrap seeder, self-service change, the forced change at login, and
+            // UpdateUserPassword below. This one hashed whatever it was given, so an
+            // administrator, or a script holding an admin token, could create an operator
+            // with the password "a" and no forced rotation.
+            var (passwordOk, passwordErrors) = await _passwordPolicy.ValidateAsync(request.Password);
+            if (!passwordOk)
+            {
+                _logger.LogWarning("User creation for {Username} rejected by password policy: {Errors}",
+                    request.Username, string.Join("; ", passwordErrors));
+                return (false, "Password does not meet policy requirements: " + string.Join("; ", passwordErrors));
+            }
+
             using var transaction = await _dbContext.Database.BeginTransactionAsync();
             try
             {

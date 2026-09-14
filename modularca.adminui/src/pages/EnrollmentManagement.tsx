@@ -169,6 +169,7 @@ const EnrollmentManagement: React.FC = () => {
                             <select value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })}
                                 className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-2 py-1 text-sm">
                                 <option value="">Any</option>
+                                <option value="QR">QR enrollment page</option>
                                 <option value="EST">EST</option>
                                 <option value="SCEP">SCEP</option>
                                 <option value="CMP">CMP</option>

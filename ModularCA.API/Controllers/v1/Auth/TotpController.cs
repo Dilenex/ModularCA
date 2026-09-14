@@ -286,6 +286,15 @@ public class TotpController : ControllerBase
         _db.Users.Update(user);
         await _db.SaveChangesAsync();
 
+        // The stamp invalidates JWTs; it does not touch refresh tokens, and refresh does not
+        // check the stamp. A recovery code is used on a bad day, possibly because a device is
+        // gone; the sessions on that device must go with it.
+        await _db.Set<ModularCA.Shared.Entities.RefreshTokenEntity>()
+            .Where(t => t.UserId == user.Id && !t.IsRevoked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.IsRevoked, true)
+                .SetProperty(t => t.RevokedAt, DateTime.UtcNow));
+
         await _audit.LogAsync(
             Shared.Enums.AuditActionType.UserUpdated,
             user.Id, user.Username,

@@ -156,7 +156,8 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
     /// a dns-01 challenge (per RFC 8555 §7.4.1); non-wildcard authorizations receive both
     /// http-01 and dns-01 challenges.
     /// </summary>
-    internal static List<AcmeChallengeEntity> CreateChallengesForAuthorization(Guid authzId, bool isWildcard)
+    internal static List<AcmeChallengeEntity> CreateChallengesForAuthorization(
+        Guid authzId, bool isWildcard, IReadOnlyCollection<string>? allowedTypes = null)
     {
         var challenges = new List<AcmeChallengeEntity>();
 
@@ -189,7 +190,9 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             });
         }
 
-        return challenges;
+        // Per-CA policy. A wildcard authorization on a CA that forbids dns-01 ends up with no
+        // challenges and can never be satisfied, which is the operator's stated intent.
+        return AcmeChallengeTypePolicy.Filter(challenges, allowedTypes, c => c.Type).ToList();
     }
 
     private async Task EvaluateParentOrderAsync(Guid orderId)

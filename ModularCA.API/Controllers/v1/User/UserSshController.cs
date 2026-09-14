@@ -116,6 +116,12 @@ public class UserSshController(
         var extensions = request.Extensions;
         var validityHours = request.ValidityHours;
 
+        // Caller-requested extensions are checked against the cert profile below, once it is
+        // loaded; server-added ones (the signing profile's force-command, source-address and
+        // required extensions) are not the caller's to be restricted on. Captured here, before
+        // the merges, so the check sees only what was asked for.
+        var requestedExtensions = request.Extensions?.ToList();
+
         // Validate against signing profile (required)
         var signingProfile = await _db.SshSigningProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == signingProfileId);
@@ -181,6 +187,12 @@ public class UserSshController(
                     return BadRequest(new { error = $"Principal '{principal}' does not match any allowed pattern" });
             }
         }
+
+        // The admin path has always enforced AllowedExtensions; this path never did, so a user
+        // could request any extension the profile never offered, force-command included.
+        var extensionError = ModularCA.Core.Services.SshExtensionPolicy.Validate(requestedExtensions, certProfile.AllowedExtensions);
+        if (extensionError != null)
+            return BadRequest(new { error = extensionError });
 
         var required = JsonSerializer.Deserialize<List<string>>(certProfile.RequiredExtensions) ?? new();
         if (required.Count > 0)

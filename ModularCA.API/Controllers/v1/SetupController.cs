@@ -123,9 +123,27 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         switch (result)
         {
-            case Startup.SetupTokenHolder.ValidationResult.NotInSetupMode:
             case Startup.SetupTokenHolder.ValidationResult.Valid:
                 return null;
+
+            case Startup.SetupTokenHolder.ValidationResult.NotInSetupMode:
+                // No token was minted, so this process did not start in setup mode and did not
+                // detect a needs-setup state at boot. This used to map to "allowed", on the
+                // theory that a configured instance would never reach a setup endpoint. It could:
+                // IsConfigured() answers false when the CertificateAuthorities table is empty or
+                // missing, so an empty database restore or every CA soft-deleted re-opened
+                // /initialize to any RFC 1918 address with no credential at all, and /initialize
+                // deletes the keystores and re-points the database at caller-supplied
+                // credentials. Recovery is still possible; it requires the token that startup
+                // prints when it detects the state, which means console access.
+                Log.Warning(
+                    "Setup wizard: {Path} called from {CallerIp} on an instance that has no setup token; refusing.",
+                    HttpContext.Request.Path, HttpContext.Connection.RemoteIpAddress);
+                return StatusCode(403, new
+                {
+                    error = "Setup is not available on this instance. To re-run setup, restart the "
+                          + "service and use the setup token printed on its console."
+                });
 
             case Startup.SetupTokenHolder.ValidationResult.Missing:
                 Log.Warning(

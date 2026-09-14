@@ -68,6 +68,40 @@ public static class CertificateValidityUtil
     public static DateTime DefaultNotBefore() => DateTime.UtcNow - SkewAllowance;
 
     /// <summary>
+    /// Applies the floor to a client-requested start date: nothing may begin earlier than
+    /// <see cref="DefaultNotBefore"/>.
+    /// </summary>
+    /// <remarks>
+    /// ACME's newOrder and CMP's OptionalValidity both let the client name a start, and both
+    /// honoured it as given, raising it only to the issuing CA's own start. A certificate valid
+    /// from years ago is a certificate whose signatures can be made to look older than a
+    /// revocation. The end date was already measured from now; this closes the other side.
+    /// Starting in the future stays permitted.
+    /// </remarks>
+    /// <param name="requested">The client's start, or null for the default.</param>
+    /// <param name="wasRaised">Whether the request was in the past and was raised to the floor.</param>
+    /// <returns>The start to issue with, as UTC.</returns>
+    public static DateTime ClampRequestedNotBefore(DateTime? requested, out bool wasRaised)
+    {
+        var floor = DefaultNotBefore();
+        if (requested == null)
+        {
+            wasRaised = false;
+            return floor;
+        }
+
+        var value = AsUtc(requested.Value);
+        if (value < floor)
+        {
+            wasRaised = true;
+            return floor;
+        }
+
+        wasRaised = false;
+        return value;
+    }
+
+    /// <summary>
     /// Tags a validity timestamp as UTC, converting a local one and treating an unspecified one as
     /// already-UTC per the application's convention.
     /// </summary>

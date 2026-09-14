@@ -111,6 +111,12 @@ public class CmpService : ICmpService
         public string? CaLabel { get; init; }
         public CmpProtectionMode ProtectionMode { get; set; } = CmpProtectionMode.None;
 
+        /// <summary>
+        /// SANs held by the signing certificate, in <c>TYPE:value</c> form, for signature-protected
+        /// requests. What a request may ask for is bounded by these.
+        /// </summary>
+        public List<string> SignerSans { get; set; } = [];
+
         /// <summary>For PBMAC responses: reference value to echo in senderKID (bytes).</summary>
         public byte[]? PbmReferenceValue { get; set; }
 
@@ -212,7 +218,27 @@ public class CmpService : ICmpService
                         "messageTime outside the acceptable freshness window.");
                 }
             }
-            catch { /* parse failures fall through; other protection checks will reject */ }
+            catch
+            {
+                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                    "messageTime could not be parsed.");
+            }
+        }
+
+        // RFC 9483 section 3.1 (Lightweight CMP Profile) requires transactionID, senderNonce and
+        // messageTime in every message; RFC 4210 left them optional. Both checks were therefore
+        // opt-in by the attacker: omit messageTime and there was no freshness window, omit
+        // transactionID and no replay record was kept. A captured protected request that left
+        // both out replayed indefinitely. They are required here for every request.
+        if (header.MessageTime == null)
+        {
+            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                "messageTime is required (RFC 9483 section 3.1).");
+        }
+        if (header.TransactionID == null)
+        {
+            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+                "transactionID is required (RFC 9483 section 3.1).");
         }
 
         // Sender/transaction nonce length minimums (RFC 4210 §5.1.1; the same
@@ -569,33 +595,69 @@ public class CmpService : ICmpService
         reqCtx.SignerSubjectDn = signingCert.SubjectDN.ToString();
         reqCtx.SignerSerialHex = signingCertSerial;
 
-        // Kur key-identity binding. Partial — subject-DN match only,
-        // not full oldCertId binding per RFC 4210 §5.3.5.
-        if (body.Type == TypeKur)
+        // The names this signer may request are the names it holds. Captured here; enforced per
+        // CertRequest in ProcessSingleCertRequestAsync, for ir, cr and kur alike. This replaces
+        // a kur-only subject comparison that left ir and cr unbound, so any device with any
+        // unrevoked certificate from this CA could sign a request for any name.
+        try
         {
-            try
-            {
-                var certReqMessages = CertReqMessages.GetInstance(body.Content);
-                var reqMsgs = certReqMessages.ToCertReqMsgArray();
-                if (reqMsgs.Length > 0)
-                {
-                    var templateSubject = reqMsgs[0].CertReq.CertTemplate.Subject?.ToString();
-                    var signerSubject = signingCert.SubjectDN.ToString();
-                    if (string.IsNullOrEmpty(templateSubject) ||
-                        !string.Equals(NormalizeForCompare(templateSubject), NormalizeForCompare(signerSubject),
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        return "kur signing cert subject must match CertTemplate subject.";
-                    }
-                }
-            }
-            catch
-            {
-                return "kur body could not be parsed for key-identity binding.";
-            }
+            reqCtx.SignerSans = ExtractSans(signingCert.CertificateStructure.TbsCertificate.Extensions, lenient: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CMP signing certificate SANs could not be parsed");
+            return "Signing certificate SANs could not be parsed.";
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Reads a SubjectAlternativeName extension into the <c>TYPE:value</c> strings the issuance
+    /// pipeline and the name-restriction checks use.
+    /// </summary>
+    /// <param name="extensions">The extension block, or null.</param>
+    /// <param name="lenient">
+    /// When false, an entry type the builder cannot re-encode (otherName, dirName, registeredID)
+    /// is an error, because accepting it into a request only produces a confusing failure at
+    /// issuance. When true such entries are skipped, which is right for a signing certificate:
+    /// this product issues UPN otherNames routinely, and a signer carrying one must still be able
+    /// to sign.
+    /// </param>
+    private static List<string> ExtractSans(X509Extensions? extensions, bool lenient)
+    {
+        var sans = new List<string>();
+        var sanExtension = extensions?.GetExtension(X509Extensions.SubjectAlternativeName);
+        if (sanExtension == null)
+            return sans;
+
+        var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
+        foreach (var gn in generalNames.GetNames())
+        {
+            if (gn.TagNo == GeneralName.IPAddress && gn.Name is Asn1OctetString ipOctets)
+            {
+                sans.Add($"IP:{new System.Net.IPAddress(ipOctets.GetOctets())}");
+                continue;
+            }
+
+            var prefix = gn.TagNo switch
+            {
+                GeneralName.DnsName => "DNS",
+                GeneralName.Rfc822Name => "EMAIL",
+                GeneralName.UniformResourceIdentifier => "URI",
+                _ => null
+            };
+            if (prefix == null)
+            {
+                if (lenient)
+                    continue;
+                throw new InvalidOperationException(
+                    $"Unsupported SAN type in CMP certTemplate (GeneralName tag {gn.TagNo}). " +
+                    "Supported types: DNS, IP, URI, EMAIL.");
+            }
+            sans.Add($"{prefix}:{gn.Name}");
+        }
+        return sans;
     }
 
     private static string NormalizeForCompare(string dn) =>
@@ -917,46 +979,9 @@ public class CmpService : ICmpService
         // Extract subject from the template
         var subject = certTemplate.Subject?.ToString() ?? string.Empty;
 
-        // Extract SANs from extensions if present
-        var sans = new List<string>();
-        var extensions = certTemplate.Extensions;
-        if (extensions != null)
-        {
-            var sanExtension = extensions.GetExtension(X509Extensions.SubjectAlternativeName);
-            if (sanExtension != null)
-            {
-                var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
-                foreach (var gn in generalNames.GetNames())
-                {
-                    // Emit the TYPE:value form the rest of the pipeline speaks. These were stored
-                    // as bare values, which CertificateBuilderService rejects outright ("SAN entry
-                    // is missing a TYPE:value prefix") — so any CMP request carrying a SAN failed
-                    // at issuance — and which EnrollmentNameRestriction would have had to guess at.
-                    if (gn.TagNo == GeneralName.IPAddress && gn.Name is Asn1OctetString ipOctets)
-                    {
-                        sans.Add($"IP:{new System.Net.IPAddress(ipOctets.GetOctets())}");
-                        continue;
-                    }
-
-                    var prefix = gn.TagNo switch
-                    {
-                        GeneralName.DnsName => "DNS",
-                        GeneralName.Rfc822Name => "EMAIL",
-                        GeneralName.UniformResourceIdentifier => "URI",
-                        _ => null
-                    };
-                    if (prefix == null)
-                    {
-                        // An otherName / dirName / registeredID cannot be re-encoded by the builder,
-                        // so accepting it here would only produce a confusing failure later.
-                        throw new InvalidOperationException(
-                            $"Unsupported SAN type in CMP certTemplate (GeneralName tag {gn.TagNo}). " +
-                            "Supported types: DNS, IP, URI, EMAIL.");
-                    }
-                    sans.Add($"{prefix}:{gn.Name}");
-                }
-            }
-        }
+        // Extract SANs from extensions if present, in the TYPE:value form the rest of the
+        // pipeline speaks.
+        var sans = ExtractSans(certTemplate.Extensions, lenient: false);
 
         // Determine key algorithm from the template's public key
         var publicKeyInfo = certTemplate.PublicKey;
@@ -1003,6 +1028,15 @@ public class CmpService : ICmpService
                 throw new InvalidOperationException($"SAN not permitted for this CMP credential: {sanFailure}");
         }
 
+        // A signature-protected request may only name its signer. See CmpSignerNameBinding for
+        // why this is the rule and how an RA gets wider scope.
+        if (reqCtx.ProtectionMode == CmpProtectionMode.Signature)
+        {
+            var bindingError = CmpSignerNameBinding.Check(subject, sans, reqCtx.SignerSubjectDn, reqCtx.SignerSans, DnEquals);
+            if (bindingError != null)
+                throw new InvalidOperationException($"Request not permitted for this signing certificate: {bindingError}");
+        }
+
         // Validate against request profile if one is configured for this protocol
         if (context.RequestProfileId != null)
         {
@@ -1047,7 +1081,12 @@ public class CmpService : ICmpService
         {
             var optValidity = certTemplate.Validity;
             if (optValidity.NotBefore != null)
-                notBefore = optValidity.NotBefore.ToDateTime();
+            {
+                notBefore = CertificateValidityUtil.ClampRequestedNotBefore(
+                    optValidity.NotBefore.ToDateTime(), out var notBeforeRaised);
+                if (notBeforeRaised)
+                    _logger.LogInformation("CMP requested a notBefore in the past; raised to the issuance floor.");
+            }
             if (optValidity.NotAfter != null)
                 notAfter = optValidity.NotAfter.ToDateTime();
 

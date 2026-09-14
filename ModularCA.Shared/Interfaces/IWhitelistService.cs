@@ -40,6 +40,16 @@ public enum WhitelistDecision
 public interface IWhitelistService
 {
     /// <summary>
+    /// Whether at least one snapshot has ever been loaded from the database.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <c>IsWarm</c>: a reload failure clears warmth but keeps the last good
+    /// snapshot. The middleware evaluates against that snapshot rather than passing traffic
+    /// through, which is what "cold" used to mean for every non-admin path.
+    /// </remarks>
+    bool HasSnapshot { get; }
+
+    /// <summary>
     /// True once the service has successfully loaded rules from the
     /// database at least once. Starts false at construction time and
     /// stays false if the <c>Whitelists</c> table does not yet exist

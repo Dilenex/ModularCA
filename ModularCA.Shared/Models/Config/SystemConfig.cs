@@ -196,14 +196,19 @@ namespace ModularCA.Shared.Models.Config
         public bool Enabled { get; set; } = true;
 
         /// <summary>
-        /// Paths exempt from IP whitelisting. Auth must be reachable for login,
-        /// and the public CA list for the portal. The admin UI and API are
-        /// covered by the whitelist alongside protocol endpoints.
+        /// Paths exempt from IP whitelisting entirely. Empty by default.
         /// </summary>
-        public List<string> ExemptPaths { get; set; } = new()
-        {
-            "/api/v1/auth", "/api/v1/public/ca"
-        };
+        /// <remarks>
+        /// This used to default to <c>/api/v1/auth</c> and <c>/api/v1/public/ca</c>, and the
+        /// exemption is checked before any rule. The seeded "Auth Endpoints" and "CA cert
+        /// download" whitelist rules already cover both paths (open to all addresses by
+        /// default), so the exemption added nothing on a fresh install and took something away
+        /// from anyone who later tightened those rules: restricting auth to the VPN in the admin
+        /// UI bound the short-URL form only, while <c>/api/v1/auth/login</c>, the path the SPA
+        /// actually uses, stayed reachable from anywhere. Reachability now comes from the rules,
+        /// where it can be seen and changed.
+        /// </remarks>
+        public List<string> ExemptPaths { get; set; } = new();
     }
 
     /// <summary>
@@ -504,7 +509,13 @@ namespace ModularCA.Shared.Models.Config
         public bool Enabled { get; set; } = false;
         public string Host { get; set; } = string.Empty;
         public int Port { get; set; } = 389;
-        public bool UseSsl { get; set; } = false;
+        /// <summary>
+        /// Whether to connect over LDAPS. Defaults to true: the bind is a simple bind, which sends
+        /// the service-account password and every user's login password to the directory, and
+        /// there is no StartTLS path. A deployment that must use plaintext sets this explicitly
+        /// and gets the startup warning.
+        /// </summary>
+        public bool UseSsl { get; set; } = true;
         public string SearchBaseDn { get; set; } = string.Empty;
         public string SearchFilter { get; set; } = "(&(objectClass=user)(sAMAccountName={0}))";
         public string? BindDn { get; set; }
@@ -532,9 +543,10 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>
         /// AUTH-019: when true, rejects LDAP connections that don't use TLS.
-        /// Default false for backward compatibility.
+        /// Defaults to true, matching <see cref="UseSsl"/>; a configuration that enables LDAP
+        /// with UseSsl off must also set this false, deliberately.
         /// </summary>
-        public bool RequireTls { get; set; } = false;
+        public bool RequireTls { get; set; } = true;
     }
 
     /// <summary>

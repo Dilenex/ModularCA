@@ -827,6 +827,29 @@ namespace ModularCA.API.Controllers.v1.Auth
             user.LockoutEndUtc = null;
 
             // Validate new password against policy and reuse check.
+            // This endpoint exists for one situation: the account cannot log in until its
+            // password is replaced (an administrator's temporary password, or an expired one).
+            // It is not a general password-change path; that one lives behind a session and
+            // step-up MFA. Without this gate, a phished password alone rotated the password and
+            // locked the real owner out of an MFA-protected account. Evaluated after the old
+            // password verified, so it reveals nothing to a caller who has not proved it.
+            var passwordExpired = !user.PasswordNeverExpires
+                && user.PasswordExpirationDate.HasValue
+                && user.PasswordExpirationDate < DateTime.UtcNow;
+            if (!user.PasswordChangeOnNextLogon && !passwordExpired)
+            {
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = "change_not_required", source = "pre_jwt_change_password" },
+                    errorMessage: "LoginFailed");
+                await DelayToBudgetAsync(sw);
+                return StatusCode(403, new
+                {
+                    error = "This account's password does not need to be changed before signing in. "
+                          + "Sign in and change it from your account settings."
+                });
+            }
+
             var (isValid, errors) = await _passwordPolicy.ValidateAsync(user.Id, request.NewPassword);
             if (!isValid)
             {
@@ -858,10 +881,28 @@ namespace ModularCA.API.Controllers.v1.Auth
             // _cache is guaranteed non-null — registered unconditionally in StartModularCA.cs.
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
 
+            // The comment on the stamp rotation above has promised this since it was written;
+            // nothing performed it. A refresh token stolen before the change re-minted a session
+            // carrying the new stamp, because refresh checks account state, not credentials.
+            await RevokeAllRefreshTokensAsync(user.Id);
+
             await _audit.LogAsync(AuditActionType.UserPasswordChanged, user.Id, user.Username,
                 sourceIp: sourceIp, details: new { reason = "Forced password change on login" });
 
             return Ok(new { message = "Password changed successfully. Please log in again." });
+        }
+
+        /// <summary>
+        /// Revokes every live refresh token an account holds. Called wherever a credential
+        /// changes, so a session that predates the change cannot outlive it.
+        /// </summary>
+        private async Task RevokeAllRefreshTokensAsync(Guid userId)
+        {
+            await _db.RefreshTokens
+                .Where(t => t.UserId == userId && !t.IsRevoked)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.IsRevoked, true)
+                    .SetProperty(t => t.RevokedAt, DateTime.UtcNow));
         }
 
         /// <summary>
@@ -1043,7 +1084,24 @@ namespace ModularCA.API.Controllers.v1.Auth
                 .Include(gm => gm.Group)
                 .Select(gm => gm.Group)
                 .ToListAsync();
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+            // mTLS is the only factor here. For a member of a system group that is not enough:
+            // Login computes the same flag and MfaEnrollmentMiddleware confines a token that
+            // carries it to enrollment until a second factor exists. These certificate-primary
+            // paths minted an unrestricted token instead, so an admin whose only factor was a
+            // .p12 had full API access on one possession factor, and a restricted admin could
+            // enrol a .p12 and certificate-login around the restriction.
+            var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
+            var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
+                && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
+            if (mfaEnforcedForGroup)
+            {
+                return StatusCode(403, new
+                {
+                    error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                    requiresMfaEnrollment = true
+                });
+            }
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
             var certUserAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, certUserAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));

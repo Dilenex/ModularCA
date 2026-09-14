@@ -210,7 +210,8 @@ public static class BootstrapDatabaseSetup
                 Enabled = false,
                 Host = "",
                 Port = 389,
-                UseSsl = false,
+                UseSsl = true,
+                RequireTls = true,
                 SearchBaseDn = "",
                 SearchFilter = "(&(objectClass=user)(sAMAccountName={0}))"
             },

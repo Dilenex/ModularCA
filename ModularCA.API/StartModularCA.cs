@@ -1015,7 +1015,20 @@ if (config.Redis.Enabled && !string.IsNullOrWhiteSpace(config.Redis.ConnectionSt
         options.Configuration = config.Redis.ConnectionString;
         options.InstanceName = config.Redis.InstanceName ?? "ModularCA:";
     });
-    Console.WriteLine("[Cache] Using Redis distributed cache at {0}", config.Redis.ConnectionString);
+    // The connection string carries the password ("host:6379,password=..."), and this line
+    // lands in journald and whatever ships logs onward. That Redis holds the Data Protection
+    // keyring, which decrypts every TOTP secret. Print the endpoints only.
+    string redisDescription;
+    try
+    {
+        redisDescription = StackExchange.Redis.ConfigurationOptions.Parse(config.Redis.ConnectionString)
+            .ToString(includePassword: false);
+    }
+    catch
+    {
+        redisDescription = "(configured; not shown)";
+    }
+    Console.WriteLine("[Cache] Using Redis distributed cache at {0}", redisDescription);
 }
 else
 {
@@ -1290,6 +1303,7 @@ builder.Services.AddScoped<ModularCA.Core.Services.BootstrapAuditReplayService>(
 builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
+builder.Services.AddHostedService<ModularCA.API.Services.WhitelistRewarmService>();
 builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAuthorizer, ModularCA.Auth.Authorization.EnrollmentPrincipalAuthorizer>();
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
@@ -2337,6 +2351,20 @@ if (!isSetupMode)
         needsSetup = !checkDb.Database.CanConnect() || !checkDb.CertificateAuthorities.Any();
     }
     catch { needsSetup = true; }
+}
+
+// A configured instance that has no CAs is a recovery situation (an empty restore, a wrong
+// schema in db.yaml, every CA soft-deleted). The setup endpoints are the recovery tool, and
+// they must not be reachable on a credential-free basis just because the state is odd: mint a
+// token exactly as setup mode does, so recovery needs the console. Without a token the setup
+// controller refuses.
+if (!isSetupMode && needsSetup)
+{
+    var recoveryToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    SetupTokenHolder.SetToken(recoveryToken);
+    Console.WriteLine("[SETUP] This instance is configured but has no certificate authorities.");
+    Console.WriteLine("[SETUP] The setup wizard is available for recovery. It requires this one-time token,");
+    Console.WriteLine($"[SETUP] valid for {SetupTokenHolder.DefaultTokenTtl.TotalMinutes:0} minutes: {recoveryToken}");
 }
 
 // Startup state logging

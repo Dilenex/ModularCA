@@ -51,9 +51,10 @@ public class SshCaService : ISshCaService
         var bitsArg = BuildBitsArg(sanitizedType, keySize);
 
         // Generate keypair via ssh-keygen
-        var (exitCode, _, stderr) = await ProcessRunner.RunAsync(
-            _config.SshCa.SshKeygenPath,
-            $"-t {sanitizedType}{bitsArg} -f \"{keyPath}\" -N \"\" -C \"{SanitizeComment(name)}\"");
+        var keygenArgs = new List<string> { "-t", sanitizedType };
+        keygenArgs.AddRange(bitsArg.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        keygenArgs.AddRange(["-f", keyPath, "-N", "", "-C", SanitizeComment(name)]);
+        var (exitCode, _, stderr) = await ProcessRunner.RunAsync(_config.SshCa.SshKeygenPath, keygenArgs);
 
         if (exitCode != 0)
             throw new InvalidOperationException($"ssh-keygen failed: {stderr}");
@@ -262,29 +263,29 @@ public class SshCaService : ISshCaService
 
         try
         {
-            var hostFlag = isHost ? "-h " : "";
-            var extArgs = "";
-            if (extensions != null && extensions.Count > 0)
-                extArgs = string.Join(" ", extensions.Select(e =>
-                {
-                    // Apply specific sanitization for force-command values
-                    if (e.StartsWith("force-command=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var cmd = e["force-command=".Length..];
-                        return $"-O force-command={SanitizeForceCommand(cmd)}";
-                    }
-                    // Sanitize source-address restrictions similarly
-                    if (e.StartsWith("source-address=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var addr = e["source-address=".Length..];
-                        var sanitizedAddr = SanitizeExtension(addr);
-                        return $"-O source-address={sanitizedAddr}";
-                    }
-                    return $"-O {SanitizeExtension(e)}";
-                }));
+            // Every argument is one token. The previous single-string form re-tokenised on
+            // whitespace, and force-command values are permitted to contain spaces, so a value of
+            // "x -O clear" appended a flag of the caller's choosing. The sanitizers still apply;
+            // they bound the value, the argument list bounds where it goes.
+            var args = new List<string> { "-s", caKey.PrivateKeyPath, "-I", SanitizeComment(certKeyId) };
+            if (isHost)
+                args.Add("-h");
+            args.AddRange(["-n", principals, "-V", $"+{validityHours}h", "-z", serial.ToString()]);
 
-            var args = $"-s \"{caKey.PrivateKeyPath}\" -I \"{SanitizeComment(certKeyId)}\" " +
-                       $"{hostFlag}-n \"{principals}\" -V +{validityHours}h -z {serial} {extArgs} \"{pubKeyPath}\"";
+            if (extensions != null && extensions.Count > 0)
+            {
+                foreach (var e in extensions)
+                {
+                    args.Add("-O");
+                    if (e.StartsWith("force-command=", StringComparison.OrdinalIgnoreCase))
+                        args.Add("force-command=" + SanitizeForceCommand(e["force-command=".Length..]));
+                    else if (e.StartsWith("source-address=", StringComparison.OrdinalIgnoreCase))
+                        args.Add("source-address=" + SanitizeExtension(e["source-address=".Length..]));
+                    else
+                        args.Add(SanitizeExtension(e));
+                }
+            }
+            args.Add(pubKeyPath);
 
             var (exitCode, _, stderr) = await ProcessRunner.RunAsync(_config.SshCa.SshKeygenPath, args);
             if (exitCode != 0)
@@ -415,7 +416,7 @@ public class SshCaService : ISshCaService
 
             var (exitCode, _, stderr) = await ProcessRunner.RunAsync(
                 _config.SshCa.SshKeygenPath,
-                $"-k -f \"{krlFile}\" -s \"{caKey.PrivateKeyPath}\" \"{serialsFile}\"");
+                ["-k", "-f", krlFile, "-s", caKey.PrivateKeyPath, serialsFile]);
 
             if (exitCode != 0)
                 throw new InvalidOperationException($"KRL generation failed: {stderr}");
@@ -510,6 +511,12 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// Sanitizes a ForceCommand value, allowing only safe characters for shell commands.
     /// </summary>
+    /// <remarks>
+    /// This bounds the value's content; it does not bound where the value goes on the command
+    /// line, and it must not be relied on for that. Spaces and hyphens are legitimately part of
+    /// a force command, which is exactly what made the single-string argument form injectable.
+    /// The argument list in <c>SignKeyAsync</c> is what keeps the value inside one argv element.
+    /// </remarks>
     private static string SanitizeForceCommand(string cmd)
     {
         // Only allow alphanumeric, hyphens, forward slashes, dots, spaces, equals, and underscores

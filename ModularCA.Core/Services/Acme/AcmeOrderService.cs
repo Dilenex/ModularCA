@@ -68,6 +68,10 @@ public class AcmeOrderService(
         _db.AcmeOrders.Add(order);
         await _db.SaveChangesAsync();
 
+        // The per-CA AcmeAllowedChallengeTypes setting was stored and never read; every
+        // authorization offered http-01 and dns-01 regardless. Resolved once per order.
+        var allowedChallengeTypes = await GetAllowedChallengeTypesAsync(order.CaLabel);
+
         // Previously this loop called SaveChangesAsync twice per identifier,
         // producing 2N round-trips on ACME order creation with N SANs. Now we stage every
         // authorization + its challenges in the change tracker and commit once after the loop.
@@ -78,7 +82,7 @@ public class AcmeOrderService(
             var authz = AcmeAuthorizationService.CreateAuthorizationWithChallenges(order.Id, identifier);
             _db.AcmeAuthorizations.Add(authz);
 
-            var challenges = AcmeAuthorizationService.CreateChallengesForAuthorization(authz.Id, authz.IsWildcard);
+            var challenges = AcmeAuthorizationService.CreateChallengesForAuthorization(authz.Id, authz.IsWildcard, allowedChallengeTypes);
             _db.AcmeChallenges.AddRange(challenges);
         }
 
@@ -216,7 +220,8 @@ public class AcmeOrderService(
             order.FinalizedCsrId = csrEntity.Id;
 
             // Default validity dates from signing profile when certbot omits them
-            var issuanceNotBefore = order.NotBefore ?? DateTime.UtcNow;
+            // The order's notBefore is the client's request; the floor applies at issuance.
+            var issuanceNotBefore = CertificateValidityUtil.ClampRequestedNotBefore(order.NotBefore, out _);
             var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
             var issuanceNotAfter = order.NotAfter ?? issuanceNotBefore.Add(maxValidity);
 
@@ -520,5 +525,25 @@ public class AcmeOrderService(
             case 3: s += "="; break;
         }
         return Convert.FromBase64String(s);
+    }
+
+    /// <summary>
+    /// Reads the challenge types the addressed CA permits, or null for no restriction.
+    /// </summary>
+    private async Task<IReadOnlyCollection<string>?> GetAllowedChallengeTypesAsync(string? caLabel)
+    {
+        var cas = _db.CertificateAuthorities.AsNoTracking().Where(c => c.IsEnabled);
+        cas = string.IsNullOrWhiteSpace(caLabel)
+            ? cas.OrderByDescending(c => c.IsDefault)
+            : cas.Where(c => c.Label == caLabel);
+        var caId = await cas.Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
+        if (caId == null)
+            return null;
+
+        var raw = await _db.CaProtocolConfigs.AsNoTracking()
+            .Where(c => c.CaId == caId && c.Protocol == "ACME")
+            .Select(c => c.AcmeAllowedChallengeTypes)
+            .FirstOrDefaultAsync();
+        return AcmeChallengeTypePolicy.Parse(raw);
     }
 }

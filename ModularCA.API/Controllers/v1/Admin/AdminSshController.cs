@@ -263,21 +263,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             }
         }
 
-        // Check extensions are allowed
-        if (extensions != null && extensions.Count > 0)
-        {
-            var allowed = JsonSerializer.Deserialize<List<string>>(certProfile.AllowedExtensions) ?? new();
-            if (allowed.Count > 0)
-            {
-                foreach (var ext in extensions)
-                {
-                    // Compare base extension name (before '=')
-                    var extName = ext.Contains('=') ? ext[..ext.IndexOf('=')] : ext;
-                    if (!allowed.Any(a => a == extName || a == ext))
-                        return $"Extension '{ext}' is not allowed by the cert profile";
-                }
-            }
-        }
+        // Check extensions are allowed. Shared with the self-service controller so the rule
+        // cannot drift between the two paths.
+        var extensionError = ModularCA.Core.Services.SshExtensionPolicy.Validate(extensions, certProfile.AllowedExtensions);
+        if (extensionError != null)
+            return extensionError;
 
         return null;
     }

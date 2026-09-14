@@ -15,8 +15,10 @@ namespace ModularCA.API.Middleware;
 /// from the database), applies a hardcoded RFC1918 / loopback fallback
 /// sourced from <see cref="WhitelistDefaults.InternalOnlyCidrs"/> to the
 /// <c>/setup/*</c> and <c>/api/v1/setup/*</c> paths so the setup wizard is
-/// internal-only before the database exists; every other path passes through
-/// during pre-bootstrap because there is nothing to meaningfully gate yet.
+/// internal-only before the database exists. Every other path passes through
+/// in that state only when the process started in setup mode; a configured
+/// instance whose snapshot never loaded gates every path against the same
+/// fallback, and a stale snapshot is evaluated rather than ignored.
 /// Preserves the <c>config.IpWhitelist.Enabled</c> master kill switch and
 /// the YAML-sourced <c>ExemptPaths</c> list (path exclusion, not IP allow
 /// list — a separate concept that stays in config.yaml). Blocked requests
@@ -32,6 +34,12 @@ public class IpWhitelistMiddleware
     private readonly IWhitelistService _whitelistService;
     private readonly bool _enabled;
 
+    // Whether this process started without a config.yaml, i.e. a genuinely fresh install where
+    // nothing exists yet to protect. Decided once: the file appears only when setup completes,
+    // and setup ends by restarting the process. Read the same way SetupRedirectMiddleware reads
+    // it, so the two agree on what "setup mode" is.
+    private readonly bool _startedInSetupMode;
+
     /// <summary>
     /// Constructs the middleware. The master kill switch is captured once
     /// at startup from <c>config.IpWhitelist.Enabled</c>; flipping it at
@@ -46,6 +54,7 @@ public class IpWhitelistMiddleware
         _config = config;
         _whitelistService = whitelistService;
         _enabled = config.IpWhitelist.Enabled;
+        _startedInSetupMode = !File.Exists(Path.Combine(AppContext.BaseDirectory, "config", "config.yaml"));
     }
 
     /// <summary>
@@ -80,13 +89,25 @@ public class IpWhitelistMiddleware
             remoteIp = remoteIp.MapToIPv4();
         }
 
-        // Pre-bootstrap fallback: the whitelist service has not yet read
-        // the Whitelists table (either the DB / table does not exist yet,
-        // or migrations have not been applied). In this mode we only gate
-        // the setup wizard paths against the hardcoded RFC1918 / loopback
-        // fallback, and let everything else through because there are no
-        // real CAs or protocol endpoints to protect yet.
-        if (!_whitelistService.IsWarm)
+        // Cold snapshot handling. "Not warm" covers three different situations, and they
+        // used to get one answer (gate setup and admin against RFC 1918, pass everything
+        // else), which was right for exactly one of them:
+        //
+        //   1. A stale snapshot exists: the boot-time load succeeded and a later reload
+        //      failed. Evaluate against the stale snapshot. Rules that were right a minute
+        //      ago are far better than none.
+        //   2. No snapshot, and the process started in setup mode: a fresh install. Only
+        //      the wizard exists; gate it and pass the rest. The original design.
+        //   3. No snapshot, and the process did NOT start in setup mode: the database was
+        //      unreachable at boot, on an instance that has CAs and protocol endpoints.
+        //      Passing traffic through here opened ACME, EST, CMP, SCEP and the integration
+        //      API to any source address for as long as the outage lasted, and with no
+        //      re-warm timer, for the life of the process. Gate every path against the
+        //      RFC 1918 fallback, the same default a new rule gets.
+        //
+        // WhitelistRewarmService retries the load in the background so states 2 and 3 end
+        // when the database comes back rather than at the next admin edit.
+        if (!_whitelistService.IsWarm && !_whitelistService.HasSnapshot)
         {
             var isSetupPath = path.StartsWith("/setup/", StringComparison.OrdinalIgnoreCase)
                            || path.StartsWith("/api/v1/setup/", StringComparison.OrdinalIgnoreCase)
@@ -96,7 +117,7 @@ public class IpWhitelistMiddleware
                            || path.StartsWith("/api/v1/admin/", StringComparison.OrdinalIgnoreCase)
                            || path.Equals("/admin", StringComparison.OrdinalIgnoreCase)
                            || path.Equals("/api/v1/admin", StringComparison.OrdinalIgnoreCase);
-            if (isSetupPath || isAdminPath)
+            if (isSetupPath || isAdminPath || !_startedInSetupMode)
             {
                 if (remoteIp == null)
                 {
@@ -110,7 +131,7 @@ public class IpWhitelistMiddleware
                 var fallbackNetworks = CidrMatcher.ParseNetworks(WhitelistDefaults.InternalOnlyCidrs);
                 if (!CidrMatcher.IsAllowed(remoteIp, fallbackNetworks))
                 {
-                    var surface = isSetupPath ? "setup" : "admin";
+                    var surface = isSetupPath ? "setup" : isAdminPath ? "admin" : "all endpoints while the whitelist is unavailable";
                     context.Items["IpWhitelistBlocked"] = true;
                     context.Response.StatusCode = 403;
                     context.Response.ContentType = "text/plain";
@@ -123,12 +144,12 @@ public class IpWhitelistMiddleware
                 return;
             }
 
-            // Non-setup, non-admin path during pre-bootstrap — pass through.
+            // Non-setup, non-admin path on a fresh install: nothing exists to protect yet.
             await _next(context);
             return;
         }
 
-        // Normal service-backed evaluation against the in-memory snapshot.
+        // Service-backed evaluation against the in-memory snapshot, current or stale.
         var decision = _whitelistService.Evaluate(path, remoteIp);
 
         switch (decision)

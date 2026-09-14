@@ -29,6 +29,17 @@ const MfaCallback: React.FC = () => {
             })
             .then(r => { if (!r.ok) throw new Error('Exchange failed'); return r.json(); })
             .then(data => {
+                // The certificate identified a user who also has TOTP or WebAuthn. Continue on
+                // the verify page with the MFA session in navigation state, never in the URL.
+                if (data.requiresMfa) {
+                    window.history.replaceState(null, '', '/admin/mfa-callback');
+                    navigate('/mfa-verify', {
+                        replace: true,
+                        state: { mfaToken: data.mfaToken, method: data.method, availableMethods: data.availableMethods },
+                    });
+                    return;
+                }
+
                 localStorage.setItem('authToken', data.token);
                 localStorage.setItem('expiresAt', data.expiresAt);
                 localStorage.setItem('refreshToken', data.refreshToken);

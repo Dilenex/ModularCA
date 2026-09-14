@@ -50,7 +50,12 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpGet]
         public async Task<IActionResult> GetUsers()
         {
-            var users = await _userService.GetAllUsers();
+            // Scoped to the caller's tenants. The policy is CaAuditor with no CA in the route, which
+            // the handler satisfies for a GET when the capability is held on ANY CA; and the service
+            // has no tenant predicate. A single-CA auditor in one tenant could list every account
+            // in every tenant, with group memberships (system groups included) and password expiry
+            // dates: a ready-made target list for password spraying.
+            var users = await ScopeToCallerAsync(await _userService.GetAllUsers());
             return Ok(users);
         }
 
@@ -60,7 +65,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetUserById(Guid id)
         {
-            var user = await _userService.GetUserById(id);
+            var user = await ScopeToCallerAsync(await _userService.GetUserById(id));
             if (user == null)
                 return NotFound(new { message = $"User with ID {id} not found" });
             return Ok(user);
@@ -72,7 +77,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpGet("by-username/{username}")]
         public async Task<IActionResult> GetUserByUsername(string username)
         {
-            var user = await _userService.GetUserByUsername(username);
+            var user = await ScopeToCallerAsync(await _userService.GetUserByUsername(username));
             if (user == null)
                 return NotFound(new { message = $"User with username {username} not found" });
             return Ok(user);
@@ -84,10 +89,55 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpGet("by-email")]
         public async Task<IActionResult> GetUserByEmail([FromQuery] string email)
         {
-            var user = await _userService.GetUserByEmail(email);
+            var user = await ScopeToCallerAsync(await _userService.GetUserByEmail(email));
             if (user == null)
                 return NotFound(new { message = $"User with email {email} not found" });
             return Ok(user);
+        }
+
+        /// <summary>
+        /// Restricts a user list to accounts that share a tenant with the caller. System
+        /// administrators see everyone.
+        /// </summary>
+        /// <remarks>
+        /// Users carry no tenant of their own; tenancy is a property of the groups they belong to.
+        /// An account is visible when at least one of its group memberships is in a group whose
+        /// tenant the caller can access. An account with no memberships at all is visible only to
+        /// system administrators, since nothing places it in any tenant.
+        /// </remarks>
+        private async Task<List<UserEntityDto>> ScopeToCallerAsync(List<UserEntityDto> users)
+        {
+            var tenantContext = HttpContext.RequestServices.GetRequiredService<ITenantContext>();
+            if (tenantContext.IsSystemAdmin)
+                return users;
+
+            var accessible = tenantContext.AccessibleTenantIds;
+            if (accessible.Count == 0)
+                return [];
+
+            var visibleGroupIds = await _dbContext.CaGroups
+                .AsNoTracking()
+                .Where(g => accessible.Contains(g.TenantId))
+                .Select(g => g.Id)
+                .ToHashSetAsync();
+
+            return users
+                .Where(u => u.Groups != null && u.Groups.Any(g => visibleGroupIds.Contains(g.GroupId)))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Single-user form of <see cref="ScopeToCallerAsync(List{UserEntityDto})"/>. An account
+        /// outside the caller's scope comes back as null, which the endpoints report as not found
+        /// rather than forbidden, so a lookup by username or email cannot confirm that an account
+        /// exists in another tenant.
+        /// </summary>
+        private async Task<UserEntityDto?> ScopeToCallerAsync(UserEntityDto? user)
+        {
+            if (user == null)
+                return null;
+            var visible = await ScopeToCallerAsync(new List<UserEntityDto> { user });
+            return visible.Count == 1 ? user : null;
         }
 
         /// <summary>

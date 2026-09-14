@@ -228,7 +228,11 @@ public class PublicEnrollmentController(
         }
 
         // Consume the token (validate + decrement uses)
-        var (consumed, consumeError) = await tokenService.ValidateAndConsumeAsync(token, subject, entity.Protocol);
+        // "QR" is what this endpoint is; the token's own protocol is what it is restricted to.
+        // Passing entity.Protocol here compared the restriction to itself, so it never applied:
+        // a CMP shared secret or a SCEP challenge (same table, same column) redeemed here and,
+        // carrying no profile of its own, fell back to the default CA's configuration.
+        var (consumed, consumeError) = await tokenService.ValidateAndConsumeAsync(token, subject, "QR");
         if (!consumed)
             return BadRequest(new { error = consumeError ?? "Token validation failed." });
 
@@ -363,14 +367,33 @@ public class PublicEnrollmentController(
             if (defaultCa != null) caName = defaultCa.Name;
         }
 
-        var html = BuildEnrollmentPage(token, caName, certType, entity.SubjectRestriction);
+        // This page carries its own script, and the global CSP is script-src 'self' with no
+        // inline allowance, so without a nonce the Submit button did nothing in any browser.
+        // A per-response nonce admits exactly this script and nothing else. SecurityHeadersMiddleware
+        // adds its header with TryAdd, so the one set here wins for this response only; the
+        // alternative, 'unsafe-inline' globally, would remove the control that makes the SPAs'
+        // token storage survivable.
+        var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+        Response.Headers["Content-Security-Policy"] =
+            "default-src 'self'; " +
+            $"script-src 'nonce-{nonce}'; " +
+            "style-src 'unsafe-inline'; " +
+            "img-src 'self' data:; " +
+            "connect-src 'self'; " +
+            "frame-ancestors 'none'; " +
+            "base-uri 'self'; " +
+            "form-action 'self'; " +
+            "object-src 'none'; " +
+            "report-uri /api/v1/public/csp-report";
+
+        var html = BuildEnrollmentPage(token, caName, certType, entity.SubjectRestriction, nonce);
         return Content(html, "text/html");
     }
 
     /// <summary>
     /// Builds a minimal responsive HTML enrollment page that works on mobile browsers.
     /// </summary>
-    private static string BuildEnrollmentPage(string token, string caName, string certType, string? subjectHint)
+    private static string BuildEnrollmentPage(string token, string caName, string certType, string? subjectHint, string nonce)
     {
         var apiBase = $"api/v1/public/enroll/{Uri.EscapeDataString(token)}";
         return $$"""
@@ -429,12 +452,13 @@ public class PublicEnrollmentController(
                     <label for="csr">Paste your CSR (PEM format)</label>
                     <textarea id="csr" placeholder="-----BEGIN CERTIFICATE REQUEST-----&#10;...&#10;-----END CERTIFICATE REQUEST-----"></textarea>
                     <p class="hint">Generate a CSR using: openssl req -new -newkey rsa:2048 -nodes -keyout key.pem -out csr.pem</p>
-                    <button class="btn btn-primary" id="submit-btn" onclick="submitCSR()">Submit CSR &amp; Get Certificate</button>
+                    <button class="btn btn-primary" id="submit-btn">Submit CSR &amp; Get Certificate</button>
                 </div>
 
                 <div id="result-section" class="result" style="display:none;"></div>
             </div>
-            <script>
+            <script nonce="{{nonce}}">
+                document.getElementById('submit-btn').addEventListener('click', submitCSR);
                 function el(tag, attrs, children) {
                     const e = document.createElement(tag);
                     if (attrs) Object.entries(attrs).forEach(([k, v]) => {
