@@ -22,43 +22,77 @@ public static class BootstrapProfileSeeder
     /// </summary>
     public static void LoadOidsToDb(ModularCADbContext db, YamlOIDLoader.OIDSeedConfig OIDConfig)
     {
-        if (db.OIDOptions.Any())
-        {
-            Console.WriteLine("✓ OIDs already loaded into the database.");
-            return;
-        }
+        // Reconcile each category independently rather than skipping the whole table when any row
+        // exists.
+        //
+        // The old guard was `if (db.OIDOptions.Any()) return;`, which cannot tell a fully seeded
+        // catalog from a half-seeded one. A deployment that acquired Extended rows and no Standard
+        // rows — from an interrupted first run, or from a hand-written config/OIDSeed.yaml with
+        // only an ExtendedKeyUsage section — was then permanently stuck: this is a first-run
+        // operation, so it never ran again to finish the job.
+        //
+        // That failure is not quiet at issuance, which is the one mercy. IssuanceValidationService
+        // resolves the profile's key usages against this table, finds nothing, and refuses rather
+        // than emitting a certificate with no KeyUsage extension (which is unrestricted for every
+        // usage). So the symptom is every enrollment failing with MCA-POL-000 and a message about
+        // spelling — pointing at the profile, when the profile is fine and the catalog is empty.
+        //
+        // 20260829080000_SeedSmartCardAndKdcEkus exists because this same guard already stranded
+        // two extended usages once. Fixing the guard is the general form of that migration.
+        var seeded = 0;
+        seeded += SeedCategory(db, "Standard", OIDConfig.OID.StandardKeyUsage);
+        seeded += SeedCategory(db, "Extended", OIDConfig.OID.ExtendedKeyUsage);
 
-        var standardOids = OIDConfig.OID.StandardKeyUsage!;
+        Console.WriteLine(seeded == 0
+            ? "✓ OID catalog already complete."
+            : $"✓ OID catalog reconciled — {seeded} entr{(seeded == 1 ? "y" : "ies")} added.");
+    }
 
-        for (var oid = 0; oid < standardOids.Count; oid++)
+    /// <summary>
+    /// Adds any entries of one category that the catalog does not already have, keyed by OID.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on OID rather than friendly name because OID is the primary key and the stable
+    /// identity: an operator who renamed an entry keeps their name, and a duplicate insert is
+    /// impossible rather than merely unlikely. Returns the number added so the caller can say
+    /// whether it did anything, which is the difference between "already complete" and "silently
+    /// did nothing" in a bootstrap log.
+    /// </remarks>
+    /// <param name="db">Database context.</param>
+    /// <param name="category">"Standard" or "Extended", matching <c>OIDOptionEntity.KeyUsage</c>.</param>
+    /// <param name="entries">Friendly name to OID, from the seed config or its built-in defaults.</param>
+    private static int SeedCategory(
+        ModularCADbContext db, string category, Dictionary<string, string>? entries)
+    {
+        if (entries == null || entries.Count == 0)
+            return 0;
+
+        var present = db.OIDOptions
+            .Where(o => o.KeyUsage == category)
+            .Select(o => o.OID)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var added = 0;
+        foreach (var (friendlyName, oid) in entries)
         {
+            if (string.IsNullOrWhiteSpace(oid) || present.Contains(oid))
+                continue;
+
             db.OIDOptions.Add(new OIDOptionEntity
             {
-                OID = standardOids.Values.ToList()[oid],
-                FriendlyName = standardOids.Keys.ToList()[oid],
+                OID = oid,
+                FriendlyName = friendlyName,
                 IsDefaultEntry = true,
-                KeyUsage = "Standard"
+                KeyUsage = category,
             });
-
-            db.SaveChanges();
+            added++;
         }
 
-        var extendedOids = OIDConfig.OID.ExtendedKeyUsage!;
-
-        for (var oid = 0; oid < extendedOids.Count; oid++)
-        {
-            db.OIDOptions.Add(new OIDOptionEntity
-            {
-                OID = extendedOids.Values.ToList()[oid],
-                FriendlyName = extendedOids.Keys.ToList()[oid],
-                IsDefaultEntry = true,
-                KeyUsage = "Extended"
-            });
-
-            db.SaveChanges();
-        }
-
-        Console.WriteLine("✓ OIDs loaded into the database.");
+        // One SaveChanges for the category rather than one per row: the original saved inside the
+        // loop, so an interruption partway through left exactly the half-seeded catalog this
+        // method now has to repair.
+        if (added > 0) db.SaveChanges();
+        return added;
     }
 
     /// <summary>
@@ -659,6 +693,19 @@ public static class BootstrapProfileSeeder
             // without operators having to enumerate rules per-CA. Enrollment
             // protocols (ACME/EST/SCEP/CMP) and TSA remain unseeded — those
             // are deployment-specific and operators open them explicitly.
+            new WhitelistEntity
+            {
+                Name = "Public Portal",
+                Description = "The relying-party portal (/public) and the public info endpoint its footer reads. Open by default because the people it serves are outside the network by definition — someone fetching the CA certificate has no trust in this CA yet. Protocol endpoints under /api/v1/public/ are NOT covered here; they keep their own per-protocol rules. Tighten this to internal CIDRs on an air-gapped or internal-only deployment.",
+                Scope = WhitelistScope.Public,
+                CertificateAuthorityId = null,
+                Protocol = null,
+                CidrList = WhitelistDefaults.AllAddressesCidrs.ToList(),
+                IsEnabled = true,
+                IsSystemDefault = true,
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
             new WhitelistEntity
             {
                 Name = "OCSP (global)",

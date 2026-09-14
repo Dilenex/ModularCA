@@ -23,13 +23,36 @@ public class CsrfProtectionMiddleware
     /// JWT-authenticated paths don't need this — the Bearer token provides CSRF protection.
     /// /api/v1/setup/ is included — setup initialize has CSRF protection.
     /// </summary>
+    /// <summary>
+    /// State-changing paths that require the double-submit token.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Everything here is reachable with ambient browser authority — a session cookie, or in the
+    /// setup wizard's case a first-run surface a browser can be walked into. That is what CSRF
+    /// defends against, and it is the test for belonging on this list.
+    /// </para>
+    /// <para>
+    /// <c>/api/v1/public/enroll</c> used to be here and is not, deliberately. It carries no ambient
+    /// authority of any kind: the request is anonymous, and the only thing authorising it is a
+    /// high-entropy enrollment token in the URL path. An attacker who could forge a cross-site POST
+    /// to it would need that token, and anyone holding the token can simply enroll directly — so
+    /// the protection defended nothing, while making the endpoint unusable by exactly the clients
+    /// it exists for. A device following a QR code, or a scripted enrollment, had to GET the page
+    /// first purely to collect a cookie, and got a 403 reading "CSRF validation failed" if it did
+    /// not — which reads as an authentication problem and is not one.
+    /// </para>
+    /// <para>
+    /// The token remains single-use or use-limited, expiring, and bound to a CA and profile. That
+    /// is the control on this endpoint; CSRF never was.
+    /// </para>
+    /// </remarks>
     private static readonly string[] ProtectedPaths =
     {
         "/api/v1/setup/",
         "/api/v1/auth/login",
         "/api/v1/auth/cert-login",
         "/api/v1/auth/change-password",
-        "/api/v1/public/enroll",
     };
 
     public CsrfProtectionMiddleware(RequestDelegate next)

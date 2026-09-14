@@ -161,5 +161,6 @@ export const WhitelistScope = {
     Ca: 'Ca',
     Protocol: 'Protocol',
     Admin: 'Admin',
+    Public: 'Public',
 } as const;
 export type WhitelistScope = (typeof WhitelistScope)[keyof typeof WhitelistScope];

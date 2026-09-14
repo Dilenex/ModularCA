@@ -1736,25 +1736,20 @@ namespace ModularCA.Core.Services
             var sanSeq = Asn1Sequence.GetInstance(X509ExtensionUtilities.FromExtensionValue(sanExt));
             foreach (Asn1Encodable entry in sanSeq)
             {
-                var gn = GeneralName.GetInstance(entry);
-                if (gn.TagNo == GeneralName.IPAddress)
-                {
-                    // IP addresses come as raw octets — convert to human-readable form
-                    var octets = Asn1OctetString.GetInstance(gn.Name).GetOctets();
-                    var ip = new System.Net.IPAddress(octets);
-                    result.Add($"IP:{ip}");
-                }
-                else
-                {
-                    var prefix = gn.TagNo switch
-                    {
-                        GeneralName.DnsName => "DNS",
-                        GeneralName.Rfc822Name => "Email",
-                        GeneralName.UniformResourceIdentifier => "URI",
-                        _ => "Other"
-                    };
-                    result.Add($"{prefix}:{gn.Name}");
-                }
+                // UpnSanEncoding.Describe, not a local switch. This was a local switch with no
+                // OtherName case, so a UPN fell through to `_ => "Other"` and was stored as the
+                // BouncyCastle ASN.1 dump:
+                //
+                //   Other:[1.3.6.1.4.1.311.20.2.3, [CONTEXT 0]testuser@local.private]
+                //
+                // which is what the user interface then displayed, having been handed exactly that
+                // string. Describe decodes the otherName and yields UPN:testuser@local.private.
+                // Its own remarks say every SAN decode path routes through it "so the four copies
+                // of this switch cannot disagree again" — this was a fifth the consolidation
+                // missed. The switch in CmpService is deliberately NOT this: it parses an incoming
+                // certTemplate and refuses otherName outright, because accepting a name the
+                // builder cannot re-encode only defers the failure to issuance.
+                result.Add(UpnSanEncoding.Describe(GeneralName.GetInstance(entry)));
             }
             return result;
         }

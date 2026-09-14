@@ -100,6 +100,17 @@ Http:
   # your trusted proxy subnets here. Comma-separated CIDRs, e.g.:
   # TrustedProxyCidrs: "10.0.1.0/24,10.0.2.0/24"
   TrustedProxyCidrs: ""
+  #
+  # Hops to walk back through X-Forwarded-For. Default 1 — correct for a single proxy.
+  # A CDN in FRONT of your proxy is two hops: the proxy appends the CDN's edge address,
+  # so walking back one yields the CDN and calls it the client. Every hop counted here
+  # must also appear in TrustedProxyCidrs above, or the walk stops early.
+  #
+  # Usually better: have the proxy write the real client itself and keep one hop —
+  #   nginx:  proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+  # which needs no CDN address ranges here. Only safe if the proxy refuses connections
+  # that did not come from the CDN, or anyone reaching it directly can forge the header.
+  # ForwardedHeaderHopLimit: 1
   # HSTS tuning. MaxAgeSeconds=0 disables HSTS.
   Hsts:
     MaxAgeSeconds: 31536000    # 1 year

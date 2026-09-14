@@ -57,6 +57,57 @@ public class SourceCodeConfig
     /// link rather than a dead notice — wrong for a modified build, but a visible statement that
     /// can be corrected, which an empty string is not.
     /// </remarks>
-    public string EffectiveUrl =>
-        string.IsNullOrWhiteSpace(Url) ? UpstreamUrl : Url.Trim();
+    /// <summary>
+    /// Upstream URLs this project has shipped as the default in the past.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A value equal to one of these was never chosen by anybody: it is the default of an older
+    /// build, written into <c>config.yaml</c> at bootstrap and persisted from then on. Because the
+    /// persisted value wins over the compiled default, changing <see cref="UpstreamUrl"/> alone
+    /// cannot reach an existing installation — it keeps offering a repository name that only
+    /// resolves because the forge still redirects it, and section 13 obliges an accurate offer
+    /// rather than one that happens to work today.
+    /// </para>
+    /// <para>
+    /// Matching exactly, and only against names this project actually shipped, is what keeps this
+    /// from overreaching. An operator who pointed the offer at their own fork typed something that
+    /// appears nowhere in this list and is left alone — which matters more than the repair, since
+    /// silently rewriting a modified deployment's source offer would break the compliance of the
+    /// one operator who took it seriously.
+    /// </para>
+    /// <para>
+    /// Append-only. Removing an entry re-strands every installation still carrying it.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlyList<string> SupersededUpstreamUrls =
+    [
+        // The GitHub organisation was renamed to Dilenex; installs bootstrapped before that
+        // carry this and cannot be reached by a code change to UpstreamUrl.
+        "https://github.com/Ephemeral-Intel/ModularCA",
+    ];
+
+    /// <summary>
+    /// The URL to publish, resolving an unset or superseded value to <see cref="UpstreamUrl"/>.
+    /// </summary>
+    public string EffectiveUrl
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Url))
+                return UpstreamUrl;
+
+            var trimmed = Url.Trim();
+
+            // Trailing slashes and case differ between hand-edited and seeded values; neither
+            // makes it a deliberate choice.
+            foreach (var superseded in SupersededUpstreamUrls)
+            {
+                if (string.Equals(trimmed.TrimEnd('/'), superseded.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                    return UpstreamUrl;
+            }
+
+            return trimmed;
+        }
+    }
 }

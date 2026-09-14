@@ -355,6 +355,16 @@ public class WhitelistService : IWhitelistService
         if (StartsWith(path, "/ca/") || Equals(path, "/ca"))
             return new PathBucket(WhitelistScope.ShortUrl, null, "CA", true);
 
+        // Relying-party surface. MUST stay below the CRL / CA / OCSP / TSA checks above:
+        // those are also under /api/v1/public/, and matching them here first would strip their
+        // per-protocol rules and hand every one of them whatever the Public rule says. Narrow on
+        // purpose — the portal SPA and the info endpoint its footer reads, nothing else.
+        if (StartsWith(path, "/public/") || Equals(path, "/public")
+            || Equals(path, "/api/v1/public/info"))
+        {
+            return new PathBucket(WhitelistScope.Public, null, null, false);
+        }
+
         // Metrics + integration endpoints. These are /api/v1/-only (no
         // short-URL equivalent) so they always land on the Api bucket.
         if (Equals(path, "/metrics") || StartsWith(path, "/metrics/")

@@ -58,11 +58,66 @@ public class CaProtocolConfigEntity
     /// <summary>
     /// When true, EST clients must present a valid client certificate for enrollment.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This does not currently work on the hostname EST clients use.</b> Kestrel emits a TLS
+    /// <c>CertificateRequest</c> only when the ClientHello's SNI matches
+    /// <c>Mtls.AuthSubdomain</c> — see the HTTPS endpoint setup in <c>StartModularCA</c>. A client
+    /// connecting to the ordinary CA hostname is never asked for a certificate, so it never sends
+    /// one however well configured it is, <c>GetClientCertificateAsync()</c> returns null, and
+    /// enrollment fails with "EST enrollment requires a client certificate (mTLS)".
+    /// </para>
+    /// <para>
+    /// Verified against a live deployment: a client holding a valid certificate issued by the CA
+    /// completed the handshake, reached <c>EstService</c>, and was refused — because the server
+    /// never asked. The message is accurate and describes a condition the client cannot fix from
+    /// that hostname.
+    /// </para>
+    /// <para>
+    /// The SNI gate is not a mistake; it is what lets one port serve the admin UI without a browser
+    /// certificate picker and the mTLS login flow with one. It was designed around interactive
+    /// login, and EST was given this flag afterwards. RFC 7030 has no notion of switching hostname
+    /// for the enrollment step: a client is configured with one EST base URL and derives
+    /// <c>/cacerts</c>, <c>/simpleenroll</c> and <c>/simplereenroll</c> from it.
+    /// </para>
+    /// <para>
+    /// Three ways out, none of them free. Request (not require) a client certificate on the main
+    /// hostname — SNI is decided before any path is known, so this reintroduces the browser
+    /// certificate picker the gate exists to avoid. Give EST a dedicated hostname or port that
+    /// always requests one, which is what most EST deployments do and keeps the browser surface
+    /// untouched. Or register an HTTP Basic handler so
+    /// <see cref="EstHttpAuthEnabled"/> becomes true to its name, which RFC 7030 section 3.2.3
+    /// designates as the baseline and which sidesteps TLS negotiation entirely.
+    /// </para>
+    /// </remarks>
     public bool EstRequireClientCert { get; set; } = false;
 
     /// <summary>
-    /// When true, EST accepts HTTP Basic/Digest authentication for enrollment.
+    /// When true, EST enrollment requires the caller to be authenticated by the API's own
+    /// authentication pipeline.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This does not currently mean HTTP Basic.</b> It used to say it did. The only
+    /// authentication scheme this application registers is JWT bearer, so a caller is
+    /// "authenticated" here only by presenting a bearer token — and an
+    /// <c>Authorization: Basic</c> header, which RFC 7030 section 3.2.3 designates as the baseline
+    /// EST client authentication and which most EST clients send by default, leaves
+    /// <c>HttpContext.User.Identity.IsAuthenticated</c> false and is refused.
+    /// </para>
+    /// <para>
+    /// <b>And <see cref="EstRequireClientCert"/> does not currently cover for it.</b> See that
+    /// property's remarks: the client certificate never reaches EST on the hostname an EST client
+    /// uses. Between the two, EST has no working authentication path today — verified against a
+    /// live deployment with both flags exercised in turn.
+    /// </para>
+    /// <para>
+    /// Making this true to its name needs an HTTP Basic authentication handler registered
+    /// alongside the bearer scheme and scoped to the EST routes. Until that exists, this comment
+    /// is the warning; <c>scripts/test-enrollment-protocols.sh</c> probes the path and reports the
+    /// failure so it stays visible.
+    /// </para>
+    /// </remarks>
     public bool EstHttpAuthEnabled { get; set; } = false;
 
     // ─── SCEP-specific ─────────────────────────────────────────────

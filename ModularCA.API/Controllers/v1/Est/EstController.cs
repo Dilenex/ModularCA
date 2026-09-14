@@ -18,6 +18,20 @@ namespace ModularCA.API.Controllers.v1.Est;
 [Route("api/v1/est")]
 [Route("api/v1/est/{caLabel}")]
 [Route("est/{caLabel}")]
+// RFC 7030 section 3.2.2 puts EST under /.well-known/est/. Without these two routes a client that
+// follows the specification cannot reach this server at all — it builds the well-known path,
+// receives 404, and has nowhere else to look. Confirmed against a live deployment: with EST
+// enabled the path returned a genuine 404, not a refusal.
+//
+// The gap survived because nothing pointed at it. ProtocolFeatureGateMiddleware has gated
+// "/.well-known/est/" on EST.Enabled since before this controller existed, so the deployment
+// looked configured for a path no route served, and every client tested against it happened to be
+// curl with a hand-written URL rather than an EST implementation.
+//
+// The single-segment form carries the CA label, matching the other route pairs above. The
+// label-less form resolves to the default CA the same way "api/v1/est" does.
+[Route(".well-known/est")]
+[Route(".well-known/est/{caLabel}")]
 [AllowAnonymous]
 public class EstController(IEstService estService, ModularCADbContext db) : ControllerBase
 {

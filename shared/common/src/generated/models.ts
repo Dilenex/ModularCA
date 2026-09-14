@@ -669,6 +669,7 @@ export interface HttpConfig {
     swaggerEnabled: boolean;
     enableCors: boolean;
     trustedProxyCidrs: string;
+    forwardedHeaderHopLimit: number;
     hsts: HstsConfig;
 }
 

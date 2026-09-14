@@ -372,6 +372,36 @@ namespace ModularCA.Shared.Models.Config
         public string TrustedProxyCidrs { get; set; } = string.Empty;
 
         /// <summary>
+        /// How many reverse-proxy hops to walk back through when reading
+        /// <c>X-Forwarded-For</c>. Default 1.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This was hardcoded to 1, which quietly assumes exactly one proxy. A CDN in front of a
+        /// reverse proxy is two, and the difference is not a rounding error: with a chain of
+        /// <c>client → Cloudflare → nginx → Kestrel</c>, nginx appends the address it sees — the
+        /// CDN edge — so the header arrives as <c>&lt;client&gt;, &lt;edge&gt;</c>. Walking back one
+        /// hop yields the CDN's address and calls it the client. The IP whitelist, the audit trail
+        /// and per-IP rate limiting then all operate on a value that identifies a datacentre in
+        /// another country.
+        /// </para>
+        /// <para>
+        /// Every hop counted here must also appear in <see cref="TrustedProxyCidrs"/>, or ASP.NET
+        /// stops walking at the first untrusted address. Raising this without extending that list
+        /// changes nothing, which is the failure that looks like the setting being ignored.
+        /// </para>
+        /// <para>
+        /// Prefer collapsing the chain to one hop where you can: a CDN-aware proxy can write the
+        /// real client into <c>X-Forwarded-For</c> itself (nginx:
+        /// <c>proxy_set_header X-Forwarded-For $http_cf_connecting_ip;</c>), leaving one trusted hop
+        /// and no CDN address ranges to track here. That is only safe when the proxy refuses
+        /// connections that did not come from the CDN — otherwise anyone reaching it directly can
+        /// forge the header and choose their own source address.
+        /// </para>
+        /// </remarks>
+        public int ForwardedHeaderHopLimit { get; set; } = 1;
+
+        /// <summary>
         /// HSTS header tuning for the HTTPS listener. The
         /// <see cref="SecurityHeadersMiddleware"/> emits HSTS only on HTTPS
         /// responses using the values below. Defaults follow the 1-year /

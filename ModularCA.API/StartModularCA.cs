@@ -1484,11 +1484,17 @@ if (isSetupMode)
         {
             Console.WriteLine();
             Console.WriteLine("  !! WARNING: --setup-bind points at a non-RFC1918 interface.");
-            Console.WriteLine("     The wizard is reachable from the public internet. The");
-            Console.WriteLine("     IpWhitelistMiddleware will still reject non-RFC1918 sources,");
-            Console.WriteLine("     but you should narrow the bind to a specific LAN interface");
-            Console.WriteLine("     or use SSH port-forwarding instead. Verify the fingerprint");
-            Console.WriteLine("     out-of-band before entering any credentials.");
+            Console.WriteLine("     The wizard is reachable from the public internet.");
+            Console.WriteLine();
+            Console.WriteLine("     IpWhitelistMiddleware rejects non-RFC1918 sources ONLY when it can");
+            Console.WriteLine("     see the real client address. Behind a reverse proxy it sees the");
+            Console.WriteLine("     proxy's address instead — usually RFC1918, which satisfies every");
+            Console.WriteLine("     internal-only rule — unless Http.TrustedProxyCidrs names that proxy.");
+            Console.WriteLine("     Do not treat the whitelist as the control keeping this private.");
+            Console.WriteLine();
+            Console.WriteLine("     Narrow the bind to a specific LAN interface, or use SSH");
+            Console.WriteLine("     port-forwarding instead. Verify the fingerprint out-of-band");
+            Console.WriteLine("     before entering any credentials.");
         }
         else if (setupBindIsLoopback)
         {
@@ -2310,7 +2316,11 @@ var forwardedOptions = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
     ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor |
                        Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto |
                        Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost,
-    ForwardLimit = 1
+    // Configurable because a CDN in front of a reverse proxy is two hops, and walking back only
+    // one yields the CDN's edge address and treats it as the client. See
+    // HttpConfig.ForwardedHeaderHopLimit. Clamped to at least 1: zero disables the walk entirely
+    // while still looking like a configured value.
+    ForwardLimit = Math.Max(1, config.Http.ForwardedHeaderHopLimit)
 };
 // Default trusted-proxy set is loopback only. Operators who
 // deploy ModularCA behind a reverse proxy (nginx, Traefik, HAProxy, ALB, etc.)
@@ -2339,6 +2349,25 @@ if (!string.IsNullOrWhiteSpace(config.Http.TrustedProxyCidrs))
         }
     }
 }
+// A deployment that says it is behind a proxy but names no trusted proxy falls back to
+// loopback-only, which means X-Forwarded-For is ignored and every request is attributed to the
+// proxy's own address. That address is usually RFC1918, so it satisfies every internal-only IP
+// whitelist rule and the whitelist silently permits the entire internet — failing open, with no
+// symptom until someone checks. Nothing said a word about this before; it cost an afternoon of
+// probing two live deployments to find.
+if (config.Security.BehindReverseProxy && string.IsNullOrWhiteSpace(config.Http.TrustedProxyCidrs))
+{
+    Console.WriteLine();
+    Console.WriteLine("  !! WARNING: Security.BehindReverseProxy is true but Http.TrustedProxyCidrs is empty.");
+    Console.WriteLine("     Forwarded headers are therefore trusted from loopback only, so X-Forwarded-For");
+    Console.WriteLine("     from your proxy is IGNORED and every request is recorded as coming from the");
+    Console.WriteLine("     proxy itself. If that address is RFC1918 it satisfies the internal-only IP");
+    Console.WriteLine("     whitelist rules, and the whitelist will permit callers from anywhere.");
+    Console.WriteLine("     The audit trail and per-IP login rate limiting are degraded the same way.");
+    Console.WriteLine("     Set Http.TrustedProxyCidrs to your proxy's address, e.g. \"10.0.1.5/32\".");
+    Console.WriteLine();
+}
+
 app.UseForwardedHeaders(forwardedOptions);
 
 // Standard error response format: { "error": "message" }

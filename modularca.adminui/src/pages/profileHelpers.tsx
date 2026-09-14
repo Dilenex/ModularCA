@@ -309,6 +309,29 @@ export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = (
 };
 
 /** Multi-select toggle buttons for an array field */
+/**
+ * Warns that the picker above is offering values the server's OID catalog does not hold.
+ *
+ * A profile built from one of these cannot issue. IssuanceValidationService resolves usages
+ * against that same catalog, finds nothing, and refuses with MCA-POL-000 — whose message is about
+ * the profile's spelling, which sends the reader to the one place the fault is not. The gap
+ * belongs here, where the choice is made, rather than at enrollment.
+ *
+ * Renders nothing on a healthy installation, which is the normal case and should be silent.
+ */
+export const CatalogGapNotice: React.FC<{ missing: string[]; kind: string }> = ({ missing, kind }) => {
+    if (missing.length === 0) return null;
+    return (
+        <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+            {missing.length} {kind}{missing.length === 1 ? '' : 's'} offered here{' '}
+            {missing.length === 1 ? 'is' : 'are'} missing from the server&apos;s OID catalog
+            ({missing.join(', ')}). A profile using {missing.length === 1 ? 'it' : 'them'} will be
+            refused at issuance. Add the missing entries under OID options, or run the catalog
+            backfill.
+        </p>
+    );
+};
+
 export const MultiToggle: React.FC<{
     options: readonly string[];
     selected: string[];

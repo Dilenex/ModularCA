@@ -68,4 +68,37 @@ public enum WhitelistScope
     /// + step-up as layered defense.
     /// </summary>
     Admin,
+
+    /// <summary>
+    /// Covers the relying-party surface — the <c>/public/*</c> portal SPA and
+    /// <c>/api/v1/public/info</c>. Seeded OPEN (all addresses), unlike every
+    /// other scope.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists because the portal is for people outside the network by
+    /// definition. A relying party fetching the CA certificate has no trust in
+    /// this CA yet — that is the point of the visit — and
+    /// <c>HttpSchemeEnforcementMiddleware</c> already allow-lists <c>/public</c>
+    /// over plain HTTP on exactly that reasoning. The whitelist contradicted it:
+    /// the portal fell through to the System rule and answered 403 to everyone
+    /// outside, which was invisible for as long as a reverse proxy made every
+    /// caller look internal.
+    /// </para>
+    /// <para>
+    /// The protocol endpoints under <c>/api/v1/public/</c> — CRL, CA, OCSP, TSA
+    /// — are NOT in this scope. They are matched earlier and keep their own
+    /// per-protocol rules, so an operator can publish OCSP while keeping the
+    /// portal internal, or the reverse. Widening this scope to swallow them
+    /// would take that apart.
+    /// </para>
+    /// <para>
+    /// Seeded open rather than exempted so it remains a rule: visible in the
+    /// admin Whitelists page, editable without a restart, recorded in
+    /// <c>AuditNetwork.Blocked</c>, and tightenable to internal-only by an
+    /// operator running an air-gapped CA. A path in <c>ExemptPaths</c> can do
+    /// none of that — it can only ever open.
+    /// </para>
+    /// </remarks>
+    Public,
 }
