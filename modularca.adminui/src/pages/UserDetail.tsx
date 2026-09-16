@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -10,6 +13,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { groupChipClass } from './Users';
 import { StepUpOps } from '@shared/generated';
+import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -33,7 +37,7 @@ const UserDetail: React.FC = () => {
     const [users, setUsers] = useState<any[]>([]);
     const [allGroups, setAllGroups] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     // Staged bulk group edit: pending adds/removes applied together behind one step-up prompt.
@@ -57,7 +61,7 @@ const UserDetail: React.FC = () => {
             setUser(list.find((u: any) => (u.id || u.username) === id) || null);
             setAllGroups(Array.isArray(groupsData) ? groupsData : (groupsData.items || groupsData.groups || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load user'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load user')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -96,7 +100,7 @@ const UserDetail: React.FC = () => {
     });
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!user) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">User not found.</p>
@@ -177,6 +181,14 @@ const UserDetail: React.FC = () => {
                         <DetailField label="Last Login" value={formatDate(user.lastLogin || user.lastLoginAt)} />
                         <DetailField label="Failed Logins" value={user.failedLoginCount} />
                     </div>
+                </DetailSection>
+
+                <DetailSection title="Badges">
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                        Badges this user can wear. Each keeps a subset of the grant sources they already hold; issuing one hands
+                        them a narrowed way of working without changing their grants.
+                    </p>
+                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded />
                 </DetailSection>
 
                 <DetailSection title={`Groups (${userGroups.length})`}>

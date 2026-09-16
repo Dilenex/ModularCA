@@ -1,7 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
+import { Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, API_BASE } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
+import ConfirmModal from '../components/ConfirmModal';
+
+/** The Restart card on Settings → General (id set in Settings.tsx). */
+const RESTART_PATH = '/settings#restart-application';
+const RestartLink: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+    <Link to={RESTART_PATH} className="underline hover:text-gray-900 dark:hover:text-white">{children ?? 'Settings → General → Restart Application'}</Link>
+);
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -26,7 +38,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
     const { requireStepUp } = useStepUp();
     const [creating, setCreating] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     const handleCreateBackup = async () => {
         setCreating(true);
@@ -47,7 +59,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
                 setCreating(false);
                 return;
             }
-            setError(err.message);
+            setError(errorNotice(err, 'The request failed.'));
             setStatus(null);
         } finally {
             setCreating(false);
@@ -89,9 +101,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
                 </div>
             )}
             {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
-                    {error}
-                </div>
+                <InlineNotice notice={error} />
             )}
         </div>
     );
@@ -115,6 +125,9 @@ const BackupEncryptionSection: React.FC = () => {
     const [actionError, setActionError] = useState<string | null>(null);
     const [actionSuccess, setActionSuccess] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
+    // Reverting to RandomKey was the last native confirm() in this console; ConfirmModal is used
+    // everywhere else, and a native dialog cannot show the consequence with any emphasis.
+    const [confirmRevert, setConfirmRevert] = useState(false);
 
     useEffect(() => {
         apiGet<EncryptionStatus>('/api/v1/admin/backup/encryption')
@@ -160,12 +173,7 @@ const BackupEncryptionSection: React.FC = () => {
     };
 
     const handleRevertToRandomKey = async () => {
-        if (!confirm(
-            'Revert to RandomKey mode?\n\n' +
-            'This deletes the password-derived KEK file and switches future backups to use the random-key file. ' +
-            'Existing archives created in StoredPassword mode will still be decryptable via the password (if you remember it) ' +
-            'or via a copy of the password file (if you saved one). Proceed?'
-        )) return;
+        setConfirmRevert(false);
         setActionError(null);
         setActionSuccess(null);
         setSubmitting(true);
@@ -295,7 +303,7 @@ const BackupEncryptionSection: React.FC = () => {
                     {isStoredPassword && (
                         <div className="pt-4 border-t border-gray-300 dark:border-gray-700 space-y-2">
                             <button
-                                onClick={handleRevertToRandomKey}
+                                onClick={() => setConfirmRevert(true)}
                                 disabled={submitting}
                                 className="px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm font-medium rounded transition-colors"
                             >
@@ -304,6 +312,25 @@ const BackupEncryptionSection: React.FC = () => {
                             <p className="text-xs text-gray-600 dark:text-gray-400">
                                 Deletes the password file. Existing archives remain restorable via the password.
                             </p>
+                            <ConfirmModal
+                                isOpen={confirmRevert}
+                                title="Revert to RandomKey mode?"
+                                message={
+                                    <>
+                                        <p>This deletes the password-derived KEK file and switches future backups to the random-key file.</p>
+                                        <p className="mt-2">
+                                            Archives already created in StoredPassword mode stay decryptable only with the password
+                                            (if you remember it) or with a copy of the password file (if you saved one). Without either,
+                                            they are lost.
+                                        </p>
+                                    </>
+                                }
+                                confirmLabel="Revert"
+                                confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                                loading={submitting}
+                                onConfirm={handleRevertToRandomKey}
+                                onCancel={() => setConfirmRevert(false)}
+                            />
                         </div>
                     )}
                 </>
@@ -319,7 +346,7 @@ const BackupEncryptionSection: React.FC = () => {
 };
 
 /* ─── Backup History Section ─── */
-const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean; error: string | null; onRefresh: () => void }> = ({ backups, loading, error, onRefresh }) => {
+const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean; error: NoticeInput | null; onRefresh: () => void }> = ({ backups, loading, error, onRefresh }) => {
     return (
         <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
@@ -333,7 +360,7 @@ const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean;
             </div>
 
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+            {error && <InlineNotice notice={error} />}
 
             {!loading && !error && backups.length === 0 && (
                 <div className="p-4 text-sm text-gray-600 text-center">No backups found. Create one to get started.</div>
@@ -341,24 +368,19 @@ const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean;
 
             {!loading && !error && backups.length > 0 && (
                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[600px] text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-left">
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Filename</th>
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Created (UTC)</th>
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Size</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {backups.map((backup) => (
-                                <tr key={backup.fileName} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                    <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-white">{backup.fileName}</td>
-                                    <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400">{formatDate(backup.createdUtc)}</td>
-                                    <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400">{formatSize(backup.sizeBytes)}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <DataTable<any>
+                        tableId="backups"
+                        title="Backups"
+                        rows={backups}
+                        rowKey={(b) => b.fileName}
+                        empty="No backups yet"
+                        sort={{ key: 'created', dir: 'desc' }}
+                        columns={[
+                            { key: 'fileName', header: 'Filename', defaultWidth: 320, sortable: true, exportValue: (b) => b.fileName, render: (b) => <span className="font-mono text-xs text-gray-900 dark:text-white truncate">{b.fileName}</span> },
+                            { key: 'created', header: 'Created (UTC)', defaultWidth: 180, sortable: true, sortValue: (b) => b.createdUtc ? new Date(b.createdUtc) : null, exportValue: (b) => formatDate(b.createdUtc), render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(b.createdUtc)}</span> },
+                            { key: 'size', header: 'Size', defaultWidth: 110, align: 'right', sortable: true, sortValue: (b) => b.sizeBytes ?? null, exportValue: (b) => b.sizeBytes ?? '', render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400 tabular-nums">{formatSize(b.sizeBytes)}</span> },
+                        ] as DataTableColumn<any>[]}
+                    />
                 </div>
             )}
         </div>
@@ -372,8 +394,11 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
     const [restoring, setRestoring] = useState(false);
     const [confirmRestore, setConfirmRestore] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [recoveryPassword, setRecoveryPassword] = useState('');
+    // Set once a restore has completed, so the "restart the application" instruction is a link
+    // to the restart control rather than a sentence with nowhere to go.
+    const [restored, setRestored] = useState(false);
 
     const handleRestore = async () => {
         if (!selectedFile) return;
@@ -392,6 +417,7 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                 selectedFile,
             );
             setStatus(result.message || 'Restore complete. Restart the application to apply changes.');
+            setRestored(true);
             setConfirmRestore(false);
             setRecoveryPassword('');
         } catch (err: any) {
@@ -401,7 +427,7 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                 setRestoring(false);
                 return;
             }
-            setError(err.message);
+            setError(errorNotice(err, 'The request failed.'));
             setStatus(null);
         } finally {
             setRestoring(false);
@@ -418,7 +444,8 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
 
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded p-3 text-sm text-red-800 dark:text-red-300">
                 <strong>WARNING:</strong> Restore is a destructive operation. All current data will be replaced
-                with the backup contents. The application will need to be restarted after restore completes.
+                with the backup contents. The application will need to be restarted after restore completes
+                (<RestartLink>Settings → General → Restart Application</RestartLink>).
                 This action requires step-up MFA verification.
             </div>
 
@@ -477,7 +504,8 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                             </p>
                             <p className="text-red-800 dark:text-red-300 text-xs">
                                 This will overwrite the current database, keystores, and configuration.
-                                All current data will be permanently replaced. A restart is required afterward.
+                                All current data will be permanently replaced. A restart is required afterward
+                                (<RestartLink>Settings → General → Restart Application</RestartLink>).
                             </p>
                             <div className="flex gap-2">
                                 <button
@@ -503,14 +531,18 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
             )}
 
             {status && (
-                <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm">
-                    {status}
+                <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm space-y-1">
+                    <p>{status}</p>
+                    {restored && (
+                        <p>
+                            The restored data is not in use until the service restarts:{' '}
+                            <RestartLink>go to Settings → General → Restart Application</RestartLink>.
+                        </p>
+                    )}
                 </div>
             )}
             {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
-                    {error}
-                </div>
+                <InlineNotice notice={error} />
             )}
         </div>
     );
@@ -520,14 +552,14 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
 const BackupRestore: React.FC = () => {
     const [backups, setBackups] = useState<BackupEntry[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     const loadBackups = useCallback(() => {
         setLoading(true);
         setError(null);
         apiGet<BackupEntry[]>('/api/v1/admin/backup')
             .then((data) => setBackups(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 

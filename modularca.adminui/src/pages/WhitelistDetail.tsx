@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -7,7 +10,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
 interface Whitelist {
     id: string;
@@ -40,7 +43,7 @@ const WhitelistDetail: React.FC = () => {
     const [wl, setWl] = useState<Whitelist | null>(null);
     const [caName, setCaName] = useState<string>('-');
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     // edit form
@@ -77,7 +80,7 @@ const WhitelistDetail: React.FC = () => {
                 } else setCaName('-');
             }
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -119,7 +122,7 @@ const WhitelistDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!wl) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Whitelist not found.</p>
@@ -189,7 +192,11 @@ const WhitelistDetail: React.FC = () => {
                             <label className={labelCls}>CIDRs (one per line)</label>
                             <textarea value={form.cidrsText} onChange={(e) => setForm({ ...form, cidrsText: e.target.value })} rows={8}
                                 autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellCheck={false}
+                                aria-describedby="whitelist-cidrs-hint"
                                 placeholder={'10.0.0.0/8\n::1/128'} className={`${inputCls} font-mono`} />
+                            <FieldHint id="whitelist-cidrs-hint" tone="warn">
+                                An empty list means block all for a matched rule; it is not 'no restriction'. Use 0.0.0.0/0 and ::/0 to allow any address. Make sure your own address is still covered before saving.
+                            </FieldHint>
                         </div>
                         <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                             <input type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-700 text-blue-600 focus:ring-blue-500" />

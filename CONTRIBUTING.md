@@ -29,8 +29,7 @@ single-page apps:
 | `ModularCA.Bootstrap` | First-run setup, database provisioning, seeding |
 | `ModularCA.Database` | EF Core `DbContext`s and migrations |
 | `ModularCA.Shared` | Entities, DTOs, enums, interfaces, utilities |
-| `modularca.adminui` | Administrator console |
-| `modularca.userui` | End-user self-service portal |
+| `modularca.adminui` | Console: management at `/admin`, self-service at `/user` (one bundle) |
 | `modularca.publicui` | Public CA info / CRL / OCSP / ACME directory |
 | `modularca.docsui` | Documentation site |
 | `modularca.setupui` | First-run setup wizard |
@@ -58,7 +57,7 @@ npm install
 npm run build      # or: npm run dev  for a local dev server
 ```
 
-Repeat for `modularca.userui`, `modularca.publicui`, `modularca.docsui`, and
+Repeat for `modularca.publicui`, `modularca.docsui`, and
 `modularca.setupui`.
 
 ## Running Tests

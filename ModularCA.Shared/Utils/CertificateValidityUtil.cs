@@ -339,4 +339,26 @@ public static class CertificateValidityUtil
         return new ValidityCeilingResolution(
             notBefore, effective, days, boundBy, profileCeiling, tenantCeiling, caCeiling);
     }
+
+    /// <summary>Shortest life a certificate may be issued with, counted from the moment of issuance.</summary>
+    public static readonly TimeSpan MinimumValidity = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// Throws when the resolved window gives the certificate less than <see cref="MinimumValidity"/>
+    /// of life from <paramref name="now"/> (or is inverted). NotBefore is backdated for clock
+    /// skew, so a window measured from NotBefore can look like five minutes while the certificate
+    /// is already expired when it is handed over; seen live when a profile chain resolved to zero.
+    /// Every clamp upstream only ever shortens, so a window that has collapsed means the
+    /// configuration resolves to a certificate that would be dead on arrival; refusing is better
+    /// than issuing it.
+    /// </summary>
+    public static void EnsureUsableWindow(DateTime validFrom, DateTime validTo, DateTime? now = null)
+    {
+        var from = now ?? DateTime.UtcNow;
+        if (from < validFrom) from = validFrom;
+        if (validTo - from < MinimumValidity)
+            throw new ModularCA.Shared.Errors.InvalidRequestException(
+                $"The resolved validity window runs from {validFrom:O} to {validTo:O}, leaving under the {MinimumValidity.TotalMinutes:0} minute minimum from now; " +
+                "the certificate would be expired at issuance. Check the certificate profile's maximum validity, the signing profile and the tenant ceiling.");
+    }
 }

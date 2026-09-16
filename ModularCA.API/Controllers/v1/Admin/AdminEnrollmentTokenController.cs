@@ -1,3 +1,6 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +17,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/enrollment-tokens")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminEnrollmentTokenController(
     IEnrollmentTokenService tokenService,
     ICurrentUserService currentUser,
@@ -88,6 +91,7 @@ public class AdminEnrollmentTokenController(
     /// have moved between tenants don't leak prior-tenant token visibility.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetActiveTokens()
     {
         var tokens = await tokenService.GetActiveTokensAsync();
@@ -137,7 +141,8 @@ public class AdminEnrollmentTokenController(
     /// model.
     /// </summary>
     [HttpPost("cmp-secret")]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> GenerateCmpSharedSecret([FromBody] GenerateCmpSharedSecretRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -189,6 +194,8 @@ public class AdminEnrollmentTokenController(
     }
 
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> GenerateToken([FromBody] GenerateEnrollmentTokenRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -235,6 +242,7 @@ public class AdminEnrollmentTokenController(
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeToken(Guid id)
     {
         // Resolve the token's tenant and enforce access before revoking.

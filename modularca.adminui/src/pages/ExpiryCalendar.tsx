@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 
 // ── types ──────────────────────────────────────────────────────────────────
 interface Bucket {
@@ -79,9 +83,13 @@ const ExpiryCalendar: React.FC = () => {
     const navigate = useNavigate();
     const [resp, setResp] = useState<HistogramResponse | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [authorities, setAuthorities] = useState<any[]>([]);
-    const [caId, setCaId] = useState('');
+    // The sidebar scope pins the CA filter; the select below is locked while it does.
+    const { caId: scopeCaId } = useScope();
+    const scopeLocked = !!scopeCaId;
+    const [caId, setCaId] = useState(scopeCaId ?? '');
+    useEffect(() => { setCaId(scopeCaId ?? ''); }, [scopeCaId]);
     const [rangeMonths, setRangeMonths] = useState(12);
     const [bucket, setBucket] = useState<BucketMode>('month');
     const [windowOverride, setWindowOverride] = useState<{ start: Date; end: Date } | null>(null);
@@ -112,7 +120,7 @@ const ExpiryCalendar: React.FC = () => {
         const qs = params.toString();
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram${qs ? `?${qs}` : ''}`)
             .then((data) => { setResp(data); setError(null); })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, [caId]);
 
@@ -249,7 +257,7 @@ const ExpiryCalendar: React.FC = () => {
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Renewal load over time — find the cliffs before they hit.</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                    <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} title="Filter by issuing CA">
+                    <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : 'Filter by issuing CA'}>
                         <option value="">All CAs</option>
                         {authorities.map((ca) => (
                             <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>
@@ -291,7 +299,7 @@ const ExpiryCalendar: React.FC = () => {
             )}
 
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading expiry data…</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+            {error && <InlineNotice notice={error} />}
 
             {/* Tier 1 — timeline histogram */}
             {!loading && !error && (

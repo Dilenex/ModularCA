@@ -1,13 +1,17 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { caRowId, caDisplayName } from './profileHelpers';
+import { caRowId, caDisplayName, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import {
     RequestProfileRulesEditor, emptyRules, parseRules, serializeRules,
@@ -58,7 +62,7 @@ const RequestProfileDetail: React.FC = () => {
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [resolvedProfile, setResolvedProfile] = useState<any | null>(null);
@@ -82,6 +86,8 @@ const RequestProfileDetail: React.FC = () => {
     const [initialForm, setInitialForm] = useState(emptyForm);
 
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
+    // Either half of the inheritance pair on its own is a setting the server accepts and ignores.
+    const inheritanceInconsistent = inheritancePairInconsistent(editForm.inheritsFromId, editForm.inheritanceEnabled);
 
     useEffect(() => {
         let cancelled = false;
@@ -112,7 +118,7 @@ const RequestProfileDetail: React.FC = () => {
             setCertProfiles(Array.isArray(cpData) ? cpData : (cpData.items || cpData.profiles || []));
             setAuthorities(Array.isArray(authData) ? authData : (authData.items || authData.authorities || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load request profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load request profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -180,7 +186,7 @@ const RequestProfileDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Request profile not found.</p>
@@ -200,12 +206,16 @@ const RequestProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name || !!rulesError}
+            saveDisabled={!dirty || !editForm.name || !!rulesError || inheritanceInconsistent}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Request Profile">
                     <div className="space-y-3 max-w-3xl">
+                        <SubmitBlockedHint reasons={[
+                            !editForm.name && 'A name is required before the profile can be saved.',
+                            inheritanceInconsistent && 'Save is disabled until the inheritance settings agree: either choose a parent and turn inheritance on, or clear both.',
+                        ]} />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
                             <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
@@ -235,6 +245,7 @@ const RequestProfileDetail: React.FC = () => {
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
+                        <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
                         <RequestProfileRulesEditor
                             value={editForm.rules}
                             onChange={(rules) => setEditForm({ ...editForm, rules })}
@@ -287,27 +298,21 @@ const RequestProfileDetail: React.FC = () => {
                 <DetailSection title="Subject DN Rules">
                     {dnRules.length > 0 ? (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
-                                        <th className="px-3 py-2 text-left">Field</th><th className="px-3 py-2 text-left">Requirement</th><th className="px-3 py-2 text-left">Fixed Value</th><th className="px-3 py-2 text-left">Regex</th><th className="px-3 py-2 text-left">Max Length</th><th className="px-3 py-2 text-left">Default</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {dnRules.map((rule, idx) => (
-                                        <tr key={idx} className="border-b border-gray-200 dark:border-gray-800 last:border-b-0">
-                                            <td className="px-3 py-2 text-gray-900 dark:text-white font-medium">{rule.field}</td>
-                                            <td className="px-3 py-2">
-                                                <span className={`px-2 py-0.5 rounded text-xs border ${rule.requirement === 'Required' ? 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' : rule.requirement === 'Forbidden' ? 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 border-gray-400 dark:border-gray-600'}`}>{rule.requirement}</span>
-                                            </td>
-                                            <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{rule.fixedValue || '-'}</td>
-                                            <td className="px-3 py-2 text-gray-700 dark:text-gray-300 font-mono">{rule.regex || '-'}</td>
-                                            <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{rule.maxLength ?? '-'}</td>
-                                            <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{rule.defaultValue || '-'}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="request-profile-dn-rules"
+                                rows={dnRules}
+                                rowKey={(rule, ) => rule.field}
+                                empty="No DN rules"
+                                disableExport
+                                columns={[
+                                    { key: 'field', header: 'Field', defaultWidth: 120, sortable: true, exportValue: (rule) => rule.field, render: (rule) => <span className="text-gray-900 dark:text-white font-medium">{rule.field}</span> },
+                                    { key: 'requirement', header: 'Requirement', defaultWidth: 120, truncate: false, sortable: true, exportValue: (rule) => rule.requirement, render: (rule) => <span className={`px-2 py-0.5 rounded text-xs border ${rule.requirement === 'Required' ? 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' : rule.requirement === 'Forbidden' ? 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 border-gray-400 dark:border-gray-600'}`}>{rule.requirement}</span> },
+                                    { key: 'fixed', header: 'Fixed Value', defaultWidth: 160, exportValue: (rule) => rule.fixedValue || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 truncate">{rule.fixedValue || '-'}</span> },
+                                    { key: 'regex', header: 'Regex', flex: true, exportValue: (rule) => rule.regex || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 font-mono truncate">{rule.regex || '-'}</span> },
+                                    { key: 'maxLength', header: 'Max Length', defaultWidth: 100, align: 'right', exportValue: (rule) => rule.maxLength ?? '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 tabular-nums">{rule.maxLength ?? '-'}</span> },
+                                    { key: 'default', header: 'Default', defaultWidth: 140, exportValue: (rule) => rule.defaultValue || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 truncate">{rule.defaultValue || '-'}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     ) : <span className="text-xs text-gray-600">No DN rules defined</span>}
                 </DetailSection>

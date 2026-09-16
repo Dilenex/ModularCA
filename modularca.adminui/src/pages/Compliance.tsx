@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiBlob } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useToast } from '@shared/context/ToastContext';
+import { FieldHint } from '@shared/components/forms';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -152,17 +157,16 @@ const Compliance: React.FC = () => {
     // --- Live compliance report (inventory / algorithms / expiry / history) ---
     const [report, setReport] = useState<ComplianceReport | null>(null);
     const [reportLoading, setReportLoading] = useState(true);
-    const [reportError, setReportError] = useState<string | null>(null);
+    const [reportError, setReportError] = useState<NoticeInput | null>(null);
 
     // --- Live vulnerability findings (interactive) ---
     const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
     const [vulnSummary, setVulnSummary] = useState<VulnerabilitySummary>({ critical: 0, warning: 0, info: 0, resolved: 0 });
     const [vulnLoading, setVulnLoading] = useState(true);
-    const [vulnError, setVulnError] = useState<string | null>(null);
+    const [vulnError, setVulnError] = useState<NoticeInput | null>(null);
     const [severityFilter, setSeverityFilter] = useState<string>('all');
     const [typeFilter, setTypeFilter] = useState<string>('all');
     const [showResolved, setShowResolved] = useState(false);
-    const [expandedId, setExpandedId] = useState<string | null>(null);
     const [resolvingIds, setResolvingIds] = useState<Set<string>>(new Set());
 
     // --- Export controls (scope the downloaded CSV report only) ---
@@ -187,7 +191,7 @@ const Compliance: React.FC = () => {
             });
             setReport(data);
         } catch (e: any) {
-            setReportError(e.message || 'Failed to load compliance data');
+            setReportError(errorNotice(e, 'Failed to load compliance data'));
         } finally {
             setReportLoading(false);
         }
@@ -206,7 +210,7 @@ const Compliance: React.FC = () => {
             setVulnerabilities(items);
             setVulnSummary(sum);
         } catch (e: any) {
-            setVulnError(e.message || 'Failed to load findings');
+            setVulnError(errorNotice(e, 'Failed to load findings'));
         } finally {
             setVulnLoading(false);
         }
@@ -233,7 +237,11 @@ const Compliance: React.FC = () => {
         }
     };
 
+    // An inverted range is accepted by the server and yields a CSV with no history rows at all.
+    const rangeInverted = !!(dateFrom && dateTo && dateFrom > dateTo);
+
     const handleExportCsv = async () => {
+        if (rangeInverted) { showToast('warning', 'The "from" date is after the "to" date; the export would contain no history.'); return; }
         setExporting(true);
         try {
             const body: any = { fromDate: dateFrom, toDate: dateTo };
@@ -301,8 +309,9 @@ const Compliance: React.FC = () => {
                         <input
                             type="date"
                             value={dateFrom}
+                            max={dateTo || undefined}
                             onChange={(e) => setDateFrom(e.target.value)}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
@@ -310,8 +319,9 @@ const Compliance: React.FC = () => {
                         <input
                             type="date"
                             value={dateTo}
+                            min={dateFrom || undefined}
                             onChange={(e) => setDateTo(e.target.value)}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
@@ -326,7 +336,8 @@ const Compliance: React.FC = () => {
                     </div>
                     <button
                         onClick={handleExportCsv}
-                        disabled={exporting}
+                        disabled={exporting || rangeInverted}
+                        title={rangeInverted ? 'The "from" date is after the "to" date' : undefined}
                         className="px-4 py-2 text-sm bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors disabled:opacity-50"
                     >
                         {exporting ? 'Exporting...' : 'Export Report (CSV)'}
@@ -335,11 +346,14 @@ const Compliance: React.FC = () => {
                         Issuance/revocation history in the export is bounded by this range.
                     </span>
                 </div>
+                {rangeInverted && (
+                    <FieldHint tone="warn" className="mt-2">The "from" date is later than the "to" date, so the range contains no days and the export would hold no issuance or revocation history. Swap the two dates.</FieldHint>
+                )}
             </div>
 
             {/* Report load error */}
             {reportError && (
-                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 text-red-800 dark:text-red-300">{reportError}</div>
+                <InlineNotice notice={reportError} />
             )}
 
             {/* Inventory Summary */}
@@ -391,6 +405,10 @@ const Compliance: React.FC = () => {
                     <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
                 ) : (
                     <div className="space-y-1">
+                        {/* Cumulative buckets: a certificate expiring in 20 days is counted in every row. The
+                            inventory page uses exclusive bands (0–30, 31–60, 61–90), so the two pages word
+                            their labels differently on purpose. */}
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-1">Each row is cumulative: "within 90 days" includes everything already counted within 30 and 60 days.</p>
                         {forecastEntries.map(item => {
                             const pct = forecastMax > 0 ? (item.count / forecastMax) * 100 : 0;
                             return (
@@ -412,7 +430,7 @@ const Compliance: React.FC = () => {
                 <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Findings</h2>
 
                 {vulnError && (
-                    <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 text-red-800 dark:text-red-300">{vulnError}</div>
+                    <InlineNotice notice={vulnError} />
                 )}
 
                 {/* Summary cards */}
@@ -466,126 +484,62 @@ const Compliance: React.FC = () => {
                     </div>
 
                     <div className="overflow-auto max-h-[28rem]">
-                        <table className="w-full min-w-[680px] text-xs border-collapse">
-                            <thead className="sticky top-0 z-10 bg-gray-50 dark:bg-gray-900/95 backdrop-blur text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-500">
-                                <tr className="border-b border-gray-200 dark:border-gray-800">
-                                    <th className="py-2 px-3 w-8" aria-label="Expand" />
-                                    <th className="text-left py-2 px-3 font-medium w-[88px]">Severity</th>
-                                    <th className="text-left py-2 px-3 font-medium w-[150px]">Type</th>
-                                    <th className="text-left py-2 px-3 font-medium">Description</th>
-                                    <th className="text-left py-2 px-3 font-medium w-[140px]">Certificate</th>
-                                    <th className="text-left py-2 px-3 font-medium w-[150px]">Detected</th>
-                                    <th className="text-right py-2 px-3 font-medium w-[96px]">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {vulnLoading && (
-                                    <tr>
-                                        <td colSpan={7} className="py-8 text-center text-gray-500 dark:text-gray-500">
-                                            Loading findings…
-                                        </td>
-                                    </tr>
-                                )}
-                                {!vulnLoading && filteredVulns.length === 0 && (
-                                    <tr>
-                                        <td colSpan={7} className="py-8 text-center text-gray-500 dark:text-gray-500">
-                                            No findings
-                                        </td>
-                                    </tr>
-                                )}
-                                {!vulnLoading && filteredVulns.map(v => {
-                                    const isExpanded = expandedId === v.id;
-                                    return (
-                                        <React.Fragment key={v.id}>
-                                            <tr
-                                                className={`border-b border-gray-100 dark:border-gray-800/60 cursor-pointer transition-colors ${
-                                                    isExpanded ? 'bg-blue-50/60 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
-                                                } ${v.resolved ? 'opacity-60' : ''}`}
-                                                onClick={() => setExpandedId(isExpanded ? null : v.id)}
-                                            >
-                                                <td className="py-1.5 px-3 text-gray-400 dark:text-gray-500">
-                                                    <Chevron open={isExpanded} className="w-3 h-3" />
-                                                </td>
-                                                <td className="py-1.5 px-3">
-                                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${severityColor(v.severity)}`}>
-                                                        {v.severity}
-                                                    </span>
-                                                </td>
-                                                <td className="py-1.5 px-3 text-gray-800 dark:text-gray-200 whitespace-nowrap">{v.type}</td>
-                                                <td className="py-1.5 px-3 text-gray-600 dark:text-gray-400 max-w-[320px] truncate" title={v.description}>
-                                                    {truncate(v.description, 80)}
-                                                </td>
-                                                <td className="py-1.5 px-3 font-mono text-gray-500 dark:text-gray-500 max-w-[140px] truncate" title={v.certificateSerial}>
-                                                    {v.certificateSerial ? v.certificateSerial.substring(0, 16) + '…' : '—'}
-                                                </td>
-                                                <td className="py-1.5 px-3 text-gray-500 dark:text-gray-500 whitespace-nowrap">
-                                                    {formatDateTime(v.detectedAt)}
-                                                </td>
-                                                <td className="py-1.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
-                                                    {!v.resolved && (
-                                                        <button
-                                                            onClick={() => handleResolve(v.id)}
-                                                            disabled={resolvingIds.has(v.id)}
-                                                            className="px-2 py-1 text-[10px] font-medium text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40 border border-green-200 dark:border-green-800 rounded hover:bg-green-100 dark:hover:bg-green-900/70 transition-colors disabled:opacity-50"
-                                                        >
-                                                            {resolvingIds.has(v.id) ? 'Resolving…' : 'Resolve'}
-                                                        </button>
-                                                    )}
-                                                    {v.resolved && (
-                                                        <span className="text-[10px] text-green-600 dark:text-green-400">✓ Resolved</span>
-                                                    )}
-                                                </td>
-                                            </tr>
-                                            {isExpanded && (
-                                                <tr className="bg-gray-50/50 dark:bg-gray-900/50">
-                                                    <td colSpan={7} className="px-6 py-4">
-                                                        <div className="space-y-2">
-                                                            <div>
-                                                                <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Full Description</span>
-                                                                <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.description}</p>
-                                                            </div>
-                                                            <div className="flex gap-6">
-                                                                <div>
-                                                                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Type</span>
-                                                                    <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.type}</p>
-                                                                </div>
-                                                                <div>
-                                                                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Severity</span>
-                                                                    <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.severity}</p>
-                                                                </div>
-                                                                <div>
-                                                                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Detected</span>
-                                                                    <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{formatDateTime(v.detectedAt)}</p>
-                                                                </div>
-                                                                {v.resolvedAt && (
-                                                                    <div>
-                                                                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Resolved</span>
-                                                                        <p className="text-sm text-green-800 dark:text-green-400 mt-1">{formatDateTime(v.resolvedAt)}</p>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                            {v.certificateId && (
-                                                                <div>
-                                                                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Certificate</span>
-                                                                    <p className="text-sm mt-1">
-                                                                        <a
-                                                                            href={`/admin/certificates?search=${encodeURIComponent(v.certificateSerial || v.certificateId)}`}
-                                                                            className="text-blue-800 dark:text-blue-400 hover:text-blue-300 underline font-mono"
-                                                                        >
-                                                                            {v.certificateSerial || v.certificateId}
-                                                                        </a>
-                                                                    </p>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            )}
-                                        </React.Fragment>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
+                        <DataTable<any>
+                            tableId="compliance-findings"
+                            rows={filteredVulns}
+                            rowKey={(v) => v.id}
+                            loading={vulnLoading}
+                            empty="No findings"
+                            sort={{ key: 'detected', dir: 'desc' }}
+                            renderExpanded={(v) => (
+                                <div className="space-y-2">
+                                    <div>
+                                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Full Description</span>
+                                        <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.description}</p>
+                                    </div>
+                                    <div className="flex gap-6 flex-wrap">
+                                        <div>
+                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Type</span>
+                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.type}</p>
+                                        </div>
+                                        <div>
+                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Severity</span>
+                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.severity}</p>
+                                        </div>
+                                        <div>
+                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Detected</span>
+                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{formatDateTime(v.detectedAt)}</p>
+                                        </div>
+                                        {v.resolvedAt && (
+                                            <div>
+                                                <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Resolved</span>
+                                                <p className="text-sm text-green-800 dark:text-green-400 mt-1">{formatDateTime(v.resolvedAt)}</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                    {v.certificateId && (
+                                        <div>
+                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Certificate</span>
+                                            <p className="text-sm mt-1">
+                                                <a href={`/admin/certificates?search=${encodeURIComponent(v.certificateSerial || v.certificateId)}`} className="text-blue-800 dark:text-blue-400 hover:text-blue-300 underline font-mono">
+                                                    {v.certificateSerial || v.certificateId}
+                                                </a>
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            columns={[
+                                { key: 'severity', header: 'Severity', defaultWidth: 100, truncate: false, sortable: true, exportValue: (v) => v.severity, render: (v) => <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${severityColor(v.severity)}`}>{v.severity}</span> },
+                                { key: 'type', header: 'Type', defaultWidth: 150, sortable: true, exportValue: (v) => v.type, render: (v) => <span className={`text-gray-800 dark:text-gray-200 whitespace-nowrap ${v.resolved ? 'opacity-60' : ''}`}>{v.type}</span> },
+                                { key: 'description', header: 'Description', flex: true, exportValue: (v) => v.description, render: (v) => <span className={`text-gray-600 dark:text-gray-400 truncate ${v.resolved ? 'opacity-60' : ''}`} title={v.description}>{truncate(v.description, 80)}</span> },
+                                { key: 'certificate', header: 'Certificate', defaultWidth: 150, exportValue: (v) => v.certificateSerial || '', render: (v) => <span className="font-mono text-gray-500 dark:text-gray-500 truncate" title={v.certificateSerial}>{v.certificateSerial ? v.certificateSerial.substring(0, 16) + '…' : '—'}</span> },
+                                { key: 'detected', header: 'Detected', defaultWidth: 160, sortable: true, sortValue: (v) => v.detectedAt ? new Date(v.detectedAt) : null, exportValue: (v) => formatDateTime(v.detectedAt), render: (v) => <span className="text-gray-500 dark:text-gray-500 whitespace-nowrap">{formatDateTime(v.detectedAt)}</span> },
+                                { key: 'actions', header: '', defaultWidth: 110, align: 'right', truncate: false, hideable: false, exportValue: (v) => (v.resolved ? 'Resolved' : ''), render: (v) => v.resolved
+                                    ? <span className="text-[10px] text-green-600 dark:text-green-400">✓ Resolved</span>
+                                    : <button onClick={() => handleResolve(v.id)} disabled={resolvingIds.has(v.id)} className="px-2 py-1 text-[10px] font-medium text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40 border border-green-200 dark:border-green-800 rounded hover:bg-green-100 dark:hover:bg-green-900/70 transition-colors disabled:opacity-50">{resolvingIds.has(v.id) ? 'Resolving…' : 'Resolve'}</button> },
+                            ] as DataTableColumn<any>[]}
+                        />
                     </div>
                 </div>
             </div>
@@ -599,28 +553,18 @@ const Compliance: React.FC = () => {
                         <span className="text-sm text-gray-600">No recent issuances</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Issuer</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Valid From</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {report.issuanceHistory.map((c, i) => (
-                                        <tr key={i} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>
-                                                {c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}
-                                            </td>
-                                            <td className="py-2 px-2 text-gray-600 dark:text-gray-400 max-w-[160px] truncate" title={c.issuer}>{c.issuer}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.notBefore)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="compliance-issuance-history"
+                                rows={report.issuanceHistory}
+                                rowKey={(c, ) => `${c.serialNumber || ''}-${c.notBefore || ''}-${c.subjectDN || ''}`}
+                                empty="No issuance in this period"
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-gray-600 dark:text-gray-400 truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'validFrom', header: 'Valid From', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.notBefore ? new Date(c.notBefore) : null, exportValue: (c) => formatDateTime(c.notBefore), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.notBefore)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>
@@ -632,28 +576,18 @@ const Compliance: React.FC = () => {
                         <span className="text-sm text-gray-600">No recent revocations</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Reason</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Revoked</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {report.revocationHistory.map((c, i) => (
-                                        <tr key={i} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>
-                                                {c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}
-                                            </td>
-                                            <td className="py-2 px-2 text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.revocationDate)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="compliance-revocation-history"
+                                rows={report.revocationHistory}
+                                rowKey={(c) => `${c.serialNumber || ''}-${c.revocationDate || ''}-${c.subjectDN || ''}`}
+                                empty="No revocations in this period"
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateTime(c.revocationDate), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.revocationDate)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>

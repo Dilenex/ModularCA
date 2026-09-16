@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -22,11 +22,13 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// Admin endpoints for managing Certificate Authorities including creation, listing, and hierarchy management.
     /// Class-level <c>[Authorize]</c> ensures no action falls through the
     /// permissive branch where a forgotten attribute meant an anonymous caller could reach
-    /// a handler. Individual actions still override with stricter policies as needed.
+    /// a handler. Every action names its own policy; the class carries none, because policies
+    /// stack rather than override, and a class-level CA-scoped policy would fail closed on any
+    /// mutation whose target comes from the body (CA creation) before the action's own check ran.
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/authorities")]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize]
     public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc) : ControllerBase
     {
         private readonly ICertificateStore _certService = certService;
@@ -132,6 +134,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// collapses cross-tenant mismatches to 404 to avoid existence oracles.
         /// </summary>
         [HttpGet("{serial}")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<ActionResult<CertificateInfoModel>> GetCertificateInfo(string serial)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -150,6 +153,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// tenant gate as <see cref="GetCertificateInfo"/> and returns 404 on mismatch.
         /// </summary>
         [HttpGet("{serial}/file")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetCertificateFile(string serial)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -260,6 +264,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ca.Id,
                     ca.Name,
                     ca.Label,
+                    ca.TenantId,
                     ca.Type,
                     IsRoot = ca.Type == "Root",
                     ca.IsDefault,
@@ -372,14 +377,25 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Create an intermediate CA signed by a parent CA. Requires step-up MFA verification.
+        /// Open to a tenant administrator: <c>ca.manage</c> held tenant-wide for the target tenant,
+        /// with a parent in that tenant or one the caller holds <c>ca.manage</c> on. The tenant
+        /// and parent come from the body, so the check is made here rather than by a route policy
+        /// (see <see cref="CaCreationAccess"/>).
         /// </summary>
         [HttpPost("create-intermediate")]
-        [Authorize(Policy = "SystemOperator")]
+        [Authorize]
         [RequireStepUp(StepUpOps.CreateCa)]
         public async Task<IActionResult> CreateIntermediate([FromBody] CreateIntermediateCaRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+
+            if (!await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, _currentUser.User.Id, request.TenantId, request.ParentCaId))
+            {
+                Log.Warning("Authorization denied for user {UserId} ({Username}) creating an intermediate CA in tenant {TenantId} under parent {ParentCaId}",
+                    _currentUser.User.Id, _currentUser.User.Username, request.TenantId, request.ParentCaId);
+                return StatusCode(403, new { error = "You need ca.manage for the target tenant, and for the parent CA when it belongs to another tenant." });
+            }
 
             var parentCa = await _db.CertificateAuthorities
                 .Include(ca => ca.Certificate)

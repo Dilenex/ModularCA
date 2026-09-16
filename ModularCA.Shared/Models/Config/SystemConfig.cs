@@ -25,6 +25,7 @@ namespace ModularCA.Shared.Models.Config
         public MtlsConfig Mtls { get; set; } = new();
         public AcmeConfig Acme { get; set; } = new();
         public EstConfig Est { get; set; } = new();
+        public ProtocolCleanupConfig ProtocolCleanup { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
         public WebAuthnConfig WebAuthn { get; set; } = new();
         public AlertConfig Alert { get; set; } = new();
@@ -69,7 +70,7 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// Retention policy. Controls the scheduled
         /// <c>AuditRetentionJob</c> which batches deletes past-due rows from the
-        /// AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditNetwork tables.
+        /// AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditMsae/AuditNetwork tables.
         /// </summary>
         public AuditRetentionConfig Retention { get; set; } = new();
 
@@ -96,7 +97,7 @@ namespace ModularCA.Shared.Models.Config
     /// <summary>
     /// Audit retention policy. Default cadence is daily at 03:00 UTC.
     /// Separate windows for the "general" tables (AuditLogs, AuditEst, AuditScep,
-    /// AuditCmp, AuditAcme) and the much noisier AuditNetwork table.
+    /// AuditCmp, AuditAcme, AuditMsae) and the much noisier AuditNetwork table.
     /// </summary>
     public class AuditRetentionConfig
     {
@@ -109,7 +110,7 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>
         /// Retention window in days for the "general" audit tables (AuditLogs,
-        /// AuditEst, AuditScep, AuditCmp, AuditAcme). Default 365 days keeps a
+        /// AuditEst, AuditScep, AuditCmp, AuditAcme, AuditMsae). Default 365 days keeps a
         /// full year of forensics online while still bounding disk. Set to 0 to
         /// disable retention for these tables without touching the job itself.
         /// </summary>
@@ -485,6 +486,7 @@ namespace ModularCA.Shared.Models.Config
             ["CrlExport"] = 300,
             ["CertExpire"] = 120,
             ["AcmeCleanup"] = 120,
+            ["ProtocolCleanup"] = 120,
             ["CertExpiryNotification"] = 120,
             ["TlsRenewal"] = 300,
         });
@@ -978,11 +980,29 @@ namespace ModularCA.Shared.Models.Config
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
     }
 
+    /// <summary>
+    /// Settings for the protocol cleanup job, which removes what a failed protocol enrollment
+    /// leaves behind: request rows written for issuance that were never issued, and expired SCEP
+    /// and CMP transaction rows. Applies to every enrollment protocol.
+    /// </summary>
+    public class ProtocolCleanupConfig
+    {
+        /// <summary>Cron expression for the sweep. Default every 15 minutes.</summary>
+        public string Schedule { get; set; } = "*/15 * * * *";
+
+        /// <summary>
+        /// A request row is only removed once it is older than this. Issuance normally completes
+        /// in seconds; the window exists so a request still being issued is never touched.
+        /// Default 60 minutes.
+        /// </summary>
+        public int OrphanRequestGraceMinutes { get; set; } = 60;
+    }
+
     public class AcmeConfig
     {
         /// <summary>
         /// Cron expression for the periodic ACME cleanup sweep (stale orders, expired nonces,
-        /// stuck challenges, SCEP/CMP transaction sweep). Default <c>*/5 * * * *</c> — every
+        /// stuck challenges). Default <c>*/5 * * * *</c> — every
         /// 5 minutes. The job is internally idempotent and only emits work when there's
         /// something stale to clean, so a tighter cadence is safe; default is loose because
         /// the scheduler poll loop already wakes every 30s.

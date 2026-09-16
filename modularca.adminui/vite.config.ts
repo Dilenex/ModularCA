@@ -1,4 +1,4 @@
-﻿import { defineConfig } from 'vite';
+﻿import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -27,13 +27,32 @@ function versionDefine(): Record<string, string> {
 // the alias; the dev server additionally needs fs.allow, because Vite refuses to serve
 // files outside the project root unless told to.
 const sharedCommon = resolve(process.cwd(), '..', 'shared', 'common', 'src');
-// Auth-aware code. Aliased ONLY in adminui and userui — setupui runs before
-// authentication exists and docsui/publicui are anonymous, so for them the specifier
-// simply does not resolve. The boundary is enforced by wiring, not by convention.
+// Auth-aware code. Aliased ONLY here — setupui runs before authentication exists and
+// docsui/publicui are anonymous, so for them the specifier simply does not resolve. The
+// boundary is enforced by wiring, not by convention.
 const sharedAuth = resolve(process.cwd(), '..', 'shared', 'authenticated', 'src');
 
+// The production server hands this bundle's index.html to /admin/*, /user/* and the site-root
+// sign-in pages; the bundle reads the prefix at load (src/portal.ts). Vite's dev server only
+// knows `base`, so mirror that here: those requests are served as if they were the /admin shell.
+const SHELL_PREFIXES = ['/user', '/login', '/banner', '/mfa-setup', '/mfa-verify', '/mfa-callback'];
+function portalShellDev(): Plugin {
+  return {
+    name: 'modularca-portal-shell',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const url = req.url ?? '';
+        if (SHELL_PREFIXES.some(p => url === p || url.startsWith(p + '/') || url.startsWith(p + '?'))) {
+          req.url = '/admin/';
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), portalShellDev()],
   resolve: {
     alias: {
         '@shared': sharedCommon,

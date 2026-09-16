@@ -6,7 +6,7 @@ namespace ModularCA.API.Middleware;
 /// If a Bearer token is present but invalid/missing, redirects browser requests to the admin login
 /// page and returns 401 for API/XHR requests.
 /// For browser page loads (which lack a Bearer header), the request passes through and the docs
-/// SPA handles the client-side auth check, redirecting to /admin/login if no token is in localStorage.
+/// SPA handles the client-side auth check, redirecting to /login if no token is in localStorage.
 /// </summary>
 public class DocsAuthMiddleware
 {
@@ -38,7 +38,7 @@ public class DocsAuthMiddleware
                 }
 
                 var returnUrl = Uri.EscapeDataString(path);
-                context.Response.Redirect($"/admin/login?returnUrl={returnUrl}");
+                context.Response.Redirect($"/login?returnUrl={returnUrl}");
                 return;
             }
         }

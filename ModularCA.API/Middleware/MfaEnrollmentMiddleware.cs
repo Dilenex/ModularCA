@@ -52,6 +52,7 @@ public class MfaEnrollmentMiddleware
     private static readonly string[] NonApiAllowedPrefixes =
     {
         "/admin/", "/user/", "/public/", "/setup/", "/docs/",
+        "/login", "/banner", "/mfa-setup", "/mfa-verify", "/mfa-callback",
         "/css/", "/js/", "/assets/", "/favicon",
     };
 

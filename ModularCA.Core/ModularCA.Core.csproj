@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <PackageReference Include="Kerberos.NET" Version="4.6.168" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection.Abstractions" Version="10.0.12" />
     <PackageReference Include="Serilog" Version="4.2.0" />
     <PackageReference Include="DnsClient" Version="1.8.0" />
     <PackageReference Include="MailKit" Version="4.16.0" />

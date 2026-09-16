@@ -86,7 +86,7 @@ jobs:
       # postinstall script belonging to the very packages it is judging.
       - name: Install for audit only
         run: |
-          for p in modularca.adminui modularca.userui modularca.publicui                    modularca.setupui modularca.docsui tests/modularca.web.tests; do
+          for p in modularca.adminui modularca.publicui                    modularca.setupui modularca.docsui tests/modularca.web.tests; do
             (cd "$p" && npm ci --ignore-scripts)
           done
 
@@ -112,7 +112,6 @@ jobs:
       matrix:
         app:
           - modularca.adminui
-          - modularca.userui
           - modularca.publicui
           - modularca.docsui
           - modularca.setupui

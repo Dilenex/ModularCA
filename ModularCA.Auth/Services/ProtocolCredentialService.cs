@@ -100,7 +100,7 @@ public class ProtocolCredentialService(
         }
 
         // Computed now, applied after the password check. See the remarks.
-        var isDisabled = !user.IsActive;
+        var isDisabled = !user.IsActive || user.IsServiceIdentity;
         var isHardLocked = user.IsLocked;
         var isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 

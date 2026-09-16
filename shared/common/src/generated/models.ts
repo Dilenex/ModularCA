@@ -18,6 +18,67 @@ import type * as E from './enums';
  * present-but-null in a response, and both need to typecheck.
  */
 
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeDto {
+    id: string;
+    userId: string;
+    name: string;
+    description?: string | null;
+    isDefault: boolean;
+    createdAt: string;
+    updatedAt?: string | null;
+    sources: AccessBadgeSourceDto[];
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceDto {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+    label?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceOptionDto {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+    label: string;
+    scope: string;
+    capabilities: string[];
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceRef {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSummary {
+    id: string;
+    name: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSwitchRequest {
+    badgeId?: string | null;
+    refreshToken: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSwitchResponse {
+    token: string;
+    expiresAt: string;
+    badge?: AccessBadgeSummary | null;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeWriteRequest {
+    name: string;
+    description?: string | null;
+    isDefault: boolean;
+    sources: AccessBadgeSourceRef[];
+}
+
 /** From `ModularCA.Shared/Models/Acme/AcmeAccountDto.cs`. */
 export interface AcmeAccountDto {
     id: string;
@@ -317,6 +378,11 @@ export interface CertificateTemplateDto {
     signingProfileId: string;
     signingProfileName?: string | null;
     isEnabled: boolean;
+    offeredToWindows: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion: number;
+    msaeMinorVersion: number;
+    msaeMachineType: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -442,6 +508,11 @@ export interface CreateCertificateTemplateRequest {
     certProfileId: string;
     signingProfileId: string;
     isEnabled: boolean;
+    offerToWindows: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion: number;
+    msaeMinorVersion: number;
+    msaeMachineType: boolean;
 }
 
 /** From `ModularCA.Shared/Models/CertProfiles/CreateCertProfileRequest.cs`. */
@@ -834,6 +905,43 @@ export interface MetricsConfig {
     path: string;
 }
 
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadiness {
+    caId: string;
+    caLabel: string;
+    tenantId?: string | null;
+    ready: boolean;
+    cepUrl: string;
+    policyId: string;
+    steps: MsaeReadinessStep[];
+    realms: MsaeReadinessRealm[];
+    evaluatedAt: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessFix {
+    label: string;
+    path: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessRealm {
+    id: string;
+    realm: string;
+    dnsDomain: string;
+    servicePrincipal: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessStep {
+    key: string;
+    title: string;
+    state: E.MsaeReadinessState;
+    detail: string;
+    items: string[];
+    fix?: MsaeReadinessFix | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface MtlsConfig {
     enabled: boolean;
@@ -883,6 +991,12 @@ export interface PolicySyncConfig {
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface ProtocolCleanupConfig {
+    schedule: string;
+    orphanRequestGraceMinutes: number;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface RedisConfig {
     enabled: boolean;
     connectionString: string;
@@ -914,6 +1028,13 @@ export interface ReissueCertificateRequestByCsrId {
     notAfter?: string | null;
     newSubjectDn?: string | null;
     newSans?: string[] | null;
+}
+
+/** From `ModularCA.Shared/Models/RequestedExtension.cs`. */
+export interface RequestedExtension {
+    oid: string;
+    critical: boolean;
+    valueBase64: string;
 }
 
 /** From `ModularCA.Shared/Models/RequestProfiles/RequestProfileDto.cs`. */
@@ -1072,6 +1193,7 @@ export interface SetupFeatures {
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;
+    enableMsae: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */
@@ -1256,6 +1378,7 @@ export interface SystemConfig {
     mtls: MtlsConfig;
     acme: AcmeConfig;
     est: EstConfig;
+    protocolCleanup: ProtocolCleanupConfig;
     backup: BackupConfig;
     webAuthn: WebAuthnConfig;
     alert: AlertConfig;
@@ -1379,6 +1502,10 @@ export interface UserEntityDto {
     lastName?: string | null;
     displayName?: string | null;
     isActive: boolean;
+    isServiceIdentity: boolean;
+    serviceScopeTenantId?: string | null;
+    serviceScopeCaId?: string | null;
+    description?: string | null;
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;

@@ -86,10 +86,38 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
             "EST" => await ValidateEstAsync(protocolConfig, ca, clientCert, isAuthenticated, callerUsername),
             "SCEP" => await ValidateScep(protocolConfig, csrPem),
             "CMP" => ValidateCmp(protocolConfig, clientCert, isAuthenticated),
+            "MSAE" => await ValidateMsaeAsync(ca, isAuthenticated, callerUsername),
             "ACME" => (true, null), // ACME handles its own authorization via challenges
             "OCSP" => (true, null), // OCSP is a query protocol, no enrollment
             _ => (true, null),
         };
+    }
+
+    /// <summary>
+    /// Validates Windows autoenrollment (MS-WSTEP) authorization: the caller must have
+    /// authenticated with a username, and that account must hold the enrollment capability on
+    /// the CA that will issue.
+    /// </summary>
+    /// <remarks>
+    /// There is no certificate branch and no "either credential" policy here, unlike EST. The
+    /// only credential the MSAE endpoint accepts today is a username and password, so an
+    /// unauthenticated or nameless caller has nothing to check membership for and is refused
+    /// outright. Membership is the same check EST HTTP authentication uses: a password proves who
+    /// is asking, not whether they may ask here.
+    /// </remarks>
+    private async Task<(bool, string?)> ValidateMsaeAsync(
+        CertificateAuthorityEntity ca, bool isAuthenticated, string? callerUsername)
+    {
+        if (!isAuthenticated || string.IsNullOrWhiteSpace(callerUsername))
+            return (false, "MSAE enrollment requires an authenticated username.");
+
+        if (await _principalAuthorizer.MayEnrollAsync(callerUsername, ca.Id))
+            return (true, null);
+
+        _logger.LogWarning(
+            "MSAE enrollment refused: user {Username} lacks {Capability} on CA {CaLabel}.",
+            callerUsername, Shared.Authorization.Capabilities.CertRequest, ca.Label);
+        return (false, $"User '{callerUsername}' is not permitted to enroll at CA '{ca.Label}'.");
     }
 
     /// <summary>

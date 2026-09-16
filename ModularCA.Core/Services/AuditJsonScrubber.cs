@@ -27,6 +27,7 @@ public static class AuditJsonScrubber
     private static readonly string[] SensitiveNameTokens = new[]
     {
         "password",
+        "keytab",
         "secret",
         "token",
         "key",

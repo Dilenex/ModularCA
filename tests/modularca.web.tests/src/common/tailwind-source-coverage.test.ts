@@ -58,7 +58,8 @@ describe('every SPA scans the shared trees it imports from', () => {
 
     it('finds the SPA packages', () => {
         // Guards the guard: a wrong ROOT would make every assertion below vacuously pass.
-        expect(apps.length).toBeGreaterThanOrEqual(5);
+        // Four since the user portal merged into modularca.adminui (September 2026).
+        expect(apps.length).toBeGreaterThanOrEqual(4);
     });
 
     it.each(apps)('%s', (app) => {

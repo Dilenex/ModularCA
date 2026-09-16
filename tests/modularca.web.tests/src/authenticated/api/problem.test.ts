@@ -4,7 +4,7 @@ import {
 } from '@shared-auth/api/problem';
 
 /**
- * Coverage for the single funnel every API error in adminui and userui now passes through.
+ * Coverage for the single funnel every API error in the console (adminui) now passes through.
  *
  * Two different kinds of assertion live here, and they are worth telling apart.
  *

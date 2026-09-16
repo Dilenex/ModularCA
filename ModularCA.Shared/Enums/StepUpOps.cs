@@ -15,6 +15,10 @@ namespace ModularCA.Shared.Enums;
 public static class StepUpOps
 {
     // Certificate revocation
+    /// <summary>Broadening a session's access badge: taking one off, or switching to one that keeps more.</summary>
+    public const string SwitchBadge = "switch-badge";
+    /// <summary>Creating, changing, keying or deleting a Kerberos realm binding for Windows autoenrollment.</summary>
+    public const string ManageKerberosRealm = "manage-kerberos-realm";
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
@@ -45,6 +49,7 @@ public static class StepUpOps
     public const string UpdateUserGroups = "update-user-groups";
 
     // Group lifecycle (CA-scoped authorization groups)
+    public const string CreateGroup = "create-group";
     public const string DeleteGroup = "delete-group";
     public const string UpdateGroup = "update-group";
 
@@ -221,6 +226,8 @@ public static class StepUpOps
     /// </summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
+        SwitchBadge,
+        ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
         RevokeSelfCert,
         ReissueCert,
@@ -228,7 +235,7 @@ public static class StepUpOps
         UpdateCertAcl,
         CreateUser, UpdateUser, DeleteUser,
         AddGroupMember, RemoveGroupMember, UpdateUserGroups,
-        DeleteGroup, UpdateGroup,
+        CreateGroup, DeleteGroup, UpdateGroup,
         GrantUserCapability, RevokeUserCapability,
         CreateRole, UpdateRole, DeleteRole,
         AssignRole, UnassignRole,

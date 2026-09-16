@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
+import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
 
 const TEMPLATE_TABS = ['X.509 CA', 'SSH CA'] as const;
@@ -26,12 +34,43 @@ interface CertificateTemplate {
     signingProfileName?: string;
     isEnabled: boolean;
     createdAt: string;
+    offeredToWindows?: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion?: number;
+    msaeMinorVersion?: number;
+    msaeMachineType?: boolean;
 }
 
 interface DropdownOption {
     id: string;
     name: string;
 }
+
+/** A request profile as the dropdown and the approval pill need it; the list endpoint returns the full DTO. */
+interface RequestProfileOption extends DropdownOption {
+    requireApproval?: boolean;
+}
+
+/**
+ * The largest OID arc Windows reads. Its parser holds each arc in a signed 64-bit integer, so a
+ * template whose OID carries an arc above 2^63-1 is dropped from the policy response without a
+ * word to the client or the server; the template is offered and nobody ever sees it.
+ */
+const WINDOWS_OID_ARC_MAX = 9223372036854775807n;
+
+/// <summary>
+/// True when every dotted arc of the OID is a decimal integer Windows can read (at most 2^63-1).
+/// A blank or non-numeric OID is not readable either.
+/// </summary>
+function oidReadableByWindows(oid: string | null | undefined): boolean {
+    if (!oid) return false;
+    const arcs = oid.trim().split('.');
+    if (arcs.length < 2) return false;
+    return arcs.every((arc) => /^\d+$/.test(arc) && BigInt(arc) <= WINDOWS_OID_ARC_MAX);
+}
+
+const INVISIBLE_TITLE = 'An OID arc above 2^63-1; Windows drops this template silently. Regenerate or set the arc.';
+const APPROVAL_TITLE = 'Every enrollment waits in the approval queue; the client polls until it is issued.';
 
 /* ─── X.509 CA Templates Tab ─── */
 const X509TemplatesTab: React.FC = () => {
@@ -40,13 +79,12 @@ const X509TemplatesTab: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [templates, setTemplates] = useState<CertificateTemplate[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [selectedTemplate, setSelectedTemplate] = useState<CertificateTemplate | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
 
     const [authorities, setAuthorities] = useState<DropdownOption[]>([]);
-    const [requestProfiles, setRequestProfiles] = useState<DropdownOption[]>([]);
+    const [requestProfiles, setRequestProfiles] = useState<RequestProfileOption[]>([]);
     const [certProfiles, setCertProfiles] = useState<DropdownOption[]>([]);
     const [signingProfiles, setSigningProfiles] = useState<DropdownOption[]>([]);
 
@@ -54,30 +92,45 @@ const X509TemplatesTab: React.FC = () => {
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
-    const [form, setForm] = useState({
-        name: '', description: '', caId: '', requestProfileId: '',
-        certProfileId: '', signingProfileId: '', isEnabled: true,
-    });
+    /// <summary>
+    /// True when the template's request profile is known to require approval. The template DTO
+    /// does not carry the flag; it is read off the request-profile list this page already loads,
+    /// so a profile that list does not include (not loaded yet, or not granted) reads as unknown.
+    /// </summary>
+    const requiresApproval = (t: CertificateTemplate): boolean =>
+        !!t.requestProfileId && requestProfiles.find((p) => p.id === t.requestProfileId)?.requireApproval === true;
 
-    const resetForm = () => setForm({
+    const emptyForm = {
         name: '', description: '', caId: '', requestProfileId: '',
         certProfileId: '', signingProfileId: '', isEnabled: true,
-    });
+        // Windows autoenrollment (MSAE): offer the template through the policy service.
+        offerToWindows: false, msaeTemplateOid: '', msaeMachineType: true,
+    };
+    const [form, setForm] = useState(emptyForm);
+
+    const resetForm = () => setForm(emptyForm);
 
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
 
+    const { caId: scopeCaId, scope } = useScope();
+
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/templates')
+        apiGet<any>(`/api/v1/admin/templates${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
             .then((data) => setTemplates(extractList(data)))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
+    // The scope narrows the list; a new template defaults to the scoped CA.
     useEffect(() => {
         load();
+        if (scopeCaId) setForm((f) => ({ ...f, caId: f.caId || scopeCaId }));
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => {
                 const list = extractList(data);
@@ -86,7 +139,7 @@ const X509TemplatesTab: React.FC = () => {
         apiGet<any>('/api/v1/admin/request-profiles')
             .then((data) => {
                 const list = extractList(data);
-                setRequestProfiles(list.map((p: any) => ({ id: p.id, name: p.name || p.id })));
+                setRequestProfiles(list.map((p: any) => ({ id: p.id, name: p.name || p.id, requireApproval: p.requireApproval === true })));
             }).catch(() => {});
         apiGet<any>('/api/v1/admin/cert-profiles')
             .then((data) => {
@@ -107,8 +160,10 @@ const X509TemplatesTab: React.FC = () => {
                 name: form.name, description: form.description || undefined,
                 caId: form.caId, certProfileId: form.certProfileId,
                 signingProfileId: form.signingProfileId, isEnabled: form.isEnabled,
+                offerToWindows: form.offerToWindows, msaeMachineType: form.msaeMachineType,
             };
             if (form.requestProfileId) body.requestProfileId = form.requestProfileId;
+            if (form.offerToWindows && form.msaeTemplateOid.trim()) body.msaeTemplateOid = form.msaeTemplateOid.trim();
             await apiPostWithMfa('/api/v1/admin/templates', body, requireStepUp, StepUpOps.CreateCertificateTemplate);
             setShowCreate(false);
             resetForm();
@@ -129,10 +184,75 @@ const X509TemplatesTab: React.FC = () => {
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
                 await apiDeleteWithMfa(`/api/v1/admin/templates/${template.id}`, requireStepUp, StepUpOps.DeleteCertificateTemplate, template.id);
-                if (selectedTemplate?.id === template.id) setSelectedTemplate(null);
                 load();
             },
         });
+    };
+
+    const record: RecordDescriptor<CertificateTemplate> = {
+        kind: 'certificate-template',
+        key: (t) => t.id,
+        title: (t) => t.name,
+        status: (t) => ({ label: t.isEnabled ? 'Enabled' : 'Disabled', tone: t.isEnabled ? 'ok' : 'neutral' }),
+        columns: [
+            { key: 'name', header: 'Name', defaultWidth: 240, sortable: true, exportValue: (t) => t.name, render: (t) => (
+                <span className="min-w-0">
+                    <span className="text-gray-900 dark:text-white font-medium truncate block">{t.name}</span>
+                    {t.description && <span className="block text-xs text-gray-600 truncate">{t.description}</span>}
+                </span>
+            ) },
+            { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.caName || t.caId}</span> },
+            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
+            { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="font-mono text-xs text-gray-700 dark:text-gray-300 truncate">{t.msaeTemplateOid}</span> : <span className="text-gray-500">-</span>) },
+            // What a Windows client will see: whether the template survives its OID parser, the
+            // version it is advertised at, the kind of principal it is for, and whether issuance waits.
+            { key: 'windows', header: 'Windows', headerTitle: 'What a Windows client sees: Listed when the OID is readable, Invisible when an arc is too large for its parser, then the advertised version and kind.', defaultWidth: 250, truncate: false, sortable: true,
+                sortValue: (t) => (t.offeredToWindows ? (oidReadableByWindows(t.msaeTemplateOid) ? 2 : 1) : 0),
+                exportValue: (t) => {
+                    if (!t.offeredToWindows) return '';
+                    const parts = [oidReadableByWindows(t.msaeTemplateOid) ? 'Listed' : 'Invisible', `v${t.msaeMajorVersion ?? 100}.${t.msaeMinorVersion ?? 0}`, t.msaeMachineType ? 'Computer' : 'User'];
+                    if (requiresApproval(t)) parts.push('Approval');
+                    return parts.join(' ');
+                },
+                render: (t) => {
+                    if (!t.offeredToWindows) return <span className="text-gray-500">-</span>;
+                    const listed = oidReadableByWindows(t.msaeTemplateOid);
+                    return (
+                        <span className="inline-flex items-center gap-1.5 flex-wrap">
+                            <span title={listed ? 'The OID parses on Windows; the template appears in the policy list.' : INVISIBLE_TITLE}>
+                                <StatusBadge status={listed ? 'active' : 'revoked'} label={listed ? 'Listed' : 'Invisible'} />
+                            </span>
+                            <span className="font-mono text-xs text-gray-600 dark:text-gray-400">v{t.msaeMajorVersion ?? 100}.{t.msaeMinorVersion ?? 0}</span>
+                            <span className="text-xs text-gray-600 dark:text-gray-400">{t.msaeMachineType ? 'Computer' : 'User'}</span>
+                            {requiresApproval(t) && (
+                                <span title={APPROVAL_TITLE} className="inline-block px-2 py-0.5 text-xs rounded border bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-900/50 dark:text-amber-300 dark:border-amber-700">Approval</span>
+                            )}
+                        </span>
+                    );
+                } },
+            { key: 'enabled', header: 'Enabled', defaultWidth: 110, truncate: false, sortable: true, sortValue: (t) => !!t.isEnabled, exportValue: (t) => (t.isEnabled ? 'Enabled' : 'Disabled'), render: (t) => <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} /> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'ID', value: (t) => t.id, mono: true, copyable: true },
+                { label: 'Description', value: (t) => t.description },
+                { label: 'CA', value: (t) => t.caName || t.caId },
+                { label: 'Created', value: (t) => (t.createdAt ? new Date(t.createdAt).toLocaleString() : null) },
+            ] },
+            { title: 'Profiles', fields: [
+                { label: 'Request Profile', value: (t) => t.requestProfileName || t.requestProfileId || 'None' },
+                { label: 'Cert Profile', value: (t) => t.certProfileName || t.certProfileId },
+                { label: 'Signing Profile', value: (t) => t.signingProfileName || t.signingProfileId },
+            ] },
+            { title: 'Windows autoenrollment', fields: [
+                { label: 'Offered', value: (t) => (t.offeredToWindows ? (t.msaeMachineType ? 'Yes, computer template' : 'Yes, user template') : 'No') },
+                { label: 'Template OID', value: (t) => (t.offeredToWindows ? t.msaeTemplateOid : null), mono: true, copyable: true },
+                { label: 'Template Version', value: (t) => (t.offeredToWindows ? `${t.msaeMajorVersion ?? 100}.${t.msaeMinorVersion ?? 0}` : null) },
+            ] },
+        ],
+        audit: { tab: 'General', target: (t) => ({ type: 'CertificateTemplate', id: t.id }) },
+        actions: [{ label: 'Delete', tone: 'danger', run: (t) => { handleDelete(t); } }],
     };
 
     return (
@@ -197,7 +317,38 @@ const X509TemplatesTab: React.FC = () => {
                                 className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
                             Enabled
                         </label>
+                        <div>
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={form.offerToWindows}
+                                    onChange={(e) => setForm({ ...form, offerToWindows: e.target.checked })}
+                                    aria-describedby="template-msae-hint"
+                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                Offer to Windows clients (MSAE)
+                            </label>
+                            <FieldHint id="template-msae-hint">
+                                Windows autoenrollment (MSAE) is the only protocol that issues from a template: it lists the offered ones through the policy service and enrolls against them. ACME, EST, SCEP, CMP and manual requests pick profiles directly; a template left unoffered is reachable by nothing.
+                            </FieldHint>
+                        </div>
+                        {form.offerToWindows && (
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={form.msaeMachineType}
+                                    onChange={(e) => setForm({ ...form, msaeMachineType: e.target.checked })}
+                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                Computer template (uncheck for a user template)
+                            </label>
+                        )}
                     </div>
+                    {form.offerToWindows && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label className={labelClass}>Template OID (optional)</label>
+                                <input type="text" value={form.msaeTemplateOid}
+                                    onChange={(e) => setForm({ ...form, msaeTemplateOid: e.target.value })}
+                                    className={inputClass} placeholder="Generated if blank; set to keep an AD CS template's OID" />
+                                <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Dotted decimal, no arc above 9223372036854775807: Windows silently drops templates it cannot parse.</p>
+                            </div>
+                        </div>
+                    )}
                     <button onClick={handleCreate}
                         disabled={creating || !form.name || !form.caId || !form.certProfileId || !form.signingProfileId}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
@@ -208,86 +359,24 @@ const X509TemplatesTab: React.FC = () => {
 
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
                 {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+                {error && <InlineNotice notice={error} />}
                 {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-gray-600 text-center">No certificate templates found</div>
+                    <div className="p-4 text-sm text-gray-600 text-center">
+                        {scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                    </div>
                 )}
                 {!loading && !error && templates.length > 0 && (
-                    <table className="w-full min-w-[600px] text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-xs">
-                                <th className="px-4 py-3 text-left">Name</th>
-                                <th className="px-4 py-3 text-left">CA Name</th>
-                                <th className="px-4 py-3 text-left">Cert Profile</th>
-                                <th className="px-4 py-3 text-left">Signing Profile</th>
-                                <th className="px-4 py-3 text-left">Enabled</th>
-                                <th className="px-4 py-3 text-right">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {templates.map((t) => (
-                                <tr key={t.id} className="border-b border-gray-300 dark:border-gray-700 last:border-b-0 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                    <td className="px-4 py-3">
-                                        <button onClick={() => setSelectedTemplate(t)}
-                                            className="text-blue-800 dark:text-blue-400 hover:text-blue-300 font-medium text-left">
-                                            {t.name}
-                                        </button>
-                                        {t.description && <div className="text-xs text-gray-600 mt-0.5">{t.description}</div>}
-                                    </td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.caName || t.caId}</td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.certProfileName || t.certProfileId}</td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.signingProfileName || t.signingProfileId}</td>
-                                    <td className="px-4 py-3">
-                                        <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} />
-                                    </td>
-                                    <td className="px-4 py-3 text-right">
-                                        <button onClick={() => handleDelete(t)}
-                                            className="px-3 py-1 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">
-                                            Delete
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <DataTable<CertificateTemplate>
+                        tableId="templates-x509"
+                        title="Templates"
+                        rows={templates}
+                        empty={scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
+                        sort={{ key: 'name', dir: 'asc' }}
+                        {...recordTableProps(record)}
+                    />
                 )}
             </div>
 
-            {selectedTemplate && (
-                <div className="fixed inset-0 bg-black/25 dark:bg-black/60 flex items-center justify-center z-50 p-4"
-                    onClick={() => setSelectedTemplate(null)}>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg w-full max-w-2xl mx-4 max-h-[85vh] overflow-y-auto"
-                        onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between p-4 border-b border-gray-300 dark:border-gray-700">
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{selectedTemplate.name}</h3>
-                            <button onClick={() => setSelectedTemplate(null)}
-                                className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white dark:text-white text-xl px-2">X</button>
-                        </div>
-                        <div className="p-4 space-y-3">
-                            <DetailField label="ID" value={selectedTemplate.id} />
-                            <DetailField label="Template Name" value={selectedTemplate.name} />
-                            <DetailField label="Description" value={selectedTemplate.description || 'None'} />
-                            <DetailField label="CA" value={selectedTemplate.caName || selectedTemplate.caId} />
-                            <DetailField label="Request Profile" value={selectedTemplate.requestProfileName || selectedTemplate.requestProfileId || 'None'} />
-                            <DetailField label="Cert Profile" value={selectedTemplate.certProfileName || selectedTemplate.certProfileId} />
-                            <DetailField label="Signing Profile" value={selectedTemplate.signingProfileName || selectedTemplate.signingProfileId} />
-                            <div className="py-1">
-                                <span className="text-xs text-gray-600 dark:text-gray-400">Enabled</span>
-                                <div className="mt-1">
-                                    <StatusBadge status={selectedTemplate.isEnabled ? 'enabled' : 'disabled'} label={selectedTemplate.isEnabled ? 'Enabled' : 'Disabled'} />
-                                </div>
-                            </div>
-                            <DetailField label="Created At" value={selectedTemplate.createdAt ? new Date(selectedTemplate.createdAt).toLocaleString() : undefined} />
-                        </div>
-                        <div className="p-4 border-t border-gray-300 dark:border-gray-700 flex justify-end">
-                            <button onClick={() => handleDelete(selectedTemplate)}
-                                className="px-4 py-2 text-sm bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">
-                                Delete
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             <ConfirmModal
                 isOpen={!!confirmAction}
@@ -318,8 +407,7 @@ const SshTemplatesTab: React.FC = () => {
     const { showToast } = useToast();
     const [templates, setTemplates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
 
@@ -349,7 +437,7 @@ const SshTemplatesTab: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/ssh/templates')
             .then((data) => setTemplates(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -406,10 +494,43 @@ const SshTemplatesTab: React.FC = () => {
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
                 await apiDelete(`/api/v1/admin/ssh/templates/${template.id}`);
-                if (selectedTemplate?.id === template.id) setSelectedTemplate(null);
                 load();
             },
         });
+    };
+
+    const record: RecordDescriptor<any> = {
+        kind: 'ssh-template',
+        key: (t) => t.id,
+        title: (t) => t.name,
+        status: (t) => ({ label: t.isEnabled ? 'Enabled' : 'Disabled', tone: t.isEnabled ? 'ok' : 'neutral' }),
+        columns: [
+            { key: 'name', header: 'Name', defaultWidth: 240, sortable: true, exportValue: (t: any) => t.name, render: (t: any) => (
+                <span className="min-w-0">
+                    <span className="text-gray-900 dark:text-white font-medium truncate block">{t.name}</span>
+                    {t.description && <span className="block text-xs text-gray-600 truncate">{t.description}</span>}
+                </span>
+            ) },
+            { key: 'caKey', header: 'CA Key', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCaKeyName || t.sshCaKeyId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshCaKeyName || t.sshCaKeyId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshSigningProfileName || t.sshSigningProfileId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshSigningProfileName || t.sshSigningProfileId}</span> },
+            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCertProfileName || t.sshCertProfileId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshCertProfileName || t.sshCertProfileId}</span> },
+            { key: 'enabled', header: 'Enabled', defaultWidth: 110, truncate: false, sortable: true, sortValue: (t: any) => !!t.isEnabled, exportValue: (t: any) => (t.isEnabled ? 'Enabled' : 'Disabled'), render: (t: any) => <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} /> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'ID', value: (t) => t.id, mono: true, copyable: true },
+                { label: 'Description', value: (t) => t.description },
+                { label: 'SSH CA Key', value: (t) => t.sshCaKeyName || t.sshCaKeyId },
+                { label: 'Created', value: (t) => (t.createdAt ? new Date(t.createdAt).toLocaleString() : null) },
+            ] },
+            { title: 'Profiles', fields: [
+                { label: 'Signing Profile', value: (t) => t.sshSigningProfileName || t.sshSigningProfileId },
+                { label: 'Cert Profile', value: (t) => t.sshCertProfileName || t.sshCertProfileId },
+                { label: 'Request Profile', value: (t) => t.sshRequestProfileName || t.sshRequestProfileId || 'None' },
+            ] },
+        ],
+        audit: { tab: 'General', target: (t) => ({ type: 'SshTemplate', id: t.id }) },
+        actions: [{ label: 'Delete', tone: 'danger', run: (t) => { handleDelete(t); } }],
     };
 
     return (
@@ -485,86 +606,22 @@ const SshTemplatesTab: React.FC = () => {
 
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
                 {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+                {error && <InlineNotice notice={error} />}
                 {!loading && !error && templates.length === 0 && (
                     <div className="p-4 text-sm text-gray-600 text-center">No SSH certificate templates found</div>
                 )}
                 {!loading && !error && templates.length > 0 && (
-                    <table className="w-full min-w-[600px] text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-xs">
-                                <th className="px-4 py-3 text-left">Name</th>
-                                <th className="px-4 py-3 text-left">CA Key</th>
-                                <th className="px-4 py-3 text-left">Signing Profile</th>
-                                <th className="px-4 py-3 text-left">Cert Profile</th>
-                                <th className="px-4 py-3 text-left">Enabled</th>
-                                <th className="px-4 py-3 text-right">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {templates.map((t: any) => (
-                                <tr key={t.id} className="border-b border-gray-300 dark:border-gray-700 last:border-b-0 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                    <td className="px-4 py-3">
-                                        <button onClick={() => setSelectedTemplate(t)}
-                                            className="text-blue-800 dark:text-blue-400 hover:text-blue-300 font-medium text-left">
-                                            {t.name}
-                                        </button>
-                                        {t.description && <div className="text-xs text-gray-600 mt-0.5">{t.description}</div>}
-                                    </td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.sshCaKeyName || t.sshCaKeyId}</td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.sshSigningProfileName || t.sshSigningProfileId}</td>
-                                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.sshCertProfileName || t.sshCertProfileId}</td>
-                                    <td className="px-4 py-3">
-                                        <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} />
-                                    </td>
-                                    <td className="px-4 py-3 text-right">
-                                        <button onClick={() => handleDelete(t)}
-                                            className="px-3 py-1 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">
-                                            Delete
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <DataTable<any>
+                        tableId="templates-ssh"
+                        title="SSH Templates"
+                        rows={templates}
+                        empty="No SSH templates"
+                        sort={{ key: 'name', dir: 'asc' }}
+                        {...recordTableProps(record)}
+                    />
                 )}
             </div>
 
-            {selectedTemplate && (
-                <div className="fixed inset-0 bg-black/25 dark:bg-black/60 flex items-center justify-center z-50 p-4"
-                    onClick={() => setSelectedTemplate(null)}>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg w-full max-w-2xl mx-4 max-h-[85vh] overflow-y-auto"
-                        onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between p-4 border-b border-gray-300 dark:border-gray-700">
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{selectedTemplate.name}</h3>
-                            <button onClick={() => setSelectedTemplate(null)}
-                                className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white dark:text-white text-xl px-2">X</button>
-                        </div>
-                        <div className="p-4 space-y-3">
-                            <DetailField label="ID" value={selectedTemplate.id} />
-                            <DetailField label="Template Name" value={selectedTemplate.name} />
-                            <DetailField label="Description" value={selectedTemplate.description || 'None'} />
-                            <DetailField label="SSH CA Key" value={selectedTemplate.sshCaKeyName || selectedTemplate.sshCaKeyId} />
-                            <DetailField label="Signing Profile" value={selectedTemplate.sshSigningProfileName || selectedTemplate.sshSigningProfileId} />
-                            <DetailField label="Cert Profile" value={selectedTemplate.sshCertProfileName || selectedTemplate.sshCertProfileId} />
-                            <DetailField label="Request Profile" value={selectedTemplate.sshRequestProfileName || selectedTemplate.sshRequestProfileId || 'None'} />
-                            <div className="py-1">
-                                <span className="text-xs text-gray-600 dark:text-gray-400">Enabled</span>
-                                <div className="mt-1">
-                                    <StatusBadge status={selectedTemplate.isEnabled ? 'enabled' : 'disabled'} label={selectedTemplate.isEnabled ? 'Enabled' : 'Disabled'} />
-                                </div>
-                            </div>
-                            <DetailField label="Created At" value={selectedTemplate.createdAt ? new Date(selectedTemplate.createdAt).toLocaleString() : undefined} />
-                        </div>
-                        <div className="p-4 border-t border-gray-300 dark:border-gray-700 flex justify-end">
-                            <button onClick={() => handleDelete(selectedTemplate)}
-                                className="px-4 py-2 text-sm bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">
-                                Delete
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             <ConfirmModal
                 isOpen={!!confirmAction}
@@ -592,17 +649,10 @@ const SshTemplatesTab: React.FC = () => {
 
 /* ─── Certificate Templates Page ─── */
 //
-// INTERNAL NOTE — NOT WIRED INTO ISSUANCE (hidden from navigation as of 2026-06).
-// Templates are CRUD-only: no enrollment/ACME/SCEP/EST/CMP/SSH issuance path reads a template.
-// The backend resolver CaResolverService.ResolveByTemplateAsync(templateName) exists but has no
-// caller, and no issuance request accepts a templateId. This page is intentionally kept (reachable
-// by direct URL at /templates) but removed from the sidebar so operators aren't misled into
-// thinking a template governs issuance.
-//
-// RE-IMPLEMENT plan: add an optional templateId to the enrollment/issuance request paths (or have
-// CaProtocolConfig reference a template), call ResolveByTemplateAsync to expand it into the
-// CA + cert/signing/request profiles, then restore the nav entry in Layout.tsx. Until then the
-// banner below tells anyone who lands here that changes have no effect.
+// Templates are consumed by Windows autoenrollment (MSAE): a template offered to Windows is
+// advertised by the policy service (/msae/{ca}/cep) and issued from when a client's CSR names
+// it. ACME, EST, SCEP and CMP still issue from their per-CA protocol configuration, not from a
+// template; the note below says so, so nobody expects a template to govern those.
 //
 const CertificateTemplates: React.FC = () => {
     const [activeTab, setActiveTab] = useState<TemplateTab>('X.509 CA');
@@ -614,12 +664,11 @@ const CertificateTemplates: React.FC = () => {
                 Manage certificate templates that combine a CA, profiles, and settings into a reusable configuration.
             </p>
 
-            {/* Hidden-from-nav notice: templates are not yet consumed by any issuance path. */}
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/60 rounded-lg p-4 text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">Not yet active.</span> Certificate templates are not currently
-                consumed by any issuance or enrollment flow — creating or editing one has no effect on how
-                certificates are issued. This page is hidden from the navigation pending re-implementation that
-                wires templates into the issuance pipeline.
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700/60 rounded-lg p-4 text-sm text-blue-800 dark:text-blue-300">
+                <span className="font-semibold">Used by Windows autoenrollment.</span> A template offered to
+                Windows clients is advertised by the MSAE policy service and issued from when a client names it in
+                its request. ACME, EST, SCEP and CMP issue from each CA&apos;s protocol configuration and do not read
+                templates.
             </div>
 
             <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">

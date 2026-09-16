@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -43,7 +47,7 @@ const CaDetail: React.FC = () => {
 
     const [ca, setCa] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Infrastructure certificate reissue. OCSP defaults on because a broken responder is the
     // reason to be here; TSA defaults off because reissuing it is rarer and not free.
@@ -55,7 +59,7 @@ const CaDetail: React.FC = () => {
     const [revokeSuperseded, setRevokeSuperseded] = useState(true);
     const [reissuing, setReissuing] = useState(false);
     const [reissueResult, setReissueResult] = useState<any | null>(null);
-    const [reissueError, setReissueError] = useState<string | null>(null);
+    const [reissueError, setReissueError] = useState<NoticeInput | null>(null);
 
     const handleReissueInfrastructure = async () => {
         if (!ca) return;
@@ -74,7 +78,7 @@ const CaDetail: React.FC = () => {
         } catch (err: any) {
             // Cancelling the step-up prompt is a deliberate choice, not a failure to report.
             if (err?.message !== 'Step-up MFA cancelled') {
-                setReissueError(err?.message || 'Reissue failed');
+                setReissueError(errorNotice(err, 'Reissue failed'));
             }
         } finally {
             setReissuing(false);
@@ -92,12 +96,12 @@ const CaDetail: React.FC = () => {
                 setCa(flattenCas(items).find((c: any) => caKey(c) === id) || null);
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load CA'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load CA')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id]);
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!ca) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Certificate authority not found.</p>
@@ -157,25 +161,22 @@ const CaDetail: React.FC = () => {
 
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">
+                        <p className="mb-2 text-xs text-gray-600 dark:text-gray-400">
+                            Setting this CA up for Windows clients? <Link to={`/authorities/windows/${ca.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks every prerequisite in order and links to each.
+                        </p>
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-1 pr-4">Protocol</th>
-                                        <th className="text-left py-1 pr-4">Enabled</th>
-                                        <th className="text-left py-1">Profile</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {ca.protocolConfigs.map((pc: any, idx: number) => (
-                                        <tr key={idx} className="border-b border-gray-300 dark:border-gray-700/50 last:border-b-0">
-                                            <td className="py-1 pr-4 text-gray-700 dark:text-gray-300">{pc.protocol || pc.name}</td>
-                                            <td className="py-1 pr-4"><StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /></td>
-                                            <td className="py-1 text-gray-600 dark:text-gray-400">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="ca-protocols"
+                                rows={ca.protocolConfigs}
+                                rowKey={(pc: any) => pc.protocol || pc.name || pc.id}
+                                empty="No protocol configuration"
+                                disableExport
+                                columns={[
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-gray-700 dark:text-gray-300">{pc.protocol || pc.name}</span> },
+                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /> },
+                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-gray-600 dark:text-gray-400 truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     </DetailSection>
                 )}
@@ -296,7 +297,7 @@ const CaDetail: React.FC = () => {
 
                         {reissueError && (
                             <div className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-3 max-w-3xl">
-                                <p className="text-xs text-red-900 dark:text-red-300">{reissueError}</p>
+                                <InlineNotice notice={reissueError} variant="line" />
                             </div>
                         )}
                     </div>

@@ -170,6 +170,20 @@ public sealed class SchedulerJobRegistry : ISchedulerJobRegistry
                     return job.RunAsync(ct);
                 }),
 
+            // ---- ProtocolCleanup: ProtocolCleanup.Schedule (no master Enabled gate) ---------
+            // Orphaned enrollment request rows from every protocol, plus the SCEP/CMP
+            // transaction sweeps. Idempotent, so always safe to fire.
+            ["ProtocolCleanup"] = new JobEntry(
+                getCron: cfg => cfg.ProtocolCleanup.Schedule,
+                setCron: (cfg, value) => cfg.ProtocolCleanup.Schedule = value,
+                isEnabled: _ => true,
+                setEnabled: null,
+                invokeAsync: (sp, ct) =>
+                {
+                    var job = sp.GetRequiredService<ProtocolCleanupJob>();
+                    return job.RunAsync(ct);
+                }),
+
             // ---- LdapGroupSync: LdapAuth.GroupSyncSchedule + LdapAuth.GroupSyncEnabled ------
             ["LdapGroupSync"] = new JobEntry(
                 getCron: cfg => cfg.LdapAuth.GroupSyncSchedule,

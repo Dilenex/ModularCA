@@ -717,21 +717,21 @@ public class MtlsController : ControllerBase
         if (clientCert == null)
         {
             // No client cert presented — browser didn't have one or issuing CA isn't trusted.
-            return Redirect($"{mainOrigin}/admin/login?error=no_certificate");
+            return Redirect($"{mainOrigin}/login?error=no_certificate");
         }
 
         if (string.IsNullOrWhiteSpace(mfaToken))
-            return Redirect($"{mainOrigin}/admin/login?error=mfa_token_missing");
+            return Redirect($"{mainOrigin}/login?error=mfa_token_missing");
 
         // Atomically consume: read AND remove in one operation to prevent TOCTOU race
         var cachedUserId = await _cache.GetStringAsync($"mfa:{mfaToken}");
         await _cache.RemoveAsync($"mfa:{mfaToken}"); // Remove IMMEDIATELY after read
         if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var userId))
-            return Redirect($"{mainOrigin}/admin/login?error=mfa_expired");
+            return Redirect($"{mainOrigin}/login?error=mfa_expired");
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
-            return Redirect($"{mainOrigin}/admin/login?error=user_not_found");
+            return Redirect($"{mainOrigin}/login?error=user_not_found");
 
         // clientCert was already obtained above (non-null if we reached here)
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
@@ -743,7 +743,7 @@ public class MtlsController : ControllerBase
             && c.ExpiresAt > DateTime.UtcNow);
 
         if (credential == null)
-            return Redirect($"{mainOrigin}/admin/login?error=cert_not_matched");
+            return Redirect($"{mainOrigin}/login?error=cert_not_matched");
 
         // Full chain validation against the enrolled signing CA.
         var chainOkRedirect = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
@@ -754,7 +754,7 @@ public class MtlsController : ControllerBase
             // Apply the failed-login counter for cert chain failures too.
             await _db.Users.Where(u => u.Id == user.Id)
                 .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailedLoginAttempts, u => u.FailedLoginAttempts + 1));
-            return Redirect($"{mainOrigin}/admin/login?error=cert_chain_invalid");
+            return Redirect($"{mainOrigin}/login?error=cert_chain_invalid");
         }
 
         // Dedicated MfaMtlsVerified emission (see /verify).
@@ -777,7 +777,7 @@ public class MtlsController : ControllerBase
                 user.Id, user.Username,
                 sourceIp: sourceIp,
                 details: new { Reason = blockedAtIssue, Flow = "mtls-verify-redirect" });
-            return Redirect($"{mainOrigin}/admin/login?error=account_locked");
+            return Redirect($"{mainOrigin}/login?error=account_locked");
         }
 
         var groups = await _db.CaGroupMembers
@@ -847,7 +847,7 @@ public class MtlsController : ControllerBase
         await _cache.SetStringAsync($"mtls-code:{authCode}",
             JsonSerializer.Serialize(new { Token, ExpiresAt = ExpiresAt.ToString("O"), RefreshToken = refreshPlaintext }),
             new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30) });
-        return Redirect($"{mainOrigin}/admin/mfa-callback?code={authCode}");
+        return Redirect($"{mainOrigin}/mfa-callback?code={authCode}");
     }
 
     /// <summary>
@@ -864,7 +864,7 @@ public class MtlsController : ControllerBase
         // Try to read the client cert
         var clientCert = await HttpContext.Connection.GetClientCertificateAsync();
         if (clientCert == null)
-            return Redirect($"{mainOrigin}/admin/login?error=no_certificate");
+            return Redirect($"{mainOrigin}/login?error=no_certificate");
 
         // Compute SHA-256 thumbprint of the presented certificate
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
@@ -877,7 +877,7 @@ public class MtlsController : ControllerBase
 
         var user = credential != null ? await _db.Users.FindAsync(credential.UserId) : null;
         if (credential == null || user == null)
-            return Redirect($"{mainOrigin}/admin/login?error=auth_failed");
+            return Redirect($"{mainOrigin}/login?error=auth_failed");
 
         // Validate chain against the enrolled signing CA.
         var chainOkLogin = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
@@ -887,7 +887,7 @@ public class MtlsController : ControllerBase
         {
             await _db.Users.Where(u => u.Id == user.Id)
                 .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailedLoginAttempts, u => u.FailedLoginAttempts + 1));
-            return Redirect($"{mainOrigin}/admin/login?error=cert_chain_invalid");
+            return Redirect($"{mainOrigin}/login?error=cert_chain_invalid");
         }
 
         // Account-state gate. This is a PRIMARY login path — nothing ran AuthController.Login
@@ -904,7 +904,7 @@ public class MtlsController : ControllerBase
                 user.Id, user.Username,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
                 details: new { Reason = blockedReason, Flow = "login-redirect", Thumbprint = thumbprint });
-            return Redirect($"{mainOrigin}/admin/login?error=account_locked");
+            return Redirect($"{mainOrigin}/login?error=account_locked");
         }
 
         // Check if user has other MFA methods (TOTP or WebAuthn)
@@ -934,7 +934,7 @@ public class MtlsController : ControllerBase
             await _cache.SetStringAsync($"mtls-code:{mfaAuthCode}",
                 JsonSerializer.Serialize(new { RequiresMfa = true, MfaToken = mfaToken, AvailableMethods = mfaMethods }),
                 new Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30) });
-            return Redirect($"{mainOrigin}/admin/mfa-callback?code={mfaAuthCode}");
+            return Redirect($"{mainOrigin}/mfa-callback?code={mfaAuthCode}");
         }
 
         // No other MFA — mTLS is the sole factor. Issue full JWT.
@@ -1015,7 +1015,7 @@ public class MtlsController : ControllerBase
         await _cache.SetStringAsync($"mtls-code:{authCode}",
             JsonSerializer.Serialize(new { Token, ExpiresAt = ExpiresAt.ToString("O"), RefreshToken = refreshPlaintext }),
             new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30) });
-        return Redirect($"{mainOrigin}/admin/mfa-callback?code={authCode}");
+        return Redirect($"{mainOrigin}/mfa-callback?code={authCode}");
     }
 
     /// <summary>

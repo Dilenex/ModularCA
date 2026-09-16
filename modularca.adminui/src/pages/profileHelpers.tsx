@@ -1,6 +1,7 @@
 import React from 'react';
 import { KEY_USAGE_NAMES, canonicalizeUsage } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+import { formatIso8601Duration } from './validityCeiling';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
@@ -337,20 +338,192 @@ export const MultiToggle: React.FC<{
     selected: string[];
     onChange: (next: string[]) => void;
     formatLabel?: (opt: string) => string;
-}> = ({ options, selected, onChange, formatLabel }) => (
-    <div className="flex flex-wrap gap-2">
-        {options.map((opt) => {
-            const active = selected.includes(opt);
-            return (
-                <button key={opt} type="button"
-                    onClick={() => onChange(active ? selected.filter((v) => v !== opt) : [...selected, opt])}
-                    className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
-                    {formatLabel ? formatLabel(opt) : opt}
-                </button>
-            );
-        })}
-    </div>
+    /** Native tooltip per chip, for options whose name alone does not say what they do. */
+    titleFor?: (opt: string) => string | undefined;
+    /**
+     * Helper text under the chips. Pass {@link CEILING_HINT} for every "Allowed …" list so the
+     * editor says the same thing {@link CeilingList} says on the read-only side: an empty
+     * selection is unrestricted, not empty.
+     */
+    hint?: React.ReactNode;
+    /** Warn-tone line under the hint, shown only when set. */
+    warning?: React.ReactNode;
+}> = ({ options, selected, onChange, formatLabel, titleFor, hint, warning }) => (
+    <>
+        <div className="flex flex-wrap gap-2">
+            {options.map((opt) => {
+                const active = selected.includes(opt);
+                return (
+                    <button key={opt} type="button" title={titleFor ? titleFor(opt) : undefined}
+                        onClick={() => onChange(active ? selected.filter((v) => v !== opt) : [...selected, opt])}
+                        className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
+                        {formatLabel ? formatLabel(opt) : opt}
+                    </button>
+                );
+            })}
+        </div>
+        {hint && <FieldHint>{hint}</FieldHint>}
+        {warning && <FieldHint tone="warn">{warning}</FieldHint>}
+    </>
 );
+
+/**
+ * The one sentence every "Allowed …" editor shows under its chips.
+ *
+ * It is the editing-side twin of the "Unrestricted — every … is permitted" line CeilingList
+ * prints on the read-only side. The two were written together so an operator who reads one and
+ * then the other is told the same thing about the same empty list.
+ */
+export const CEILING_HINT = 'Leave every option off to allow all of them. These are ceilings: none selected means unrestricted, not none.';
+
+/**
+ * Hint for a cert profile's Key Usages / Extended Key Usages pickers, which are NOT ceilings.
+ *
+ * IssuanceValidationService stamps these into the issued certificate (after the signing
+ * profile's Allowed EKUs ceiling has filtered them). An empty list therefore means the extension
+ * is omitted, which is the opposite of what the "Allowed …" lists a few rows down mean, and the
+ * two kinds of picker look identical. Saying so here is what keeps them apart.
+ */
+export const REQUESTED_USAGE_HINT = 'Written into every certificate issued with this profile. Leave empty to omit the extension. The signing profile’s Allowed EKUs may still drop entries it does not permit.';
+
+/** Tooltip text for each SSH certificate extension the pickers offer. */
+export const SSH_EXTENSION_TITLES: Record<string, string> = {
+    'permit-pty': 'Allows the session to allocate a terminal (interactive shell).',
+    'permit-port-forwarding': 'Allows TCP port forwarding (ssh -L / -R / -D).',
+    'permit-agent-forwarding': 'Allows the SSH agent to be forwarded to the remote host.',
+    'permit-X11-forwarding': 'Allows X11 display forwarding.',
+    'permit-user-rc': 'Allows ~/.ssh/rc to run on login.',
+    'no-pty': 'Explicitly denies terminal allocation; the certificate can run commands but not open a shell.',
+    'no-port-forwarding': 'Explicitly denies TCP port forwarding.',
+    'no-agent-forwarding': 'Explicitly denies SSH agent forwarding.',
+    'no-X11-forwarding': 'Explicitly denies X11 forwarding.',
+    'no-user-rc': 'Explicitly denies running ~/.ssh/rc on login.',
+};
+export const sshExtensionTitle = (ext: string): string | undefined => SSH_EXTENSION_TITLES[ext];
+
+/**
+ * Expands the compact rendering formatIso8601Duration produces ("1y 6mo", "12h") into words
+ * ("1 year 6 months", "12 hours") for the live preview under a validity input.
+ */
+const expandCompactDuration = (compact: string): string => {
+    const words: Record<string, [string, string]> = {
+        y: ['year', 'years'], mo: ['month', 'months'], w: ['week', 'weeks'], d: ['day', 'days'],
+        h: ['hour', 'hours'], min: ['minute', 'minutes'], s: ['second', 'seconds'],
+    };
+    return compact.split(' ').map((tok) => {
+        const m = /^(\d+)(y|mo|w|d|h|min|s)$/.exec(tok);
+        if (!m) return tok;
+        const n = Number(m[1]);
+        const [one, many] = words[m[2]];
+        return `${n} ${n === 1 ? one : many}`;
+    }).join(' ');
+};
+
+/**
+ * Helper text under a "Validity Period Min/Max" or "Max Validity Period" input.
+ *
+ * States the format with worked examples, names the other two layers that can shorten a
+ * certificate (tenant cap and issuing CA expiry) so the operator does not treat this field as the
+ * final word, and previews the parsed value live. formatIso8601Duration echoes anything it does
+ * not recognise verbatim, so "output equals input" is the parse-failure signal.
+ */
+export const DurationHint: React.FC<{ value: string; id?: string }> = ({ value, id }) => {
+    const trimmed = value.trim();
+    const compact = trimmed ? formatIso8601Duration(trimmed) : null;
+    const parsed = compact !== null && compact !== trimmed;
+    return (
+        <>
+            <FieldHint id={id}>
+                ISO 8601 duration: P90D is 90 days, P1Y one year, P18M eighteen months, PT12H twelve hours.
+                The certificate&apos;s real ceiling is the strictest of this profile, the tenant&apos;s cap and the issuing CA&apos;s own expiry.
+                {parsed && <> <span className="font-medium">= {expandCompactDuration(compact!)}</span></>}
+            </FieldHint>
+            {trimmed && !parsed && (
+                <FieldHint tone="warn">
+                    &ldquo;{trimmed}&rdquo; is not a recognised ISO 8601 duration. It must start with P, use whole numbers, and put time units after a T (for example P1Y6M or PT36H).
+                </FieldHint>
+            )}
+        </>
+    );
+};
+
+/**
+ * True when the Inherits From / Enable Inheritance pair disagree.
+ *
+ * ProfileResolutionService applies a parent only when BOTH `InheritanceEnabled` is true and
+ * `InheritsFromId` is set, so either half on its own is a no-op the server accepts silently. The
+ * create and edit forms block Save on this instead of storing a setting that does nothing.
+ */
+export const inheritancePairInconsistent = (inheritsFromId: string, inheritanceEnabled: boolean): boolean =>
+    (!!inheritsFromId && !inheritanceEnabled) || (!inheritsFromId && inheritanceEnabled);
+
+/**
+ * The explanatory line under an "Enable Inheritance" checkbox, plus the warn line when the pair
+ * above is inconsistent. Rendered once per form so the four X.509 profile surfaces say the same
+ * thing.
+ */
+export const InheritanceHint: React.FC<{ inheritsFromId: string; inheritanceEnabled: boolean }> = ({ inheritsFromId, inheritanceEnabled }) => (
+    <>
+        <FieldHint>
+            Inheritance applies only when this is on and a parent is chosen above. The parent sets the baseline; this profile may only make it stricter. Blank fields here take the parent&apos;s value.
+        </FieldHint>
+        {inheritsFromId && !inheritanceEnabled && (
+            <FieldHint tone="warn">A parent is selected but inheritance is off, so it has no effect.</FieldHint>
+        )}
+        {!inheritsFromId && inheritanceEnabled && (
+            <FieldHint tone="warn">Inheritance is on but no parent is selected.</FieldHint>
+        )}
+    </>
+);
+
+/**
+ * Warn line placed beside a disabled Create/Save button, naming what is still missing so the
+ * operator is told before clicking rather than after.
+ */
+export const SubmitBlockedHint: React.FC<{ reasons: (string | false | null | undefined)[] }> = ({ reasons }) => {
+    const active = reasons.filter((r): r is string => typeof r === 'string' && r.length > 0);
+    if (active.length === 0) return null;
+    return <FieldHint tone="warn">{active.join(' ')}</FieldHint>;
+};
+
+/**
+ * Hint under a signing profile's single-line Name Constraints JSON inputs.
+ *
+ * CertificateBuilderService.ParseSubtrees reads a JSON array of "TYPE:value" strings, where TYPE
+ * is DNS, IP, EMAIL, URI or DN. The old placeholder showed an object ({"permitted":[...]}), which
+ * that parser cannot read at all.
+ */
+export const NAME_CONSTRAINTS_HINT = 'A JSON array of "TYPE:value" strings, TYPE being DNS, IP, EMAIL, URI or DN, for example ["DNS:example.com", "EMAIL:example.com", "IP:10.0.0.0/255.0.0.0"]. Entries in any other shape are ignored. Leave blank for no constraint.';
+export const NAME_CONSTRAINTS_PLACEHOLDER = '["DNS:example.com", "EMAIL:example.com"]';
+
+/** Hint under a signing profile's Max Path Length input. */
+export const MAX_PATH_LENGTH_HINT = 'How many more CA levels may sit below this one; 0 means it may issue end-entity certificates only. Leave blank to omit the path length constraint.';
+
+/**
+ * Hint under a cert profile's CT Log IDs input. CertificateIssuanceService passes an empty list
+ * as null to CtSubmissionService, which then submits to every enabled CT log, and a submission
+ * failure is logged and never blocks issuance.
+ */
+export const CT_LOG_IDS_HINT = 'JSON array of CT log IDs to submit to, for example ["<log-id>", "<log-id>"]. Only read when CT Enabled is on. Leave blank to submit to every enabled CT log; if no CT log is enabled, nothing is submitted and the certificate is still issued. A failed submission is logged and never blocks issuance.';
+
+/** Hint under a cert profile's CT Enabled checkbox; the read-only twin of {@link CT_LOG_IDS_HINT}. */
+export const CT_ENABLED_HINT = 'When on, each issued certificate is submitted to the CT logs listed in CT Log IDs, or to every enabled log if that field is blank. A parent profile with CT on cannot be turned off here.';
+
+/** Hint under an SSH signing profile's Force Command input. */
+export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.';
+
+/**
+ * Hint under an SSH cert profile's Required Extensions picker.
+ *
+ * Both issuance controllers check the caller's requested extensions against Allowed first and
+ * append Required afterwards, so a required-but-not-allowed extension is still written into every
+ * certificate while a caller who asks for it by name is refused. The forms block save on that.
+ */
+export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree.';
+
+/** Returns the SSH extensions required but not allowed; empty when Allowed is unrestricted. */
+export const sshRequiredNotAllowed = (required: string[], allowed: string[]): string[] =>
+    allowed.length === 0 ? [] : required.filter((r) => !allowed.includes(r));
 
 /** Decorates RSA 7680 / 8192 with a "(high compute)" hint so profile authors and
  *  cert requesters know those sizes carry significant keygen overhead. */

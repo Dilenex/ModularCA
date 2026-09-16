@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost } from '../api/client';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import type { ValidityCeilingPreflight } from '@shared/generated';
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from './validityCeiling';
 
@@ -96,7 +99,7 @@ const IssueCertificate: React.FC = () => {
 
     // Parsed CSR data
     const [parsedCsr, setParsedCsr] = useState<ParseCsrResponse | null>(null);
-    const [parseError, setParseError] = useState<string | null>(null);
+    const [parseError, setParseError] = useState<NoticeInput | null>(null);
     const [parsing, setParsing] = useState(false);
 
     // Editable fields
@@ -126,7 +129,7 @@ const IssueCertificate: React.FC = () => {
 
     // Submit state
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [success, setSuccess] = useState<{ serial: string; hasPrivateKey?: boolean } | null>(null);
 
     // --- Initial data load ---
@@ -226,7 +229,7 @@ const IssueCertificate: React.FC = () => {
             setParsedCsr(null);
             setSubjectFields({});
             setSanList([]);
-            setParseError(err.message || 'Failed to parse CSR');
+            setParseError(errorNotice(err, 'Failed to parse CSR'));
         } finally {
             setParsing(false);
         }
@@ -351,6 +354,12 @@ const IssueCertificate: React.FC = () => {
 
     // --- Submit ---
     const hasValidationErrors = validationResult && !validationResult.valid;
+    // Both profiles are required by the server; without them the click only produced an error
+    // banner after the fact. Name what is missing so the button's disabled state explains itself.
+    const missingProfiles = [
+        !selectedSigningProfile ? 'a signing profile' : null,
+        !selectedCertProfile ? 'a certificate profile' : null,
+    ].filter(Boolean) as string[];
 
     const handleSubmit = async () => {
         if (!selectedRequestProfile) { setError('Please select a request profile.'); return; }
@@ -431,7 +440,7 @@ const IssueCertificate: React.FC = () => {
                 setValidationResult(null);
             }
         } catch (err: any) {
-            setError(err.message || 'Certificate issuance failed');
+            setError(errorNotice(err, 'Certificate issuance failed'));
         } finally {
             setLoading(false);
         }
@@ -653,7 +662,7 @@ const IssueCertificate: React.FC = () => {
                     )}
                     {parseError && (
                         <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
-                            <p className="text-sm text-red-800 dark:text-red-300">{parseError}</p>
+                            <InlineNotice notice={parseError} variant="line" />
                         </div>
                     )}
 
@@ -953,7 +962,7 @@ const IssueCertificate: React.FC = () => {
             <div className="flex items-center gap-4">
                 <button
                     onClick={handleSubmit}
-                    disabled={loading || !selectedRequestProfile || (tab !== 'generate' && !csrPem.trim()) || !!hasValidationErrors}
+                    disabled={loading || !selectedRequestProfile || (tab !== 'generate' && !csrPem.trim()) || !!hasValidationErrors || missingProfiles.length > 0}
                     className="px-6 py-2 text-sm font-semibold bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
                     {loading ? 'Submitting...' : (tab === 'generate' ? 'Generate Key & Request Certificate' : 'Request Certificate')}
@@ -961,12 +970,15 @@ const IssueCertificate: React.FC = () => {
                 {hasValidationErrors && (
                     <span className="text-xs text-red-800 dark:text-red-400">Fix validation errors before submitting.</span>
                 )}
+                {!hasValidationErrors && selectedRequestProfile && missingProfiles.length > 0 && (
+                    <FieldHint tone="warn">Choose {missingProfiles.join(' and ')} under Issuance Options before submitting.</FieldHint>
+                )}
             </div>
 
             {/* Result */}
             {error && (
                 <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4">
-                    <p className="text-sm text-red-800 dark:text-red-300">{error}</p>
+                    <InlineNotice notice={error} variant="line" />
                 </div>
             )}
             {success && (
@@ -974,7 +986,7 @@ const IssueCertificate: React.FC = () => {
                     {success.hasPrivateKey ? (
                         <>
                             <p className="text-sm font-semibold text-green-800 dark:text-green-300">Request submitted with server-generated key pair.</p>
-                            <DetailField label="Status" value={success.serial} mono />
+                            <DetailField label="Result" value={success.serial} />
                             <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded p-3 mt-2">
                                 <p className="text-xs text-yellow-800 dark:text-yellow-300">
                                     The private key is stored encrypted on the server. After the request is approved and issued,
@@ -986,7 +998,7 @@ const IssueCertificate: React.FC = () => {
                     ) : (
                         <>
                             <p className="text-sm font-semibold text-green-800 dark:text-green-300">Certificate request uploaded successfully.</p>
-                            <DetailField label="Status" value={success.serial} mono />
+                            <DetailField label="Result" value={success.serial} />
                         </>
                     )}
                 </div>

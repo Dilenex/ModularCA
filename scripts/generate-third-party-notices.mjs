@@ -124,7 +124,7 @@ function nugetMeta(root, idVersion) {
 
 /** Production dependencies only — the packages that reach a browser. */
 function npmProduction() {
-    const apps = ['modularca.adminui', 'modularca.userui', 'modularca.publicui',
+    const apps = ['modularca.adminui', 'modularca.publicui',
                   'modularca.setupui', 'modularca.docsui'];
     const found = new Map();
 

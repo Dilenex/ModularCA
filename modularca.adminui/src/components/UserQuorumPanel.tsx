@@ -1,9 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPutWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
+
+/** Same sentence as on Settings → Security Policy; the number is "other people", never "people". */
+const INITIATOR_EXCLUDED = 'The initiator is always excluded, so the effective minimum is 1 other approver.';
 
 export interface CaQ { id: string; name: string; label?: string; override: number | null; effective: number; }
 export interface TenantQ { id: string; name: string; override: number | null; effective: number; cas: CaQ[]; }
@@ -66,13 +73,13 @@ export const SystemQuorumCard: React.FC = () => {
     const [val, setVal] = useState('');
     const [saving, setSaving] = useState(false);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     const load = useCallback(() => {
         setLoading(true);
         apiGet<QuorumData>('/api/v1/admin/user-quorum')
             .then((d) => { setSystem(d.system); setVal(String(d.system.quorum)); setError(null); })
-            .catch((e) => setError(e.message || 'Failed to load'))
+            .catch((e) => setError(errorNotice(e, 'Failed to load')))
             .finally(() => setLoading(false));
     }, []);
     useEffect(() => { load(); }, [load]);
@@ -100,7 +107,7 @@ export const SystemQuorumCard: React.FC = () => {
             </div>
 
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading…</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+            {error && <InlineNotice notice={error} />}
             {!loading && !error && system && (<>
                 <QuorumRow
                     label="System" sublabel="System administrators · standalone"
@@ -113,6 +120,7 @@ export const SystemQuorumCard: React.FC = () => {
                             {saving ? '…' : 'Save'}
                         </button>
                     } />
+                <FieldHint className="px-3 pb-3">{INITIATOR_EXCLUDED}</FieldHint>
                 {!isSuper && (
                     <p className="px-3 pb-3 -mt-1 text-[11px] text-gray-500">
                         Only a system super-administrator can change the System quorum. Tenant and per-CA quorums are set on each tenant's page (and start a ceremony for non-super admins).
@@ -159,11 +167,10 @@ export const TenantUserQuorumSection: React.FC<{
                     override={ca.override} effective={ca.effective} allowInherit max={quorum.effective} readOnly={readOnly}
                     className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8" />
             ))}
-            {!readOnly && (
-                <div className="px-3 py-2 text-[11px] text-gray-500 border-t border-gray-200 dark:border-gray-700/60">
-                    Blank = inherit the parent value. A CA can require fewer approvals than its tenant, never more.
-                </div>
-            )}
+            <div className="px-3 py-2 text-[11px] text-gray-500 border-t border-gray-200 dark:border-gray-700/60">
+                {!readOnly && <>Blank = inherit the parent value. A CA can require fewer approvals than its tenant, never more. </>}
+                {INITIATOR_EXCLUDED}
+            </div>
         </div>
     );
 };

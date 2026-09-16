@@ -85,7 +85,8 @@
     <Message Text="Generating shared TypeScript from C# contracts..." Importance="high" />
     <Exec Command="node scripts/generate-shared-types.mjs" WorkingDirectory="$(ProjectDir).." />
 
-    <!-- Admin UI -->
+    <!-- Admin UI. One bundle serves both /admin (management console) and /user (self-service
+         portal); the server hands its index.html to either prefix. -->
     <Message Text="Building Admin UI..." Importance="high" />
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.adminui" />
@@ -96,12 +97,6 @@
     <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
     <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
     <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.publicui" />
-
-    <!-- User UI -->
-    <Message Text="Building User UI..." Importance="high" />
-    <Exec Command="npm install --legacy-peer-deps" WorkingDirectory="$(ProjectDir)../modularca.userui" />
-    <Exec Command="node_modules/.bin/tsc -b --force" WorkingDirectory="$(ProjectDir)../modularca.userui" />
-    <Exec EnvironmentVariables="$(ViteSourcemapEnv)" Command="node_modules/.bin/vite build" WorkingDirectory="$(ProjectDir)../modularca.userui" />
 
     <!-- Setup UI -->
     <Message Text="Building Setup UI..." Importance="high" />
@@ -121,7 +116,6 @@
     <ItemGroup>
       <AdminUIFiles Include="../modularca.adminui/dist/**/*" />
       <PublicUIFiles Include="../modularca.publicui/dist/**/*" />
-      <UserUIFiles Include="../modularca.userui/dist/**/*" />
       <SetupUIFiles Include="../modularca.setupui/dist/**/*" />
       <DocsUIFiles Include="../modularca.docsui/dist/**/*" />
     </ItemGroup>
@@ -129,6 +123,8 @@
          asset manifest refers to what is being deleted. Vite emits a new content-hashed filename
          on every build, so without this the directory only ever grows — it had reached 6,880
          files and 199 MB against 112 for one real build, all of it published and none reachable. -->
+    <!-- wwwroot/user stays in the list although nothing writes it any more: a checkout that
+         built before the user portal merged into the admin bundle still has one. -->
     <RemoveDir Directories="$(ProjectDir)wwwroot/admin;$(ProjectDir)wwwroot/user;$(ProjectDir)wwwroot/public;$(ProjectDir)wwwroot/docs;$(ProjectDir)wwwroot/setup" />
     <RemoveDir Directories="$(OutputPath)wwwroot/admin;$(OutputPath)wwwroot/user;$(OutputPath)wwwroot/public;$(OutputPath)wwwroot/docs;$(OutputPath)wwwroot/setup" />
 
@@ -136,13 +132,11 @@
          project directory, not the output directory. -->
     <Copy SourceFiles="@(AdminUIFiles)" DestinationFolder="$(ProjectDir)wwwroot/admin/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PublicUIFiles)" DestinationFolder="$(ProjectDir)wwwroot/public/%(RecursiveDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(UserUIFiles)" DestinationFolder="$(ProjectDir)wwwroot/user/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SetupUIFiles)" DestinationFolder="$(ProjectDir)wwwroot/setup/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(DocsUIFiles)" DestinationFolder="$(ProjectDir)wwwroot/docs/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <!-- Copy to output directory (ensures current build has the files) -->
     <Copy SourceFiles="@(AdminUIFiles)" DestinationFolder="$(OutputPath)wwwroot/admin/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PublicUIFiles)" DestinationFolder="$(OutputPath)wwwroot/public/%(RecursiveDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(UserUIFiles)" DestinationFolder="$(OutputPath)wwwroot/user/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SetupUIFiles)" DestinationFolder="$(OutputPath)wwwroot/setup/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(DocsUIFiles)" DestinationFolder="$(OutputPath)wwwroot/docs/%(RecursiveDir)" SkipUnchangedFiles="true" />
     <Message Text="Web UIs copied to wwwroot and output directory" Importance="high" />
@@ -159,7 +153,6 @@
     <ItemGroup>
       <_AdminPublish Include="../modularca.adminui/dist/**/*" />
       <_PublicPublish Include="../modularca.publicui/dist/**/*" />
-      <_UserPublish Include="../modularca.userui/dist/**/*" />
       <_SetupPublish Include="../modularca.setupui/dist/**/*" />
       <_DocsPublish Include="../modularca.docsui/dist/**/*" />
     </ItemGroup>
@@ -170,10 +163,6 @@
       </ResolvedFileToPublish>
       <ResolvedFileToPublish Include="@(_PublicPublish)">
         <RelativePath>wwwroot/public/%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
-        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-      </ResolvedFileToPublish>
-      <ResolvedFileToPublish Include="@(_UserPublish)">
-        <RelativePath>wwwroot/user/%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       </ResolvedFileToPublish>
       <ResolvedFileToPublish Include="@(_SetupPublish)">

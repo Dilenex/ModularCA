@@ -13,22 +13,29 @@ namespace ModularCA.Core.Services;
 public class CertificateTemplateService
 {
     private readonly ModularCADbContext _db;
+    private readonly string? _templateOidArc;
 
     /// <summary>
     /// Initializes the service with the application database context.
     /// </summary>
-    public CertificateTemplateService(ModularCADbContext db)
+    public CertificateTemplateService(ModularCADbContext db, Microsoft.Extensions.Options.IOptions<Msae.MsaeOptions>? msaeOptions = null)
     {
+        _templateOidArc = msaeOptions?.Value.TemplateOidArc;
         _db = db;
     }
 
     /// <summary>
-    /// Returns all certificate templates with resolved CA and profile names.
+    /// Returns all certificate templates with resolved CA and profile names, optionally only
+    /// those issued by one CA.
     /// </summary>
-    public async Task<List<CertificateTemplateDto>> GetAllAsync()
+    /// <param name="caId">When set, only templates whose issuing CA this is.</param>
+    /// <param name="tenantId">When set, only templates whose issuing CA belongs to this tenant.</param>
+    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null, Guid? tenantId = null)
     {
         var entities = await _db.CertificateTemplates
             .AsNoTracking()
+            .Where(t => caId == null || t.CaId == caId)
+            .Where(t => tenantId == null || t.Ca.TenantId == tenantId)
             .Include(t => t.Ca)
             .Include(t => t.CertProfile)
             .Include(t => t.SigningProfile)
@@ -93,6 +100,7 @@ public class CertificateTemplateService
             IsEnabled = request.IsEnabled
         };
 
+        ApplyWindowsOffer(entity, request);
         _db.CertificateTemplates.Add(entity);
         await _db.SaveChangesAsync();
 
@@ -115,6 +123,7 @@ public class CertificateTemplateService
         entity.CertProfileId = request.CertProfileId;
         entity.SigningProfileId = request.SigningProfileId;
         entity.IsEnabled = request.IsEnabled;
+        ApplyWindowsOffer(entity, request);
 
         await _db.SaveChangesAsync();
 
@@ -137,11 +146,41 @@ public class CertificateTemplateService
     }
 
     /// <summary>
+    /// Applies the Windows (MSAE) offer settings: an offered template carries an OID, generated
+    /// from its id unless one was supplied; a template not offered carries none. Throws
+    /// <see cref="ArgumentException"/> for an OID that is not dotted-decimal.
+    /// </summary>
+    private void ApplyWindowsOffer(CertificateTemplateEntity entity, CreateCertificateTemplateRequest request)
+    {
+        entity.MsaeMajorVersion = request.MsaeMajorVersion;
+        entity.MsaeMinorVersion = request.MsaeMinorVersion;
+        entity.MsaeMachineType = request.MsaeMachineType;
+
+        if (!request.OfferToWindows)
+        {
+            entity.MsaeTemplateOid = null;
+            return;
+        }
+
+        var oid = string.IsNullOrWhiteSpace(request.MsaeTemplateOid)
+            ? entity.MsaeTemplateOid ?? Msae.MsaeTemplateOids.FromTemplateId(entity.Id, _templateOidArc)
+            : request.MsaeTemplateOid.Trim();
+        if (!Msae.MsaeTemplateOids.IsValid(oid))
+            throw new ArgumentException($"'{oid}' is not an object identifier Windows can use: dotted decimal, e.g. 1.3.6.1.4.1.311.21.8.1, with no arc above {long.MaxValue}.");
+        entity.MsaeTemplateOid = oid;
+    }
+
+    /// <summary>
     /// Maps a <see cref="CertificateTemplateEntity"/> to a <see cref="CertificateTemplateDto"/>
     /// with resolved navigation property names.
     /// </summary>
     private static CertificateTemplateDto MapToDto(CertificateTemplateEntity entity) => new()
     {
+        OfferedToWindows = entity.MsaeTemplateOid != null,
+        MsaeTemplateOid = entity.MsaeTemplateOid,
+        MsaeMajorVersion = entity.MsaeMajorVersion,
+        MsaeMinorVersion = entity.MsaeMinorVersion,
+        MsaeMachineType = entity.MsaeMachineType,
         Id = entity.Id,
         Name = entity.Name,
         Description = entity.Description,

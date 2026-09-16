@@ -4,6 +4,7 @@
 //   The build runs this generator and fails if the checked-in output is stale.
 // </auto-generated>
 /** Everything generated from the C# backend. Import from '@shared/generated'. */
+export * from './capabilities';
 export * from './stepUpOps';
 export * from './usageVocabulary';
 export * from './enums';

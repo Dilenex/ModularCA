@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace ModularCA.Shared.Entities
 {
@@ -29,6 +29,23 @@ namespace ModularCA.Shared.Entities
         public string LastName { get; set; } = string.Empty;
 
         public bool IsActive { get; set; } = true;
+
+        /// <summary>
+        /// A service identity holds group memberships and grants for a non-person caller (a
+        /// Kerberos realm binding, for instance) and can never sign in: no password, no second
+        /// factor, no token by any path. Every authorization check treats it as a user.
+        /// </summary>
+        public bool IsServiceIdentity { get; set; } = false;
+
+        /// <summary>Service identities only: the tenant the identity is confined to. Null with a null CA means system scope.</summary>
+        public Guid? ServiceScopeTenantId { get; set; }
+
+        /// <summary>Service identities only: the CA the identity is confined to, when narrower than a tenant.</summary>
+        public Guid? ServiceScopeCaId { get; set; }
+
+        /// <summary>Free-text purpose, shown in the console. Service identities mostly.</summary>
+        [MaxLength(500)]
+        public string? Description { get; set; }
         public bool IsLocked { get; set; } = false;
         public int FailedLoginAttempts { get; set; } = 0;
         public DateTime? LockoutEndUtc { get; set; }

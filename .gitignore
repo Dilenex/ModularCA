@@ -391,7 +391,6 @@ config/policies/*.yaml
 # Build output — wwwroot is populated by Vite builds during Staging/Release
 ModularCA.API/wwwroot/
 modularca.adminui/dist/
-modularca.userui/dist/
 modularca.publicui/dist/
 modularca.docsui/dist/
 modularca.setupui/dist/

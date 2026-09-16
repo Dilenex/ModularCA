@@ -1,4 +1,4 @@
-﻿namespace ModularCA.Shared.Enums;
+namespace ModularCA.Shared.Enums;
 
 public static class AuditActionType
 {
@@ -69,6 +69,7 @@ public static class AuditActionType
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";
     public const string CrlExported = "CrlExported";
     public const string AcmeCleanupCompleted = "AcmeCleanupCompleted";
+    public const string ProtocolCleanupCompleted = "ProtocolCleanupCompleted";
     public const string ExpiredCertificatesRevoked = "ExpiredCertificatesRevoked";
     // Emitted by SchedulerService.RunJobAsync when a scheduled
     // job's outer catch fires. Distinct from the individual job's own audit event
@@ -270,4 +271,27 @@ public static class AuditActionType
     // Compliance
     /// <summary>An operator cleared a compliance finding. Previously unrecorded entirely.</summary>
     public const string ComplianceFindingResolved = "ComplianceFindingResolved";
+
+    // Access badges
+    /// <summary>A session put a badge on, took one off, or switched badges. Details name both sides.</summary>
+    public const string BadgeSwitched = "BadgeSwitched";
+    public const string BadgeCreated = "BadgeCreated";
+    public const string BadgeUpdated = "BadgeUpdated";
+    public const string BadgeDeleted = "BadgeDeleted";
+
+    // Kerberos realm bindings (Windows autoenrollment)
+    /// <summary>A forest was bound to a tenant. Details name the realm, SPN and enrollment user; never a key.</summary>
+    public const string KerberosRealmCreated = "KerberosRealmCreated";
+    public const string KerberosRealmUpdated = "KerberosRealmUpdated";
+    public const string KerberosRealmDisabled = "KerberosRealmDisabled";
+    public const string KerberosRealmDeleted = "KerberosRealmDeleted";
+    /// <summary>A key version was imported or derived. Details carry the version and types, never the key.</summary>
+    public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
+    public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
+
+    // Service identities (permission-only accounts that cannot sign in)
+    public const string ServiceIdentityCreated = "ServiceIdentityCreated";
+    public const string ServiceIdentityUpdated = "ServiceIdentityUpdated";
+    public const string ServiceIdentityGroupsChanged = "ServiceIdentityGroupsChanged";
+    public const string ServiceIdentityDeleted = "ServiceIdentityDeleted";
 }

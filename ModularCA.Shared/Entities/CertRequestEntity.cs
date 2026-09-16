@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ModularCA.Shared.Entities;
@@ -100,6 +100,14 @@ public class CertRequestEntity
     /// JSON array of SAN overrides. When set, these replace the CSR's original SANs at issuance time.
     /// </summary>
     public string? SanOverrides { get; set; }
+
+    /// <summary>
+    /// JSON array of <see cref="Models.RequestedExtension"/>: extensions the enrolling protocol asks
+    /// to have stamped on the certificate beyond what the profiles produce, such as the Windows
+    /// Certificate Template Information extension. Applied whenever the request is issued, so an
+    /// approval that happens later still honours it. Null when there are none.
+    /// </summary>
+    public string? AdditionalExtensions { get; set; }
 
     /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
     [Timestamp]

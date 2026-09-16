@@ -53,12 +53,26 @@ public class AdminAuditController : ControllerBase
         [FromQuery] string? actorUsername,
         [FromQuery] Guid? caId,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50)
+        [FromQuery] int pageSize = 50,
+        [FromQuery] Guid? tenantId = null,
+        [FromQuery] string? sort = null,
+        [FromQuery] string? targetEntityType = null,
+        [FromQuery] string? targetEntityId = null)
     {
         if (_auditDb == null)
             return StatusCode(503, new { error = "Audit database is not configured" });
 
         var query = _auditDb.AuditLogs.AsQueryable();
+
+        // One entity's activity: the record drawers' Audit tab asks by target.
+        if (!string.IsNullOrWhiteSpace(targetEntityType))
+            query = query.Where(a => a.TargetEntityType == targetEntityType);
+        if (!string.IsNullOrWhiteSpace(targetEntityId))
+            query = query.Where(a => a.TargetEntityId == targetEntityId);
+
+        // The console's tenant scope: rows stamped with that tenant.
+        if (tenantId.HasValue)
+            query = query.Where(a => a.TenantId == tenantId.Value);
 
         if (from.HasValue)
             query = query.Where(a => a.Timestamp >= from.Value);
@@ -86,8 +100,20 @@ public class AdminAuditController : ControllerBase
         }
 
         var total = await query.CountAsync();
-        var items = await query
-            .OrderByDescending(a => a.Timestamp)
+        // sort: timestamp (default, newest first), actionType, actorUsername, success.
+        var parsedSort = ModularCA.Core.ListSort.Parse(sort, "timestamp", "actionType", "actorUsername", "success");
+        IOrderedQueryable<Shared.Entities.AuditLogEntity> ordered = parsedSort switch
+        {
+            ("actionType", false) => query.OrderBy(a => a.ActionType).ThenByDescending(a => a.Timestamp),
+            ("actionType", true) => query.OrderByDescending(a => a.ActionType).ThenByDescending(a => a.Timestamp),
+            ("actorUsername", false) => query.OrderBy(a => a.ActorUsername).ThenByDescending(a => a.Timestamp),
+            ("actorUsername", true) => query.OrderByDescending(a => a.ActorUsername).ThenByDescending(a => a.Timestamp),
+            ("success", false) => query.OrderBy(a => a.Success).ThenByDescending(a => a.Timestamp),
+            ("success", true) => query.OrderByDescending(a => a.Success).ThenByDescending(a => a.Timestamp),
+            ("timestamp", false) => query.OrderBy(a => a.Timestamp),
+            _ => query.OrderByDescending(a => a.Timestamp),
+        };
+        var items = await ordered
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(a => new
@@ -209,6 +235,11 @@ public class AdminAuditController : ControllerBase
     public Task<IActionResult> GetAcmeAuditById(Guid id) =>
         GetProtocolAuditByIdAsync(_auditDb?.AuditAcme, id, a => a.CaLabel);
 
+    /// <summary>Returns a single MSAE audit entry by ID, CA-scope filtered like the list endpoint.</summary>
+    [HttpGet("msae/{id:guid}")]
+    public Task<IActionResult> GetMsaeAuditById(Guid id) =>
+        GetProtocolAuditByIdAsync(_auditDb?.AuditMsae, id, a => a.CaLabel);
+
     /// <summary>Returns a single network audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("network/{id:guid}")]
     public Task<IActionResult> GetNetworkAuditById(Guid id) =>
@@ -232,6 +263,36 @@ public class AdminAuditController : ControllerBase
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
         // Resolve caId to caLabel for filtering
+        var filterLabel = await ResolveCaLabelAsync(caId);
+        if (filterLabel != null)
+            query = query.Where(a => a.CaLabel == filterLabel);
+
+        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+
+        var total = await query.CountAsync();
+        var items = await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
+    }
+
+    /// <summary>
+    /// Returns paginated MSAE (Windows autoenrollment) audit entries, optionally filtered by date
+    /// range and CA. Non-system users only see logs for CAs they have auditor-level access to.
+    /// </summary>
+    [HttpGet("msae")]
+    public async Task<IActionResult> GetMsaeAudit(
+        [FromQuery] DateTime? from, [FromQuery] DateTime? to,
+        [FromQuery] Guid? caId,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    {
+        if (_auditDb == null)
+            return StatusCode(503, new { error = "Audit database is not configured" });
+
+        var query = _auditDb.AuditMsae.AsQueryable();
+        if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
+        if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
+
         var filterLabel = await ResolveCaLabelAsync(caId);
         if (filterLabel != null)
             query = query.Where(a => a.CaLabel == filterLabel);

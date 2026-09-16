@@ -1,4 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -8,6 +11,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -52,6 +56,29 @@ export const REVOCATION_REASONS: { value: string; label: string }[] = [
     { value: 'PrivilegeWithdrawn', label: 'Privilege Withdrawn' },
 ];
 
+/**
+ * What each RFC 5280 revocation reason means to the operator choosing it. Every reason picker in
+ * the console (this page, the bulk modal, the dashboard quick revoke, the user portal) shows the
+ * sentence for the selected value, because only Certificate Hold can ever be undone.
+ */
+export const REVOCATION_REASON_HELP: Record<string, string> = {
+    Unspecified: 'No reason recorded. Permanent, and it cannot be changed later.',
+    KeyCompromise: 'The private key may have leaked. Permanent, and some clients hard-fail on it.',
+    CACompromise: 'The issuing CA\'s own key is suspected compromised; use it only for CA certificates, and expect every certificate under that CA to be distrusted. Permanent.',
+    AffiliationChanged: 'The subject\'s name or organisation is no longer accurate, but the key itself is not suspected. Permanent.',
+    Superseded: 'Replaced by a new certificate; the normal choice after a reissue. Permanent.',
+    CessationOfOperation: 'The service or device this certificate identified has been decommissioned and will not return. Permanent.',
+    CertificateHold: 'The only reversible reason. The hold can be lifted from the certificate\'s page.',
+    PrivilegeWithdrawn: 'The subject no longer holds the role or privilege the certificate asserted; the key is not suspected. Permanent.',
+};
+
+/** Helper text for a revocation-reason select; amber unless the reversible Certificate Hold is chosen. */
+export const RevocationReasonHint: React.FC<{ reason: string; id?: string }> = ({ reason, id }) => (
+    <FieldHint id={id} tone={reason === 'CertificateHold' ? 'muted' : 'warn'}>
+        {REVOCATION_REASON_HELP[reason] || 'Permanent once published to the CRL and OCSP.'}
+    </FieldHint>
+);
+
 const actBtn = 'px-3 py-1.5 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors';
 
 /// <summary>
@@ -63,21 +90,22 @@ const CertificateDetail: React.FC = () => {
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
+    const [holdBusy, setHoldBusy] = useState(false);   // declared with the other hooks, above the early returns
 
     const [cert, setCert] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [ext, setExt] = useState<any | null>(null);
     const [extLoading, setExtLoading] = useState(false);
-    const [extError, setExtError] = useState<string | null>(null);
+    const [extError, setExtError] = useState<NoticeInput | null>(null);
     const [extVisible, setExtVisible] = useState(false);
 
     const [revokeOpen, setRevokeOpen] = useState(false);
     const [revokeReason, setRevokeReason] = useState('Unspecified');
     const [revokeLoading, setRevokeLoading] = useState(false);
-    const [revokeError, setRevokeError] = useState<string | null>(null);
+    const [revokeError, setRevokeError] = useState<NoticeInput | null>(null);
 
     const [reissueOpen, setReissueOpen] = useState(false);
 
@@ -95,7 +123,7 @@ const CertificateDetail: React.FC = () => {
         setError(null);
         apiGet<any>(`/api/v1/admin/certificates/${serial}`)
             .then((data) => { if (!cancelled) { setCert(data); setLoading(false); } })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load certificate'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load certificate')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [serial, refresh]);
 
@@ -141,7 +169,7 @@ const CertificateDetail: React.FC = () => {
         if (ext) return;
         setExtLoading(true); setExtError(null);
         try { setExt(await apiGet<any>(`/api/v1/admin/certificates/${serial}/extensions`)); }
-        catch (err: any) { setExtError(err.message || 'Failed to load extensions'); }
+        catch (err: any) { setExtError(errorNotice(err, 'Failed to load extensions')); }
         finally { setExtLoading(false); }
     };
 
@@ -176,7 +204,7 @@ const CertificateDetail: React.FC = () => {
             setRevokeOpen(false);
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') setRevokeError(err.message || 'Revocation failed');
+            if (err.message !== 'Step-up MFA cancelled') setRevokeError(errorNotice(err, 'Revocation failed'));
         } finally {
             setRevokeLoading(false);
         }
@@ -185,7 +213,7 @@ const CertificateDetail: React.FC = () => {
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
+            <InlineNotice notice={error} variant="line" />
             <button onClick={() => navigate('/certificates')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Certificates</button>
         </div>
     );
@@ -197,6 +225,22 @@ const CertificateDetail: React.FC = () => {
     );
 
     const status = certStatus(cert);
+    // Certificate Hold (RFC 5280 reason 6) is the only reversible revocation; the server exposes
+    // the reversal and this is the only place in the console that can offer it.
+    const isOnHold = status === 'revoked' && /hold/i.test(String(cert?.revocationReason ?? ''));
+    const liftHold = async () => {
+        if (!cert?.certificateId) return;
+        setHoldBusy(true);
+        try {
+            await apiPostWithMfa(`/api/v1/admin/certificates/${cert.certificateId}/unhold`, {}, requireStepUp, StepUpOps.UnholdCert, cert.certificateId);
+            showToast('success', 'Hold lifted. The certificate is valid again from the next CRL and OCSP update.');
+            setRefresh((r) => r + 1);
+        } catch (err: any) {
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Could not lift the hold');
+        } finally {
+            setHoldBusy(false);
+        }
+    };
     const thumbprints = parseThumbprints(cert.thumbprints);
     const sans = parseSans(cert.subjectAlternativeNames);
     const cn = (cert.subjectDN || '').match(/CN=([^,]+)/)?.[1] || cert.serialNumber;
@@ -216,7 +260,8 @@ const CertificateDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">Revoke</button>}
-                    {status === 'active' && <button onClick={() => setReissueOpen(true)} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Reissue</button>}
+                    {/* Reissue builds a fresh request from the old subject, so an expired certificate can be replaced too; a revoked one only while it is merely on hold. */}
+                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Reissue</button>}
                     <button onClick={handleDownloadPem} className={actBtn}>PEM</button>
                     <button onClick={handleDownloadDer} className={actBtn}>DER</button>
                     <button onClick={handleDownloadChain} className="px-3 py-1.5 text-xs bg-cyan-50 dark:bg-cyan-900/50 text-cyan-800 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-700 rounded hover:bg-cyan-900 transition-colors">Full Chain</button>
@@ -226,11 +271,19 @@ const CertificateDetail: React.FC = () => {
         >
             {() => (<>
                 {status === 'revoked' && (
-                    <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded-md flex items-center gap-2">
+                    <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded-md flex items-center gap-2 flex-wrap">
                         <span className="inline-block px-2 py-0.5 text-xs font-semibold bg-red-600 text-white rounded">REVOKED</span>
                         {cert.revocationReason && <span className="text-sm text-red-800 dark:text-red-300">Reason: {cert.revocationReason}</span>}
                         {cert.revokedAt && <span className="text-xs text-red-800 dark:text-red-400 ml-auto">{formatDate(cert.revokedAt)}</span>}
+                        {isOnHold && (
+                            <button onClick={liftHold} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-red-400 text-red-800 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/60 disabled:opacity-50">
+                                {holdBusy ? 'Lifting…' : 'Lift hold'}
+                            </button>
+                        )}
                     </div>
+                )}
+                {isOnHold && (
+                    <p className="text-xs text-gray-600 dark:text-gray-400 -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer.</p>
                 )}
 
                 <DetailSection title="Certificate">
@@ -255,7 +308,7 @@ const CertificateDetail: React.FC = () => {
                     {extVisible && (
                         <div className="mt-2 pl-2 border-l-2 border-gray-300 dark:border-gray-600 space-y-1">
                             {extLoading && <div className="text-xs text-gray-600">Loading extensions...</div>}
-                            {extError && <div className="text-xs text-red-800 dark:text-red-400">{extError}</div>}
+                            {extError && <InlineNotice notice={extError} />}
                             {ext && (<>
                                 {ext.basicConstraints && <DetailField label="Basic Constraints" value={`CA: ${ext.basicConstraints.isCA ? 'Yes' : 'No'}${ext.basicConstraints.pathLength != null ? `, Path Length: ${ext.basicConstraints.pathLength}` : ''}`} />}
                                 {ext.keyUsage?.length > 0 && <DetailField label="Key Usage" value={ext.keyUsage.join(', ')} />}
@@ -351,8 +404,9 @@ const CertificateDetail: React.FC = () => {
                                     <select id="revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeLoading} className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
                                         {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                     </select>
+                                    <RevocationReasonHint reason={revokeReason} />
                                 </div>
-                                {revokeError && <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded text-sm text-red-800 dark:text-red-300">{revokeError}</div>}
+                                {revokeError && <InlineNotice notice={revokeError} />}
                             </div>
                             <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
                                 <button onClick={() => setRevokeOpen(false)} disabled={revokeLoading} className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">Cancel</button>

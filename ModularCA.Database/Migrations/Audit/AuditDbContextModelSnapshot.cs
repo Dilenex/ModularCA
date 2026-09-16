@@ -275,6 +275,13 @@ namespace ModularCA.Database.Migrations.Audit
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<Guid?>("AccessBadgeId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("AccessBadgeName")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
                     b.Property<string>("ActionType")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -350,6 +357,96 @@ namespace ModularCA.Database.Migrations.Audit
                         .HasDatabaseName("IX_AuditLogs_TenantChain");
 
                     b.ToTable("AuditLogs");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.AuditMsaeEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("AuthMethod")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("CaLabel")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("CallerPrincipal")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<Guid?>("CertificateAuthorityId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("CertificateSerial")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("KeyAlgorithm")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("KeySize")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("Realm")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("SourceIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("varchar(45)");
+
+                    b.Property<string>("SubjectDN")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<bool>("Success")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("TemplateName")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaLabel");
+
+                    b.HasIndex("CertificateAuthorityId");
+
+                    b.HasIndex("CertificateSerial");
+
+                    b.HasIndex("Realm");
+
+                    b.HasIndex("SourceIp");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("Timestamp");
+
+                    b.HasIndex("CertificateAuthorityId", "Timestamp");
+
+                    b.HasIndex("TenantId", "Timestamp");
+
+                    b.ToTable("AuditMsae");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AuditNetworkEntity", b =>

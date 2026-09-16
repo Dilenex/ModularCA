@@ -54,6 +54,39 @@ public class ProtocolAuditService : IProtocolAuditService
         catch (Exception ex) { _logger.LogError(ex, "Failed to write EST audit log"); }
     }
 
+    /// <inheritdoc />
+    public async Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
+        string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
+        string? sourceIp, bool success = true, string? errorMessage = null,
+        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        string? callerPrincipal = null, string? realm = null, string? authMethod = null)
+    {
+        if (!ShouldLog()) return;
+        try
+        {
+            _auditDb!.AuditMsae.Add(new AuditMsaeEntity
+            {
+                Operation = operation,
+                SubjectDN = Truncate(subjectDN, 255),
+                CertificateSerial = certSerial,
+                KeyAlgorithm = keyAlgorithm,
+                KeySize = keySize,
+                TemplateName = Truncate(templateName, 100),
+                CaLabel = caLabel,
+                SourceIp = NormalizeIp(sourceIp),
+                Success = success,
+                ErrorMessage = Truncate(errorMessage, 500),
+                CertificateAuthorityId = certificateAuthorityId,
+                TenantId = tenantId,
+                CallerPrincipal = Truncate(callerPrincipal, 255),
+                Realm = Truncate(realm, 255),
+                AuthMethod = Truncate(authMethod, 32),
+            });
+            await _auditDb.SaveChangesAsync();
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Failed to write MSAE audit log"); }
+    }
+
     /// <summary>
     /// Logs a SCEP protocol event to the audit database.
     /// </summary>

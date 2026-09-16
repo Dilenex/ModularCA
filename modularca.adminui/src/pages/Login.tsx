@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import { apiLogin, apiChangePassword, apiGet } from '../api/client';
 import { setMfaSetupRequired } from '../components/auth';
 import { useAuth } from '../context/AuthContext';
+import { rememberReturnUrl, consumeReturnUrl, homeFor, type PortalUser } from '../portal';
 
 const Login: React.FC = () => {
     const navigate = useNavigate();
@@ -10,7 +14,7 @@ const Login: React.FC = () => {
 
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [loading, setLoading] = useState(false);
 
     // Password change form state
@@ -21,6 +25,9 @@ const Login: React.FC = () => {
     const [mtlsInfo, setMtlsInfo] = useState<{ enabled: boolean; subdomain?: string } | null>(null);
 
     useEffect(() => {
+        // A portal page that found no session sends the browser here with returnUrl. Keep it
+        // for the end of the flow, which may pass through MFA pages that drop the query.
+        rememberReturnUrl(new URLSearchParams(window.location.search).get('returnUrl'));
         apiGet('/auth/mtls/auth-info').then(setMtlsInfo).catch(() => {});
         // Pre-login banner gate: if the server has a banner configured and the user has not
         // acknowledged it in this browser session, bounce to the dedicated consent page.
@@ -33,6 +40,12 @@ const Login: React.FC = () => {
             })
             .catch(() => { /* no banner configured or endpoint unreachable — fall through */ });
     }, [navigate]);
+
+    /** Leaves the sign-in pages for a portal: the remembered returnUrl, else the account's home. */
+    const finishSignIn = async () => {
+        const me = await apiGet<PortalUser>('/api/v1/me').catch(() => null);
+        window.location.replace(consumeReturnUrl() ?? homeFor(me));
+    };
 
     const handleCertLogin = () => {
         if (!mtlsInfo?.enabled) return;
@@ -70,14 +83,14 @@ const Login: React.FC = () => {
                 await refreshAuth();
                 navigate('/mfa-setup');
             } else {
-                // Normal login — refresh AuthContext so Layout/ProtectedRoute have the
-                // user's roles before rendering the dashboard nav.
+                // Normal login. The portals live under their own basenames, so this is a full
+                // navigation: back to where the browser was bounced from, or to the portal
+                // that fits the account.
                 setMfaSetupRequired(false);
-                await refreshAuth();
-                navigate('/dashboard');
+                await finishSignIn();
             }
         } catch (err: any) {
-            setError(err.message || 'Unexpected error');
+            setError(errorNotice(err, 'Unexpected error'));
         } finally {
             setLoading(false);
         }
@@ -120,10 +133,10 @@ const Login: React.FC = () => {
                 navigate('/mfa-setup');
             } else {
                 setMfaSetupRequired(false);
-                navigate('/dashboard');
+                await finishSignIn();
             }
         } catch (err: any) {
-            setError(err.message || 'Unexpected error');
+            setError(errorNotice(err, 'Unexpected error'));
         } finally {
             setLoading(false);
         }
@@ -136,9 +149,9 @@ const Login: React.FC = () => {
                     onSubmit={handleLogin}
                     className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md space-y-6 border border-gray-300 dark:border-gray-700"
                 >
-                    <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">ModularCA Admin</h2>
+                    <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">ModularCA</h2>
 
-                    {error && <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">{error}</div>}
+                    {error && <InlineNotice notice={error} />}
                     {changeSuccess && <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm text-center p-2 rounded">{changeSuccess}</div>}
 
                     <div>
@@ -156,8 +169,10 @@ const Login: React.FC = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="login-password">Password</label>
                         <input
+                            id="login-password"
+                            name="password"
                             type="password"
                             className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
                             value={password}
@@ -203,7 +218,7 @@ const Login: React.FC = () => {
                         You must change your password before continuing.
                     </p>
 
-                    {error && <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">{error}</div>}
+                    {error && <InlineNotice notice={error} />}
 
                     <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Current Password</label>

@@ -1,3 +1,6 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/whitelists")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminWhitelistController(
     IWhitelistService whitelistService,
     IDistributedCache cache,
@@ -47,6 +50,7 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with the full list of <see cref="WhitelistResponse"/>.</returns>
     [HttpGet]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
         var all = await _whitelistService.GetAllAsync(ct);
@@ -61,6 +65,7 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with the <see cref="WhitelistResponse"/>, or 404 Not Found.</returns>
     [HttpGet("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
         var entity = await _whitelistService.GetByIdAsync(id, ct);
@@ -88,6 +93,8 @@ public class AdminWhitelistController(
     /// <returns>201 Created with the new row, 400 on validation failure, 403 when
     /// step-up is required, 409 on uniqueness conflict.</returns>
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
     public async Task<IActionResult> Create(
         [FromBody] CreateWhitelistRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null,
@@ -178,6 +185,7 @@ public class AdminWhitelistController(
     /// <returns>200 OK with the updated row, 400 on validation failure, 403 when
     /// step-up is required, 404 if the rule does not exist.</returns>
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Update(
         Guid id,
         [FromBody] UpdateWhitelistRequest request,
@@ -252,6 +260,7 @@ public class AdminWhitelistController(
     /// <returns>204 No Content on success, 403 when step-up is required, 404 if
     /// the rule does not exist, 409 if the rule is a system default.</returns>
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Delete(
         Guid id,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null,
@@ -305,6 +314,8 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with a per-outcome summary, 400 on empty list, 403 when step-up is required.</returns>
     [HttpPost("bulk-delete")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Whitelists, "request.Ids")]
     public async Task<IActionResult> BulkDelete(
         [FromBody] BulkDeleteWhitelistRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null,
@@ -354,6 +365,8 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with a per-outcome summary, 400 on empty list, 403 when step-up is required.</returns>
     [HttpPost("bulk-set-enabled")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Whitelists, "request.Ids")]
     public async Task<IActionResult> BulkSetEnabled(
         [FromBody] BulkSetEnabledWhitelistRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null,

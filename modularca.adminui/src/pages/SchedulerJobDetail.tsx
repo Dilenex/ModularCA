@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -14,9 +17,9 @@ import {
     setSchedulerJobEnabled,
     updateSchedulerJob,
 } from '../api/scheduler';
-import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { inputClass as inputCls, labelClass as labelCls, FieldHint } from '@shared/components/forms';
 
-const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'TlsRenewal']);
+const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
 const CRON_5_FIELD = /^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/;
 
 // Scheduler timestamps arrive as UTC instants without a trailing 'Z' (EF/NCrontab emit
@@ -49,7 +52,7 @@ const SchedulerJobDetail: React.FC = () => {
 
     const [job, setJob] = useState<SchedulerJob | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [cron, setCron] = useState('');
@@ -57,6 +60,10 @@ const SchedulerJobDetail: React.FC = () => {
     const [initialForm, setInitialForm] = useState({ cron: '', timeout: '' });
     const [confirmRun, setConfirmRun] = useState(false);
     const [running, setRunning] = useState(false);
+    // Disable is confirmed by name (Enable is not): turning off the nightly backup or
+    // auto-renewal is silent and only noticed when something that should have happened did not.
+    const [confirmDisable, setConfirmDisable] = useState(false);
+    const [toggling, setToggling] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -75,7 +82,7 @@ const SchedulerJobDetail: React.FC = () => {
                 }
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err?.message || 'Failed to load job'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load job')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [name, refresh]);
 
@@ -124,17 +131,21 @@ const SchedulerJobDetail: React.FC = () => {
     const toggle = async () => {
         if (!job) return;
         if (NON_TOGGLEABLE_JOBS.has(job.name)) { showToast('error', `${job.name} is a continuous job and cannot be disabled.`); return; }
+        setToggling(true);
         try {
             await setSchedulerJobEnabled(job.name, !job.enabled, requireStepUp);
             showToast('success', `${job.name} ${job.enabled ? 'disabled' : 'enabled'}`);
             setRefresh((r) => r + 1);
         } catch (err: any) {
             if (err?.message !== 'Step-up MFA cancelled') showToast('error', err?.message || 'Failed to toggle job');
+        } finally {
+            setToggling(false);
+            setConfirmDisable(false);
         }
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!job) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Job not found.</p>
@@ -161,8 +172,8 @@ const SchedulerJobDetail: React.FC = () => {
                         {running ? 'Running…' : 'Run Now'}
                     </button>
                     {toggleable && (
-                        <button onClick={toggle}
-                            className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        <button onClick={() => (job.enabled ? setConfirmDisable(true) : toggle())} disabled={toggling}
+                            className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
                             {job.enabled ? 'Disable' : 'Enable'}
                         </button>
                     )}
@@ -189,6 +200,10 @@ const SchedulerJobDetail: React.FC = () => {
                                 <pre className="mt-1 text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{job.lastError}</pre>
                             </div>
                         )}
+                        <FieldHint className="mt-3">
+                            The cron expression and timeout are changed here: switch to <strong>Edit</strong> above.
+                            Times are UTC; the change is saved to config.yaml and takes effect on the scheduler's next poll.
+                        </FieldHint>
                     </DetailSection>
                 ) : (
                     <DetailSection title="Edit Job">
@@ -197,11 +212,19 @@ const SchedulerJobDetail: React.FC = () => {
                                 <label className={labelCls}>Cron Expression</label>
                                 <input type="text" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 */6 * * *" className={`${inputCls} font-mono`} />
                                 {!cronShapeOk && cron.length > 0 && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be 5 space-separated fields.</p>}
+                                <FieldHint>
+                                    Five fields, UTC: <span className="font-mono">minute hour day-of-month month day-of-week</span>.
+                                    Examples: <span className="font-mono">0 2 * * *</span> runs daily at 02:00;
+                                    {' '}<span className="font-mono">*/15 * * * *</span> runs every 15 minutes.
+                                    The server validates the expression on save and rejects one it cannot parse; a job whose schedule
+                                    is not operator-tunable is refused with a message saying so.
+                                </FieldHint>
                             </div>
                             <div>
                                 <label className={labelCls}>Timeout (seconds)</label>
                                 <input type="text" inputMode="numeric" value={timeout} onChange={(e) => setTimeoutVal(e.target.value.replace(/\D/g, ''))} className={inputCls} />
                                 {!timeoutOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Timeout must be a positive integer.</p>}
+                                <FieldHint>1 to 86400. A run longer than this is cancelled and recorded as a failure. Overrides the scheduler's default timeout for this job only.</FieldHint>
                             </div>
                         </div>
                     </DetailSection>
@@ -216,6 +239,21 @@ const SchedulerJobDetail: React.FC = () => {
                     loading={running}
                     onConfirm={doRun}
                     onCancel={() => setConfirmRun(false)}
+                />
+
+                <ConfirmModal
+                    isOpen={confirmDisable}
+                    title={`Disable ${job.name}?`}
+                    message={<>
+                        <span className="font-mono">{job.name}</span> will stop running on its schedule
+                        (<span className="font-mono">{job.cronExpression}</span>) until someone enables it again.
+                        Nothing else will notice; whatever this job does simply stops happening.
+                    </>}
+                    confirmLabel="Disable"
+                    confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                    loading={toggling}
+                    onConfirm={toggle}
+                    onCancel={() => setConfirmDisable(false)}
                 />
             </>)}
         </DetailPage>

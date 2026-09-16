@@ -77,7 +77,7 @@ export default function Overview() {
                     <div className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
                         <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Protocol Support</h3>
                         <p className="text-sm text-gray-600 dark:text-gray-400">
-                            ACME (RFC 8555), EST (RFC 7030), SCEP (RFC 8894), and CMP (RFC 4210) for
+                            ACME (RFC 8555), EST (RFC 7030), SCEP (RFC 8894), CMP (RFC 4210), and Windows autoenrollment (MS-WSTEP) for
                             automated certificate enrollment and management.
                         </p>
                     </div>

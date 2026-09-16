@@ -36,6 +36,17 @@ public interface IProtocolAuditService
         string? callerPrincipal = null);
 
     /// <summary>
+    /// Logs a Windows autoenrollment (MSAE, MS-WSTEP) protocol event.
+    /// <paramref name="templateName"/> is the certificate template the client named in its
+    /// CSR, or null; <paramref name="callerPrincipal"/> records the authenticated username.
+    /// </summary>
+    Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
+        string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
+        string? sourceIp, bool success = true, string? errorMessage = null,
+        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        string? callerPrincipal = null, string? realm = null, string? authMethod = null);
+
+    /// <summary>
     /// Logs an ACME protocol event to the audit database.
     /// <paramref name="signingProfileId"/> and <paramref name="certProfileId"/>
     /// are persisted so post-incident analysis can trace a revoked cert back to

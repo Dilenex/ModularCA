@@ -23,17 +23,34 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     private readonly ILogger<CaGroupAuthorizationService> _logger;
     private readonly IAuditService? _audit;
     private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly IAccessBadgeContext? _badges;
 
     public CaGroupAuthorizationService(
         ModularCADbContext db,
         ILogger<CaGroupAuthorizationService> logger,
         IAuditService? audit = null,
-        IHttpContextAccessor? httpContextAccessor = null)
+        IHttpContextAccessor? httpContextAccessor = null,
+        IAccessBadgeContext? badges = null)
     {
         _db = db;
         _logger = logger;
         _audit = audit;
         _httpContextAccessor = httpContextAccessor;
+        _badges = badges;
+    }
+
+    /// <summary>
+    /// The worn badge as query filters. Every grant-source query below carries
+    /// <c>(!worn || &lt;ids&gt;.Contains(...))</c>: badgeless (<c>worn == false</c>) walks every
+    /// source, which is today's behaviour, and a worn badge keeps only the sources it names.
+    /// The resolver reads the badge from the caller's token, so a badge is enforced on every
+    /// request, including ones the console never makes. Jobs and protocol clients wear none.
+    /// </summary>
+    private async Task<(bool worn, List<Guid> bGroups, List<Guid> bRas, List<Guid> bGrants)> BadgeAsync(Guid userId)
+    {
+        var filter = _badges == null ? null : await _badges.GetWornAsync(userId);
+        if (filter == null) return (false, [], [], []);
+        return (true, filter.GroupIds.ToList(), filter.RoleAssignmentIds.ToList(), filter.CapabilityGrantIds.ToList());
     }
 
     // ── Helpers: check a single capability across all 4 sources ──
@@ -43,10 +60,11 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// </summary>
     private async Task<bool> HasCapabilityViaSystemGroupsAsync(Guid userId, string capability)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         // Source 1: direct group grants
         if (await _db.CapabilityGrants
             .AnyAsync(g => g.Group.IsSystemGroup
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability
                 && g.ResourceType == null))
             return true;
@@ -55,7 +73,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.GroupId != null
                 && ra.Group!.IsSystemGroup
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)))
             return true;
 
@@ -68,9 +86,10 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// </summary>
     private async Task<bool> HasCapabilityViaUserGrantsAsync(Guid userId, string capability, Guid? tenantId, Guid? caId)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         // Source 3: direct user grants — match global, tenant, or CA scope
         if (await _db.UserCapabilityGrants
-            .AnyAsync(ug => ug.UserId == userId
+            .AnyAsync(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id))
                 && ug.Capability == capability
                 && ug.ResourceType == null
                 && (
@@ -106,6 +125,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// <inheritdoc />
     public async Task<bool> HasSystemCapabilityAsync(Guid userId, string capability)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         // System group grants + roles
         if (await HasCapabilityViaSystemGroupsAsync(userId, capability))
             return true;
@@ -117,6 +137,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// <inheritdoc />
     public async Task<bool> HasCaCapabilityAsync(Guid userId, Guid caId, string capability)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         // system.manage holders bypass all CA-scoped checks
         if (await IsSystemAdminAsync(userId))
         {
@@ -179,7 +200,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 1: direct group grants (system, tenant, CA-scoped)
         if (await _db.CapabilityGrants
-            .AnyAsync(g => g.Group.Members.Any(m => m.UserId == userId)
+            .AnyAsync(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability
                 && g.ResourceType == null
                 && (
@@ -192,7 +213,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // Source 2: role grants via group membership
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.GroupId != null
-                && ra.Group!.Members.Any(m => m.UserId == userId)
+                && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
                 && (
                     ra.Group.IsSystemGroup
@@ -206,12 +227,90 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     }
 
     /// <inheritdoc />
+    public async Task<bool> HasTenantCapabilityAsync(Guid userId, Guid tenantId, string capability)
+    {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
+
+        // system.manage holders bypass every scoped check; a system-scoped holder of the
+        // capability itself holds it for every tenant.
+        if (await IsSystemAdminAsync(userId) || await HasCapabilityViaSystemGroupsAsync(userId, capability))
+            return true;
+
+        // Source 1: direct grants on a tenant-wide group of this tenant
+        if (await _db.CapabilityGrants
+            .AnyAsync(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
+                && g.Capability == capability
+                && g.ResourceType == null
+                && !g.Group.IsSystemGroup
+                && g.Group.CertificateAuthorityId == null
+                && g.Group.TenantId == tenantId))
+            return true;
+
+        // Source 2: roles on a tenant-wide group of this tenant
+        if (await _db.RoleAssignments
+            .AnyAsync(ra => ra.GroupId != null
+                && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
+                && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
+                && !ra.Group.IsSystemGroup
+                && ra.Group.CertificateAuthorityId == null
+                && ra.Group.TenantId == tenantId))
+            return true;
+
+        // Sources 3+4: grants and roles on the user at global or tenant scope. No CA is passed,
+        // so a CA-scoped grant inside the tenant cannot satisfy this.
+        return await HasCapabilityViaUserGrantsAsync(userId, capability, tenantId, caId: null);
+    }
+
+    /// <inheritdoc />
+    public async Task<List<Guid>> GetTenantIdsWithCapabilityAsync(Guid userId, string capability)
+    {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
+        var ids = new HashSet<Guid>();
+
+        // Source 1: direct grants on tenant-wide groups
+        ids.UnionWith(await _db.CapabilityGrants
+            .Where(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
+                && g.Capability == capability && g.ResourceType == null
+                && !g.Group.IsSystemGroup && g.Group.CertificateAuthorityId == null)
+            .Select(g => g.Group.TenantId)
+            .ToListAsync());
+
+        // Source 2: roles on tenant-wide groups
+        ids.UnionWith(await _db.RoleAssignments
+            .Where(ra => ra.GroupId != null
+                && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
+                && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
+                && !ra.Group.IsSystemGroup && ra.Group.CertificateAuthorityId == null)
+            .Select(ra => ra.Group!.TenantId)
+            .ToListAsync());
+
+        // Source 3: tenant-scoped grants on the user
+        ids.UnionWith(await _db.UserCapabilityGrants
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id))
+                && ug.Capability == capability && ug.ResourceType == null
+                && ug.TenantId != null && ug.CertificateAuthorityId == null)
+            .Select(ug => ug.TenantId!.Value)
+            .ToListAsync());
+
+        // Source 4: tenant-scoped roles on the user
+        ids.UnionWith(await _db.RoleAssignments
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
+                && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
+                && ra.TenantId != null && ra.CertificateAuthorityId == null)
+            .Select(ra => ra.TenantId!.Value)
+            .ToListAsync());
+
+        return ids.ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<bool> IsSystemAdminAsync(Guid userId)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         // Direct group grant
         if (await _db.CapabilityGrants
             .AnyAsync(g => g.Group.IsSystemGroup
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == Capabilities.SystemManage
                 && g.ResourceType == null))
             return true;
@@ -220,13 +319,13 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.GroupId != null
                 && ra.Group!.IsSystemGroup
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == Capabilities.SystemManage && rc.ResourceType == null)))
             return true;
 
         // Direct user grant (global scope)
         if (await _db.UserCapabilityGrants
-            .AnyAsync(ug => ug.UserId == userId
+            .AnyAsync(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id))
                 && ug.Capability == Capabilities.SystemManage
                 && ug.TenantId == null && ug.CertificateAuthorityId == null
                 && ug.ResourceType == null))
@@ -246,15 +345,154 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// <inheritdoc />
     public async Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         return await _db.CaGroupMembers
-            .Where(gm => gm.UserId == userId)
+            .Where(gm => gm.UserId == userId && (!worn || bGroups.Contains(gm.GroupId)))
             .Select(gm => gm.Group)
             .ToListAsync();
     }
 
     /// <inheritdoc />
+    public async Task<EffectiveCapabilities> GetEffectiveCapabilitiesAsync(Guid userId)
+    {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
+        // Load the user's grant sources once and fold them in memory. The per-capability
+        // checks above each run several queries; walking them per capability per CA would be
+        // hundreds of round trips for one page load.
+        var memberGroupIds = await _db.CaGroupMembers
+            .AsNoTracking()
+            .Where(m => m.UserId == userId && (!worn || bGroups.Contains(m.GroupId)))
+            .Select(m => m.GroupId)
+            .ToListAsync();
+
+        var groups = await _db.CaGroups
+            .AsNoTracking()
+            .Where(g => memberGroupIds.Contains(g.Id))
+            .Select(g => new { g.Id, g.IsSystemGroup, g.CertificateAuthorityId, g.TenantId })
+            .ToListAsync();
+        var groupById = groups.ToDictionary(g => g.Id);
+
+        // (capability, scope) pairs. Scope is one of: system, a tenant, or a CA.
+        var systemCaps = new HashSet<string>(StringComparer.Ordinal);
+        var tenantCaps = new Dictionary<Guid, HashSet<string>>();
+        var caCaps = new Dictionary<Guid, HashSet<string>>();
+
+        void AddGroupScoped(Guid groupId, string capability)
+        {
+            if (!groupById.TryGetValue(groupId, out var g)) return;
+            if (g.IsSystemGroup) systemCaps.Add(capability);
+            else if (g.CertificateAuthorityId is Guid caId) Bucket(caCaps, caId).Add(capability);
+            else Bucket(tenantCaps, g.TenantId).Add(capability);
+        }
+
+        void AddUserScoped(string capability, Guid? tenantId, Guid? certificateAuthorityId)
+        {
+            if (certificateAuthorityId is Guid caId) Bucket(caCaps, caId).Add(capability);
+            else if (tenantId is Guid tid) Bucket(tenantCaps, tid).Add(capability);
+            else systemCaps.Add(capability);
+        }
+
+        // Source 1: direct group grants.
+        var groupGrants = await _db.CapabilityGrants
+            .AsNoTracking()
+            .Where(g => memberGroupIds.Contains(g.GroupId) && g.ResourceType == null)
+            .Select(g => new { g.GroupId, g.Capability })
+            .ToListAsync();
+        foreach (var g in groupGrants) AddGroupScoped(g.GroupId, g.Capability);
+
+        // Source 2: roles assigned to the user's groups.
+        var groupRoles = await _db.RoleAssignments
+            .AsNoTracking()
+            .Include(ra => ra.Role).ThenInclude(r => r.Capabilities)
+            .Where(ra => ra.GroupId != null && memberGroupIds.Contains(ra.GroupId.Value))
+            .ToListAsync();
+        foreach (var ra in groupRoles)
+            foreach (var rc in ra.Role.Capabilities.Where(rc => rc.ResourceType == null))
+                AddGroupScoped(ra.GroupId!.Value, rc.Capability);
+
+        // Source 3: grants on the user directly, at global, tenant or CA scope.
+        var userGrants = await _db.UserCapabilityGrants
+            .AsNoTracking()
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.ResourceType == null)
+            .Select(ug => new { ug.Capability, ug.TenantId, ug.CertificateAuthorityId })
+            .ToListAsync();
+        foreach (var ug in userGrants) AddUserScoped(ug.Capability, ug.TenantId, ug.CertificateAuthorityId);
+
+        // Source 4: roles assigned to the user directly, at global, tenant or CA scope.
+        var userRoles = await _db.RoleAssignments
+            .AsNoTracking()
+            .Include(ra => ra.Role).ThenInclude(r => r.Capabilities)
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id)))
+            .ToListAsync();
+        foreach (var ra in userRoles)
+            foreach (var rc in ra.Role.Capabilities.Where(rc => rc.ResourceType == null))
+                AddUserScoped(rc.Capability, ra.TenantId, ra.CertificateAuthorityId);
+
+        // system.manage at system scope passes every check (see HasCaCapabilityAsync), so
+        // report it as everything rather than as the literal grants.
+        if (systemCaps.Contains(Capabilities.SystemManage))
+            systemCaps.UnionWith(Capabilities.All);
+
+        var cas = await _db.CertificateAuthorities
+            .AsNoTracking()
+            .Select(ca => new { ca.Id, ca.Label, ca.Name, ca.IsSshCa, ca.TenantId })
+            .ToListAsync();
+        // Tenant names and slugs for the console's tenant scope. Every tenant, not just the
+        // caller's: the query filter would otherwise hide the tenant of a CA the caller holds a
+        // grant on but is not a member of through a group.
+        var tenants = await _db.Tenants
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Select(t => new { t.Id, t.Name, t.Slug })
+            .ToDictionaryAsync(t => t.Id, t => t);
+
+        var perCa = new List<CaCapabilities>();
+        foreach (var ca in cas)
+        {
+            var caps = new HashSet<string>(systemCaps, StringComparer.Ordinal);
+            if (tenantCaps.TryGetValue(ca.TenantId, out var t)) caps.UnionWith(t);
+            if (caCaps.TryGetValue(ca.Id, out var c)) caps.UnionWith(c);
+            if (caps.Count == 0) continue;
+            tenants.TryGetValue(ca.TenantId, out var tenant);
+            perCa.Add(new CaCapabilities(ca.Id, ca.Label ?? string.Empty, ca.Name, ca.IsSshCa,
+                ca.TenantId, tenant?.Name ?? string.Empty, tenant?.Slug ?? ca.TenantId.ToString(),
+                caps.OrderBy(x => x, StringComparer.Ordinal).ToList()));
+        }
+
+        // Tenant-wide grants, so the console knows where the user may create a CA even before
+        // the tenant has one. System-scoped holders are not expanded to every tenant here; the
+        // client reads `System` for that, as it does for CAs.
+        var perTenant = new List<TenantCapabilities>();
+        foreach (var (tenantId, granted) in tenantCaps)
+        {
+            var caps = new HashSet<string>(systemCaps, StringComparer.Ordinal);
+            caps.UnionWith(granted);
+            if (caps.Count == 0) continue;
+            tenants.TryGetValue(tenantId, out var tenant);
+            perTenant.Add(new TenantCapabilities(tenantId, tenant?.Name ?? string.Empty, tenant?.Slug ?? tenantId.ToString(),
+                caps.OrderBy(x => x, StringComparer.Ordinal).ToList()));
+        }
+
+        return new EffectiveCapabilities(
+            systemCaps.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            perCa.OrderBy(x => x.Label, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            perTenant.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Slug, StringComparer.OrdinalIgnoreCase).ToList());
+
+        static HashSet<string> Bucket(Dictionary<Guid, HashSet<string>> map, Guid key)
+        {
+            if (!map.TryGetValue(key, out var set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                map[key] = set;
+            }
+            return set;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         if (await IsSystemAdminAsync(userId))
         {
             return await _db.CertificateAuthorities.Select(ca => ca.Id).ToListAsync();
@@ -271,7 +509,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // Tenant-level group grants → all CAs in those tenants
         var tenantIdsFromGroups = await _db.CapabilityGrants
             .Where(g => g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null)
             .Select(g => g.Group.TenantId)
             .Distinct().ToListAsync();
@@ -280,21 +518,21 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         var tenantIdsFromGroupRoles = await _db.RoleAssignments
             .Where(ra => ra.GroupId != null
                 && ra.Group!.CertificateAuthorityId == null && !ra.Group.IsSystemGroup
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             .Select(ra => ra.Group!.TenantId)
             .Distinct().ToListAsync();
 
         // Tenant-level user grants
         var tenantIdsFromUserGrants = await _db.UserCapabilityGrants
-            .Where(ug => ug.UserId == userId && ug.Capability == capability
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.Capability == capability
                 && ug.ResourceType == null && ug.TenantId != null && ug.CertificateAuthorityId == null)
             .Select(ug => ug.TenantId!.Value)
             .Distinct().ToListAsync();
 
         // Tenant-level user role assignments
         var tenantIdsFromUserRoles = await _db.RoleAssignments
-            .Where(ra => ra.UserId == userId && ra.GroupId == null
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.TenantId != null && ra.CertificateAuthorityId == null
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             .Select(ra => ra.TenantId!.Value)
@@ -317,7 +555,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // CA-scoped group grants
         var directFromGroups = await _db.CapabilityGrants
             .Where(g => g.Group.CertificateAuthorityId != null
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null)
             .Select(g => g.Group.CertificateAuthorityId!.Value)
             .Distinct().ToListAsync();
@@ -326,7 +564,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // CA-scoped group role assignments
         var directFromGroupRoles = await _db.RoleAssignments
             .Where(ra => ra.GroupId != null && ra.Group!.CertificateAuthorityId != null
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             .Select(ra => ra.Group!.CertificateAuthorityId!.Value)
             .Distinct().ToListAsync();
@@ -334,7 +572,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // CA-scoped user grants
         var directFromUserGrants = await _db.UserCapabilityGrants
-            .Where(ug => ug.UserId == userId && ug.Capability == capability
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.Capability == capability
                 && ug.ResourceType == null && ug.CertificateAuthorityId != null)
             .Select(ug => ug.CertificateAuthorityId!.Value)
             .Distinct().ToListAsync();
@@ -342,7 +580,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // CA-scoped user role assignments
         var directFromUserRoles = await _db.RoleAssignments
-            .Where(ra => ra.UserId == userId && ra.GroupId == null
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.CertificateAuthorityId != null
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             .Select(ra => ra.CertificateAuthorityId!.Value)
@@ -355,6 +593,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// <inheritdoc />
     public async Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? tenantId)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         if (await IsSystemAdminAsync(userId))
         {
             return await _db.CertificateAuthorities
@@ -375,21 +614,21 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             await _db.CapabilityGrants.AnyAsync(g =>
                 g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup
                 && g.Group.TenantId == tenantId
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null)
             // Group role
             || await _db.RoleAssignments.AnyAsync(ra =>
                 ra.GroupId != null && ra.Group!.CertificateAuthorityId == null && !ra.Group.IsSystemGroup
                 && ra.Group.TenantId == tenantId
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             // User grant
             || await _db.UserCapabilityGrants.AnyAsync(ug =>
-                ug.UserId == userId && ug.Capability == capability && ug.ResourceType == null
+                ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.Capability == capability && ug.ResourceType == null
                 && ug.TenantId == tenantId && ug.CertificateAuthorityId == null)
             // User role
             || await _db.RoleAssignments.AnyAsync(ra =>
-                ra.UserId == userId && ra.GroupId == null
+                ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.TenantId == tenantId && ra.CertificateAuthorityId == null
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null));
 
@@ -405,7 +644,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         var fromGroups = await _db.CapabilityGrants
             .Where(g => g.Group.CertificateAuthorityId != null
-                && g.Group.Members.Any(m => m.UserId == userId)
+                && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null)
             .Where(g => g.Group.CertificateAuthority != null && g.Group.CertificateAuthority.TenantId == tenantId)
             .Select(g => g.Group.CertificateAuthorityId!.Value).Distinct().ToListAsync();
@@ -413,21 +652,21 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         var fromGroupRoles = await _db.RoleAssignments
             .Where(ra => ra.GroupId != null && ra.Group!.CertificateAuthorityId != null
-                && ra.Group.Members.Any(m => m.UserId == userId)
+                && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Group.CertificateAuthority != null && ra.Group.CertificateAuthority.TenantId == tenantId
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
             .Select(ra => ra.Group!.CertificateAuthorityId!.Value).Distinct().ToListAsync();
         foreach (var id in fromGroupRoles) caIds.Add(id);
 
         var fromUserGrants = await _db.UserCapabilityGrants
-            .Where(ug => ug.UserId == userId && ug.Capability == capability
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.Capability == capability
                 && ug.ResourceType == null && ug.CertificateAuthorityId != null
                 && ug.CertificateAuthority != null && ug.CertificateAuthority.TenantId == tenantId)
             .Select(ug => ug.CertificateAuthorityId!.Value).Distinct().ToListAsync();
         foreach (var id in fromUserGrants) caIds.Add(id);
 
         var fromUserRoles = await _db.RoleAssignments
-            .Where(ra => ra.UserId == userId && ra.GroupId == null
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.CertificateAuthorityId != null
                 && ra.CertificateAuthority != null && ra.CertificateAuthority.TenantId == tenantId
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
@@ -440,12 +679,13 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     /// <inheritdoc />
     public async Task<bool> HasResourceCapabilityAsync(Guid userId, string capability, string resourceType, Guid resourceId)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         if (capability.StartsWith("profile.") && await IsSystemAdminAsync(userId))
             return true;
 
         // Source 1: group direct grants (exact match OR wildcard where ResourceId is null)
         if (await _db.CapabilityGrants
-            .AnyAsync(g => g.Group.Members.Any(m => m.UserId == userId)
+            .AnyAsync(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability
                 && g.ResourceType == resourceType
                 && (g.ResourceId == resourceId || g.ResourceId == null)))
@@ -454,7 +694,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // Source 2: role via group (exact match OR wildcard where ResourceId is null)
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.GroupId != null
-                && ra.Group!.Members.Any(m => m.UserId == userId)
+                && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability
                     && rc.ResourceType == resourceType
                     && (rc.ResourceId == resourceId || rc.ResourceId == null))))
@@ -462,7 +702,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 3: direct user grants (exact match OR wildcard where ResourceId is null)
         if (await _db.UserCapabilityGrants
-            .AnyAsync(ug => ug.UserId == userId
+            .AnyAsync(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id))
                 && ug.Capability == capability
                 && ug.ResourceType == resourceType
                 && (ug.ResourceId == resourceId || ug.ResourceId == null)))
@@ -470,7 +710,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 4: role via user (exact match OR wildcard where ResourceId is null)
         if (await _db.RoleAssignments
-            .AnyAsync(ra => ra.UserId == userId && ra.GroupId == null
+            .AnyAsync(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability
                     && rc.ResourceType == resourceType
                     && (rc.ResourceId == resourceId || rc.ResourceId == null))))
@@ -483,6 +723,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     public async Task<(List<Guid> ResourceIds, bool HasWildcard)> GetGrantedResourceIdsAsync(
         Guid userId, string capabilityPrefix, string resourceType)
     {
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
         if (await IsSystemAdminAsync(userId))
             return (new List<Guid>(), true);
 
@@ -491,7 +732,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 1: group direct grants
         var s1 = await _db.CapabilityGrants
-            .Where(g => g.Group.Members.Any(m => m.UserId == userId)
+            .Where(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability.StartsWith(capabilityPrefix)
                 && g.ResourceType == resourceType)
             .Select(g => g.ResourceId)
@@ -500,7 +741,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 2: role via group
         var s2 = await _db.RoleAssignments
-            .Where(ra => ra.GroupId != null && ra.Group!.Members.Any(m => m.UserId == userId))
+            .Where(ra => ra.GroupId != null && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value)))
             .SelectMany(ra => ra.Role.Capabilities)
             .Where(rc => rc.Capability.StartsWith(capabilityPrefix) && rc.ResourceType == resourceType)
             .Select(rc => rc.ResourceId)
@@ -509,7 +750,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 3: direct user grants
         var s3 = await _db.UserCapabilityGrants
-            .Where(ug => ug.UserId == userId
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id))
                 && ug.Capability.StartsWith(capabilityPrefix)
                 && ug.ResourceType == resourceType)
             .Select(ug => ug.ResourceId)
@@ -518,7 +759,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Source 4: role via user
         var s4 = await _db.RoleAssignments
-            .Where(ra => ra.UserId == userId && ra.GroupId == null)
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id)))
             .SelectMany(ra => ra.Role.Capabilities)
             .Where(rc => rc.Capability.StartsWith(capabilityPrefix) && rc.ResourceType == resourceType)
             .Select(rc => rc.ResourceId)

@@ -1,22 +1,21 @@
 // ProtectedRoute.tsx
-import React from 'react';
-import { Navigate } from 'react-router-dom';
+import React, { useEffect } from 'react';
 import { isAuthenticated, isMfaSetupRequired } from './auth';
 import { useAuth } from '../context/AuthContext';
+import { useScope } from '../context/ScopeContext';
+import type { Gate } from '../gates';
+import { BASENAME, MFA_SETUP_PATH, goToLogin } from '../portal';
 
 type Props = {
     children: React.ReactNode;
     /**
-     * List of role levels (e.g. ['Admin','Operator']) the user
-     * must hold to render the children. SystemAdmin satisfies any role. Empty/missing
-     * means "any authenticated user". Failing the check renders an inline 403 panel
-     * instead of redirecting to login.
+     * The capability the page needs (see gates.ts), checked at system scope or, for a scoped
+     * gate, against the selected CA scope. Missing means "any authenticated user". Failing
+     * the check renders an inline 403 panel instead of redirecting to login.
      */
-    requiredRoles?: string[];
-    /**
-     * Optional scope string (e.g. 'system:Admin' or 'Admin' for any-CA admin).
-     */
-    requiredScope?: string;
+    requires?: Gate['requires'];
+    /** Whether `requires` is checked against the CA scope rather than at system scope. */
+    scoped?: boolean;
 };
 
 const ForbiddenPanel: React.FC<{ message?: string }> = ({ message }) => (
@@ -32,7 +31,7 @@ const ForbiddenPanel: React.FC<{ message?: string }> = ({ message }) => (
                 {message || 'You do not have permission to view this page. Contact a system administrator if you believe this is an error.'}
             </p>
             <a
-                href="/admin/dashboard"
+                href={`${BASENAME}/dashboard`}
                 className="inline-block px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
             >
                 Return to Dashboard
@@ -41,19 +40,24 @@ const ForbiddenPanel: React.FC<{ message?: string }> = ({ message }) => (
     </div>
 );
 
-const ProtectedRoute: React.FC<Props> = ({ children, requiredRoles, requiredScope }) => {
-    const { user, loading, hasAnyRole, hasScope } = useAuth();
+const ProtectedRoute: React.FC<Props> = ({ children, requires, scoped }) => {
+    const { user, loading } = useAuth();
+    const { allows, scope } = useScope();
 
-    if (!isAuthenticated()) {
-        return <Navigate to="/login" replace />;
-    }
-    if (isMfaSetupRequired()) {
-        return <Navigate to="/mfa-setup" replace />;
-    }
+    // The sign-in pages live at the site root, outside this portal's basename, so leaving
+    // for them is a full navigation rather than a router redirect. The login page brings the
+    // browser back here afterwards via returnUrl.
+    const signedOut = !isAuthenticated();
+    const needsMfaSetup = !signedOut && isMfaSetupRequired();
+    useEffect(() => {
+        if (signedOut) goToLogin();
+        else if (needsMfaSetup) window.location.replace(MFA_SETUP_PATH);
+    }, [signedOut, needsMfaSetup]);
+    if (signedOut || needsMfaSetup) return null;
 
-    // Role/scope gating only applies if requested. Wait for the AuthContext to
+    // Capability gating only applies if requested. Wait for the AuthContext to
     // hydrate before deciding so we don't flash a 403 during initial load.
-    if ((requiredRoles && requiredRoles.length > 0) || requiredScope) {
+    if (requires) {
         if (loading || !user) {
             return (
                 <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
@@ -61,11 +65,11 @@ const ProtectedRoute: React.FC<Props> = ({ children, requiredRoles, requiredScop
                 </div>
             );
         }
-        if (requiredRoles && requiredRoles.length > 0 && !hasAnyRole(requiredRoles)) {
-            return <ForbiddenPanel message={`This page requires one of: ${requiredRoles.join(', ')}.`} />;
-        }
-        if (requiredScope && !hasScope(requiredScope)) {
-            return <ForbiddenPanel message={`This page requires the ${requiredScope} scope.`} />;
+        if (!allows({ requires, scoped })) {
+            const where = scoped
+                ? (scope.kind === 'ca' ? ` on ${scope.label}` : ' on a CA in the selected scope')
+                : ' at system scope';
+            return <ForbiddenPanel message={`This page requires the ${requires} capability${where}.`} />;
         }
     }
 

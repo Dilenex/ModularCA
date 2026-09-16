@@ -864,10 +864,10 @@ export default function AdminUiGuide() {
                         The Admin UI also includes unauthenticated routes for the login flow:
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mt-2">
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/admin/login</code> — Username/password login form</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/admin/mfa-setup</code> — First-time MFA enrollment</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/admin/mfa-verify</code> — MFA challenge verification</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/admin/mfa-callback</code> — WebAuthn callback handler</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/login</code> — Username/password login form, shared with the self-service portal</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-setup</code> — First-time MFA enrollment</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-verify</code> — MFA challenge verification</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-callback</code> — WebAuthn callback handler</li>
                     </ul>
                 </div>
             </section>

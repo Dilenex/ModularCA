@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -8,7 +11,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 
 const SSH_SIGNING_TAB = `/profiles?tab=${encodeURIComponent('SSH Signing')}`;
@@ -26,7 +29,7 @@ const SshSigningProfileDetail: React.FC = () => {
     const [profile, setProfile] = useState<any | null>(null);
     const [caKeys, setCaKeys] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -65,13 +68,16 @@ const SshSigningProfileDetail: React.FC = () => {
                 setInitialForm(seeded);
             }
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load SSH signing profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load SSH signing profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
     const caKeyName = (kid: string) => caKeys.find((k) => k.id === kid)?.name || kid;
 
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
+    // A profile that allows neither user nor host certificates can sign nothing; the server would
+    // still save it, and the signing form would then filter it out of every dropdown.
+    const signsNothing = !editForm.allowUserCerts && !editForm.allowHostCerts;
 
     const handleSave = async () => {
         try {
@@ -108,7 +114,7 @@ const SshSigningProfileDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">SSH signing profile not found.</p>
@@ -128,7 +134,7 @@ const SshSigningProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name || !editForm.sshCaKeyId}
+            saveDisabled={!dirty || !editForm.name || !editForm.sshCaKeyId || signsNothing}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
@@ -145,12 +151,25 @@ const SshSigningProfileDetail: React.FC = () => {
                                 </select>
                             </div>
                             <div><label className={labelClass}>Max Validity Hours</label><input type="text" inputMode="numeric" value={editForm.maxValidityHours} onChange={(e) => setEditForm({ ...editForm, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Force Command (optional)</label><input type="text" value={editForm.forceCommand} onChange={(e) => setEditForm({ ...editForm, forceCommand: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Source Address Restrictions (comma-separated)</label><input type="text" value={editForm.sourceAddressRestrictions} onChange={(e) => setEditForm({ ...editForm, sourceAddressRestrictions: e.target.value })} className={inputClass} /></div>
+                            <div>
+                                <label className={labelClass}>Force Command (optional)</label>
+                                <input type="text" value={editForm.forceCommand} onChange={(e) => setEditForm({ ...editForm, forceCommand: e.target.value })} className={inputClass} />
+                                <FieldHint tone={editForm.forceCommand.trim() ? 'warn' : 'muted'}>Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.</FieldHint>
+                            </div>
+                            <div>
+                                <label className={labelClass}>Source Address Restrictions (comma-separated)</label>
+                                <input type="text" value={editForm.sourceAddressRestrictions} onChange={(e) => setEditForm({ ...editForm, sourceAddressRestrictions: e.target.value })} className={inputClass} />
+                                <FieldHint>Addresses or CIDR ranges the certificate may be used from; the server rejects connections from anywhere else. Blank means no restriction.</FieldHint>
+                            </div>
                         </div>
-                        <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowUserCerts} onChange={(e) => setEditForm({ ...editForm, allowUserCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow User Certs</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowHostCerts} onChange={(e) => setEditForm({ ...editForm, allowHostCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow Host Certs</label>
+                        <div>
+                            <div className="flex flex-wrap gap-4">
+                                <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowUserCerts} onChange={(e) => setEditForm({ ...editForm, allowUserCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow User Certs</label>
+                                <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowHostCerts} onChange={(e) => setEditForm({ ...editForm, allowHostCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow Host Certs</label>
+                            </div>
+                            {signsNothing && (
+                                <FieldHint tone="warn">This profile allows neither user nor host certificates, so it can sign nothing and will not appear in the signing form. Tick at least one before saving.</FieldHint>
+                            )}
                         </div>
                         <div><label className={labelClass}>Default Extensions</label><MultiToggle options={SSH_EXTENSION_OPTIONS} selected={editForm.defaultExtensions} onChange={(next) => setEditForm({ ...editForm, defaultExtensions: next })} /></div>
                     </div>

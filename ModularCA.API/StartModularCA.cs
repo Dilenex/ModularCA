@@ -1,4 +1,4 @@
-﻿using FluentValidation;
+using FluentValidation;
 using Fido2NetLib;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -857,6 +857,9 @@ builder.Services.AddScoped<ICaaCheckService, CaaCheckService>();
 builder.Services.AddSingleton<IAcmeAccountRateLimiter, AcmeAccountRateLimiter>();
 builder.Services.AddScoped<AcmeCleanupJob>();
 builder.Services.AddScoped<ISchedulerJob, AcmeCleanupJob>(sp => sp.GetRequiredService<AcmeCleanupJob>());
+// Orphaned enrollment requests from every protocol, plus SCEP/CMP transaction sweeps.
+builder.Services.AddScoped<ProtocolCleanupJob>();
+builder.Services.AddScoped<ISchedulerJob, ProtocolCleanupJob>(sp => sp.GetRequiredService<ProtocolCleanupJob>());
 // The ACME http-01 validator must NOT auto-follow
 // redirects to arbitrary hosts. We disable the default auto-redirect behavior
 // here; AcmeChallengeService performs a single-hop, allow-listed redirect
@@ -889,6 +892,19 @@ builder.Services.AddScoped<IScepService, ScepService>();
 
 // CMP Protocol Service
 builder.Services.AddScoped<ICmpService, CmpService>();
+
+// MSAE (Windows autoenrollment, MS-WSTEP) enrollment pipeline
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.IMsaeEnrollmentService,
+                           ModularCA.Core.Services.Msae.MsaeEnrollmentService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.IXcepPolicyService,
+                           ModularCA.Core.Services.Msae.XcepPolicyService>();
+// Kerberos for MSAE: realm bindings and keys, a replay cache over the distributed cache, and the
+// managed acceptor (Kerberos.NET) that validates tickets without the OS Kerberos stack.
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.IKerberosRealmKeyProvider>(sp =>
+    sp.GetRequiredService<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>());
+builder.Services.AddSingleton<Kerberos.NET.ITicketReplayValidator, ModularCA.API.Services.DistributedTicketReplayCache>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosAcceptor>();
 
 // Centralized CA Resolver Service
 builder.Services.AddScoped<ICaResolverService, CaResolverService>();
@@ -956,6 +972,13 @@ builder.Services.AddScoped<ModularCA.Auth.Services.IProtocolCredentialService,
                            ModularCA.Auth.Services.ProtocolCredentialService>();
 
 builder.Services.AddScoped<ModularCA.Auth.Authorization.ICaGroupAuthorizationService, ModularCA.Auth.Authorization.CaGroupAuthorizationService>();
+// Access badges: the worn badge for this request (from the token), read by the resolver and
+// stamped on audit rows; and the badge CRUD used by the account and admin endpoints.
+builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeContext>();
+builder.Services.AddScoped<ModularCA.Auth.Authorization.IAccessBadgeContext>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
+builder.Services.AddScoped<ModularCA.Shared.Interfaces.IWornBadgeProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
+builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeService>();
+builder.Services.AddScoped<ModularCA.Auth.Authorization.ServiceIdentityService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
 
 builder.Services.AddAuthorization(options =>
@@ -1336,7 +1359,7 @@ builder.Services.AddScoped<ISchedulerJob, BackupCreationJob>(sp => sp.GetRequire
 builder.Services.AddScoped<BackupVerificationJob>();
 builder.Services.AddScoped<ISchedulerJob, BackupVerificationJob>(sp => sp.GetRequiredService<BackupVerificationJob>());
 // Scheduled audit-retention job (chunked DELETE + optional gzip
-// archive) across AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditNetwork.
+// archive) across AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditMsae/AuditNetwork.
 builder.Services.AddScoped<AuditRetentionJob>();
 builder.Services.AddScoped<ISchedulerJob, AuditRetentionJob>(sp => sp.GetRequiredService<AuditRetentionJob>());
 builder.Services.AddScoped<ICertHealthScoreService, CertHealthScoreService>();
@@ -1354,6 +1377,10 @@ builder.Services.AddScoped<RequestProfileValidationService>();
 builder.Services.AddScoped<IPolicySyncService, PolicySyncService>();
 
 builder.Services.AddScoped<CertificateTemplateService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
+builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
+builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
 
@@ -2313,6 +2340,24 @@ if (!isSetupMode)
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
         logger.LogWarning(ex, "Failed to check/apply migrations — the database may not exist yet. Setup wizard will handle initialization.");
     }
+
+    // Generated template OIDs move under the operator's arc once Msae:TemplateOidArc is set, in
+    // one pass, so each template's OID changes exactly once. The repair only touches OIDs that
+    // equal a generated derivation of their own template id, never an operator's, and does
+    // nothing while no arc is configured.
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ModularCA.Core.Services.Msae.MsaeOptions>>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+        await ModularCA.Core.Services.Msae.MsaeTemplateOidRepair.RunAsync(db, options.Value.TemplateOidArc, logger);
+    }
+    catch (Exception ex)
+    {
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup")
+            .LogWarning(ex, "Template OID repair skipped; it runs again at the next start.");
+    }
 }
 
 // Warm the IWhitelistService snapshot after migrations are applied so the
@@ -2323,6 +2368,27 @@ if (!isSetupMode)
 // The middleware's pre-bootstrap fallback handles /setup/* via WhitelistDefaults
 // while the service stays cold. The post-bootstrap reload in BootstrapService flips
 // IsWarm = true once real credentials exist.
+// Flags introduced after this instance was bootstrapped have no row, so the settings page cannot
+// show them and the path gate treats them as off with no way to turn them on. Add them, disabled.
+if (!isSetupMode)
+{
+    try
+    {
+        using var flagScope = app.Services.CreateScope();
+        var flagDb = flagScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var added = await ModularCA.Core.Services.FeatureFlagBackfill.EnsureAsync(flagDb);
+        if (added.Count > 0)
+        {
+            flagScope.ServiceProvider.GetRequiredService<IFeatureFlagService>().InvalidateCache();
+            Console.WriteLine($"[STARTUP] Added feature flag(s) introduced by this version, disabled: {string.Join(", ", added)}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Feature flag backfill skipped: {ex.Message}");
+    }
+}
+
 if (!isSetupMode)
 {
     try
@@ -2842,6 +2908,18 @@ if (sinkFlagsQueryFailed && !isSetupMode)
 // would otherwise 401 the SPA HTML shell before the browser can even load the login page.
 // Auth for admin/user pages happens client-side (AuthContext redirects to login) and
 // server-side (API endpoints enforce their own [Authorize] policies).
+// The console's sign-in pages sit at the site root, shared by /admin and /user.
+static bool IsConsoleAuthPath(string path)
+{
+    foreach (var p in new[] { "/login", "/banner", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
+    {
+        if (path.Equals(p, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase))
+            return true;
+    }
+    return false;
+}
+
 app.MapFallback(context =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -2864,10 +2942,11 @@ app.MapFallback(context =>
     }
 
     string indexPath;
-    if (path.StartsWith("/admin"))
+    // /admin, /user and the site-root sign-in pages are one console bundle: the SPA reads the
+    // prefix it was loaded under and becomes the management console, the self-service portal,
+    // or the shared sign-in flow. Its assets live under /admin/assets regardless of the prefix.
+    if (path.StartsWith("/admin") || path.StartsWith("/user") || IsConsoleAuthPath(path))
         indexPath = Path.Combine(webRoot, "admin", "index.html");
-    else if (path.StartsWith("/user"))
-        indexPath = Path.Combine(webRoot, "user", "index.html");
     else if (path.StartsWith("/public"))
         indexPath = Path.Combine(webRoot, "public", "index.html");
     else if (path.StartsWith("/setup"))
@@ -2876,13 +2955,13 @@ app.MapFallback(context =>
     {
         // Require authentication for docs SPA — if a Bearer token was sent and validated, allow access.
         // Browser page loads without a Bearer header are allowed through so the SPA can boot and
-        // perform its own client-side auth check (redirecting to /admin/login if no token in localStorage).
+        // perform its own client-side auth check (redirecting to /login if no token in localStorage).
         var authHeader = context.Request.Headers.Authorization.ToString();
         var hasBearerHeader = !string.IsNullOrEmpty(authHeader) &&
                               authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
         if (hasBearerHeader && context.User?.Identity?.IsAuthenticated != true)
         {
-            context.Response.Redirect($"/admin/login?returnUrl={Uri.EscapeDataString(path)}");
+            context.Response.Redirect($"/login?returnUrl={Uri.EscapeDataString(path)}");
             return Task.CompletedTask;
         }
         indexPath = Path.Combine(webRoot, "docs", "index.html");

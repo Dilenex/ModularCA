@@ -1,6 +1,8 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Errors;
+using ModularCA.Shared.Models;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
@@ -69,7 +71,8 @@ namespace ModularCA.Core.Services
             Guid caCertificateId,
             SigningProfileEntity? signingProfile,
             bool isCa = false,
-            bool allowWildcardSans = false)
+            bool allowWildcardSans = false,
+            IReadOnlyList<RequestedExtension>? additionalExtensions = null)
         {
             // Defensive assertion — when the key handle is software-backed
             // and exportable, derive the corresponding public key and compare against
@@ -301,6 +304,10 @@ namespace ModularCA.Core.Services
             // Name constraints, policy, and path length extensions from signing profile
             AddPolicyExtensions(certGen, signingProfile, isCa);
 
+            // Extensions the request itself asked for, after every profile-driven one so a request
+            // can never pre-empt the profile's say on an OID it governs.
+            AddRequestedExtensions(certGen, additionalExtensions);
+
             // === Sign cert (via key handle — supports HSM) ===
             var sigAlgName = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(issuerCert.GetPublicKey()));
             var signer = new PrivateKeyHandleSignatureFactory(sigAlgName, caKeyHandle);
@@ -314,6 +321,45 @@ namespace ModularCA.Core.Services
         /// <param name="csr">The parsed PKCS#10 certification request.</param>
         /// <param name="csrEntity">The CSR database entity (used for SAN fallback).</param>
         /// <returns>The resolved X509Name for the certificate subject.</returns>
+        /// <summary>
+        /// Extension OIDs the certificate and signing profiles decide. A request asking for one of
+        /// these is refused rather than silently overridden or duplicated.
+        /// </summary>
+        private static readonly HashSet<string> ProfileGovernedExtensionOids = new(StringComparer.Ordinal)
+        {
+            X509Extensions.BasicConstraints.Id, X509Extensions.SubjectKeyIdentifier.Id, X509Extensions.AuthorityKeyIdentifier.Id,
+            X509Extensions.KeyUsage.Id, X509Extensions.ExtendedKeyUsage.Id, X509Extensions.SubjectAlternativeName.Id,
+            X509Extensions.CrlDistributionPoints.Id, X509Extensions.AuthorityInfoAccess.Id, X509Extensions.NameConstraints.Id,
+            X509Extensions.CertificatePolicies.Id, X509Extensions.InhibitAnyPolicy.Id, X509Extensions.PolicyConstraints.Id,
+            X509Extensions.IssuerAlternativeName.Id, X509Extensions.SubjectDirectoryAttributes.Id,
+            "1.3.6.1.5.5.7.48.1.5",   // OCSP no-check, emitted by the builder itself
+        };
+
+        /// <summary>
+        /// Adds the extensions a request asked for (<see cref="CertRequestEntity.AdditionalExtensions"/>).
+        /// Refuses an OID the profiles govern, a malformed OID, a duplicate, or a value that is not DER.
+        /// </summary>
+        private static void AddRequestedExtensions(X509V3CertificateGenerator certGen, IReadOnlyList<RequestedExtension>? extensions)
+        {
+            if (extensions == null || extensions.Count == 0) return;
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var ext in extensions)
+            {
+                DerObjectIdentifier oid;
+                try { oid = new DerObjectIdentifier(ext.Oid); }
+                catch (FormatException) { throw new InvalidRequestException($"Requested extension OID '{ext.Oid}' is not a valid object identifier."); }
+                if (ProfileGovernedExtensionOids.Contains(oid.Id))
+                    throw new InvalidRequestException($"Requested extension {oid.Id} is decided by the certificate profile and cannot be supplied by the request.");
+                if (!seen.Add(oid.Id))
+                    throw new InvalidRequestException($"Requested extension {oid.Id} appears more than once.");
+                Asn1Object value;
+                try { value = Asn1Object.FromByteArray(ext.Value); }
+                catch (Exception e) when (e is IOException or FormatException or ArgumentException)
+                { throw new InvalidRequestException($"Requested extension {oid.Id} does not carry a DER value."); }
+                certGen.AddExtension(oid, ext.Critical, value);
+            }
+        }
+
         public X509Name ResolveSubjectDn(Pkcs10CertificationRequest csr, CertRequestEntity csrEntity)
         {
             var csrSubject = csr.GetCertificationRequestInfo().Subject;

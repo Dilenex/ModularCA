@@ -1,3 +1,6 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
@@ -10,7 +13,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/policy")]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
     public class AdminPolicyController : ControllerBase
     {
         private readonly ICertPolicyService _certPolicy;
@@ -32,6 +35,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <param name="request">The certificate parameters to evaluate.</param>
         /// <returns>A response containing any policy violations found.</returns>
         [HttpPost("check")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
         public IActionResult CheckPolicy([FromBody] PolicyCheckRequest request)
         {
             var context = new CertificateIssuanceContext

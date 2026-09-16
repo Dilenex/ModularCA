@@ -1,3 +1,4 @@
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
@@ -19,7 +20,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/request-profiles")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminRequestProfileController(
     RequestProfileService requestProfileService,
     IAuditService audit,
@@ -37,6 +38,7 @@ public class AdminRequestProfileController(
     /// </summary>
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
     [HttpGet]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null)
     {
         await currentUser.EnsureLoadedAsync();
@@ -62,6 +64,7 @@ public class AdminRequestProfileController(
     /// Retrieves a single request profile by its GUID, including inheritance fields.
     /// </summary>
     [HttpGet("{id}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var profile = await requestProfileService.GetByIdAsync(id);
@@ -75,6 +78,8 @@ public class AdminRequestProfileController(
     /// and optional inheritance configuration.
     /// </summary>
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
     public async Task<IActionResult> Create([FromBody] CreateRequestProfileRequest request)
     {
         var result = await requestProfileService.CreateAsync(request);
@@ -91,6 +96,7 @@ public class AdminRequestProfileController(
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRequestProfileRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await currentUser.EnsureLoadedAsync();
@@ -111,6 +117,7 @@ public class AdminRequestProfileController(
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpDelete("{id}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Delete(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await currentUser.EnsureLoadedAsync();

@@ -339,13 +339,23 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// Lists issued SSH certificates with pagination, optionally filtered by CA key.
     /// </summary>
-    public async Task<List<SshCertificateEntity>> GetCertificatesAsync(int page = 1, int pageSize = 50, Guid? caKeyId = null)
+    public async Task<List<SshCertificateEntity>> GetCertificatesAsync(int page = 1, int pageSize = 50, Guid? caKeyId = null, string? sort = null)
     {
         var query = _db.SshCertificates.AsNoTracking().AsQueryable();
         if (caKeyId.HasValue)
             query = query.Where(c => c.SshCaKeyId == caKeyId.Value);
-        return await query
-            .OrderByDescending(c => c.CreatedAt)
+        // sort: createdAt (default, newest first), keyId, validBefore.
+        var parsedSort = ListSort.Parse(sort, "createdAt", "keyId", "validBefore");
+        IOrderedQueryable<SshCertificateEntity> ordered = parsedSort switch
+        {
+            ("keyId", false) => query.OrderBy(c => c.KeyId),
+            ("keyId", true) => query.OrderByDescending(c => c.KeyId),
+            ("validBefore", false) => query.OrderBy(c => c.ValidBefore),
+            ("validBefore", true) => query.OrderByDescending(c => c.ValidBefore),
+            ("createdAt", false) => query.OrderBy(c => c.CreatedAt),
+            _ => query.OrderByDescending(c => c.CreatedAt),
+        };
+        return await ordered
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync();
     }

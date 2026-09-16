@@ -1,4 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPut, apiPost } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -19,7 +22,7 @@ interface AlertConfig { enabled: boolean; minimumSeverity: string; cooldownMinut
 const NotificationManagement: React.FC = () => {
     const [prefs, setPrefs] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [testStatus, setTestStatus] = useState<string | null>(null);
 
     const [alertConfig, setAlertConfig] = useState<AlertConfig | null>(null);
@@ -29,7 +32,7 @@ const NotificationManagement: React.FC = () => {
     // Single-row edit modal
     const [editTarget, setEditTarget] = useState<any | null>(null);
     const [editForm, setEditForm] = useState<{ recipients: string; daysBeforeExpiry: string; enabled: boolean; hasDays: boolean }>({ recipients: '', daysBeforeExpiry: '', enabled: true, hasDays: false });
-    const [editEmailError, setEditEmailError] = useState<string | null>(null);
+    const [editEmailError, setEditEmailError] = useState<NoticeInput | null>(null);
     const [saving, setSaving] = useState(false);
 
     const loadPrefs = async () => {
@@ -39,7 +42,7 @@ const NotificationManagement: React.FC = () => {
             const data = await apiGet<any[]>('/api/v1/admin/notifications');
             setPrefs(Array.isArray(data) ? data : ((data as any).items || []));
         } catch (err: any) {
-            setError(err.message || 'Failed to load notification preferences');
+            setError(errorNotice(err, 'Failed to load notification preferences'));
         }
         setLoading(false);
     };
@@ -69,9 +72,11 @@ const NotificationManagement: React.FC = () => {
     const bulkSetEnabled = async (rows: any[], enabled: boolean) => {
         const targets = rows.filter((p) => p.enabled !== enabled);
         if (targets.length === 0) { setTestStatus(`All selected are already ${enabled ? 'enabled' : 'disabled'}.`); setTimeout(() => setTestStatus(null), 3000); return; }
+        let failed = 0;
         for (const p of targets) {
-            try { await apiPut(`/api/v1/admin/notifications/${p.eventType}`, { enabled }); } catch { }
+            try { await apiPut(`/api/v1/admin/notifications/${p.eventType}`, { enabled }); } catch { failed++; }
         }
+        if (failed > 0) { setTestStatus(`${failed} of ${targets.length} could not be ${enabled ? 'enabled' : 'disabled'}; the table shows the current state.`); setTimeout(() => setTestStatus(null), 6000); }
         loadPrefs();
     };
 
@@ -94,7 +99,7 @@ const NotificationManagement: React.FC = () => {
             setEditTarget(null);
             loadPrefs();
         } catch (err: any) {
-            setEditEmailError(err.message || 'Failed to save');
+            setEditEmailError(errorNotice(err, 'Failed to save'));
         } finally {
             setSaving(false);
         }
@@ -262,7 +267,7 @@ const NotificationManagement: React.FC = () => {
                                 <input type="text" value={editForm.recipients} onChange={(e) => { setEditForm({ ...editForm, recipients: e.target.value }); setEditEmailError(validateEmails(e.target.value)); }}
                                     placeholder="Leave empty to use admin defaults" autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore
                                     className={`${inputCls} ${editEmailError ? 'border-red-500' : ''}`} />
-                                {editEmailError && <p className="text-xs text-red-800 dark:text-red-400 mt-1">{editEmailError}</p>}
+                                {editEmailError && <InlineNotice notice={editEmailError} variant="line" className="mt-1" />}
                             </div>
                         </div>
                         <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">

@@ -59,4 +59,7 @@
     <ProjectReference Include="..\..\ModularCA.Bootstrap\ModularCA.Bootstrap.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Core\Services\Msae\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

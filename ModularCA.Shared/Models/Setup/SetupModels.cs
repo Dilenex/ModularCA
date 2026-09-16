@@ -104,6 +104,9 @@ public class SetupFeatures
     public bool Scep { get; set; } = false;
     [System.Text.Json.Serialization.JsonPropertyName("enableCmp")]
     public bool Cmp { get; set; } = false;
+    /// <summary>Windows autoenrollment (MS-WSTEP over HTTPS).</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("enableMsae")]
+    public bool Msae { get; set; } = false;
 }
 
 /// <summary>

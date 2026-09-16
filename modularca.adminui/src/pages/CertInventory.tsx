@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
+import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,19 +101,34 @@ function getAlgorithmInfo(cert: CertItem): { algorithm: string; keySize: string 
 // Sub-components
 // ---------------------------------------------------------------------------
 
-/** Color-coded stat card */
+/** Color-coded stat card; with `to` it deep-links to the certificate list filtered to the same set. */
 const StatCard: React.FC<{
     label: string;
     value: number;
     color: string;
     sub?: string;
-}> = ({ label, value, color, sub }) => (
-    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 flex flex-col">
+    to?: string;
+}> = ({ label, value, color, sub, to }) => {
+    const body = (<>
         <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">{label}</span>
         <span className={`text-2xl font-bold mt-1 ${color}`}>{value}</span>
-        {sub && <span className="text-[10px] text-gray-600 mt-0.5">{sub}</span>}
-    </div>
-);
+        {sub && <span className="text-[10px] text-gray-600 dark:text-gray-400 mt-0.5">{sub}</span>}
+    </>);
+    const frame = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 flex flex-col';
+    if (!to) return <div className={frame}>{body}</div>;
+    return (
+        <Link to={to} title="Open these certificates in the list" className={`${frame} hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}>
+            {body}
+        </Link>
+    );
+};
+
+/** yyyy-MM-dd for the certificate list's date filters, `days` from now. */
+function isoDateFromNow(days: number): string {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+}
 
 /** Horizontal bar used in charts */
 const HBar: React.FC<{
@@ -171,7 +191,7 @@ const gradeLabelColors: Record<string, string> = {
 const CertInventory: React.FC = () => {
     const [certs, setCerts] = useState<CertItem[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [caFilter, setCaFilter] = useState<string | null>(null);
     const [healthSummary, setHealthSummary] = useState<HealthSummary | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
@@ -199,7 +219,7 @@ const CertInventory: React.FC = () => {
                 }
                 setCerts(all);
             } catch (e: any) {
-                if (!cancelled) setError(e.message || 'Failed to load certificates');
+                if (!cancelled) setError(errorNotice(e, 'Failed to load certificates'));
             } finally {
                 if (!cancelled) setLoading(false);
             }
@@ -252,6 +272,19 @@ const CertInventory: React.FC = () => {
         }
         return s;
     }, [filtered, now]);
+
+    // Deep link into the certificate list with the same filter a stat card counted (the list
+    // reads status / notAfterFrom / notAfterTo / issuer from its URL). The CA filter here is an
+    // issuer DN, which the list also filters on.
+    const certListLink = (filter: { status?: string; notAfterFrom?: string; notAfterTo?: string }): string => {
+        const params = new URLSearchParams();
+        if (filter.status) params.set('status', filter.status);
+        if (filter.notAfterFrom) params.set('notAfterFrom', filter.notAfterFrom);
+        if (filter.notAfterTo) params.set('notAfterTo', filter.notAfterTo);
+        if (caFilter) params.set('issuer', caFilter);
+        const qs = params.toString();
+        return qs ? `/certificates?${qs}` : '/certificates';
+    };
 
     // Algorithm distribution
     const algoDist = useMemo(() => {
@@ -350,7 +383,7 @@ const CertInventory: React.FC = () => {
         return (
             <div className="p-6">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Certificate Inventory</h1>
-                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 text-red-800 dark:text-red-300">{error}</div>
+                <InlineNotice notice={error} />
             </div>
         );
     }
@@ -369,15 +402,16 @@ const CertInventory: React.FC = () => {
                 )}
             </div>
 
-            {/* 1. Summary Stats Bar */}
+            {/* 1. Summary Stats Bar. The expiry bands are exclusive (a certificate lands in exactly
+                one), unlike the cumulative "within N days" rows on Compliance, so the labels say so. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                <StatCard label="Total" value={stats.total} color="text-gray-900 dark:text-white" />
-                <StatCard label="Active" value={stats.active} color="text-green-800 dark:text-green-400" />
-                <StatCard label="Expiring 30d" value={stats.expiring30} color={stats.expiring30 > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} />
-                <StatCard label="Expiring 60d" value={stats.expiring60} color={stats.expiring60 > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-900 dark:text-white'} />
-                <StatCard label="Expiring 90d" value={stats.expiring90} color={stats.expiring90 > 0 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'} />
-                <StatCard label="Expired" value={stats.expired} color={stats.expired > 0 ? 'text-orange-800 dark:text-orange-400' : 'text-gray-900 dark:text-white'} />
-                <StatCard label="Revoked" value={stats.revoked} color={stats.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} />
+                <StatCard label="Total" value={stats.total} color="text-gray-900 dark:text-white" to={certListLink({})} />
+                <StatCard label="Active" value={stats.active} color="text-green-800 dark:text-green-400" to={certListLink({ status: 'active' })} />
+                <StatCard label="Expiring 0–30 days" value={stats.expiring30} sub="active, expires within 30 days" color={stats.expiring30 > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(0), notAfterTo: isoDateFromNow(30) })} />
+                <StatCard label="Expiring 31–60 days" value={stats.expiring60} sub="active, not counted above" color={stats.expiring60 > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(31), notAfterTo: isoDateFromNow(60) })} />
+                <StatCard label="Expiring 61–90 days" value={stats.expiring90} sub="active, not counted above" color={stats.expiring90 > 0 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(61), notAfterTo: isoDateFromNow(90) })} />
+                <StatCard label="Expired" value={stats.expired} color={stats.expired > 0 ? 'text-orange-800 dark:text-orange-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'expired' })} />
+                <StatCard label="Revoked" value={stats.revoked} color={stats.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'revoked' })} />
             </div>
 
             {/* Health Scores */}
@@ -539,40 +573,25 @@ const CertInventory: React.FC = () => {
                     <span className="text-sm text-gray-600">No CA data</span>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[600px] text-xs">
-                            <thead>
-                                <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                    <th className="text-left py-2 px-2 font-semibold">CA Name</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Total</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Active</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Expiring Soon</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Revoked</th>
-                                    <th className="text-right py-2 px-2 font-semibold"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {caBreakdown.map(([issuer, data]) => (
-                                    <tr
-                                        key={issuer}
-                                        className={`border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors ${caFilter === issuer ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
-                                    >
-                                        <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-xs truncate" title={issuer}>{issuer}</td>
-                                        <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-300 tabular-nums">{data.total}</td>
-                                        <td className="py-2 px-2 text-right text-green-800 dark:text-green-400 tabular-nums">{data.active}</td>
-                                        <td className={`py-2 px-2 text-right tabular-nums ${data.expiring > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-600'}`}>{data.expiring}</td>
-                                        <td className={`py-2 px-2 text-right tabular-nums ${data.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-600'}`}>{data.revoked}</td>
-                                        <td className="py-2 px-2 text-right">
-                                            <button
-                                                onClick={() => setCaFilter(caFilter === issuer ? null : issuer)}
-                                                className="text-blue-800 dark:text-blue-400 hover:text-blue-300 text-[10px] underline"
-                                            >
-                                                {caFilter === issuer ? 'Clear' : 'Filter'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                        <DataTable<[string, any]>
+                            tableId="inventory-by-ca"
+                            rows={caBreakdown}
+                            rowKey={([issuer]) => issuer}
+                            empty="No certificates"
+                            sort={{ key: 'total', dir: 'desc' }}
+                            columns={[
+                                { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-gray-800 dark:text-gray-200 truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
+                                { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-gray-700 dark:text-gray-300 tabular-nums">{d.total}</span> },
+                                { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-green-800 dark:text-green-400 tabular-nums">{d.active}</span> },
+                                { key: 'expiring', header: 'Expiring Soon', defaultWidth: 120, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-600'}`}>{d.expiring}</span> },
+                                { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-600'}`}>{d.revoked}</span> },
+                                { key: 'filter', header: '', defaultWidth: 80, align: 'right', truncate: false, hideable: false, exportValue: () => '', render: ([issuer]) => (
+                                    <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-blue-800 dark:text-blue-400 hover:text-blue-300 text-[10px] underline">
+                                        {caFilter === issuer ? 'Clear' : 'Filter'}
+                                    </button>
+                                ) },
+                            ] as DataTableColumn<[string, any]>[]}
+                        />
                     </div>
                 )}
             </Section>
@@ -584,26 +603,19 @@ const CertInventory: React.FC = () => {
                         <span className="text-sm text-gray-600">No certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Issuer</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Issued</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {recentlyIssued.map(c => (
-                                        <tr key={c.serialNumber} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</td>
-                                            <td className="py-2 px-2 text-gray-600 dark:text-gray-400 max-w-[160px] truncate" title={c.issuer}>{c.issuer}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.validFrom)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="inventory-recently-issued"
+                                rows={recentlyIssued}
+                                rowKey={(c) => c.serialNumber}
+                                empty="Nothing issued recently"
+                                detailPath={(c) => `/certificates/${c.serialNumber}`}
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-gray-600 dark:text-gray-400 truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'issued', header: 'Issued', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.validFrom ? new Date(c.validFrom) : null, exportValue: (c) => formatDateShort(c.validFrom), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.validFrom)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>
@@ -614,26 +626,19 @@ const CertInventory: React.FC = () => {
                         <span className="text-sm text-gray-600">No revoked certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Reason</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Revoked</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {recentlyRevoked.map(c => (
-                                        <tr key={c.serialNumber} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</td>
-                                            <td className="py-2 px-2 text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.revocationDate)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="inventory-recently-revoked"
+                                rows={recentlyRevoked}
+                                rowKey={(c) => c.serialNumber}
+                                empty="Nothing revoked recently"
+                                detailPath={(c) => `/certificates/${c.serialNumber}`}
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>

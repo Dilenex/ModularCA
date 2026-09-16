@@ -1,3 +1,5 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +21,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh/profiles")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminSshProfileController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
@@ -99,6 +101,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// unbound rows that an admin in another tenant could later claim.
     /// </summary>
     [HttpGet("signing")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetSigningProfiles()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -146,6 +149,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// requests collapse to 404 and emit a failure audit row.
     /// </summary>
     [HttpGet("signing/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetSigningProfile(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -175,6 +179,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// a signing profile binds it to an SSH CA key whose material can mint host/user certs.
     /// </summary>
     [HttpPost("signing")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
     [RequireStepUp(StepUpOps.CreateSshProfile)]
     public async Task<IActionResult> CreateSigningProfile([FromBody] CreateSshSigningProfileRequest request)
     {
@@ -222,6 +228,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// because mutations alter validity, extensions, or CA-key binding for SSH issuance.
     /// </summary>
     [HttpPut("signing/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.UpdateSshProfile, "id")]
     public async Task<IActionResult> UpdateSigningProfile(Guid id, [FromBody] UpdateSshSigningProfileRequest request)
     {
@@ -281,6 +288,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// permanently removes issuance constraints tied to a live SSH CA key.
     /// </summary>
     [HttpDelete("signing/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.DeleteSshProfile, "id")]
     public async Task<IActionResult> DeleteSigningProfile(Guid id)
     {
@@ -321,6 +329,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// tenant operator cannot mutate this shared catalog out from under another tenant.
     /// </summary>
     [HttpGet("cert")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCertProfiles()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -344,6 +353,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// system admins on the corresponding write endpoints.
     /// </summary>
     [HttpGet("cert/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCertProfile(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -367,6 +377,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// required because cert profiles constrain SSH issuance globally across tenants.
     /// </summary>
     [HttpPost("cert")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
     [RequireStepUp(StepUpOps.CreateSshProfile)]
     public async Task<IActionResult> CreateCertProfile([FromBody] CreateSshCertProfileRequest request)
     {
@@ -408,6 +420,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// because changes affect issuance constraints applied to every tenant.
     /// </summary>
     [HttpPut("cert/{id:guid}")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
     [RequireStepUp(StepUpOps.UpdateSshProfile, "id")]
     public async Task<IActionResult> UpdateCertProfile(Guid id, [FromBody] UpdateSshCertProfileRequest request)
     {
@@ -447,6 +461,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// required because deletion strips SSH issuance constraints tenants may depend on.
     /// </summary>
     [HttpDelete("cert/{id:guid}")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
     [RequireStepUp(StepUpOps.DeleteSshProfile, "id")]
     public async Task<IActionResult> DeleteCertProfile(Guid id)
     {
@@ -481,6 +497,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// "global" rows do not leak across tenants.
     /// </summary>
     [HttpGet("request")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetRequestProfiles()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -529,6 +546,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// requests collapse to 404 and emit a failure audit row.
     /// </summary>
     [HttpGet("request/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetRequestProfile(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -558,6 +576,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// because request profiles gate which signing/cert profiles a tenant can invoke.
     /// </summary>
     [HttpPost("request")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
     [RequireStepUp(StepUpOps.CreateSshProfile)]
     public async Task<IActionResult> CreateRequestProfile([FromBody] CreateSshRequestProfileRequest request)
     {
@@ -613,6 +633,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// signing/cert bundles a tenant can invoke during enrollment.
     /// </summary>
     [HttpPut("request/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.UpdateSshProfile, "id")]
     public async Task<IActionResult> UpdateRequestProfile(Guid id, [FromBody] UpdateSshRequestProfileRequest request)
     {
@@ -671,6 +692,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// allow-list of SSH signing/cert bundles available to a tenant.
     /// </summary>
     [HttpDelete("request/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.DeleteSshProfile, "id")]
     public async Task<IActionResult> DeleteRequestProfile(Guid id)
     {

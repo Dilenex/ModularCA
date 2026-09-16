@@ -19,7 +19,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/signing-profiles")]
-[Authorize(Policy = "CaAuditor")]
+[Authorize]
 public class AdminSigningProfileController(
     ISigningProfileService service,
     IAuditService audit,
@@ -38,6 +38,7 @@ public class AdminSigningProfileController(
     /// they have a profile.* capability grant for.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetAll()
     {
         await currentUser.EnsureLoadedAsync();
@@ -59,7 +60,8 @@ public class AdminSigningProfileController(
     /// and inheritance configuration.
     /// </summary>
     [HttpPost]
-    [Authorize(Policy = "CaAdmin")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CaManage, CaTarget.CaCertificate, "r.IssuerId")]
     public async Task<IActionResult> Create([FromBody] CreateSigningProfileRequest r)
     {
         var result = await service.CreateAsync(r);
@@ -119,6 +121,7 @@ public class AdminSigningProfileController(
     /// and inheritance configuration.
     /// </summary>
     [HttpGet("{id}")]
+    [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var profile = await service.GetByIdAsync(id);
@@ -151,6 +154,7 @@ public class AdminSigningProfileController(
     /// Returns the list of allowed cert profile IDs for the specified signing profile.
     /// </summary>
     [HttpGet("{id}/allowed-cert-profiles")]
+    [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetAllowedCertProfiles(Guid id)
     {
         var ids = await service.GetAllowedCertProfileIdsAsync(id);

@@ -12,6 +12,7 @@ public class AuditDbContext(DbContextOptions<AuditDbContext> options) : DbContex
     public DbSet<AuditEstEntity> AuditEst { get; set; }
     public DbSet<AuditScepEntity> AuditScep { get; set; }
     public DbSet<AuditCmpEntity> AuditCmp { get; set; }
+    public DbSet<AuditMsaeEntity> AuditMsae { get; set; }
     public DbSet<AuditAcmeEntity> AuditAcme { get; set; }
     public DbSet<AuditNetworkEntity> AuditNetwork { get; set; }
     public DbSet<CertComplianceFindingEntity> CertComplianceFindings { get; set; }
@@ -43,6 +44,19 @@ public class AuditDbContext(DbContextOptions<AuditDbContext> options) : DbContex
         modelBuilder.Entity<AuditEstEntity>(entity =>
         {
             entity.HasIndex(a => a.Timestamp);
+            entity.HasIndex(a => a.CertificateSerial);
+            entity.HasIndex(a => a.SourceIp);
+            entity.HasIndex(a => a.CaLabel);
+            entity.HasIndex(a => a.CertificateAuthorityId);
+            entity.HasIndex(a => a.TenantId);
+            entity.HasIndex(a => new { a.TenantId, a.Timestamp });
+            entity.HasIndex(a => new { a.CertificateAuthorityId, a.Timestamp });
+        });
+
+        modelBuilder.Entity<AuditMsaeEntity>(entity =>
+        {
+            entity.HasIndex(a => a.Timestamp);
+            entity.HasIndex(a => a.Realm);
             entity.HasIndex(a => a.CertificateSerial);
             entity.HasIndex(a => a.SourceIp);
             entity.HasIndex(a => a.CaLabel);

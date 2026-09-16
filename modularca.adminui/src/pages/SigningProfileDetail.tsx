@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -8,8 +11,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { SIGNING_ALLOWED_ALGORITHM_OPTIONS, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, canonicalizeUsages, caCertId, caDisplayName } from './profileHelpers';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { SIGNING_ALLOWED_ALGORITHM_OPTIONS, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, canonicalizeUsages, caCertId, caDisplayName,
+    CEILING_HINT, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint, NAME_CONSTRAINTS_HINT, NAME_CONSTRAINTS_PLACEHOLDER, MAX_PATH_LENGTH_HINT } from './profileHelpers';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 const SIGNING_TAB = `/profiles?tab=${encodeURIComponent('Signing Profiles')}`;
@@ -31,11 +35,15 @@ const SigningProfileDetail: React.FC = () => {
     const { showToast } = useToast();
 
     const [profile, setProfile] = useState<any | null>(null);
+    // Every signing profile, kept for the Inherits From select. The form already carried
+    // inheritsFromId and the checkbox to enable it, but offered no way to choose or clear the
+    // parent, so a seeded inconsistent pair could only be repaired by turning inheritance off.
+    const [profiles, setProfiles] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [allowedCpIds, setAllowedCpIds] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
     const [qualifiersError, setQualifiersError] = useState<string | null>(null);
 
@@ -65,6 +73,7 @@ const SigningProfileDetail: React.FC = () => {
         ]).then(([data, authData, cpData, allowedData]) => {
             if (cancelled) return;
             const list = Array.isArray(data) ? data : (data.items || data.profiles || []);
+            setProfiles(list);
             const p = list.find((x: any) => spId(x) === id) || null;
             setProfile(p);
             setAuthorities(Array.isArray(authData) ? authData : (authData.items || authData.authorities || []));
@@ -92,7 +101,7 @@ const SigningProfileDetail: React.FC = () => {
                 setInitialForm(seeded);
             }
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load signing profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load signing profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -107,6 +116,10 @@ const SigningProfileDetail: React.FC = () => {
     };
 
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
+    // Either half of the inheritance pair on its own is a setting the server accepts and ignores.
+    const inheritanceInconsistent = inheritancePairInconsistent(editForm.inheritsFromId, editForm.inheritanceEnabled);
+    // The API accepts a null IssuerId, and a signing profile without one cannot sign anything.
+    const issuerMissing = !editForm.issuerId;
     const handleCancel = () => { setEditForm(initialForm); setQualifiersError(null); };
 
     const handleSave = async () => {
@@ -162,7 +175,7 @@ const SigningProfileDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Signing profile not found.</p>
@@ -171,7 +184,8 @@ const SigningProfileDetail: React.FC = () => {
     );
 
     const p = profile;
-    const toggleEku = (oid: string) => setEditForm({ ...editForm, allowedEkus: editForm.allowedEkus.includes(oid) ? editForm.allowedEkus.filter((o) => o !== oid) : [...editForm.allowedEkus, oid] });
+    const siblingProfiles = profiles.filter((x) => spId(x) !== spId(p));
+    const toggleEku =(oid: string) => setEditForm({ ...editForm, allowedEkus: editForm.allowedEkus.includes(oid) ? editForm.allowedEkus.filter((o) => o !== oid) : [...editForm.allowedEkus, oid] });
 
     return (
         <DetailPage
@@ -183,25 +197,47 @@ const SigningProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name}
+            saveDisabled={!dirty || !editForm.name || issuerMissing || inheritanceInconsistent}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Signing Profile">
                     <div className="space-y-3 max-w-3xl">
+                        <SubmitBlockedHint reasons={[
+                            !editForm.name && 'A name is required before the profile can be saved.',
+                            issuerMissing && 'Save is disabled until an issuing authority is chosen; a signing profile without one cannot sign.',
+                            inheritanceInconsistent && 'Save is disabled until the inheritance settings agree: either choose a parent and turn inheritance on, or clear both.',
+                        ]} />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
                             <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
                             <div>
                                 <label className={labelClass}>Issuer</label>
-                                <select value={editForm.issuerId} onChange={(e) => setEditForm({ ...editForm, issuerId: e.target.value })} className={inputClass}>
+                                <select value={editForm.issuerId} onChange={(e) => setEditForm({ ...editForm, issuerId: e.target.value })} className={inputClass} aria-describedby="sp-edit-issuer-hint">
                                     <option value="">-- Select Issuing Authority --</option>
                                     {authorities.map((a) => <option key={caCertId(a)} value={caCertId(a)}>{caDisplayName(a)}</option>)}
                                 </select>
+                                <FieldHint id="sp-edit-issuer-hint" tone={issuerMissing ? 'warn' : 'muted'}>
+                                    {issuerMissing
+                                        ? 'Required. A signing profile with no issuing authority cannot sign anything; Save stays disabled until one is chosen.'
+                                        : 'Every certificate issued through this profile is signed by this authority.'}
+                                </FieldHint>
                             </div>
-                            <div><label className={labelClass}>Max Path Length</label><input type="text" inputMode="numeric" value={editForm.maxPathLength} onChange={(e) => setEditForm({ ...editForm, maxPathLength: e.target.value.replace(/\D/g, '') })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Name Constraints Permitted (JSON)</label><input type="text" value={editForm.nameConstraintsPermitted} onChange={(e) => setEditForm({ ...editForm, nameConstraintsPermitted: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Name Constraints Excluded (JSON)</label><input type="text" value={editForm.nameConstraintsExcluded} onChange={(e) => setEditForm({ ...editForm, nameConstraintsExcluded: e.target.value })} className={inputClass} /></div>
+                            <div>
+                                <label className={labelClass}>Max Path Length</label>
+                                <input type="text" inputMode="numeric" value={editForm.maxPathLength} onChange={(e) => setEditForm({ ...editForm, maxPathLength: e.target.value.replace(/\D/g, '') })} className={inputClass} aria-describedby="sp-edit-maxpath-hint" />
+                                <FieldHint id="sp-edit-maxpath-hint">{MAX_PATH_LENGTH_HINT}</FieldHint>
+                            </div>
+                            <div>
+                                <label className={labelClass}>Name Constraints Permitted (JSON)</label>
+                                <input type="text" placeholder={NAME_CONSTRAINTS_PLACEHOLDER} value={editForm.nameConstraintsPermitted} onChange={(e) => setEditForm({ ...editForm, nameConstraintsPermitted: e.target.value })} className={inputClass} aria-describedby="sp-edit-nc-permitted-hint" />
+                                <FieldHint id="sp-edit-nc-permitted-hint">Names issued certificates may carry. {NAME_CONSTRAINTS_HINT}</FieldHint>
+                            </div>
+                            <div>
+                                <label className={labelClass}>Name Constraints Excluded (JSON)</label>
+                                <input type="text" placeholder={NAME_CONSTRAINTS_PLACEHOLDER} value={editForm.nameConstraintsExcluded} onChange={(e) => setEditForm({ ...editForm, nameConstraintsExcluded: e.target.value })} className={inputClass} aria-describedby="sp-edit-nc-excluded-hint" />
+                                <FieldHint id="sp-edit-nc-excluded-hint">Names issued certificates may never carry. {NAME_CONSTRAINTS_HINT}</FieldHint>
+                            </div>
                             <div><label className={labelClass}>Policy OIDs (comma-separated)</label><input type="text" value={editForm.policyOids} onChange={(e) => setEditForm({ ...editForm, policyOids: e.target.value })} className={inputClass} /></div>
                         </div>
                         <div>
@@ -212,11 +248,23 @@ const SigningProfileDetail: React.FC = () => {
                                     return <button key={eku.oid} type="button" onClick={() => toggleEku(eku.oid)} className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-blue-600/30 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-600' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>{eku.label} <span className="text-[10px] text-gray-600 ml-1">{eku.oid}</span></button>;
                                 })}
                             </div>
+                            <FieldHint>{CEILING_HINT}</FieldHint>
                         </div>
                         <div className="flex flex-wrap gap-4">
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.isDefault} onChange={(e) => setEditForm({ ...editForm, isDefault: e.target.checked })} className="w-4 h-4 rounded" />Default Profile</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inhibitAnyPolicy} onChange={(e) => setEditForm({ ...editForm, inhibitAnyPolicy: e.target.checked })} className="w-4 h-4 rounded" />Inhibit Any Policy</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
+                        </div>
+                        <div>
+                            <label className={labelClass}>Inherits From</label>
+                            <select value={editForm.inheritsFromId} onChange={(e) => setEditForm({ ...editForm, inheritsFromId: e.target.value })} className={inputClass}>
+                                <option value="">-- None (standalone) --</option>
+                                {siblingProfiles.map((pr) => <option key={spId(pr)} value={spId(pr)}>{pr.name}</option>)}
+                            </select>
+                            <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
+                            {editForm.inheritanceEnabled && editForm.inheritsFromId && (
+                                <FieldHint tone="warn">Signing profile inheritance is stored but not yet applied at issuance: only certificate and request profiles are resolved against a parent today. This setting has no effect until that lands.</FieldHint>
+                            )}
                         </div>
                         <div>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={!!editForm.extendedKeyUsageCritical} onChange={(e) => setEditForm({ ...editForm, extendedKeyUsageCritical: e.target.checked })} className="w-4 h-4 rounded" />Mark Extended Key Usage extension as critical</label>
@@ -227,7 +275,7 @@ const SigningProfileDetail: React.FC = () => {
                             <textarea value={editForm.policyQualifiersJson ?? '{}'} onChange={(e) => { setEditForm({ ...editForm, policyQualifiersJson: e.target.value }); if (qualifiersError) setQualifiersError(null); }} rows={8} placeholder={QUALIFIERS_PLACEHOLDER} className={`${inputClass} font-mono text-xs resize-y`} />
                             {qualifiersError && <p className="text-[11px] text-red-800 dark:text-red-400 mt-1">{qualifiersError}</p>}
                         </div>
-                        <div><label className={labelClass}>Allowed Algorithms</label><MultiToggle options={SIGNING_ALLOWED_ALGORITHM_OPTIONS} selected={editForm.allowedAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedAlgorithms: next })} /></div>
+                        <div><label className={labelClass}>Allowed Algorithms</label><MultiToggle options={SIGNING_ALLOWED_ALGORITHM_OPTIONS} selected={editForm.allowedAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedAlgorithms: next })} hint={CEILING_HINT} /></div>
                         <div className="last:mb-0">
                             <label className={labelClass}>Allowed Cert Profiles</label>
                             <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">

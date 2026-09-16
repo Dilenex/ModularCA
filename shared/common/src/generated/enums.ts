@@ -16,6 +16,21 @@
  * default rather than failing, which is why these must not be hand-typed.
  */
 
+/** From `ModularCA.Shared/Enums/AccessBadgeSourceKind.cs`. */
+export const AccessBadgeSourceKind = {
+    Group: 'Group',
+    RoleAssignment: 'RoleAssignment',
+    CapabilityGrant: 'CapabilityGrant',
+} as const;
+export type AccessBadgeSourceKind = (typeof AccessBadgeSourceKind)[keyof typeof AccessBadgeSourceKind];
+
+/** Underlying numeric values of `AccessBadgeSourceKind`, which are protocol-significant. */
+export const AccessBadgeSourceKindCode: Readonly<Record<AccessBadgeSourceKind, number>> = {
+    Group: 1,
+    RoleAssignment: 2,
+    CapabilityGrant: 3,
+};
+
 /** From `ModularCA.Shared/Enums/AcmeAccountStatus.cs`. */
 export const AcmeAccountStatus = {
     Valid: 'Valid',
@@ -92,6 +107,23 @@ export const JwtIpBindingMode = {
     Subnet24: 'Subnet24',
 } as const;
 export type JwtIpBindingMode = (typeof JwtIpBindingMode)[keyof typeof JwtIpBindingMode];
+
+/** From `ModularCA.Shared/Enums/KerberosKeySource.cs`. */
+export const KerberosKeySource = {
+    Keytab: 'Keytab',
+    Password: 'Password',
+    Generated: 'Generated',
+} as const;
+export type KerberosKeySource = (typeof KerberosKeySource)[keyof typeof KerberosKeySource];
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export const MsaeReadinessState = {
+    Pass: 'Pass',
+    Warn: 'Warn',
+    Fail: 'Fail',
+    Skip: 'Skip',
+} as const;
+export type MsaeReadinessState = (typeof MsaeReadinessState)[keyof typeof MsaeReadinessState];
 
 /** From `ModularCA.Shared/Enums/RevocationReason.cs`. */
 export const RevocationReason = {

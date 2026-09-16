@@ -1,3 +1,5 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.API.Filters;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -22,7 +24,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/users")]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize]
     public class AdminUserManagerController(
         ModularCADbContext dbContext,
         IUserManagementService userService,
@@ -48,6 +50,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves all user accounts. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetUsers()
         {
             // Scoped to the caller's tenants. The policy is CaAuditor with no CA in the route, which
@@ -63,6 +66,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by ID. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("{id:guid}")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetUserById(Guid id)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserById(id));
@@ -75,6 +79,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by username. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("by-username/{username}")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetUserByUsername(string username)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserByUsername(username));
@@ -87,6 +92,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by email address. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("by-email")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetUserByEmail([FromQuery] string email)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserByEmail(email));
@@ -144,7 +150,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Creates a new user account. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
         /// </summary>
         [HttpPost]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CaManage, CaTarget.AnyCa)]
         public async Task<IActionResult> CreateUser([FromBody] CreateUserRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {

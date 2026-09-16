@@ -3,7 +3,7 @@ import { apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { looksLikeHostname } from '@shared/hostname';
 import { StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { FieldNotices, hasFieldNotice } from '@shared/components/FieldNotice';
 import {
     mergeNotices, unclaimedNotices, worstSeverity,
@@ -179,8 +179,13 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
         onClose();
     };
 
+    // Both overrides are optional, but when both are given the window must run forwards; the
+    // server refuses an inverted one, so refuse it here before the step-up prompt is spent on it.
+    const validityInverted = !!(form.notBefore && form.notAfter && form.notBefore >= form.notAfter);
+
     const handleSubmit = async () => {
         if (!cert) return;
+        if (validityInverted) return;
         setSubmitting(true);
         setNotices([]);
         try {
@@ -416,6 +421,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                 id="reissue-not-before"
                                 type="datetime-local"
                                 value={form.notBefore}
+                                max={form.notAfter || undefined}
                                 onChange={(e) => updateField('notBefore', e.target.value)}
                                 disabled={submitting}
                                 aria-invalid={hasFieldNotice(notices, NOT_BEFORE_FIELDS)}
@@ -431,14 +437,18 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                 id="reissue-not-after"
                                 type="datetime-local"
                                 value={form.notAfter}
+                                min={form.notBefore || undefined}
                                 onChange={(e) => updateField('notAfter', e.target.value)}
                                 disabled={submitting}
-                                aria-invalid={hasFieldNotice(notices, NOT_AFTER_FIELDS)}
+                                aria-invalid={hasFieldNotice(notices, NOT_AFTER_FIELDS) || validityInverted}
                                 aria-describedby={describedBy('reissue-not-after-notice', NOT_AFTER_FIELDS)}
                                 className={inputClass + invalidClass(NOT_AFTER_FIELDS)}
                             />
                             <FieldNotices id="reissue-not-after-notice" notices={notices} field={NOT_AFTER_FIELDS} />
                             <div className={helperClass}>Leave blank to use the signing profile's default (recommended).</div>
+                            {validityInverted && (
+                                <FieldHint tone="warn">Valid To must be later than Valid From; as entered, the certificate would expire before it became valid. Reissue is disabled until the order is fixed.</FieldHint>
+                            )}
                         </div>
                     </div>
 
@@ -480,7 +490,8 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                     </button>
                     <button
                         onClick={handleSubmit}
-                        disabled={submitting}
+                        disabled={submitting || validityInverted}
+                        title={validityInverted ? 'Valid To must be later than Valid From' : undefined}
                         className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
                     >
                         {submitting && (

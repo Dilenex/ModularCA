@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -7,7 +9,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -66,7 +68,7 @@ const LdapPublisherDrawer: React.FC<{ publisher: LdapPublisher }> = ({ publisher
         <DetailField label="Host" value={`${p.host}:${p.port}`} mono />
         <DetailField label="Status" value={p.enabled ? 'Enabled' : 'Disabled'} />
         <DetailField label="Use SSL" value={p.useSsl ? 'Yes' : 'No'} />
-        <DetailField label="Username" value={p.username || '-'} />
+        <DetailField label="Bind DN" value={p.username || '-'} mono />
         <DetailField label="Base DN" value={p.baseDn} mono />
         <DetailField label="User DN Template" value={p.userDnTemplate || '-'} mono />
         <DetailField label="Update Interval" value={p.updateInterval || '-'} mono />
@@ -88,7 +90,7 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
 
     const [publishers, setPublishers] = useState<LdapPublisher[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Create form
     const [showCreate, setShowCreate] = useState(false);
@@ -109,7 +111,7 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
         setError(null);
         apiGet<any>(basePath)
             .then((data) => setPublishers(Array.isArray(data) ? data : (data.items || data.publishers || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -230,14 +232,20 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
                         placeholder="389" className={inputClass} />
                 </div>
                 <div>
-                    <label className={labelClass}>Username</label>
+                    <label className={labelClass}>Bind DN</label>
                     <input type="text" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })}
-                        placeholder="cn=admin,dc=example,dc=com" className={inputClass} />
+                        placeholder="cn=admin,dc=example,dc=com" className={`${inputClass} font-mono`} />
+                    <FieldHint>The distinguished name the publisher binds as (sent to the server as its username). Leave blank for an anonymous bind.</FieldHint>
                 </div>
                 <div>
                     <label className={labelClass}>Password</label>
                     <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })}
                         placeholder={isEdit ? '(unchanged)' : ''} className={inputClass} />
+                    {!f.useSsl && (
+                        <FieldHint tone="warn">
+                            Without SSL the bind password is sent to {f.host || 'the directory'} in cleartext. Enable it and use the LDAPS port (usually 636). Many directories, Active Directory included, reject unencrypted simple binds outright.
+                        </FieldHint>
+                    )}
                 </div>
                 <div>
                     <label className={labelClass}>Base DN *</label>

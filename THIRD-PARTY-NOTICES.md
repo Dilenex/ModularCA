@@ -16,7 +16,7 @@ no redistribution obligation; it is summarised at the end for completeness, not 
 
 | Licence | Components |
 | --- | ---: |
-| MIT | 68 |
+| MIT | 69 |
 | Apache-2.0 | 17 |
 | ISC | 1 |
 | unstated | 1 |
@@ -29,7 +29,7 @@ confirmed at source before the next release is distributed.
 
 - **Serilog.Sinks.Network 3.0.0** — https://github.com/serilog-contrib/Serilog.Sinks.Network
 
-## .NET runtime components (77)
+## .NET runtime components (78)
 
 | Package | Version | Licence | Copyright |
 | --- | --- | --- | --- |
@@ -41,6 +41,7 @@ confirmed at source before the next release is distributed.
 | [FluentValidation.DependencyInjectionExtensions](https://fluentvalidation.net/) | 12.1.1 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
 | [FluentValidation](https://fluentvalidation.net/) | 12.1.1 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
 | [Humanizer.Core](https://github.com/Humanizr/Humanizer) | 2.14.1 | MIT | Copyright (c) .NET Foundation and Contributors |
+| [Kerberos.NET](https://github.com/dotnet/Kerberos.NET) | 4.6.168 | MIT | Copyright (c) .NET Foundation and Contributors |
 | [libsodium](https://libsodium.org/) | 1.0.20.1 | ISC | © 2024 Frank Denis |
 | [MailKit](http://www.mimekit.net/) | 4.16.0 | MIT | .NET Foundation and Contributors |
 | [Microsoft.AspNetCore.Authentication.JwtBearer](https://asp.net/) | 10.0.5 | MIT | © Microsoft Corporation. All rights reserved. |

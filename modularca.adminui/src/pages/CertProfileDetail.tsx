@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -7,8 +10,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, CatalogGapNotice, formatKeySizeLabel, FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName } from './profileHelpers';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, parseJsonArray, parseListField, BadgeList, CeilingList, MultiToggle, CatalogGapNotice, formatKeySizeLabel, FieldSourceBadge, SourceBorderedField, caRowId, caDisplayName,
+    CEILING_HINT, REQUESTED_USAGE_HINT, DurationHint, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint, CT_LOG_IDS_HINT, CT_ENABLED_HINT } from './profileHelpers';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { useEkuCatalog, useKeyUsageCatalog } from '../hooks/useOidCatalog';
 
 const CERT_TAB = `/profiles?tab=${encodeURIComponent('Certificate Profiles')}`;
@@ -36,7 +40,7 @@ const CertProfileDetail: React.FC = () => {
     const [profiles, setProfiles] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [resolvedProfile, setResolvedProfile] = useState<any | null>(null);
@@ -94,7 +98,7 @@ const CertProfileDetail: React.FC = () => {
             }
             setAuthorities(Array.isArray(authData) ? authData : (authData.items || authData.authorities || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -118,6 +122,8 @@ const CertProfileDetail: React.FC = () => {
     };
 
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
+    // Either half of the inheritance pair on its own is a setting the server accepts and ignores.
+    const inheritanceInconsistent = inheritancePairInconsistent(editForm.inheritsFromId, editForm.inheritanceEnabled);
 
     const handleSave = async () => {
         try {
@@ -164,7 +170,7 @@ const CertProfileDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Certificate profile not found.</p>
@@ -183,18 +189,34 @@ const CertProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name}
+            saveDisabled={!dirty || !editForm.name || inheritanceInconsistent}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Certificate Profile">
                     <div className="space-y-3 max-w-3xl">
+                        <SubmitBlockedHint reasons={[
+                            !editForm.name && 'A name is required before the profile can be saved.',
+                            inheritanceInconsistent && 'Save is disabled until the inheritance settings agree: either choose a parent and turn inheritance on, or clear both.',
+                        ]} />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
                             <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Validity Period Min (ISO 8601)</label><input type="text" placeholder="e.g. P90D" value={editForm.validityPeriodMin} onChange={(e) => setEditForm({ ...editForm, validityPeriodMin: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Validity Period Max (ISO 8601)</label><input type="text" placeholder="e.g. P1Y" value={editForm.validityPeriodMax} onChange={(e) => setEditForm({ ...editForm, validityPeriodMax: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>CT Log IDs</label><input type="text" placeholder="Comma-separated log IDs" value={editForm.ctLogIds} onChange={(e) => setEditForm({ ...editForm, ctLogIds: e.target.value })} className={inputClass} /></div>
+                            <div>
+                                <label className={labelClass}>Validity Period Min (ISO 8601)</label>
+                                <input type="text" placeholder="e.g. P90D" value={editForm.validityPeriodMin} onChange={(e) => setEditForm({ ...editForm, validityPeriodMin: e.target.value })} className={inputClass} aria-describedby="cp-edit-validity-min-hint" />
+                                <DurationHint id="cp-edit-validity-min-hint" value={editForm.validityPeriodMin} />
+                            </div>
+                            <div>
+                                <label className={labelClass}>Validity Period Max (ISO 8601)</label>
+                                <input type="text" placeholder="e.g. P1Y" value={editForm.validityPeriodMax} onChange={(e) => setEditForm({ ...editForm, validityPeriodMax: e.target.value })} className={inputClass} aria-describedby="cp-edit-validity-max-hint" />
+                                <DurationHint id="cp-edit-validity-max-hint" value={editForm.validityPeriodMax} />
+                            </div>
+                            <div>
+                                <label className={labelClass}>CT Log IDs</label>
+                                <input type="text" placeholder='e.g. ["<log-id>", "<log-id>"]' value={editForm.ctLogIds} onChange={(e) => setEditForm({ ...editForm, ctLogIds: e.target.value })} className={inputClass} aria-describedby="cp-edit-ct-logs-hint" />
+                                <FieldHint id="cp-edit-ct-logs-hint">{CT_LOG_IDS_HINT}</FieldHint>
+                            </div>
                             <div>
                                 <label className={labelClass}>Inherits From</label>
                                 <select value={editForm.inheritsFromId} onChange={(e) => setEditForm({ ...editForm, inheritsFromId: e.target.value })} className={inputClass}>
@@ -215,23 +237,25 @@ const CertProfileDetail: React.FC = () => {
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.ctEnabled} onChange={(e) => setEditForm({ ...editForm, ctEnabled: e.target.checked })} className="w-4 h-4 rounded" />CT Enabled</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
+                        {editForm.ctEnabled && <FieldHint>{CT_ENABLED_HINT}</FieldHint>}
+                        <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
                         <div>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowWildcard} onChange={(e) => setEditForm({ ...editForm, allowWildcard: e.target.checked })} className="w-4 h-4 rounded" />Allow wildcard SAN/CN entries</label>
                             <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance. Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the leftmost label, and at least two labels.</p>
                         </div>
                         <div>
                             <label className={labelClass}>Key Usages</label>
-                            <MultiToggle options={keyUsageCatalog.options} selected={editForm.keyUsages} onChange={(next) => setEditForm({ ...editForm, keyUsages: next })} formatLabel={keyUsageCatalog.label} />
+                            <MultiToggle options={keyUsageCatalog.options} selected={editForm.keyUsages} onChange={(next) => setEditForm({ ...editForm, keyUsages: next })} formatLabel={keyUsageCatalog.label} hint={REQUESTED_USAGE_HINT} />
                             <CatalogGapNotice missing={keyUsageCatalog.missingFromCatalog} kind="key usage" />
                         </div>
                         <div>
                             <label className={labelClass}>Extended Key Usages</label>
-                            <MultiToggle options={ekuCatalog.options} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuCatalog.label} />
+                            <MultiToggle options={ekuCatalog.options} selected={editForm.extendedKeyUsages} onChange={(next) => setEditForm({ ...editForm, extendedKeyUsages: next })} formatLabel={ekuCatalog.label} hint={REQUESTED_USAGE_HINT} />
                             <CatalogGapNotice missing={ekuCatalog.missingFromCatalog} kind="extended key usage" />
                         </div>
-                        <div><label className={labelClass}>Allowed Key Algorithms</label><MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={editForm.allowedKeyAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedKeyAlgorithms: next })} /></div>
-                        <div><label className={labelClass}>Allowed Key Sizes</label><MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={editForm.allowedKeySizes} onChange={(next) => setEditForm({ ...editForm, allowedKeySizes: next })} formatLabel={formatKeySizeLabel} /></div>
-                        <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} /></div>
+                        <div><label className={labelClass}>Allowed Key Algorithms</label><MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={editForm.allowedKeyAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedKeyAlgorithms: next })} hint={CEILING_HINT} /></div>
+                        <div><label className={labelClass}>Allowed Key Sizes</label><MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={editForm.allowedKeySizes} onChange={(next) => setEditForm({ ...editForm, allowedKeySizes: next })} formatLabel={formatKeySizeLabel} hint={CEILING_HINT} /></div>
+                        <div><label className={labelClass}>Allowed Signature Algorithms</label><MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={editForm.allowedSignatureAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} hint={CEILING_HINT} /></div>
                     </div>
                 </DetailSection>
             ) : (<>

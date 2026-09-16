@@ -1,14 +1,24 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
+import { useAuth } from '../context/AuthContext';
+import { can, canAtTenant, tenantsOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
-import { StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
+
+/** ML-DSA and SLH-DSA: the FIPS 204 / FIPS 205 post-quantum signature schemes. */
+const isPostQuantum = (alg: string) => alg.startsWith('ML-DSA') || alg.startsWith('SLH-DSA');
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -47,7 +57,7 @@ const CaManagement: React.FC = () => {
     // CA List state
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Tenant state
     const [tenants, setTenants] = useState<any[]>([]);
@@ -71,7 +81,7 @@ const CaManagement: React.FC = () => {
     const [caCertProfiles, setCaCertProfiles] = useState<any[]>([]);
     const [formPublicBaseUrl, setFormPublicBaseUrl] = useState('');
     const [createLoading, setCreateLoading] = useState(false);
-    const [createError, setCreateError] = useState<string | null>(null);
+    const [createError, setCreateError] = useState<NoticeInput | null>(null);
     const [createSuccess, setCreateSuccess] = useState<string | null>(null);
 
     // Name constraints — committed string[] arrays sent in the POST body
@@ -126,12 +136,40 @@ const CaManagement: React.FC = () => {
         return result;
     };
 
+    const { caId: scopeCaId, tenantId: scopeTenantId, inScope, scope } = useScope();
+    const { capabilities } = useAuth();
+    const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
+    /** System-scoped ca.manage may create in any tenant and under any parent, as the server allows. */
+    const managesAllTenants = isSystemAdmin || can(capabilities, Capabilities.CaManage);
+    /**
+     * The tenants the caller may create a CA in. The tenant list endpoint is system-only, so a
+     * tenant administrator's choices come from their own capabilities instead.
+     */
+    const creatableTenants: Array<{ id: string; name: string }> = managesAllTenants
+        ? tenants.filter(t => t.isEnabled)
+        : tenantsOf(capabilities).filter(t => canAtTenant(capabilities, Capabilities.CaManage, t.id));
+    const canCreateCa = isSystemAdmin || creatableTenants.length > 0;
+
+    /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
+    const subtreeOf = (list: any[], id: string): any | null => {
+        for (const ca of list) {
+            if ((ca.id || ca.caId) === id) return ca;
+            const found = ca.children?.length ? subtreeOf(ca.children, id) : null;
+            if (found) return found;
+        }
+        return null;
+    };
+
     const loadAuthorities = () => {
         setLoading(true);
         setError(null);
         apiGet<any>('/api/v1/admin/authorities/hierarchy')
             .then((data) => {
-                const items = Array.isArray(data) ? data : (data.items || data.authorities || []);
+                const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
+                const scoped = scopeCaId ? subtreeOf(all, scopeCaId) : null;
+                const items = scopeCaId
+                    ? (scoped ? [scoped] : [])
+                    : scopeTenantId ? all.filter((root: any) => inScope(root.id || root.caId)) : all;
                 setAuthorities(items);
                 const flat = flattenCas(items);
                 if (flat.length > 0 && !formParentCa) {
@@ -140,16 +178,25 @@ const CaManagement: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                setError(err.message || 'Failed to load authorities');
+                setError(errorNotice(err, 'Failed to load authorities'));
                 setLoading(false);
             });
     };
 
     useEffect(() => {
-        loadAuthorities();
+        if (!managesAllTenants) return;
         apiGet<any>('/api/v1/admin/tenants')
             .then(data => setTenants(Array.isArray(data) ? data : data.items || []))
             .catch(() => {});
+    }, [managesAllTenants]);
+
+    // A tenant administrator of one tenant has nothing to choose; a system administrator picks.
+    useEffect(() => {
+        if (!formTenant && creatableTenants.length === 1) setFormTenant(creatableTenants[0].id);
+    }, [formTenant, creatableTenants.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        loadAuthorities();
         apiGet<any>('/api/v1/admin/cert-profiles?isCaProfile=true')
             .then(data => {
                 const items = Array.isArray(data) ? data : (data.items || []);
@@ -157,9 +204,35 @@ const CaManagement: React.FC = () => {
                 if (items.length > 0 && !formCertProfile) setFormCertProfile(items[0].id);
             })
             .catch(() => {});
-    }, []);
+    }, [scopeCaId, scopeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const allCasFlat = flattenCas(authorities);
+    /**
+     * Parents the caller may sign under: any CA for a system-scoped holder, otherwise the chosen
+     * tenant's own CAs and any CA they hold ca.manage on. Mirrors CaCreationAccess on the server.
+     */
+    const parentKey = (ca: any) => ca.id || ca.certificateId || ca.name;
+    const parentCandidates = allCasFlat.filter((ca) =>
+        managesAllTenants || (!!formTenant && ca.tenantId === formTenant) || can(capabilities, Capabilities.CaManage, ca.id));
+
+    useEffect(() => {
+        if (!parentCandidates.some((ca) => parentKey(ca) === formParentCa)) {
+            setFormParentCa(parentCandidates[0] ? parentKey(parentCandidates[0]) : '');
+        }
+    }, [formTenant, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    /**
+     * The chosen parent's remaining life in years, so the validity field can warn before the
+     * server truncates or rejects a child that would outlive its issuer. `null` when no parent
+     * applies (a root) or the parent carries no expiry we can read.
+     */
+    const selectedParent = formCaType === 'intermediate' ? parentCandidates.find((ca) => parentKey(ca) === formParentCa) : undefined;
+    const parentNotAfter: string | undefined = selectedParent?.certificate?.notAfter || selectedParent?.notAfter;
+    const parentYearsLeft: number | null = parentNotAfter && !Number.isNaN(new Date(parentNotAfter).getTime())
+        ? (new Date(parentNotAfter).getTime() - Date.now()) / (365.25 * 24 * 60 * 60 * 1000)
+        : null;
+    const requestedYears = parseInt(formValidityYears, 10);
+    const outlivesParent = parentYearsLeft !== null && !Number.isNaN(requestedYears) && requestedYears > parentYearsLeft;
 
     const handleCreateCa = async () => {
         if (!formTenant) {
@@ -226,7 +299,7 @@ const CaManagement: React.FC = () => {
             setFormNameConstraintsExcluded([]);
             loadAuthorities();
         } catch (err: any) {
-            setCreateError(err.message || 'Failed to create CA');
+            setCreateError(errorNotice(err, 'Failed to create CA'));
         } finally {
             setCreateLoading(false);
         }
@@ -256,7 +329,7 @@ const CaManagement: React.FC = () => {
                 rowKey={caKey}
                 loading={loading}
                 error={error}
-                empty="No certificate authorities found"
+                empty={scopeCaId || scopeTenantId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
                 columns={caColumns}
                 selectable
                 exportFileName="certificate-authorities"
@@ -266,6 +339,7 @@ const CaManagement: React.FC = () => {
             />
 
             {/* Section 2: Create Intermediate CA */}
+            {canCreateCa && (
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
                 <button
                     onClick={() => setCreateExpanded(!createExpanded)}
@@ -281,7 +355,7 @@ const CaManagement: React.FC = () => {
                             <label className={labelClass}>Tenant *</label>
                             <select value={formTenant} onChange={(e) => setFormTenant(e.target.value)} className={inputClass}>
                                 <option value="">-- Select Tenant --</option>
-                                {tenants.filter(t => t.isEnabled).map(t => (
+                                {creatableTenants.map(t => (
                                     <option key={t.id} value={t.id}>{t.name}</option>
                                 ))}
                             </select>
@@ -289,12 +363,14 @@ const CaManagement: React.FC = () => {
 
                         {/* CA Type Toggle */}
                         <div className="flex gap-2">
+                            {isSystemAdmin && (
                             <button
                                 onClick={() => { setFormCaType('root'); setFormValidityYears('25'); }}
                                 className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'root' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
                             >
                                 Root CA
                             </button>
+                            )}
                             <button
                                 onClick={() => { setFormCaType('intermediate'); setFormValidityYears('10'); }}
                                 className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'intermediate' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
@@ -340,6 +416,11 @@ const CaManagement: React.FC = () => {
                                     <option value="ML-DSA-87">ML-DSA-87</option>
                                     <option value="SLH-DSA-SHA2-128F">SLH-DSA-SHA2-128F</option>
                                 </select>
+                                <FieldHint tone={isPostQuantum(formKeyAlg) ? 'warn' : 'muted'}>
+                                    {isPostQuantum(formKeyAlg)
+                                        ? 'ML-DSA and SLH-DSA are post-quantum signature schemes. Almost nothing validates them yet: browsers, operating-system trust stores, TLS stacks and most PKI tooling will reject or fail to parse certificates this CA signs. Use them for a lab or a dedicated PQ hierarchy, not for a CA anything in production has to trust.'
+                                        : 'RSA and ECDSA are validated everywhere; Ed25519 and Ed448 by most current software. ML-DSA and SLH-DSA are post-quantum and almost nothing validates them yet.'}
+                                </FieldHint>
                             </div>
                             {formKeyAlg !== 'Ed25519' && formKeyAlg !== 'Ed448' && !formKeyAlg.startsWith('ML-DSA') && !formKeyAlg.startsWith('SLH-DSA') && (
                             <div>
@@ -370,7 +451,14 @@ const CaManagement: React.FC = () => {
                             )}
                             <div>
                                 <label className={labelClass}>Validity (Years)</label>
-                                <input type="text" inputMode="numeric" value={formValidityYears} onChange={(e) => setFormValidityYears(e.target.value.replace(/\D/g, ''))} className={inputClass} />
+                                <input type="text" inputMode="numeric" value={formValidityYears} onChange={(e) => setFormValidityYears(e.target.value.replace(/\D/g, ''))} className={inputClass} aria-describedby="ca-validity-hint" />
+                                {outlivesParent && parentNotAfter ? (
+                                    <FieldHint id="ca-validity-hint" tone="warn">
+                                        Longer than the parent has left: {selectedParent?.name || selectedParent?.subjectDN || 'the parent CA'} expires {formatDate(parentNotAfter)}, about {parentYearsLeft!.toFixed(1)} years from now. A CA certificate cannot be trusted past its issuer's expiry, so the effective life would be capped there (or the request refused). Shorten the validity or renew the parent first.
+                                    </FieldHint>
+                                ) : formCaType === 'intermediate' && parentNotAfter ? (
+                                    <FieldHint id="ca-validity-hint">Parent expires {formatDate(parentNotAfter)}; this CA must not outlive it.</FieldHint>
+                                ) : null}
                             </div>
                             <div>
                                 <label className={labelClass}>Label (optional, auto-generated from CN if empty)</label>
@@ -380,9 +468,9 @@ const CaManagement: React.FC = () => {
                                 <div>
                                     <label className={labelClass}>Parent CA *</label>
                                     <select value={formParentCa} onChange={(e) => setFormParentCa(e.target.value)} className={inputClass}>
-                                        {allCasFlat.length === 0 && <option value="">No CAs available</option>}
-                                        {allCasFlat.map((ca) => {
-                                            const id = ca.id || ca.certificateId || ca.name;
+                                        {parentCandidates.length === 0 && <option value="">{formTenant ? 'No CA you may sign under in this tenant' : 'Select a tenant first'}</option>}
+                                        {parentCandidates.map((ca) => {
+                                            const id = parentKey(ca);
                                             return (
                                                 <option key={id} value={id}>
                                                     {ca.name || ca.subjectDN}
@@ -480,7 +568,7 @@ const CaManagement: React.FC = () => {
 
                         {createError && (
                             <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
-                                <p className="text-sm text-red-800 dark:text-red-300">{createError}</p>
+                                <InlineNotice notice={createError} variant="line" />
                             </div>
                         )}
                         {createSuccess && (
@@ -491,6 +579,7 @@ const CaManagement: React.FC = () => {
                     </div>
                 )}
             </div>
+            )}
 
         </div>
     );

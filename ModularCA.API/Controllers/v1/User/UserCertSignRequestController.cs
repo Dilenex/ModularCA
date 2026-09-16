@@ -1,4 +1,7 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
@@ -25,7 +28,7 @@ namespace ModularCA.API.Controllers.v1.User;
 /// </summary>
 [ApiController]
 [Route("api/v1/user/requests")]
-[Authorize(Policy = "CaUser")]
+[Authorize]
 public class UserCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,
@@ -44,6 +47,7 @@ public class UserCertSignRequestController(
     /// Lists all certificate signing requests submitted by the authenticated user, ordered by most recent first.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaUser")]
     public async Task<IActionResult> GetMyRequests()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -69,6 +73,8 @@ public class UserCertSignRequestController(
     }
 
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> Generate([FromBody] CreateCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -79,6 +85,8 @@ public class UserCertSignRequestController(
     }
 
     [HttpPost("upload")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> UploadCsrRequest([FromBody] UploadCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -98,6 +106,8 @@ public class UserCertSignRequestController(
     /// Once issued, the user can download the PFX via the certificate export endpoint.
     /// </summary>
     [HttpPost("request-with-key")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "req.SigningProfileId")]
     public async Task<IActionResult> RequestWithServerKey([FromBody] IssueWithKeyRequest req)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -228,6 +238,8 @@ public class UserCertSignRequestController(
     /// Parses a PEM-encoded CSR and returns subject, SANs, key info, and signature validation.
     /// </summary>
     [HttpPost("parse-csr")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.AnyCa)]
     public IActionResult ParseCsr([FromBody] ParseCsrRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Pem))
@@ -255,6 +267,8 @@ public class UserCertSignRequestController(
     /// never as "valid" — so a broken profile is visible here instead of previewing as a pass.
     /// </summary>
     [HttpPost("validate-against-profile")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.AnyCa)]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
     {
         var profile = await _db.RequestProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == request.RequestProfileId);

@@ -4,106 +4,25 @@ import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
 import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { useScope } from '../context/ScopeContext';
+import { PORTAL, PORTAL_LABEL } from '../portal';
+import { scopeLabel } from '../scope';
 import LogPanel from './LogPanel';
+import TopBar from './TopBar';
+import { switchBadge } from './BadgeSwitcher';
+import { useStepUp } from './StepUpMfaContext';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
-interface NavItem {
-    name: string;
-    path: string;
-    icon: string;
-    /**
-     * Optional list of role levels the current user must hold
-     * for this nav item to render. Omit for entries every authenticated user can see.
-     * SystemAdmin satisfies any required role (matches AuthContext.hasAnyRole).
-     */
-    requiredRoles?: string[];
-}
-
-interface NavSection {
-    title: string;
-    items: NavItem[];
-}
-
-// Keep these role lists in sync with the matching ProtectedRoute
-// declarations in App.tsx so a hidden link cannot be reached by typing the URL.
-const ADMIN_ONLY = ['Administrator'];
-const ADMIN_OPERATOR = ['Administrator', 'Operator'];
-const ADMIN_AUDITOR = ['Administrator', 'Auditor'];
-
-const navSections: NavSection[] = [
-    {
-        title: 'Overview',
-        items: [
-            { name: 'Dashboard', path: '/dashboard', icon: '\u2302' },
-            { name: 'System Health', path: '/health', icon: '\u2665', requiredRoles: ADMIN_OPERATOR },
-        ]
-    },
-    {
-        title: 'Certificates',
-        items: [
-            { name: 'All Certificates', path: '/certificates', icon: '\u2387' },
-            { name: 'Request Certificate', path: '/certificates/request', icon: '+' },
-            { name: 'Pending Requests', path: '/certificates/requests', icon: '\u2709' },
-            { name: 'Cert Inventory', path: '/intel/inventory', icon: '\u2690' },
-            { name: 'Compliance', path: '/intel/compliance', icon: '\u2611', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Expiry Calendar', path: '/certificates/expiry', icon: '\u2612' },
-        ]
-    },
-    {
-        title: 'CA Management',
-        items: [
-            { name: 'Authorities', path: '/authorities/manage', icon: '\u26BF', requiredRoles: ADMIN_ONLY },
-            { name: 'Profiles', path: '/profiles', icon: '\u2630', requiredRoles: ADMIN_OPERATOR },
-            // TEMPLATES HIDDEN \u2014 Certificate templates are CRUD-only and not consumed by any
-            // issuance path (no enrollment/ACME/SCEP/EST/CMP/SSH flow reads a template; the
-            // CaResolverService.ResolveByTemplateAsync resolver exists but has no caller). Removed
-            // from navigation so operators aren't misled into thinking templates govern issuance.
-            // The /templates route is still registered in App.tsx and reachable by direct URL.
-            // RE-IMPLEMENT: wire templates into issuance (add an optional templateId to the
-            // enrollment/issuance request paths and call ResolveByTemplateAsync) before restoring
-            // this nav entry. See also the banner in CertificateTemplates.tsx.
-            // { name: 'Templates', path: '/templates', icon: '\u2702', requiredRoles: ADMIN_OPERATOR },
-            { name: 'CA Distribution', path: '/distribution', icon: '\u2716', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Trust Anchors', path: '/trust-anchors', icon: '\u2693', requiredRoles: ADMIN_ONLY },
-            { name: 'SSH CA', path: '/ssh', icon: '\u2318' },
-            { name: 'Protocol Config', path: '/authorities/protocols', icon: '\u21C4', requiredRoles: ADMIN_ONLY },
-        ]
-    },
-    {
-        title: 'Access & Identity',
-        items: [
-            { name: 'Users', path: '/users', icon: '\u263A', requiredRoles: ADMIN_ONLY },
-            { name: 'Groups', path: '/groups', icon: '\u2302', requiredRoles: ADMIN_ONLY },
-            { name: 'Roles', path: '/roles', icon: '\u2606', requiredRoles: ADMIN_ONLY },
-            { name: 'Enrollment', path: '/enrollment', icon: '\u2611', requiredRoles: ADMIN_OPERATOR },
-            { name: 'ACME', path: '/acme', icon: 'A', requiredRoles: ADMIN_OPERATOR },
-        ]
-    },
-    {
-        title: 'Administration',
-        items: [
-            // Ceremonies covers both key ceremonies (CA key ops) and controlled-user approvals
-            // (promote/demote/delete of privileged users), so it lives with governance/oversight
-            // here rather than CA Management; its quorum config is in Settings, also Administration.
-            // Placed at the top of this group as it's used more often than the rest.
-            { name: 'Ceremonies', path: '/ceremonies', icon: '\u2638', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Tenants & Quotas', path: '/tenants', icon: '\u2616', requiredRoles: ADMIN_ONLY },
-            { name: 'Settings', path: '/settings', icon: '\u2699', requiredRoles: ADMIN_ONLY },
-            { name: 'Audit Logs', path: '/audit', icon: '\u2709', requiredRoles: ADMIN_AUDITOR },
-            { name: 'Notifications', path: '/notifications', icon: '\u2709', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Whitelists', path: '/whitelists', icon: '\u26E8', requiredRoles: ADMIN_ONLY },
-            { name: 'Backup & Restore', path: '/backup', icon: '\u2B07', requiredRoles: ADMIN_ONLY },
-            { name: 'Schedules', path: '/schedules', icon: '\u29D6', requiredRoles: ADMIN_ONLY },
-            { name: 'Web TLS Certificate', path: '/webtls', icon: '\u26BF', requiredRoles: ADMIN_ONLY },
-        ]
-    }
-];
+import { navSections } from '../nav';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const location = useLocation();
     const { theme, toggleTheme } = useTheme();
-    const { hasAnyRole, loading: authLoading } = useAuth();
+    const { user, loading: authLoading } = useAuth();
+    const { requireStepUp } = useStepUp();
+    const [badgeBusy, setBadgeBusy] = useState(false);
+    const { allows, scope, linkScope } = useScope();
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -147,16 +66,16 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         setCollapsed(prev => ({ ...prev, [title]: !prev[title] }));
     };
 
-    // Hide nav items the user cannot reach. While the auth
+    // Hide nav items the user cannot reach under the selected scope. While the auth
     // context hydrates we render every link to avoid a content flash; the
-    // ProtectedRoute server-side gate is still authoritative.
+    // ProtectedRoute gate and the API remain authoritative.
     const visibleSections = navSections
         .map(section => ({
             ...section,
             items: section.items.filter(item => {
-                if (!item.requiredRoles || item.requiredRoles.length === 0) return true;
+                if (!item.gate) return true;
                 if (authLoading) return true;
-                return hasAnyRole(item.requiredRoles);
+                return allows(item.gate);
             }),
         }))
         .filter(section => section.items.length > 0);
@@ -174,7 +93,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                             v{APP_VERSION}
                         </span>
                     </h2>
-                    <p className="text-xs text-gray-600">Administration</p>
+                    <p className="text-xs text-gray-600">{PORTAL_LABEL}</p>
                 </Link>
                 <button
                     onClick={toggleTheme}
@@ -203,7 +122,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         {!collapsed[section.title] && (
                             <ul className="px-2 space-y-0.5">
                                 {section.items.map(item => {
-                                    const isActive = location.pathname === item.path;
+                                    const isActive = location.pathname === item.path ||
+                                        (PORTAL === 'user' && item.path !== '/dashboard' && location.pathname.startsWith(item.path));
                                     return (
                                         <li key={item.path}>
                                             <Link
@@ -274,6 +194,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             )}
 
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                <TopBar onOpenSidebar={() => setSidebarOpen(true)} />
                 {/* Deploy-drift banner: UI bundle and API report different versions. */}
                 {showDrift && serverVersion && (
                     <div
@@ -282,7 +203,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     >
                         <span>
                             <span className="font-semibold">Version mismatch.</span>{' '}
-                            This admin UI is <span className="font-mono">v{APP_VERSION}</span> but the server is{' '}
+                            This console is <span className="font-mono">v{APP_VERSION}</span> but the server is{' '}
                             <span className="font-mono">v{serverVersion.version}</span>. Reload once the deploy finishes;
                             if it persists, the UI and API were built from different versions.
                         </span>
@@ -304,24 +225,54 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </div>
                 )}
 
-                {/* Mobile header with hamburger menu */}
-                <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800">
-                    <button
-                        onClick={() => setSidebarOpen(true)}
-                        className="p-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                {/* A link set the scope. Say so, and offer the way back, so following a link
+                    never quietly moves someone out of the scope they work in. */}
+                {linkScope && (
+                    <div
+                        role="status"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-sky-50 dark:bg-sky-900/30 border-b border-sky-300 dark:border-sky-700 text-[11px] text-sky-900 dark:text-sky-200"
                     >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                        </svg>
-                    </button>
-                    <span className="text-base font-bold text-blue-800 dark:text-blue-400">ModularCA</span>
-                    <span className="text-xs text-gray-600">Administration</span>
-                </header>
+                        <span>
+                            <span className="font-semibold">Scope set by this link:</span> {scopeLabel(scope)}.
+                            {' '}Your usual scope is {scopeLabel(linkScope.usual)}; navigating elsewhere returns to it.
+                        </span>
+                        <span className="flex items-center gap-3 flex-shrink-0">
+                            <button onClick={linkScope.leave} className="font-semibold underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                                Back to {scopeLabel(linkScope.usual)}
+                            </button>
+                            <button onClick={linkScope.keep} className="underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                                Keep {scopeLabel(scope)}
+                            </button>
+                        </span>
+                    </div>
+                )}
+
+                {/* Worn-badge banner. Persistent while a badge is worn, absent when badgeless:
+                    forgetting which hat you wear is the classic failure of these features. */}
+                {user?.badge && (
+                    <div
+                        role="status"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-violet-50 dark:bg-violet-900/30 border-b border-violet-300 dark:border-violet-700 text-[11px] text-violet-900 dark:text-violet-200"
+                    >
+                        <span>
+                            <span className="font-semibold">Wearing badge:</span> {user.badge.name}. This session holds only the rights the badge keeps.
+                        </span>
+                        <button
+                            onClick={async () => { setBadgeBusy(true); try { await switchBadge(null, requireStepUp); } catch { setBadgeBusy(false); } }}
+                            disabled={badgeBusy}
+                            className="font-semibold underline hover:text-violet-950 dark:hover:text-white transition-colors disabled:opacity-60 flex-shrink-0"
+                        >
+                            Take off
+                        </button>
+                    </div>
+                )}
+
 
                 {/* Explicit landmark + id so a future skip-to-content link
                     can target the main region. */}
                 <main id="content" role="main" className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900">{children}</main>
-                <LogPanel />
+                {/* The live audit tail reads admin audit endpoints; self-service users cannot. */}
+                {PORTAL === 'admin' && <LogPanel />}
 
                 {/* AGPL section 13 source offer. In the content column rather than the sidebar:
                     sidebarContent is rendered twice (desktop rail and mobile overlay), so a copy

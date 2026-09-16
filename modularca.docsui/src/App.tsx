@@ -33,10 +33,10 @@ function isAuthenticated(): boolean {
     return true;
 }
 
-/** Redirect to the admin login page, preserving the current docs path as returnUrl. */
+/** Redirect to the console's sign-in page, preserving the current docs path as returnUrl. */
 function redirectToLogin(): void {
     const returnUrl = window.location.pathname + window.location.search;
-    window.location.href = `/admin/login?returnUrl=${encodeURIComponent(returnUrl)}`;
+    window.location.href = `/login?returnUrl=${encodeURIComponent(returnUrl)}`;
 }
 
 interface NavItem {

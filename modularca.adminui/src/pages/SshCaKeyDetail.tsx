@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -37,7 +40,7 @@ const SshCaKeyDetail: React.FC = () => {
 
     const [key, setKey] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [disabling, setDisabling] = useState(false);
@@ -53,7 +56,7 @@ const SshCaKeyDetail: React.FC = () => {
                 setKey(list.find((k: any) => k.id === id) || null);
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load CA key'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load CA key')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -94,7 +97,7 @@ const SshCaKeyDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!key) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">SSH CA key not found.</p>

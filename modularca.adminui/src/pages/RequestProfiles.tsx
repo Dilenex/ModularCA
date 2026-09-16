@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -7,7 +9,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
-import { caRowId, caDisplayName } from './profileHelpers';
+import { caRowId, caDisplayName, DurationHint, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import {
     RequestProfileRulesEditor, emptyRules, serializeRules,
@@ -38,7 +40,7 @@ const RequestProfiles: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
@@ -65,7 +67,7 @@ const RequestProfiles: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/request-profiles')
             .then((data) => setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -179,7 +181,8 @@ const RequestProfiles: React.FC = () => {
                         </div>
                         <div>
                             <label className={labelClass}>Max Validity Period (ISO 8601)</label>
-                            <input type="text" value={form.maxValidityPeriod} onChange={(e) => setForm({ ...form, maxValidityPeriod: e.target.value })} className={inputClass} placeholder="e.g. P365D or P1Y" />
+                            <input type="text" value={form.maxValidityPeriod} onChange={(e) => setForm({ ...form, maxValidityPeriod: e.target.value })} className={inputClass} placeholder="e.g. P365D or P1Y" aria-describedby="rp-create-validity-hint" />
+                            <DurationHint id="rp-create-validity-hint" value={form.maxValidityPeriod} />
                         </div>
                         <div>
                             <label className={labelClass}>Default Certificate Profile</label>
@@ -217,6 +220,7 @@ const RequestProfiles: React.FC = () => {
                             Enable Inheritance
                         </label>
                     </div>
+                    <InheritanceHint inheritsFromId={form.inheritsFromId} inheritanceEnabled={form.inheritanceEnabled} />
 
                     <RequestProfileRulesEditor
                         value={form.rules}
@@ -224,9 +228,13 @@ const RequestProfiles: React.FC = () => {
                     />
 
 
-                    <button onClick={handleCreate} disabled={creating || !form.name} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                    <button onClick={handleCreate} disabled={creating || !form.name || inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
+                    <SubmitBlockedHint reasons={[
+                        !form.name && 'A name is required before the profile can be created.',
+                        inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled) && 'Resolve the inheritance settings above: either choose a parent and turn inheritance on, or clear both.',
+                    ]} />
                 </div>
             )}
 

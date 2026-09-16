@@ -217,10 +217,10 @@ export default function UserUiGuide() {
                         The User UI includes the same authentication flow as the Admin UI:
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mt-2">
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/user/login</code> — Login form</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/user/mfa-setup</code> — First-time MFA enrollment</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/user/mfa-verify</code> — MFA challenge verification</li>
-                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/user/mfa-callback</code> — WebAuthn callback handler</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/login</code> — Login form, shared with the management console</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-setup</code> — First-time MFA enrollment</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-verify</code> — MFA challenge verification</li>
+                        <li><code className="text-sm bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded">/mfa-callback</code> — WebAuthn callback handler</li>
                     </ul>
                 </div>
             </section>

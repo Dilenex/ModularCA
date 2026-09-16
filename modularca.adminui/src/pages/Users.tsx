@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -6,6 +8,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import ServiceIdentitiesPanel from '../components/ServiceIdentitiesPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -51,12 +54,13 @@ const Users: React.FC = () => {
     const [users, setUsers] = useState<any[]>([]);
     const [allGroups, setAllGroups] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [search, setSearch] = useState('');
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', firstName: '', lastName: '', groupIds: [] as string[] });
     const [creating, setCreating] = useState(false);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+    const [tab, setTab] = useState<'people' | 'service'>('people');
 
     useEffect(() => {
         let cancelled = false;
@@ -70,7 +74,7 @@ const Users: React.FC = () => {
             setUsers(Array.isArray(usersData) ? usersData : (usersData.items || usersData.users || []));
             setAllGroups(Array.isArray(groupsData) ? groupsData : (groupsData.items || groupsData.groups || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load users'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load users')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
@@ -144,13 +148,28 @@ const Users: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Users</h1>
-                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
-                    {showCreate ? 'Cancel' : 'Create User'}
-                </button>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-4">
+                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Users</h1>
+                    <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
+                        {([['people', 'People'], ['service', 'Service identities']] as const).map(([k, label]) => (
+                            <button key={k} onClick={() => setTab(k)}
+                                className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                {tab === 'people' && (
+                    <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                        {showCreate ? 'Cancel' : 'Create User'}
+                    </button>
+                )}
             </div>
 
+            {tab === 'service' && <ServiceIdentitiesPanel />}
+
+            {tab === 'people' && (<>
             {/* Create User Form */}
             {showCreate && (
                 <form onSubmit={handleCreate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
@@ -193,12 +212,12 @@ const Users: React.FC = () => {
 
             <DataTable<any>
                 tableId="users"
-                title="All Users"
+                title="Users"
                 rows={filteredUsers}
                 rowKey={(u) => u.id || u.username}
                 loading={loading}
                 error={error}
-                empty="No users found"
+                empty={search ? 'No users match this search' : 'No users found'}
                 columns={columns}
                 selectable
                 exportFileName="users"
@@ -206,6 +225,7 @@ const Users: React.FC = () => {
                 drawerTitle={(u) => u.username}
                 detailPath={(u) => `/users/${u.id || u.username}`}
             />
+            </>)}
         </div>
     );
 };

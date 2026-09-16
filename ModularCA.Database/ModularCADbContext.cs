@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
@@ -121,6 +121,14 @@ public class ModularCADbContext : DbContext
     public DbSet<CertificateAuthorityEntity> CertificateAuthorities { get; set; }
 
     public DbSet<RefreshTokenEntity> RefreshTokens { get; set; }
+
+    /// <summary>Access badges: named subsets of a user's own grant sources a session can wear.</summary>
+    public DbSet<AccessBadgeEntity> AccessBadges { get; set; }
+    public DbSet<AccessBadgeSourceEntity> AccessBadgeSources { get; set; }
+
+    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
+    public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
+    public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
 
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
@@ -531,6 +539,9 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertificateTemplateEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
+            // A Windows client names a template by OID, so two templates must never share one.
+            // Nulls (templates not offered to Windows) are exempt from the uniqueness check.
+            entity.HasIndex(e => e.MsaeTemplateOid).IsUnique();
             entity.HasOne(e => e.Ca)
                   .WithMany()
                   .HasForeignKey(e => e.CaId)
@@ -762,6 +773,55 @@ public class ModularCADbContext : DbContext
         });
 
         // User capability grants — direct one-off grants on users
+        modelBuilder.Entity<AccessBadgeEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AccessBadgeSourceEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.BadgeId, e.Kind, e.SourceId }).IsUnique();
+            entity.HasOne(e => e.Badge)
+                  .WithMany(b => b.Sources)
+                  .HasForeignKey(e => e.BadgeId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserEntity>(entity =>
+        {
+            entity.HasIndex(e => e.IsServiceIdentity);
+            entity.HasIndex(e => e.ServiceScopeTenantId);
+            entity.HasIndex(e => e.ServiceScopeCaId);
+        });
+
+        modelBuilder.Entity<KerberosRealmEntity>(entity =>
+        {
+            entity.HasIndex(e => e.Realm).IsUnique();
+            entity.HasIndex(e => e.TenantId);
+            entity.HasOne(e => e.Tenant)
+                  .WithMany()
+                  .HasForeignKey(e => e.TenantId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.EnrollmentUser)
+                  .WithMany()
+                  .HasForeignKey(e => e.EnrollmentUserId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<KerberosRealmKeyEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.RealmId, e.Kvno, e.EncryptionType }).IsUnique();
+            entity.Property(e => e.Source).HasConversion<string>().HasMaxLength(16);
+            entity.HasOne(e => e.Realm)
+                  .WithMany(r => r.Keys)
+                  .HasForeignKey(e => e.RealmId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.Capability });

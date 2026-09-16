@@ -1,3 +1,5 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,7 +21,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/acme/eab-keys")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminAcmeEabController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
@@ -33,6 +35,7 @@ public class AdminAcmeEabController(
     /// Lists all EAB keys, including used and expired ones.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> ListEabKeys()
     {
         var keys = await _db.AcmeEabKeys
@@ -59,6 +62,8 @@ public class AdminAcmeEabController(
     /// be securely distributed to the ACME client.
     /// </summary>
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
     public async Task<IActionResult> CreateEabKey([FromBody] CreateEabKeyRequest? request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -103,6 +108,8 @@ public class AdminAcmeEabController(
     /// Deletes an EAB key by its database ID. Used keys can also be deleted.
     /// </summary>
     [HttpDelete("{id:guid}")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
     [RequireStepUp(StepUpOps.DeleteEabKey, "id")]
     public async Task<IActionResult> DeleteEabKey(Guid id)
     {

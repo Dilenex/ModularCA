@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiPutWithMfa } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -28,7 +33,7 @@ interface Whitelist {
 type WhitelistScope = Whitelist['scope'];
 
 const SCOPES: WhitelistScope[] = ['System', 'Setup', 'Admin', 'Auth', 'Api', 'ShortUrl', 'Ca', 'Protocol'];
-const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'OCSP', 'TSA', 'CRL', 'CA'];
+const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'MSAE', 'OCSP', 'TSA', 'CRL', 'CA'];
 
 /// <summary>
 /// Validates a single CIDR string. Accepts IPv4 (optionally with /prefix)
@@ -70,14 +75,14 @@ const Whitelists: React.FC = () => {
     const [whitelists, setWhitelists] = useState<Whitelist[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     // Modal / form state
     const [showModal, setShowModal] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [form, setForm] = useState<FormState>(emptyForm);
-    const [formError, setFormError] = useState<string | null>(null);
+    const [formError, setFormError] = useState<NoticeInput | null>(null);
     const [saving, setSaving] = useState(false);
 
     // Bulk-delete confirm modal state
@@ -106,7 +111,7 @@ const Whitelists: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                if (!cancelled) { setError(err.message || 'Failed to load whitelists'); setLoading(false); }
+                if (!cancelled) { setError(errorNotice(err, 'Failed to load whitelists')); setLoading(false); }
             });
 
         return () => { cancelled = true; };
@@ -163,7 +168,7 @@ const Whitelists: React.FC = () => {
             closeModal();
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {
-            setFormError(err.message || 'Failed to save whitelist');
+            setFormError(errorNotice(err, 'Failed to save whitelist'));
         } finally {
             setSaving(false);
         }
@@ -173,6 +178,7 @@ const Whitelists: React.FC = () => {
     /// Bulk enable/disable selected rules. Skips rows already in the target state, runs sequentially,
     /// and aborts the batch if the operator cancels a step-up prompt.
     /// </summary>
+    const [confirmToggle, setConfirmToggle] = useState<{ rows: Whitelist[]; enabled: boolean } | null>(null);
     const bulkSetEnabled = async (rows: Whitelist[], enabled: boolean) => {
         const targets = rows.filter((wl) => wl.isEnabled !== enabled);
         if (targets.length === 0) { showToast('info', `All selected are already ${enabled ? 'enabled' : 'disabled'}.`); return; }
@@ -216,70 +222,70 @@ const Whitelists: React.FC = () => {
         });
     }, [whitelists]);
 
-    const columns: DataTableColumn<Whitelist>[] = useMemo(() => [
-        {
-            key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false,
-            exportValue: (wl) => wl.name,
-            render: (wl) => (
-                <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                        <span className="text-gray-900 dark:text-white font-medium truncate">{wl.name}</span>
-                        {wl.isSystemDefault && (
-                            <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded shrink-0">System Default</span>
-                        )}
+    const record: RecordDescriptor<Whitelist> = useMemo(() => ({
+        kind: 'whitelist',
+        key: (wl) => wl.id,
+        title: (wl) => wl.name,
+        status: (wl) => ({ label: wl.isEnabled ? 'Enabled' : 'Disabled', tone: wl.isEnabled ? 'ok' : 'neutral' }),
+        columns: [
+            {
+                key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, sortable: true,
+                exportValue: (wl) => wl.name,
+                render: (wl) => (
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                            <span className="text-gray-900 dark:text-white font-medium truncate">{wl.name}</span>
+                            {wl.isSystemDefault && (
+                                <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded shrink-0">System Default</span>
+                            )}
+                        </div>
+                        {wl.description && <div className="text-xs text-gray-600 truncate">{wl.description}</div>}
                     </div>
-                    {wl.description && <div className="text-xs text-gray-600 truncate">{wl.description}</div>}
-                </div>
-            ),
-        },
-        { key: 'scope', header: 'Scope', defaultWidth: 100, exportValue: (wl) => wl.scope, truncate: false,
-            render: (wl) => <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span> },
-        { key: 'protocol', header: 'Protocol', defaultWidth: 90, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
-        { key: 'ca', header: 'CA', defaultWidth: 150, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
-        { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
-        { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),
-            render: (wl) => (
-                <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-                    ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
-            ) },
-        { key: 'updated', header: 'Updated', defaultWidth: 150, exportValue: (wl) => wl.updatedAt, render: (wl) => formatDate(wl.updatedAt) },
+                ),
+            },
+            { key: 'scope', header: 'Scope', defaultWidth: 100, sortable: true, exportValue: (wl) => wl.scope, truncate: false,
+                render: (wl) => <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span> },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 90, sortable: true, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
+            { key: 'ca', header: 'CA', defaultWidth: 150, sortable: true, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
+            { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', sortable: true, sortValue: (wl) => (wl.cidrs || []).length, exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
+            { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (wl) => wl.isEnabled, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),
+                render: (wl) => (
+                    <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
+                        ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
+                ) },
+            { key: 'updated', header: 'Updated', defaultWidth: 150, sortable: true, sortValue: (wl) => wl.updatedAt ? new Date(wl.updatedAt) : null, exportValue: (wl) => wl.updatedAt, render: (wl) => formatDate(wl.updatedAt) },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Scope', value: (wl) => wl.scope },
+                { label: 'System Default', value: (wl) => (wl.isSystemDefault ? 'Yes' : null) },
+                { label: 'Description', value: (wl) => wl.description },
+                { label: 'Protocol', value: (wl) => wl.protocol },
+                { label: 'CA', value: (wl) => caNameById(wl.certificateAuthorityId) },
+                { label: 'Created', value: (wl) => formatDate(wl.createdAt) },
+                { label: 'Updated', value: (wl) => formatDate(wl.updatedAt) },
+            ] },
+            { title: 'CIDRs', fields: [
+                { label: 'Rules', value: (wl) => (
+                    <div className="max-h-60 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
+                        {(wl.cidrs || []).length === 0
+                            ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
+                            : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
+                    </div>
+                ) },
+            ] },
+        ],
+        audit: { tab: 'General', target: (wl) => ({ type: 'Whitelist', id: wl.id }) },
+        page: { path: (wl) => `/whitelists/${wl.id}` },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    ], [authorities]);
-
-    const renderDrawer = (wl: Whitelist) => (
-        <div className="space-y-3 text-sm">
-            <div className="flex items-center gap-2 flex-wrap">
-                <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-                    ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
-                <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span>
-                {wl.isSystemDefault && <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded">System Default</span>}
-            </div>
-            {wl.description && <p className="text-gray-700 dark:text-gray-300">{wl.description}</p>}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <div><span className="text-gray-500">Protocol</span><div className="text-gray-900 dark:text-white">{wl.protocol || '-'}</div></div>
-                <div><span className="text-gray-500">CA</span><div className="text-gray-900 dark:text-white truncate">{caNameById(wl.certificateAuthorityId)}</div></div>
-                <div><span className="text-gray-500">Created</span><div className="text-gray-900 dark:text-white">{formatDate(wl.createdAt)}</div></div>
-                <div><span className="text-gray-500">Updated</span><div className="text-gray-900 dark:text-white">{formatDate(wl.updatedAt)}</div></div>
-            </div>
-            <div>
-                <span className="text-gray-500 text-xs">CIDRs ({(wl.cidrs || []).length})</span>
-                <div className="mt-1 max-h-60 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
-                    {(wl.cidrs || []).length === 0
-                        ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
-                        : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
-                </div>
-            </div>
-            <p className="text-[11px] text-gray-500">Select the row in the table to edit, enable/disable, or delete.</p>
-        </div>
-    );
+    }), [authorities]);
 
     // Edit moved to the per-entry detail page (open via the drawer's "Open full page", then the
     // View/Edit toggle). The modal below is now create-only.
     const bulkActions: DataTableBulkAction<Whitelist>[] = [
-        { label: 'Enable', onClick: (rows) => bulkSetEnabled(rows, true) },
-        { label: 'Disable', onClick: (rows) => bulkSetEnabled(rows, false) },
+        { label: 'Enable', onClick: (rows) => setConfirmToggle({ rows, enabled: true }) },
+        { label: 'Disable', onClick: (rows) => setConfirmToggle({ rows, enabled: false }) },
         { label: 'Delete', variant: 'danger', enabledFor: (wl) => !wl.isSystemDefault, onClick: (rows) => setConfirmBulk(rows) },
     ];
 
@@ -303,17 +309,13 @@ const Whitelists: React.FC = () => {
                 tableId="whitelists"
                 title="Rules"
                 rows={sorted}
-                rowKey={(wl) => wl.id}
                 loading={loading}
                 error={error}
                 empty="No whitelist rules found. They are normally seeded on first bootstrap — reload after running setup."
-                columns={columns}
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="whitelists"
-                renderDrawer={renderDrawer}
-                drawerTitle={(wl) => wl.name}
-                detailPath={(wl) => `/whitelists/${wl.id}`}
+                {...recordTableProps(record)}
             />
 
             {/* Create/Edit Modal */}
@@ -381,7 +383,7 @@ const Whitelists: React.FC = () => {
                             </div>
                             {formError && (
                                 <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
-                                    <p className="text-sm text-red-800 dark:text-red-300">{formError}</p>
+                                    <InlineNotice notice={formError} variant="line" />
                                 </div>
                             )}
                         </div>
@@ -395,6 +397,28 @@ const Whitelists: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            <ConfirmModal
+
+                isOpen={!!confirmToggle}
+
+                title={confirmToggle?.enabled ? `Enable ${confirmToggle.rows.length} rule(s)?` : `Disable ${confirmToggle?.rows.length ?? 0} rule(s)?`}
+
+                message={confirmToggle?.enabled
+
+                    ? 'An enabled rule with an empty address list blocks every address for what it matches, including yours. Check that your own address is covered before enabling.'
+
+                    : 'Disabling a rule removes its protection immediately. If it was the rule letting you in, the next rule that matches decides, and a rule with no address list blocks everything.'}
+
+                confirmLabel={confirmToggle?.enabled ? 'Enable' : 'Disable'}
+
+                confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+
+                onConfirm={() => { const t = confirmToggle; setConfirmToggle(null); if (t) bulkSetEnabled(t.rows, t.enabled); }}
+
+                onCancel={() => setConfirmToggle(null)}
+
+            />
 
             <ConfirmModal
                 isOpen={!!confirmBulk}

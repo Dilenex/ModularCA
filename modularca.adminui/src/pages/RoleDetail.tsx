@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
@@ -10,7 +13,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { capabilityCategory, categoryStatus } from './RoleManagement';
 import type { RoleDetail as RoleDetailModel, RoleCapability } from './RoleManagement';
 import { StepUpOps } from '@shared/generated';
-import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
 const ALL_CAPABILITIES = [
     'cert.request', 'cert.view', 'cert.revoke', 'cert.reissue', 'cert.approve',
@@ -42,7 +45,7 @@ const RoleDetail: React.FC = () => {
 
     const [role, setRole] = useState<RoleDetailModel | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [form, setForm] = useState({ name: '', description: '' });
@@ -73,7 +76,7 @@ const RoleDetail: React.FC = () => {
                 }
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load role'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load role')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -102,10 +105,15 @@ const RoleDetail: React.FC = () => {
         setNewResourceId('');
     };
 
+    // A resource scope is the pair (type, id). One half alone is not a narrower grant, it is
+    // ignored by the authorization handler, so the Add button refuses the half-filled state
+    // instead of silently saving a capability that applies everywhere.
+    const resourceHalfFilled = (newResourceType.trim() !== '') !== (newResourceId.trim() !== '');
+
     const addCapability = () => {
-        if (!newCapability) return;
-        const rt = newResourceType || undefined;
-        const rid = newResourceId || undefined;
+        if (!newCapability || resourceHalfFilled) return;
+        const rt = newResourceType.trim() || undefined;
+        const rid = newResourceId.trim() || undefined;
         const exists = capsEdit.some((c) => c.capability === newCapability && (c.resourceType || undefined) === rt && (c.resourceId || undefined) === rid);
         if (!exists) {
             setCapsEdit((prev) => [...prev, { capability: newCapability, resourceType: rt, resourceId: rid }]);
@@ -129,7 +137,7 @@ const RoleDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!role) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Role not found.</p>
@@ -205,14 +213,18 @@ const RoleDetail: React.FC = () => {
                                 </div>
                                 <div>
                                     <label className={labelCls}>Resource Type (optional)</label>
-                                    <input type="text" value={newResourceType} onChange={(e) => setNewResourceType(e.target.value)} placeholder="e.g., ca, profile" className={inputCls} />
+                                    <input type="text" value={newResourceType} onChange={(e) => setNewResourceType(e.target.value)} placeholder="e.g., ca, profile" className={inputCls} aria-describedby="role-resource-scope-hint" />
                                 </div>
                                 <div>
                                     <label className={labelCls}>Resource ID (optional)</label>
-                                    <input type="text" value={newResourceId} onChange={(e) => setNewResourceId(e.target.value)} placeholder="specific resource ID" className={inputCls} />
+                                    <input type="text" value={newResourceId} onChange={(e) => setNewResourceId(e.target.value)} placeholder="specific resource ID" className={inputCls} aria-describedby="role-resource-scope-hint" />
                                 </div>
                             </div>
-                            <button onClick={addCapability} disabled={!newCapability} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Add Capability</button>
+                            <FieldHint id="role-resource-scope-hint" tone={resourceHalfFilled ? 'warn' : 'muted'}>
+                                Leave both blank to grant this capability everywhere. Fill both to scope it to one resource, for example type <span className="font-mono">ca</span> with a CA's id grants it on that CA only. Setting one without the other has no effect.
+                                {resourceHalfFilled && ' Fill in the other field or clear this one before adding.'}
+                            </FieldHint>
+                            <button onClick={addCapability} disabled={!newCapability || resourceHalfFilled} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Add Capability</button>
                         </div>
                     )}
 

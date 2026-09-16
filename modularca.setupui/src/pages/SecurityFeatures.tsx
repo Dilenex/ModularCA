@@ -7,6 +7,7 @@ export interface SecurityData {
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;
+    enableMsae: boolean;
     maxFailedLoginAttempts: number;
     lockoutMinutes: number;
     jwtExpirationMinutes: number;
@@ -22,7 +23,7 @@ interface SecurityFeaturesProps {
 }
 
 interface FeatureToggle {
-    key: keyof Pick<SecurityData, 'enableCrl' | 'enableOcsp' | 'enableAcme' | 'enableEst' | 'enableScep' | 'enableCmp'>;
+    key: keyof Pick<SecurityData, 'enableCrl' | 'enableOcsp' | 'enableAcme' | 'enableEst' | 'enableScep' | 'enableCmp' | 'enableMsae'>;
     acronym: string;
     description: string;
 }
@@ -34,6 +35,7 @@ const featureToggles: FeatureToggle[] = [
     { key: 'enableEst', acronym: 'EST', description: 'Enrollment over Secure Transport - Modern certificate enrollment protocol (RFC 7030)' },
     { key: 'enableScep', acronym: 'SCEP', description: 'Simple Certificate Enrollment Protocol - Legacy device enrollment support' },
     { key: 'enableCmp', acronym: 'CMP', description: 'Certificate Management Protocol - Full lifecycle certificate management (RFC 4210)' },
+    { key: 'enableMsae', acronym: 'MSAE', description: 'Windows autoenrollment - Certificate Enrollment Web Service (MS-WSTEP) for Group Policy and certreq clients' },
 ];
 
 /// <summary>

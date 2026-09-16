@@ -10,7 +10,7 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
 /// Scheduled job that enforces audit retention by chunked deletes
-/// across the AuditLogs / AuditEst / AuditScep / AuditCmp / AuditAcme / AuditNetwork
+/// across the AuditLogs / AuditEst / AuditScep / AuditCmp / AuditAcme / AuditMsae / AuditNetwork
 /// tables. Respects separate retention windows for the "general" audit tables and
 /// the noisier AuditNetwork table, uses per-batch <c>LIMIT</c> so no single DELETE
 /// holds a long-running transaction, and optionally streams matching rows to a
@@ -126,7 +126,7 @@ public class AuditRetentionJob : SingletonCronJob
             }
         }
 
-        // General audit tables (AuditLogs, AuditEst, AuditScep, AuditCmp, AuditAcme).
+        // General audit tables (AuditLogs, AuditEst, AuditScep, AuditCmp, AuditAcme, AuditMsae).
         if (generalDays > 0)
         {
             var generalCutoff = TimeProvider.GetUtcNow().UtcDateTime.AddDays(-generalDays);
@@ -140,6 +140,8 @@ public class AuditRetentionJob : SingletonCronJob
             await PruneTableAsync("AuditCmp", generalCutoff, batchSize,
                 resolvedArchiveDir, cancellationToken);
             await PruneTableAsync("AuditAcme", generalCutoff, batchSize,
+                resolvedArchiveDir, cancellationToken);
+            await PruneTableAsync("AuditMsae", generalCutoff, batchSize,
                 resolvedArchiveDir, cancellationToken);
         }
         else

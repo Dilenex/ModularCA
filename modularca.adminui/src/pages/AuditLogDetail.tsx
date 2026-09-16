@@ -1,16 +1,20 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { MsaeWhyNotice } from './AuditLogs';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'network']);
+const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'msae', 'network']);
 // Keys rendered with their own formatting / not in the generic dump.
 const TIMESTAMP_KEYS = new Set(['timestamp']);
 
@@ -31,8 +35,9 @@ function auditStatus(type: string, log: any): React.ReactNode {
 
 /// <summary>
 /// Read-only detail page for a single audit log entry. The audit table family is keyed by type
-/// (general / est / scep / cmp / acme / network), carried in the route, so the page hits the matching
-/// by-id endpoint. Audit entries are immutable, so the page is View-only (Edit disabled).
+/// (general / est / scep / cmp / acme / msae / network), carried in the route, so the page hits the matching
+/// by-id endpoint. Audit entries are immutable, so the page is View-only (Edit disabled). An MSAE
+/// refusal is explained above the raw fields (see msaeRefusals.ts) so the operator reads the fix first.
 /// </summary>
 const AuditLogDetail: React.FC = () => {
     const { type = 'general', id } = useParams<{ type: string; id: string }>();
@@ -40,7 +45,7 @@ const AuditLogDetail: React.FC = () => {
 
     const [log, setLog] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         if (!TYPES.has(type)) { setError(`Unknown audit type "${type}".`); setLoading(false); return; }
@@ -50,14 +55,14 @@ const AuditLogDetail: React.FC = () => {
         const path = type === 'general' ? `/api/v1/admin/audit/${id}` : `/api/v1/admin/audit/${type}/${id}`;
         apiGet<any>(path)
             .then((data) => { if (!cancelled) { setLog(data); setLoading(false); } })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load audit entry'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load audit entry')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [type, id]);
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
+            <InlineNotice notice={error} variant="line" />
             <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
         </div>
     );
@@ -82,6 +87,7 @@ const AuditLogDetail: React.FC = () => {
         >
             {() => (
                 <DetailSection title="Audit Entry">
+                    {type === 'msae' && <MsaeWhyNotice log={log} className="mb-4" />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
                         {entries.map(([k, v]) => (

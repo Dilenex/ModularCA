@@ -10,7 +10,7 @@ namespace ModularCA.Auth.Interfaces
         /// <c>mfa_setup_required</c> claim that restricts access to admin endpoints.
         /// Group names are embedded as <c>groups</c> claims.
         /// </summary>
-        (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false);
+        (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false, AccessBadgeClaim? badge = null);
 
         /// <summary>
         /// Creates a cryptographically random refresh token for the specified user.

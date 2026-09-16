@@ -91,6 +91,12 @@ public class LoginRateLimitMiddleware
 
     private static readonly string[] EstEnrollmentPrefixes = ["/api/v1/est", "/est/", "/.well-known/est/"];
 
+    // The MSAE (Windows autoenrollment) endpoint takes HTTP Basic too, through the same credential
+    // service, so a wrong password there increments the same lockout counter and must draw from
+    // the same login budget. Credentials carried inside the SOAP body (UsernameToken) are not
+    // visible here; those attempts are throttled by the protocol bucket and the lockout itself.
+    private static readonly string[] MsaeEnrollmentPrefixes = ["/api/v1/msae", "/msae/"];
+
     /// <summary>
     /// Paths where a per-username bucket should also be applied (on top of the
     /// per-IP bucket). Covers both login and forced password-change flows.
@@ -188,6 +194,16 @@ public class LoginRateLimitMiddleware
         if (string.IsNullOrEmpty(authorizationHeader)
             || !authorizationHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
             return false;
+
+        if (requestPath.EndsWith("/ces", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var prefix in MsaeEnrollmentPrefixes)
+            {
+                if (requestPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
 
         if (!requestPath.EndsWith("/simpleenroll", StringComparison.OrdinalIgnoreCase)
             && !requestPath.EndsWith("/simplereenroll", StringComparison.OrdinalIgnoreCase))

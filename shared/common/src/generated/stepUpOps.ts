@@ -16,6 +16,8 @@
  * MFA failure; a constant typo does not compile.
  */
 export const StepUpOps = {
+    SwitchBadge: 'switch-badge',
+    ManageKerberosRealm: 'manage-kerberos-realm',
     RevokeCert: 'revoke-cert',
     HoldCert: 'hold-cert',
     UnholdCert: 'unhold-cert',
@@ -29,6 +31,7 @@ export const StepUpOps = {
     AddGroupMember: 'add-group-member',
     RemoveGroupMember: 'remove-group-member',
     UpdateUserGroups: 'update-user-groups',
+    CreateGroup: 'create-group',
     DeleteGroup: 'delete-group',
     UpdateGroup: 'update-group',
     GrantUserCapability: 'grant-user-capability',

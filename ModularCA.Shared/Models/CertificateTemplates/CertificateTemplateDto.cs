@@ -65,4 +65,17 @@ public class CertificateTemplateDto
     /// Whether this template is active and available for enrollment.
     /// </summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>True when the template is offered to Windows clients through the MSAE policy service.</summary>
+    public bool OfferedToWindows { get; set; }
+
+    /// <summary>The OID Windows clients know the template by, or null when not offered.</summary>
+    public string? MsaeTemplateOid { get; set; }
+
+    public int MsaeMajorVersion { get; set; }
+
+    public int MsaeMinorVersion { get; set; }
+
+    /// <summary>True for a computer template, false for a user template.</summary>
+    public bool MsaeMachineType { get; set; }
 }

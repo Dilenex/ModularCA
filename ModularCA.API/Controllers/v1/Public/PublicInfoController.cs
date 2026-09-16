@@ -32,6 +32,7 @@ public class PublicInfoController(SystemConfig config, IFeatureFlagService featu
         ("EST", "EST.Enabled"),
         ("SCEP", "SCEP.Enabled"),
         ("CMP", "CMP.Enabled"),
+        ("MSAE", "MSAE.Enabled"),
     };
 
     /// <summary>

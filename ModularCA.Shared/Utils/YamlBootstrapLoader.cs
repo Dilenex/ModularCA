@@ -45,6 +45,8 @@ namespace ModularCA.Shared.Utils
             public bool EST { get; set; } = false;
             public bool SCEP { get; set; } = false;
             public bool CMP { get; set; } = false;
+            /// <summary>Windows autoenrollment (MS-WSTEP). Off by default like the other enrollment protocols.</summary>
+            public bool MSAE { get; set; } = false;
         }
 
         /// <summary>

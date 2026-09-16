@@ -25,10 +25,12 @@ public class AdminCertificateTemplateController(
     /// <summary>
     /// Returns all certificate templates with resolved CA and profile names.
     /// </summary>
+    /// <param name="caId">Optional: only templates issued by this CA (the console's scope).</param>
+    /// <param name="tenantId">Optional: only templates issued by CAs of this tenant.</param>
     [HttpGet]
-    public async Task<IActionResult> GetAll()
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
     {
-        var templates = await templateService.GetAllAsync();
+        var templates = await templateService.GetAllAsync(caId, tenantId);
         return Ok(templates);
     }
 
@@ -65,7 +67,15 @@ public class AdminCertificateTemplateController(
     [RequireStepUp(StepUpOps.CreateCertificateTemplate)]
     public async Task<IActionResult> Create([FromBody] CreateCertificateTemplateRequest request)
     {
-        var result = await templateService.CreateAsync(request);
+        CertificateTemplateDto result;
+        try
+        {
+            result = await templateService.CreateAsync(request);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync("CertificateTemplateCreated", currentUser.User?.Id, currentUser.User?.Username,
             "CertificateTemplate", result.Id.ToString(), new { request.Name },
@@ -80,7 +90,15 @@ public class AdminCertificateTemplateController(
     [RequireStepUp(StepUpOps.UpdateCertificateTemplate, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCertificateTemplateRequest request)
     {
-        var result = await templateService.UpdateAsync(id, request);
+        CertificateTemplateDto result;
+        try
+        {
+            result = await templateService.UpdateAsync(id, request);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync("CertificateTemplateUpdated", currentUser.User?.Id, currentUser.User?.Username,
             "CertificateTemplate", id.ToString(), request,

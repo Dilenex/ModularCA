@@ -1,8 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../api/client';
+import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { useTableQuery } from '@shared/hooks/useTableQuery';
+import { formatSort, parseSort, viewQuery, type TableQueryValues } from '@shared/tableQuery';
+import { SavedViews } from '@shared/components/SavedViews';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { Link } from 'react-router-dom';
+import { explainMsaeFailure, type MsaeAuditRow } from './msaeRefusals';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -26,8 +36,12 @@ function formatIdentifiers(raw: any): string {
     return s;
 }
 
-const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'Network'] as const;
-type Tab = typeof TABS[number];
+const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'MSAE', 'Network'] as const;
+export type Tab = typeof TABS[number];
+
+/** What the audit list keeps in the URL. Defaults stay out of the link. */
+const QUERY_DEFAULTS: TableQueryValues = { page: '1', pageSize: '25', sort: '-timestamp', tab: 'General', from: '', to: '', caId: '', actionType: '', user: '' };
+const PAGE_SIZES = [25, 50, 100];
 
 type Category = 'general' | 'protocol' | 'network';
 function tabCategory(tab: Tab): Category {
@@ -46,9 +60,9 @@ const networkBadge = (log: any) =>
 /// Builds the DataTable columns for the active audit tab. General (app), protocol (EST/SCEP/CMP/ACME)
 /// and network entries have distinct shapes, so each gets a tailored column set.
 /// </summary>
-function buildColumns(tab: Tab): DataTableColumn<any>[] {
+export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     const cat = tabCategory(tab);
-    const timeCol: DataTableColumn<any> = { key: 'time', header: 'Timestamp', defaultWidth: 170, minWidth: 140, exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(l.timestamp)}</span> };
+    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(l.timestamp)}</span> };
 
     if (cat === 'network') {
         return [
@@ -75,23 +89,61 @@ function buildColumns(tab: Tab): DataTableColumn<any>[] {
             subjectOrIdentifiers,
             { key: 'serial', header: 'Serial', defaultWidth: 140, exportValue: (l) => l.certificateSerial || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.certificateSerial || '-'}</span> },
             { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.caLabel || '-'}</span> },
+            ...(tab === 'MSAE' ? [
+                { key: 'callerPrincipal', header: 'Caller', defaultWidth: 220, exportValue: (l: any) => l.callerPrincipal || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.callerPrincipal || '-'}</span> },
+                { key: 'realm', header: 'Realm', defaultWidth: 180, exportValue: (l: any) => l.realm || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.realm || '-'}</span> },
+                { key: 'authMethod', header: 'Auth', defaultWidth: 110, exportValue: (l: any) => l.authMethod || '', render: (l: any) => <span className="text-xs text-gray-600 dark:text-gray-400">{l.authMethod || '-'}</span> },
+                // The refusal in one phrase; the drawer and the detail page carry the explanation and the fix.
+                { key: 'why', header: 'Why', headerTitle: 'What the refusal means. Open the row for the explanation and the fix.', defaultWidth: 210, exportValue: (l: any) => explainMsaeFailure(l)?.title || '', render: (l: any) => {
+                    const why = explainMsaeFailure(l);
+                    return why
+                        ? <span title={why.explanation} className="text-xs text-amber-800 dark:text-amber-300 truncate">{why.title}</span>
+                        : <span className="text-xs text-gray-500">-</span>;
+                } },
+            ] as DataTableColumn<any>[] : []),
         ];
     }
 
     // general (app)
     return [
         timeCol,
-        { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (l) => (l.success ? 'OK' : 'FAIL'), render: okFailBadge },
-        { key: 'actor', header: 'Actor', defaultWidth: 150, exportValue: (l) => l.actorUsername || 'system', render: (l) => <span className="text-xs text-blue-800 dark:text-blue-300 truncate">{l.actorUsername || 'system'}</span> },
-        { key: 'action', header: 'Action', defaultWidth: 190, exportValue: (l) => l.actionType || '', render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300 truncate">{l.actionType}</span> },
+        { key: 'success', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, exportValue: (l) => (l.success ? 'OK' : 'FAIL'), render: okFailBadge },
+        { key: 'actorUsername', header: 'Actor', defaultWidth: 150, sortable: true, exportValue: (l) => l.actorUsername || 'system', render: (l) => <span className="text-xs text-blue-800 dark:text-blue-300 truncate">{l.actorUsername || 'system'}</span> },
+        { key: 'actionType', header: 'Action', defaultWidth: 190, sortable: true, exportValue: (l) => l.actionType || '', render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300 truncate">{l.actionType}</span> },
         { key: 'target', header: 'Target', defaultWidth: 180, exportValue: (l) => `${l.targetEntityType || ''}${l.targetEntityId ? ` #${l.targetEntityId}` : ''}`, render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.targetEntityType} {l.targetEntityId ? `#${String(l.targetEntityId).substring(0, 8)}` : ''}</span> },
         { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{l.sourceIp || '-'}</span> },
     ];
 }
 
-/* read-only drawer — dumps every populated field (DetailField hides null/empty) */
-const AuditDrawer: React.FC<{ log: any }> = ({ log }) => (
+/**
+ * What an MSAE refusal means and what resolves it, rendered where the row lands. Null when the
+ * row is not a refusal this console can explain, so callers can place it unconditionally.
+ */
+export const MsaeWhyNotice: React.FC<{ log: MsaeAuditRow; className?: string }> = ({ log, className = '' }) => {
+    const why = explainMsaeFailure(log);
+    if (!why) return null;
+    return (
+        <div className={`space-y-2 ${className}`}>
+            <InlineNotice severity="warning" notice={{ title: why.title, detail: why.explanation, remediation: why.fix }} />
+            {why.link && (
+                <Link to={why.link.path}
+                    className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors">
+                    {why.link.label}
+                </Link>
+            )}
+        </div>
+    );
+};
+
+/** True when a row came from the MSAE audit table: the tab says so, or the row carries MSAE-only columns. */
+function isMsaeRow(log: any, tab?: Tab): boolean {
+    return tab ? tab === 'MSAE' : (log != null && typeof log === 'object' && ('authMethod' in log || 'callerPrincipal' in log));
+}
+
+/* read-only drawer — dumps every populated field (DetailField hides null/empty); an MSAE refusal is explained first */
+export const AuditDrawer: React.FC<{ log: any; tab?: Tab }> = ({ log, tab }) => (
     <div className="text-sm">
+        {isMsaeRow(log, tab) && <MsaeWhyNotice log={log} className="mb-3" />}
         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
         {Object.entries(log).filter(([k]) => k.toLowerCase() !== 'timestamp').map(([k, v]) => (
             <DetailField key={k} label={k} value={v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))} mono={typeof v === 'object' || /id$|serial|hash|ip$/i.test(k)} />
@@ -100,20 +152,40 @@ const AuditDrawer: React.FC<{ log: any }> = ({ log }) => (
 );
 
 const AuditLogs: React.FC = () => {
-    const [activeTab, setActiveTab] = useState<Tab>('General');
+    // Tab, page, sort and filters live in the URL (see useTableQuery).
+    const [q, setQ] = useTableQuery('audit', QUERY_DEFAULTS);
+    const activeTab: Tab = (TABS as readonly string[]).includes(q.tab) ? (q.tab as Tab) : 'General';
+    const page = Math.max(1, parseInt(q.page, 10) || 1);
+    const pageSize = PAGE_SIZES.includes(parseInt(q.pageSize, 10)) ? parseInt(q.pageSize, 10) : 25;
+    const sort = parseSort(q.sort);
+    const { from: dateFrom, to: dateTo, actionType: filterActionType } = q;
     const [logs, setLogs] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [page, setPage] = useState(1);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [totalPages, setTotalPages] = useState(1);
-    const [dateFrom, setDateFrom] = useState('');
-    const [dateTo, setDateTo] = useState('');
-    const [filterCaId, setFilterCaId] = useState('');
-    const [filterActionType, setFilterActionType] = useState('');
-    const [filterUser, setFilterUser] = useState('');
+    const [totalCount, setTotalCount] = useState(0);
+    // The username filter is typed; it reaches the URL after a pause.
+    const [filterUser, setFilterUser] = useState(q.user);
+    useEffect(() => {
+        const t = setTimeout(() => { if (filterUser !== q.user) setQ({ user: filterUser }); }, 700);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [filterUser]);
+    useEffect(() => { setFilterUser(q.user); }, [q.user]);
+    // The sidebar scope pins the CA filter; the select below is locked while it does.
+    const { caId: scopeCaId, caQuery, scope } = useScope();
+    const scopeLocked = !!scopeCaId;
+    const filterCaId = q.caId;
+    // Only a change of scope clears the pin, so a deep link with ?caId= survives the first render.
+    const wasLocked = useRef(scopeLocked);
+    useEffect(() => {
+        if (scopeLocked && q.caId !== scopeCaId) setQ({ caId: scopeCaId! });
+        else if (!scopeLocked && wasLocked.current && q.caId) setQ({ caId: '' });
+        wasLocked.current = scopeLocked;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [scopeLocked, scopeCaId]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [knownActionTypes, setKnownActionTypes] = useState<string[]>([]);
-    const pageSize = 25;
 
     // Fetch CAs for the filter dropdown
     useEffect(() => {
@@ -144,8 +216,10 @@ const AuditLogs: React.FC = () => {
         if (dateFrom) params.set('from', dateFrom);
         if (dateTo) params.set('to', dateTo);
         if (filterCaId) params.set('caId', filterCaId);
+        else { const scoped = caQuery(); if (scoped.startsWith('?tenantId=')) params.set('tenantId', decodeURIComponent(scoped.slice('?tenantId='.length))); }
         if (filterActionType) params.set('actionType', filterActionType);
-        if (filterUser) params.set('user', filterUser);
+        if (q.user) params.set('user', q.user);
+        if (activeTab === 'General' && q.sort) params.set('sort', q.sort);
 
         const path = activeTab === 'General'
             ? `/api/v1/admin/audit?${params}`
@@ -155,9 +229,10 @@ const AuditLogs: React.FC = () => {
             .then((data) => {
                 if (cancelled) return;
                 const items = Array.isArray(data) ? data : (data.items || []);
-                const total = data.totalPages || Math.ceil((data.totalCount || items.length) / pageSize) || 1;
+                const total = data.totalPages || Math.ceil((data.total || data.totalCount || items.length) / pageSize) || 1;
                 setLogs(items);
                 setTotalPages(total);
+                setTotalCount(data.total ?? data.totalCount ?? items.length);
                 setLoading(false);
 
                 // Collect unique action types for the filter dropdown
@@ -174,17 +249,23 @@ const AuditLogs: React.FC = () => {
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load audit logs');
+                    setError(errorNotice(err, 'Failed to load audit logs'));
                     setLoading(false);
                 }
             });
 
         return () => { cancelled = true; };
-    }, [activeTab, page, dateFrom, dateTo, filterCaId, filterActionType, filterUser]);
+    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery]);
 
-    const handleTabChange = (tab: Tab) => {
-        setActiveTab(tab);
-        setPage(1);
+    const handleTabChange = (tab: Tab) => setQ({ tab, sort: QUERY_DEFAULTS.sort });
+
+    /** The current filter as a saved view sees it: tab, filters and sort, never the page. */
+    const currentView = viewQuery(q, QUERY_DEFAULTS);
+    const applyView = (view: string) => {
+        const params = new URLSearchParams(view);
+        const next: Partial<TableQueryValues> = {};
+        for (const key of Object.keys(QUERY_DEFAULTS)) if (key !== 'page') next[key] = params.get(key) ?? QUERY_DEFAULTS[key];
+        setQ(next);
     };
 
     const columns = buildColumns(activeTab);
@@ -215,7 +296,9 @@ const AuditLogs: React.FC = () => {
                     <label className="text-xs text-gray-600 dark:text-gray-400">CA:</label>
                     <select
                         value={filterCaId}
-                        onChange={(e) => { setFilterCaId(e.target.value); setPage(1); }}
+                        onChange={(e) => setQ({ caId: e.target.value })}
+                        disabled={scopeLocked}
+                        title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}
                         className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                     >
                         <option value="">All CAs</option>
@@ -229,7 +312,7 @@ const AuditLogs: React.FC = () => {
                     <input
                         type="date"
                         value={dateFrom}
-                        onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                        onChange={(e) => setQ({ from: e.target.value })}
                         className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                     />
                 </div>
@@ -238,19 +321,21 @@ const AuditLogs: React.FC = () => {
                     <input
                         type="date"
                         value={dateTo}
-                        onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                        onChange={(e) => setQ({ to: e.target.value })}
                         className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                     />
                 </div>
                 {activeTab === 'General' && (
                     <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-600 dark:text-gray-400">Action:</label>
+                        <label className="text-xs text-gray-600 dark:text-gray-400" htmlFor="audit-action-filter">Action <span className="text-gray-500">(seen in the loaded entries)</span>:</label>
                         <select
+                            id="audit-action-filter"
                             value={filterActionType}
-                            onChange={(e) => { setFilterActionType(e.target.value); setPage(1); }}
+                            onChange={(e) => setQ({ actionType: e.target.value })}
+                            title="Actions seen in the loaded entries. This is not the full list of action types; an action that has not appeared on a page you have viewed is not offered here."
                             className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                         >
-                            <option value="">All Actions</option>
+                            <option value="">All actions</option>
                             {knownActionTypes.map((t) => (
                                 <option key={t} value={t}>{t}</option>
                             ))}
@@ -262,20 +347,22 @@ const AuditLogs: React.FC = () => {
                     <input
                         type="text"
                         value={filterUser}
-                        onChange={(e) => { setFilterUser(e.target.value); setPage(1); }}
+                        onChange={(e) => setFilterUser(e.target.value)}
                         placeholder="Username"
                         className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 w-36"
                     />
                 </div>
                 {(dateFrom || dateTo || filterCaId || filterActionType || filterUser) && (
                     <button
-                        onClick={() => { setDateFrom(''); setDateTo(''); setFilterCaId(''); setFilterActionType(''); setFilterUser(''); setPage(1); }}
+                        onClick={() => { setFilterUser(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '' }); }}
                         className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                     >
                         Clear filters
                     </button>
                 )}
             </div>
+
+            <SavedViews tableId="audit" current={currentView} onApply={applyView} />
 
             <DataTable<any>
                 tableId={`audit-${activeTab.toLowerCase()}`}
@@ -284,35 +371,24 @@ const AuditLogs: React.FC = () => {
                 rowKey={(l) => l.id || `${l.timestamp}-${l.actionType || l.operation || l.messageType || ''}`}
                 loading={loading}
                 error={error}
-                empty="No audit entries found"
+                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No audit entries found'}
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}
-                renderDrawer={(l) => <AuditDrawer log={l} />}
+                renderDrawer={(l) => <AuditDrawer log={l} tab={activeTab} />}
                 drawerTitle={(l) => l.actionType || l.operation || l.messageType || (l.requestPath ? `${l.httpMethod} ${l.requestPath}` : 'Audit entry')}
                 detailPath={(l) => `/audit/${activeTab.toLowerCase()}/${l.id}`}
+                sort={activeTab === 'General' ? sort : null}
+                onSortChange={activeTab === 'General' ? (next) => setQ({ sort: formatSort(next) || QUERY_DEFAULTS.sort }) : undefined}
+                page={page}
+                pageSize={pageSize}
+                totalPages={totalPages}
+                totalCount={totalCount}
+                onPageChange={(n) => setQ({ page: String(n) })}
+                pageSizeOptions={PAGE_SIZES}
+                onPageSizeChange={(n) => setQ({ pageSize: String(n), page: '1' })}
             />
 
-            {/* Pagination */}
-            {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-4">
-                    <button
-                        onClick={() => setPage((p) => Math.max(1, p - 1))}
-                        disabled={page <= 1}
-                        className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                        Previous
-                    </button>
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Page {page} of {totalPages}</span>
-                    <button
-                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                        disabled={page >= totalPages}
-                        className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                        Next
-                    </button>
-                </div>
-            )}
         </div>
     );
 };

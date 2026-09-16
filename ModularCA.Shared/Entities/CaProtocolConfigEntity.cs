@@ -21,7 +21,7 @@ public class CaProtocolConfigEntity
     public virtual CertificateAuthorityEntity Ca { get; set; } = default!;
 
     /// <summary>
-    /// Protocol identifier: "EST", "SCEP", "CMP", "ACME", "OCSP".
+    /// Protocol identifier: "EST", "SCEP", "CMP", "ACME", "OCSP", "MSAE".
     /// </summary>
     [Required]
     [MaxLength(20)]
@@ -183,6 +183,19 @@ public class CaProtocolConfigEntity
     /// Null means no additional request validation (open enrollment).
     /// </summary>
     public Guid? RequestProfileId { get; set; }
+
+    /// <summary>
+    /// MSAE only: accept the WS-Security UsernameToken (and HTTP Basic) a client configured for
+    /// username authentication sends. On by default so an existing deployment keeps working.
+    /// </summary>
+    public bool MsaeAllowUsernameToken { get; set; } = true;
+
+    /// <summary>
+    /// MSAE only: accept Kerberos tickets (<c>Authorization: Negotiate</c>) from the forests bound
+    /// to the CA's tenant, and challenge a credential-less client with 401 so it fetches one.
+    /// Requires at least one enabled realm binding on the tenant.
+    /// </summary>
+    public bool MsaeAllowKerberos { get; set; } = false;
 
     [ForeignKey("RequestProfileId")]
     public virtual RequestProfileEntity? RequestProfile { get; set; }

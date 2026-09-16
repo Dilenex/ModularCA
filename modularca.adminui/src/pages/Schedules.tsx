@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
+import { Link, useNavigate } from 'react-router-dom';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -22,7 +24,12 @@ import {
     setSchedulerJobEnabled,
     updateSchedulerConfig,
 } from '../api/scheduler';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+
+// Shown under the Missed-Run Policy select and as the health tile's hover text, so the
+// operator meets the RunAll consequence before choosing it, not after an outage.
+const MISSED_RUN_HINT = 'SkipMissed forgets runs missed while the service was down. RunOnce catches up with a single run. RunAll replays every missed occurrence; after a week-long outage that can fire dozens of jobs at once.';
+const LEASE_TTL_HINT = 'How long one instance holds the right to run jobs before another may take over. Shorter means faster failover and a higher risk of two instances running the same job.';
 
 // ---------------------------------------------------------------------------
 // Style helpers (match Settings/Vulnerabilities/BackupRestore conventions)
@@ -111,7 +118,7 @@ const HealthStrip: React.FC<{ health: SchedulerHealth | null; now: number }> = (
             )}
             {tile('Lease Expires', expiresIn, lease ? formatAbsoluteUtc(lease.expiresAtUtc) : undefined)}
             {tile('Poll Interval', `${health.pollIntervalSeconds}s, fixed`)}
-            {tile('Missed-Run Policy', health.missedRunPolicy || '-')}
+            {tile('Missed-Run Policy', health.missedRunPolicy || '-', MISSED_RUN_HINT)}
             {tile('Default Timeout', `${health.defaultJobTimeoutSeconds}s`)}
             {tile('Failure Alert Threshold', health.consecutiveFailureAlertThreshold)}
         </div>
@@ -125,7 +132,7 @@ const HealthStrip: React.FC<{ health: SchedulerHealth | null; now: number }> = (
 // Continuous-throttle jobs (always-on, internally rate-limited). The backend
 // returns 400 if the operator tries to disable these — guard the Enable/Disable
 // toolbar actions proactively instead of letting the round-trip fail.
-const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'TlsRenewal']);
+const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
 
 function jobResultBadge(result: SchedulerJob['lastResult']): React.ReactElement {
     if (result === 'success') return <StatusBadge status="active" label="success" />;
@@ -135,25 +142,6 @@ function jobResultBadge(result: SchedulerJob['lastResult']): React.ReactElement 
 }
 
 /* ── read-only drawer for a system job ──────────────────────────────────────── */
-const JobDrawer: React.FC<{ job: SchedulerJob; now: number }> = ({ job, now }) => (
-    <div className="text-sm">
-        <DetailField label="Name" value={job.name} />
-        <DetailField label="Status" value={job.enabled ? 'Enabled' : 'Disabled'} />
-        <DetailField label="Cron" value={job.cronExpression} mono />
-        <DetailField label="Timeout" value={`${job.timeoutSeconds}s`} />
-        <DetailField label="Last Run" value={`${formatRelative(job.lastRunUtc, now)} (${job.lastResult ?? 'never run'})`} />
-        {job.lastDurationMs != null && <DetailField label="Last Duration" value={`${job.lastDurationMs} ms`} />}
-        <DetailField label="Next Run" value={formatRelative(job.nextRunUtc, now)} />
-        <DetailField label="Consecutive Failures" value={String(job.consecutiveFailureCount)} />
-        {job.lastError && (
-            <div className="mt-2">
-                <span className="text-gray-600 text-xs">Last Error</span>
-                <pre className="mt-1 text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{job.lastError}</pre>
-            </div>
-        )}
-    </div>
-);
-
 interface SystemJobsSectionProps {
     jobs: SchedulerJob[];
     health: SchedulerHealth | null;
@@ -167,6 +155,10 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
     const { showToast } = useToast();
     const [confirmRunJob, setConfirmRunJob] = useState<SchedulerJob | null>(null);
     const [running, setRunning] = useState<string | null>(null);
+    // Disabling a job (the nightly backup, auto-renewal) silently stops something the operator
+    // relies on, so it is confirmed by name. Enabling and "Run now" carry no such cost.
+    const [confirmDisableJob, setConfirmDisableJob] = useState<SchedulerJob | null>(null);
+    const [toggling, setToggling] = useState(false);
 
     const alertThreshold = health?.consecutiveFailureAlertThreshold ?? Number.MAX_SAFE_INTEGER;
 
@@ -190,6 +182,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
             showToast('error', `${job.name} is a continuous job and cannot be disabled.`);
             return;
         }
+        setToggling(true);
         try {
             // Toggles the SystemConfig boolean that gates this job (e.g.
             // Backup.CreateOnSchedule, AutoRenewal.Enabled). Step-up MFA gated
@@ -200,49 +193,97 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
         } catch (err: any) {
             if (err?.message === 'Step-up MFA cancelled') return;
             showToast('error', err?.message || 'Failed to toggle job');
+        } finally {
+            setToggling(false);
+            setConfirmDisableJob(null);
         }
+    };
+
+    /** Enable applies at once; Disable goes through the confirmation modal first. */
+    const requestToggle = (job: SchedulerJob) => {
+        if (job.enabled) setConfirmDisableJob(job);
+        else handleToggleFlag(job);
     };
 
     // No column flexes — every column keeps its natural width and the DataTable's trailing spacer
     // soaks up the slack at the far right, so the row packs to the left. Last Run / Next Run sit
     // side-by-side so they read as a pair.
-    const columns: DataTableColumn<SchedulerJob>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, exportValue: (j) => j.name, render: (j) => <span className="text-gray-900 dark:text-white truncate">{j.name}</span> },
-        { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (j) => (j.enabled ? 'enabled' : 'disabled'), render: (j) => <StatusBadge status={j.enabled ? 'enabled' : 'disabled'} /> },
-        { key: 'cron', header: 'Cron', defaultWidth: 130, exportValue: (j) => j.cronExpression, render: (j) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{j.cronExpression}</span> },
-        { key: 'lastRun', header: 'Last Run', defaultWidth: 150, headerTitle: 'When this job last executed', exportValue: (j) => formatAbsoluteUtc(j.lastRunUtc), render: (j) => <TimeCell iso={j.lastRunUtc} now={now} /> },
-        { key: 'nextRun', header: 'Next Run', defaultWidth: 150, headerTitle: 'Next scheduled run, computed from the cron expression', exportValue: (j) => formatAbsoluteUtc(j.nextRunUtc), render: (j) => <TimeCell iso={j.nextRunUtc} now={now} /> },
-        {
-            key: 'lastResult', header: 'Last Run Result', defaultWidth: 170, minWidth: 120, truncate: false, exportValue: (j) => j.lastResult ?? 'never run',
-            render: (j) => (
-                <div className="min-w-0">
-                    {jobResultBadge(j.lastResult)}
-                    {j.lastError && <div className="text-[10px] text-red-700 dark:text-red-400 truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
-                </div>
-            ),
-        },
-        {
-            key: 'failures', header: 'Failures', defaultWidth: 90, exportValue: (j) => j.consecutiveFailureCount,
-            render: (j) => {
-                const over = j.consecutiveFailureCount >= alertThreshold;
-                return (
-                    <span className={`inline-block px-2 py-0.5 text-xs rounded border ${over
-                        ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-900/50 dark:text-red-300 dark:border-red-700'
-                        : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600'}`}>
-                        {j.consecutiveFailureCount}
-                    </span>
-                );
+    const record: RecordDescriptor<SchedulerJob> = {
+        kind: 'scheduler-job',
+        key: (j) => j.name,
+        title: (j) => j.name,
+        status: (j) => ({ label: j.enabled ? 'Enabled' : 'Disabled', tone: j.enabled ? 'ok' : 'neutral' }),
+        columns: [
+            { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, sortable: true, exportValue: (j) => j.name, render: (j) => <span className="text-gray-900 dark:text-white truncate">{j.name}</span> },
+            { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, sortable: true, sortValue: (j) => j.enabled, exportValue: (j) => (j.enabled ? 'enabled' : 'disabled'), render: (j) => <StatusBadge status={j.enabled ? 'enabled' : 'disabled'} /> },
+            {
+                key: 'cron', header: 'Cron', defaultWidth: 130, headerTitle: 'Five-field cron, UTC. Edit it on the job page.', exportValue: (j) => j.cronExpression,
+                // The cell is itself a link to the editor: the list used to show cron read-only with
+                // nothing saying where it could be changed.
+                render: (j) => (
+                    <Link to={`/schedules/jobs/${encodeURIComponent(j.name)}`} onClick={(e) => e.stopPropagation()}
+                        title="Edit this schedule on the job page"
+                        className="font-mono text-xs text-gray-700 dark:text-gray-300 underline decoration-dotted hover:text-gray-900 dark:hover:text-white">
+                        {j.cronExpression}
+                    </Link>
+                ),
             },
-        },
-        { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-gray-700 dark:text-gray-300">{j.timeoutSeconds}s</span> },
-    ];
+            { key: 'lastRun', header: 'Last Run', defaultWidth: 150, sortable: true, sortValue: (j) => j.lastRunUtc ? new Date(j.lastRunUtc) : null, headerTitle: 'When this job last executed', exportValue: (j) => formatAbsoluteUtc(j.lastRunUtc), render: (j) => <TimeCell iso={j.lastRunUtc} now={now} /> },
+            { key: 'nextRun', header: 'Next Run', defaultWidth: 150, sortable: true, sortValue: (j) => j.nextRunUtc ? new Date(j.nextRunUtc) : null, headerTitle: 'Next scheduled run, computed from the cron expression', exportValue: (j) => formatAbsoluteUtc(j.nextRunUtc), render: (j) => <TimeCell iso={j.nextRunUtc} now={now} /> },
+            {
+                key: 'lastResult', header: 'Last Run Result', defaultWidth: 170, minWidth: 120, truncate: false, sortable: true, exportValue: (j) => j.lastResult ?? 'never run',
+                render: (j) => (
+                    <div className="min-w-0">
+                        {jobResultBadge(j.lastResult)}
+                        {j.lastError && <div className="text-[10px] text-red-700 dark:text-red-400 truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
+                    </div>
+                ),
+            },
+            {
+                key: 'failures', header: 'Failures', defaultWidth: 90, sortable: true, sortValue: (j) => j.consecutiveFailureCount, exportValue: (j) => j.consecutiveFailureCount,
+                render: (j) => {
+                    const over = j.consecutiveFailureCount >= alertThreshold;
+                    return (
+                        <span className={`inline-block px-2 py-0.5 text-xs rounded border ${over
+                            ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-900/50 dark:text-red-300 dark:border-red-700'
+                            : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600'}`}>
+                            {j.consecutiveFailureCount}
+                        </span>
+                    );
+                },
+            },
+            { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-gray-700 dark:text-gray-300">{j.timeoutSeconds}s</span> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Name', value: (j) => j.name },
+                { label: 'Cron', value: (j) => j.cronExpression, mono: true },
+                { label: 'Timeout', value: (j) => `${j.timeoutSeconds}s` },
+                { label: 'Edit', value: (j) => <Link to={`/schedules/jobs/${encodeURIComponent(j.name)}`} className="text-xs underline hover:text-gray-900 dark:hover:text-white">Change the cron expression or timeout on the job page</Link> },
+            ] },
+            { title: 'Runs', fields: [
+                { label: 'Last Run', value: (j) => `${formatRelative(j.lastRunUtc, now)} (${j.lastResult ?? 'never run'})` },
+                { label: 'Last Duration', value: (j) => (j.lastDurationMs != null ? `${j.lastDurationMs} ms` : null) },
+                { label: 'Next Run', value: (j) => formatRelative(j.nextRunUtc, now) },
+                { label: 'Consecutive Failures', value: (j) => String(j.consecutiveFailureCount) },
+                { label: 'Last Error', value: (j) => (j.lastError ? <pre className="text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{j.lastError}</pre> : null) },
+            ] },
+        ],
+        audit: { tab: 'General', target: (j) => ({ type: 'SchedulerJob', id: j.name }) },
+        actions: [
+            { label: 'Run now', tone: 'primary', run: (j) => { setConfirmRunJob(j); } },
+            { label: 'Enable', enabled: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && !j.enabled, run: (j) => requestToggle(j) },
+            { label: 'Disable', enabled: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && j.enabled, run: (j) => requestToggle(j) },
+        ],
+        page: { path: (j) => `/schedules/jobs/${encodeURIComponent(j.name)}` },
+    };
 
     // Every scheduler mutation is step-up MFA gated and there's no bulk endpoint, so the
     // mutating actions are single-select (one row → one prompt) rather than looping.
     const bulkActions: DataTableBulkAction<SchedulerJob>[] = [
         { label: 'Run Now', single: true, variant: 'primary', onClick: (rows) => setConfirmRunJob(rows[0]) },
-        { label: 'Enable', single: true, enabledFor: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && !j.enabled, onClick: (rows) => handleToggleFlag(rows[0]) },
-        { label: 'Disable', single: true, enabledFor: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && j.enabled, onClick: (rows) => handleToggleFlag(rows[0]) },
+        { label: 'Enable', single: true, enabledFor: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && !j.enabled, onClick: (rows) => requestToggle(rows[0]) },
+        { label: 'Disable', single: true, enabledFor: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && j.enabled, onClick: (rows) => requestToggle(rows[0]) },
     ];
 
     return (
@@ -252,16 +293,12 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 tableId="scheduler-jobs"
                 title="System Jobs"
                 rows={jobs}
-                rowKey={(j) => j.name}
                 loading={loading}
                 empty="No system jobs registered."
-                columns={columns}
+                {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="scheduler-jobs"
-                renderDrawer={(j) => <JobDrawer job={j} now={now} />}
-                drawerTitle={(j) => j.name}
-                detailPath={(j) => `/schedules/jobs/${encodeURIComponent(j.name)}`}
             />
 
             <ConfirmModal
@@ -273,6 +310,23 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 loading={!!running}
                 onConfirm={() => confirmRunJob && handleRun(confirmRunJob)}
                 onCancel={() => setConfirmRunJob(null)}
+            />
+
+            <ConfirmModal
+                isOpen={!!confirmDisableJob}
+                title={confirmDisableJob ? `Disable ${confirmDisableJob.name}?` : 'Disable job?'}
+                message={confirmDisableJob ? (
+                    <>
+                        <span className="font-mono">{confirmDisableJob.name}</span> will stop running on its schedule
+                        (<span className="font-mono">{confirmDisableJob.cronExpression}</span>) until someone enables it again.
+                        Nothing else will notice; whatever this job does simply stops happening.
+                    </>
+                ) : ''}
+                confirmLabel="Disable"
+                confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                loading={toggling}
+                onConfirm={() => confirmDisableJob && handleToggleFlag(confirmDisableJob)}
+                onCancel={() => setConfirmDisableJob(null)}
             />
         </section>
     );
@@ -485,24 +539,28 @@ const SchedulerConfigSection: React.FC<{ health: SchedulerHealth | null; onChang
                         <input type="text" inputMode="numeric" value={leaseTtl}
                             onChange={(e) => setLeaseTtl(e.target.value.replace(/\D/g, ''))} className={inputClass} />
                         {!leaseTtlOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be at least 15 seconds.</p>}
+                        <FieldHint>{LEASE_TTL_HINT}</FieldHint>
                     </div>
                     <div>
                         <label className={labelClass}>Missed-Run Policy</label>
                         <select value={policy} onChange={(e) => setPolicy(e.target.value)} className={inputClass}>
                             {MISSED_RUN_POLICIES.map((p) => <option key={p} value={p}>{p}</option>)}
                         </select>
+                        <FieldHint tone={policy === 'RunAll' ? 'warn' : 'muted'}>{MISSED_RUN_HINT}</FieldHint>
                     </div>
                     <div>
                         <label className={labelClass}>Default Job Timeout (seconds)</label>
                         <input type="text" inputMode="numeric" value={defaultTimeout}
                             onChange={(e) => setDefaultTimeout(e.target.value.replace(/\D/g, ''))} className={inputClass} />
                         {!timeoutOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be a positive integer.</p>}
+                        <FieldHint>A run longer than this is cancelled and counted as a failure. Applies to jobs without their own timeout; a per-job timeout set on the job page takes precedence.</FieldHint>
                     </div>
                     <div>
                         <label className={labelClass}>Consecutive Failure Alert Threshold</label>
                         <input type="text" inputMode="numeric" value={alertThreshold}
                             onChange={(e) => setAlertThreshold(e.target.value.replace(/\D/g, ''))} className={inputClass} />
                         {!thresholdOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be at least 1.</p>}
+                        <FieldHint>Failures in a row by one job before its SchedulerJobFailed alert is raised from Warning to Critical. The Failures column turns red at this count.</FieldHint>
                     </div>
                 </div>
 

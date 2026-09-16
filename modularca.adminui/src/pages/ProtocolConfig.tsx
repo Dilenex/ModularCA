@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Link } from 'react-router-dom';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -9,7 +13,10 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
 
-const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP'];
+// MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
+// modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
+// on the tenant page.
+const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
 
 const ProtocolConfig: React.FC = () => {
@@ -17,8 +24,13 @@ const ProtocolConfig: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [selectedCaId, setSelectedCaId] = useState('');
+    const [error, setError] = useState<NoticeInput | null>(null);
+    const { caId: scopeCaId } = useScope();
+    const [selectedCaId, setSelectedCaId] = useState(scopeCaId ?? '');
+    // Follow the sidebar scope: picking a CA there selects it here too.
+    useEffect(() => {
+        if (scopeCaId) { setSelectedCaId(scopeCaId); setExpandedProtocol(null); }
+    }, [scopeCaId]);
     const [expandedProtocol, setExpandedProtocol] = useState<string | null>(null);
     const [protocolConfigs, setProtocolConfigs] = useState<any[]>([]);
     const [configLoading, setConfigLoading] = useState(false);
@@ -57,12 +69,13 @@ const ProtocolConfig: React.FC = () => {
                 const flat = flattenCas(items);
                 if (flat.length > 0) {
                     const firstId = flat[0].id || flat[0].certificateId || flat[0].name || '';
-                    setSelectedCaId(firstId);
+                    // Keep a scoped CA; otherwise start on the first one.
+                    setSelectedCaId((current) => current || firstId);
                 }
                 setLoading(false);
             })
             .catch((err) => {
-                setError(err.message || 'Failed to load data');
+                setError(errorNotice(err, 'Failed to load data'));
                 setLoading(false);
             });
     }, []);
@@ -71,8 +84,10 @@ const ProtocolConfig: React.FC = () => {
         if (!selectedCaId) return;
         setConfigLoading(true);
         apiGet<any>(`/api/v1/admin/protocol-configs/${selectedCaId}`)
-            .then((data) => setProtocolConfigs(Array.isArray(data) ? data : []))
-            .catch(() => setProtocolConfigs([]))
+            .then((data) => { setProtocolConfigs(Array.isArray(data) ? data : []); setError(null); })
+            // A failed load must not paint every protocol "Not Configured": that reads as a true
+            // state and sends the operator to re-enable things that are fine.
+            .catch((err) => { setProtocolConfigs([]); setError(errorNotice(err, 'Could not load the protocol configuration for this CA.')); })
             .finally(() => setConfigLoading(false));
     }, [selectedCaId]);
 
@@ -110,7 +125,7 @@ const ProtocolConfig: React.FC = () => {
                 </div>
                 <div className="p-4">
                     {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading authorities...</p>}
-                    {error && <p className="text-sm text-red-800 dark:text-red-400">{error}</p>}
+                    {error && <InlineNotice notice={error} variant="line" />}
                     {!loading && !error && (
                         <select
                             value={selectedCaId}
@@ -143,6 +158,7 @@ const ProtocolConfig: React.FC = () => {
 
                 return (
                     <ProtocolCard
+                        caId={selectedCaId}
                         key={protocol}
                         protocol={protocol}
                         config={config}
@@ -168,6 +184,8 @@ const ProtocolConfig: React.FC = () => {
 };
 
 interface ProtocolCardProps {
+    /** The CA whose card this is; the Windows readiness page is keyed by it. */
+    caId: string;
     protocol: string;
     config: any;
     expanded: boolean;
@@ -181,6 +199,7 @@ interface ProtocolCardProps {
 }
 
 const ProtocolCard: React.FC<ProtocolCardProps> = ({
+    caId,
     protocol, config, expanded, onToggleExpand, onSave, saving,
     signingProfiles, certProfiles, labelClass, selectClass,
 }) => {
@@ -203,6 +222,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         acmeAllowPrivateAddressValidation: false,
         // OCSP
         ocspSignResponses: true,
+        // MSAE
+        msaeAllowUsernameToken: true,
+        msaeAllowKerberos: false,
     });
 
     useEffect(() => {
@@ -221,6 +243,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 acmeAllowedChallengeTypes: config.acmeAllowedChallengeTypes || '',
                 acmeAllowPrivateAddressValidation: config.acmeAllowPrivateAddressValidation ?? false,
                 ocspSignResponses: config.ocspSignResponses ?? true,
+                msaeAllowUsernameToken: config.msaeAllowUsernameToken ?? true,
+                msaeAllowKerberos: config.msaeAllowKerberos ?? false,
             });
         } else {
             setForm({
@@ -232,6 +256,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 acmeRequireEab: false, acmeAllowedChallengeTypes: '',
                 acmeAllowPrivateAddressValidation: false,
                 ocspSignResponses: true,
+                msaeAllowUsernameToken: true, msaeAllowKerberos: false,
             });
         }
     }, [config]);
@@ -256,6 +281,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
             base.acmeAllowPrivateAddressValidation = form.acmeAllowPrivateAddressValidation;
         } else if (protocol === 'OCSP') {
             base.ocspSignResponses = form.ocspSignResponses;
+        } else if (protocol === 'MSAE') {
+            base.msaeAllowUsernameToken = form.msaeAllowUsernameToken;
+            base.msaeAllowKerberos = form.msaeAllowKerberos;
         }
         onSave(base);
     };
@@ -397,6 +425,21 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'OCSP' && (
                             <div className="space-y-2">
                                 <ToggleField size="md" labelSide="left" label="Sign Responses" description="Sign OCSP responses with the CA's OCSP responder key" checked={form.ocspSignResponses} onChange={(v) => setForm({ ...form, ocspSignResponses: v })} />
+                            </div>
+                        )}
+
+                        {protocol === 'MSAE' && caId && (
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                                Authentication is only one prerequisite. <Link to={`/authorities/windows/${caId}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks all of them for this CA.
+                            </p>
+                        )}
+                        {protocol === 'MSAE' && (
+                            <div className="space-y-2">
+                                <ToggleField size="md" labelSide="left" label="Username authentication" description="Accept the WS-Security UsernameToken (and HTTP Basic) a client configured for username authentication sends" checked={form.msaeAllowUsernameToken} onChange={(v) => setForm({ ...form, msaeAllowUsernameToken: v })} />
+                                <ToggleField size="md" labelSide="left" label="Windows integrated authentication (Kerberos)" description="Accept tickets from the Active Directory forests bound to this CA's tenant, and challenge credential-less clients with 401. Needs a realm bound on the tenant page." checked={form.msaeAllowKerberos} onChange={(v) => setForm({ ...form, msaeAllowKerberos: v })} />
+                                {!form.msaeAllowUsernameToken && !form.msaeAllowKerberos && (
+                                    <p className="text-xs text-amber-700 dark:text-amber-400">At least one authentication method must stay enabled.</p>
+                                )}
                             </div>
                         )}
                     </div>

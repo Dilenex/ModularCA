@@ -76,6 +76,12 @@ namespace ModularCA.Shared.Entities
         public DateTime LastActivityAt { get; set; } = DateTime.UtcNow;
 
         /// <summary>
+        /// The access badge this session wears, carried across refreshes so a rotated access
+        /// token keeps the badge. Null when badgeless. Cleared when the badge is deleted.
+        /// </summary>
+        public Guid? AccessBadgeId { get; set; }
+
+        /// <summary>
         /// Transient plaintext handed back to the client on issuance.
         /// Never persisted. Only set by <c>JwtTokenService.GenerateRefreshToken</c> and
         /// read once by the controller before it writes the LoginResponse.

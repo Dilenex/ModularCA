@@ -27,8 +27,8 @@ public class RequestAuditMiddleware
     private static readonly string[] MonitoredPrefixes =
     {
         "/api/v1/admin", "/api/v1/user", "/api/v1/est", "/api/v1/scep",
-        "/api/v1/cmp", "/api/v1/acme", "/api/v1/public/",
-        "/est/", "/scep/", "/cmp/", "/acme/", "/ocsp", "/tsa",
+        "/api/v1/cmp", "/api/v1/acme", "/api/v1/msae", "/api/v1/public/",
+        "/est/", "/scep/", "/cmp/", "/acme/", "/msae/", "/ocsp", "/tsa",
         "/crl/", "/ca/", "/admin"
     };
 
@@ -43,12 +43,14 @@ public class RequestAuditMiddleware
         ("/api/v1/scep", "SCEP"),
         ("/api/v1/cmp", "CMP"),
         ("/api/v1/acme", "ACME"),
+        ("/api/v1/msae", "MSAE"),
         ("/api/v1/public/ocsp", "OCSP"),
         ("/api/v1/public/tsa", "TSA"),
         ("/est/", "EST"),
         ("/scep/", "SCEP"),
         ("/cmp/", "CMP"),
         ("/acme/", "ACME"),
+        ("/msae/", "MSAE"),
         ("/ocsp", "OCSP"),
         ("/tsa", "TSA"),
         ("/crl/", "CRL"),
@@ -64,7 +66,7 @@ public class RequestAuditMiddleware
         "cacerts", "csrattrs", "simpleenroll", "simplereenroll",
         "new-nonce", "new-account", "new-order", "directory",
         "order", "authz", "challenge", "cert", "key-change", "revoke-cert",
-        "account", "ca", "delta"
+        "account", "ca", "delta", "ces"
     };
 
     public RequestAuditMiddleware(RequestDelegate next, SystemConfig config)

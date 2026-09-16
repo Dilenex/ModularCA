@@ -3,6 +3,7 @@
 // auth migration is a one-line change. Do not re-introduce localStorage reads
 // here.
 import { getToken as clientGetToken, clearTokens } from '../api/client';
+import { LOGIN_PATH } from '../portal';
 
 export function isAuthenticated(): boolean {
     // Presence-based, NOT clock-based. The server is the authority on token validity (it validates
@@ -29,5 +30,5 @@ export function setMfaSetupRequired(required: boolean) {
 
 export function logout() {
     clearTokens();
-    window.location.href = '/admin/login';
+    window.location.href = LOGIN_PATH;
 }

@@ -33,7 +33,7 @@ public class TenantResolutionMiddleware
     /// Resolves tenant access for the current user, stashes the results in HttpContext.Items,
     /// populates the scoped <see cref="ITenantContext"/>, and continues the pipeline.
     /// </summary>
-    public async Task InvokeAsync(HttpContext context, ModularCADbContext db, ITenantContext tenantContext)
+    public async Task InvokeAsync(HttpContext context, ModularCADbContext db, ITenantContext tenantContext, ModularCA.Auth.Authorization.ICaGroupAuthorizationService authz)
     {
         var userIdClaim = context.User?.FindFirst("sub")?.Value
             ?? context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
@@ -46,26 +46,9 @@ public class TenantResolutionMiddleware
         {
             resolvedUserId = userId;
 
-            // Check if the user has system.manage via any source (group grant, role, user grant, user role)
-            isSystemAdmin =
-                // Group direct grant
-                await db.CapabilityGrants.AnyAsync(g => g.Group.IsSystemGroup
-                    && g.Group.Members.Any(m => m.UserId == userId)
-                    && g.Capability == Shared.Authorization.Capabilities.SystemManage
-                    && g.ResourceType == null)
-                // Role via system group
-                || await db.RoleAssignments.AnyAsync(ra => ra.GroupId != null
-                    && ra.Group!.IsSystemGroup
-                    && ra.Group.Members.Any(m => m.UserId == userId)
-                    && ra.Role.Capabilities.Any(rc => rc.Capability == Shared.Authorization.Capabilities.SystemManage && rc.ResourceType == null))
-                // Direct user grant (global)
-                || await db.UserCapabilityGrants.AnyAsync(ug => ug.UserId == userId
-                    && ug.Capability == Shared.Authorization.Capabilities.SystemManage
-                    && ug.TenantId == null && ug.CertificateAuthorityId == null && ug.ResourceType == null)
-                // User role assignment (global)
-                || await db.RoleAssignments.AnyAsync(ra => ra.UserId == userId && ra.GroupId == null
-                    && ra.TenantId == null && ra.CertificateAuthorityId == null
-                    && ra.Role.Capabilities.Any(rc => rc.Capability == Shared.Authorization.Capabilities.SystemManage && rc.ResourceType == null));
+            // system.manage via any of the four grant sources. The resolver answers, rather
+            // than a copy of its queries here, so a worn access badge restricts this too.
+            isSystemAdmin = await authz.IsSystemAdminAsync(userId);
 
             if (isSystemAdmin)
             {
@@ -78,11 +61,11 @@ public class TenantResolutionMiddleware
             }
             else
             {
-                var tenantIds = await db.CaGroupMembers
-                    .Where(m => m.UserId == userId)
-                    .Select(m => m.Group.TenantId)
+                // Group memberships as the resolver sees them (a worn badge keeps only some).
+                var tenantIds = (await authz.GetUserGroupsAsync(userId))
+                    .Select(g => g.TenantId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToList();
                 accessibleTenantIds = new HashSet<Guid>(tenantIds);
             }
 

@@ -22,6 +22,67 @@ namespace ModularCA.Database.Migrations
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("AccessBadges");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeSourceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("BadgeId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BadgeId", "Kind", "SourceId")
+                        .IsUnique();
+
+                    b.ToTable("AccessBadgeSources");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.AcmeAccountEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -434,6 +495,12 @@ namespace ModularCA.Database.Migrations
                     b.Property<bool>("IsPublicVisible")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("MsaeAllowKerberos")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("MsaeAllowUsernameToken")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("OcspSignResponses")
                         .HasColumnType("tinyint(1)");
 
@@ -679,6 +746,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
+
+                    b.Property<string>("AdditionalExtensions")
+                        .HasColumnType("longtext");
 
                     b.Property<byte[]>("AesKeyEncryptionIv")
                         .HasColumnType("longblob");
@@ -1077,6 +1147,19 @@ namespace ModularCA.Database.Migrations
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("MsaeMachineType")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("MsaeMajorVersion")
+                        .HasColumnType("int");
+
+                    b.Property<int>("MsaeMinorVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("MsaeTemplateOid")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -1093,6 +1176,9 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CaId");
 
                     b.HasIndex("CertProfileId");
+
+                    b.HasIndex("MsaeTemplateOid")
+                        .IsUnique();
 
                     b.HasIndex("Name")
                         .IsUnique();
@@ -1484,6 +1570,105 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Fido2Credentials");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<bool>("AllowMachines")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("AllowUsers")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("DnsDomain")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<Guid>("EnrollmentUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("Realm")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("ServicePrincipal")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnrollmentUserId");
+
+                    b.HasIndex("Realm")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("KerberosRealms");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmKeyEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("EncryptionType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("Kvno")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ProtectedKey")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)");
+
+                    b.Property<Guid>("RealmId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime?>("RetireAfter")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RealmId", "Kvno", "EncryptionType")
+                        .IsUnique();
+
+                    b.ToTable("KerberosRealmKeys");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.KeyCeremonyEntity", b =>
@@ -1971,6 +2156,9 @@ namespace ModularCA.Database.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("AccessBadgeId")
                         .HasColumnType("char(36)");
 
                     b.Property<string>("CnfJkt")
@@ -3056,6 +3244,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
                     b.Property<string>("DisplayName")
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)");
@@ -3082,6 +3274,9 @@ namespace ModularCA.Database.Migrations
                         .HasDefaultValue(false);
 
                     b.Property<bool>("IsLocked")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsServiceIdentity")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<DateTime?>("LastLoginAt")
@@ -3122,6 +3317,12 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("varchar(64)");
 
+                    b.Property<Guid?>("ServiceScopeCaId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("ServiceScopeTenantId")
+                        .HasColumnType("char(36)");
+
                     b.Property<string>("Username")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -3136,6 +3337,12 @@ namespace ModularCA.Database.Migrations
                         .IsUnique();
 
                     b.HasIndex("IsDeleted");
+
+                    b.HasIndex("IsServiceIdentity");
+
+                    b.HasIndex("ServiceScopeCaId");
+
+                    b.HasIndex("ServiceScopeTenantId");
 
                     b.HasIndex("Username")
                         .IsUnique();
@@ -3223,6 +3430,28 @@ namespace ModularCA.Database.Migrations
                         .IsUnique();
 
                     b.ToTable("Whitelists");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeSourceEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.AccessBadgeEntity", "Badge")
+                        .WithMany("Sources")
+                        .HasForeignKey("BadgeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Badge");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AcmeAuthorizationEntity", b =>
@@ -3608,6 +3837,36 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "EnrollmentUser")
+                        .WithMany()
+                        .HasForeignKey("EnrollmentUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("EnrollmentUser");
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmKeyEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.KerberosRealmEntity", "Realm")
+                        .WithMany("Keys")
+                        .HasForeignKey("RealmId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Realm");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.LdapConfigurationEntity", b =>
                 {
                     b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", null)
@@ -3908,6 +4167,11 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeEntity", b =>
+                {
+                    b.Navigation("Sources");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>
                 {
                     b.Navigation("Grants");
@@ -3934,6 +4198,11 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("CertificateAuthority");
 
                     b.Navigation("Tags");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmEntity", b =>
+                {
+                    b.Navigation("Keys");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.RoleEntity", b =>

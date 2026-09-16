@@ -355,6 +355,7 @@ public class BootstrapService
                 new FeatureFlagEntity { Name = "EST.Enabled", Enabled = request.Features.Est, Description = "Enable EST protocol endpoints" },
                 new FeatureFlagEntity { Name = "SCEP.Enabled", Enabled = request.Features.Scep, Description = "Enable SCEP protocol endpoints" },
                 new FeatureFlagEntity { Name = "CMP.Enabled", Enabled = request.Features.Cmp, Description = "Enable CMP protocol endpoints" },
+                new FeatureFlagEntity { Name = "MSAE.Enabled", Enabled = request.Features.Msae, Description = "Enable Windows autoenrollment (MSAE) endpoints" },
                 new FeatureFlagEntity { Name = "Syslog.Enabled", Enabled = true, Description = "Enable syslog (RFC 5424) log forwarding" },
                 new FeatureFlagEntity { Name = "EventLog.Enabled", Enabled = true, Description = "Enable Windows Event Log sink (Windows only)" },
                 new FeatureFlagEntity { Name = "Metrics.Enabled", Enabled = true, Description = "Enable Prometheus metrics endpoint at /metrics" },
@@ -770,7 +771,8 @@ public class BootstrapService
                 ACME = request.Features.Acme,
                 EST = request.Features.Est,
                 SCEP = request.Features.Scep,
-                CMP = request.Features.Cmp
+                CMP = request.Features.Cmp,
+                MSAE = request.Features.Msae
             },
             HttpsApi = new YamlBootstrapLoader.HttpsApiConfig
             {

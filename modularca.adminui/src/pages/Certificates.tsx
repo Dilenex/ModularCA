@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
+import { useScope } from '../context/ScopeContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
-import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
-import { REVOCATION_REASONS } from './CertificateDetail';
+import { useTableQuery } from '@shared/hooks/useTableQuery';
+import { formatSort, parseSort, viewQuery, type TableQueryValues } from '@shared/tableQuery';
+import { SavedViews } from '@shared/components/SavedViews';
+import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -55,32 +62,64 @@ function downloadCsv(rows: any[], filename: string) {
 const EXPORT_PAGE_SIZE = 200;
 const EXPORT_MAX_ROWS = 50000; // safety cap on a fetch-all export
 
+/** What the certificate list keeps in the URL. Defaults stay out of the link. */
+const QUERY_DEFAULTS: TableQueryValues = {
+    page: '1', pageSize: '20', sort: '-notBefore',
+    search: '', status: 'all', serial: '', san: '', issuer: '', caId: '', keyAlgorithm: '',
+    notAfterFrom: '', notAfterTo: '', issuedFrom: '', issuedTo: '',
+};
+const PAGE_SIZES = [20, 50, 100];
+
 const Certificates: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const [searchParams] = useSearchParams();
-    const [search, setSearch] = useState(() => searchParams.get('search') || '');
-    const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'revoked' | 'expired'>(
-        () => (['active', 'revoked', 'expired'].includes(searchParams.get('status') || '') ? (searchParams.get('status') as any) : 'all'));
-    const [serialFilter, setSerialFilter] = useState(() => searchParams.get('serial') || '');
-    const [sanFilter, setSanFilter] = useState(() => searchParams.get('san') || '');
-    const [issuerFilter, setIssuerFilter] = useState(() => searchParams.get('issuer') || '');
-    const [caIdFilter, setCaIdFilter] = useState(() => searchParams.get('caId') || '');
-    const [keyAlgorithmFilter, setKeyAlgorithmFilter] = useState(() => searchParams.get('keyAlgorithm') || '');
-    const [notAfterFrom, setNotAfterFrom] = useState(() => searchParams.get('notAfterFrom') || '');
-    const [notAfterTo, setNotAfterTo] = useState(() => searchParams.get('notAfterTo') || '');
-    const [issuedFrom, setIssuedFrom] = useState(() => searchParams.get('issuedFrom') || '');
-    const [issuedTo, setIssuedTo] = useState(() => searchParams.get('issuedTo') || '');
+    // Page, sort and every filter live in the URL (see useTableQuery), so a filtered view is a
+    // link and the back button walks through filter changes.
+    const [q, setQ] = useTableQuery('certificates', QUERY_DEFAULTS);
+    const page = Math.max(1, parseInt(q.page, 10) || 1);
+    const pageSize = PAGE_SIZES.includes(parseInt(q.pageSize, 10)) ? parseInt(q.pageSize, 10) : 20;
+    const sort = parseSort(q.sort);
+    const statusFilter = (['active', 'revoked', 'expired'].includes(q.status) ? q.status : 'all') as 'all' | 'active' | 'revoked' | 'expired';
+    const { caId: caIdFilter, keyAlgorithm: keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo } = q;
+    // The typed filters are edited locally and written to the URL after a pause, so every
+    // keystroke is not a history entry and not a request.
+    const [search, setSearch] = useState(q.search);
+    const [serialFilter, setSerialFilter] = useState(q.serial);
+    const [sanFilter, setSanFilter] = useState(q.san);
+    const [issuerFilter, setIssuerFilter] = useState(q.issuer);
+    useEffect(() => {
+        const t = setTimeout(() => {
+            if (search !== q.search || serialFilter !== q.serial || sanFilter !== q.san || issuerFilter !== q.issuer)
+                setQ({ search, serial: serialFilter, san: sanFilter, issuer: issuerFilter });
+        }, 700);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [search, serialFilter, sanFilter, issuerFilter]);
+    // A saved view or the back button changed the URL underneath the typed fields: follow it.
+    useEffect(() => { setSearch(q.search); setSerialFilter(q.serial); setSanFilter(q.san); setIssuerFilter(q.issuer); }, [q.search, q.serial, q.san, q.issuer]);
+    const setPage = (n: number) => setQ({ page: String(n) });
+
+    // The console's CA scope supplies the issuing-CA filter; under a single-CA scope the
+    // filter is fixed to that CA and the select below is locked to say so.
+    const { scope, caId: scopeCaId, caQuery } = useScope();
+    const scopeLocked = scope.kind === 'ca';
+    // Follow the scope both ways: a CA scope pins the filter; widening it back clears the pin.
+    // Only a change of scope clears it, so a deep link with ?caId= survives the first render.
+    const wasLocked = useRef(scopeLocked);
+    useEffect(() => {
+        if (scopeLocked && scopeCaId && q.caId !== scopeCaId) setQ({ caId: scopeCaId });
+        else if (!scopeLocked && wasLocked.current && q.caId) setQ({ caId: '' });
+        wasLocked.current = scopeLocked;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [scopeLocked, scopeCaId]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [showAdvanced, setShowAdvanced] = useState(() =>
-        ['serial', 'san', 'issuer', 'caId', 'keyAlgorithm', 'notAfterFrom', 'notAfterTo', 'issuedFrom', 'issuedTo'].some((k) => searchParams.get(k)));
-    const [page, setPage] = useState(1);
+        ['serial', 'san', 'issuer', 'caId', 'keyAlgorithm', 'notAfterFrom', 'notAfterTo', 'issuedFrom', 'issuedTo'].some((k) => q[k]));
     const [totalPages, setTotalPages] = useState(1);
     const [totalCount, setTotalCount] = useState(0);
     const [certificates, setCertificates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const pageSize = 20;
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Cross-page selection (keyed by serial). Cache of every loaded row so a selected-rows export
     // has the data for keys ticked on pages no longer rendered.
@@ -107,39 +146,41 @@ const Certificates: React.FC = () => {
             .catch(() => { /* non-critical */ });
     }, []);
 
-    // Debounce the free-typing filters.
-    const [dSearch, setDSearch] = useState(search);
-    const [dSerial, setDSerial] = useState(serialFilter);
-    const [dSan, setDSan] = useState(sanFilter);
-    const [dIssuer, setDIssuer] = useState(issuerFilter);
-    useEffect(() => {
-        const t = setTimeout(() => { setDSearch(search); setDSerial(serialFilter); setDSan(sanFilter); setDIssuer(issuerFilter); setPage(1); }, 1500);
-        return () => clearTimeout(t);
-    }, [search, serialFilter, sanFilter, issuerFilter]);
-
-    // Build the query params for the active filter (page/size supplied by the caller).
+    // Build the query params for the active filter (page/size supplied by the caller). The
+    // tenant scope arrives through caQuery when no single CA is pinned.
     const buildParams = useCallback((pageNum: number, size: number) => {
         const params = new URLSearchParams({ page: String(pageNum), pageSize: String(size) });
-        if (dSearch) params.set('search', dSearch);
+        if (q.sort) params.set('sort', q.sort);
+        if (q.search) params.set('search', q.search);
         if (statusFilter !== 'all') params.set('status', statusFilter);
-        if (dSerial) params.set('serial', dSerial);
-        if (dSan) params.set('san', dSan);
-        if (dIssuer) params.set('issuer', dIssuer);
+        if (q.serial) params.set('serial', q.serial);
+        if (q.san) params.set('san', q.san);
+        if (q.issuer) params.set('issuer', q.issuer);
         if (caIdFilter) params.set('caId', caIdFilter);
+        else { const scoped = caQuery(); if (scoped.startsWith('?tenantId=')) params.set('tenantId', decodeURIComponent(scoped.slice('?tenantId='.length))); }
         if (keyAlgorithmFilter) params.set('keyAlgorithm', keyAlgorithmFilter);
         if (notAfterFrom) params.set('notAfterFrom', notAfterFrom);
         if (notAfterTo) params.set('notAfterTo', notAfterTo);
         if (issuedFrom) params.set('issuedFrom', issuedFrom);
         if (issuedTo) params.set('issuedTo', issuedTo);
         return params;
-    }, [dSearch, statusFilter, dSerial, dSan, dIssuer, caIdFilter, keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo]);
+    }, [q.sort, q.search, statusFilter, q.serial, q.san, q.issuer, caIdFilter, caQuery, keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo]);
+
+    /** The current filter as a saved view sees it: filters and sort, never the page. */
+    const currentView = viewQuery(q, QUERY_DEFAULTS);
+    const applyView = (view: string) => {
+        const params = new URLSearchParams(view);
+        const next: Partial<TableQueryValues> = {};
+        for (const key of Object.keys(QUERY_DEFAULTS)) if (key !== 'page') next[key] = params.get(key) ?? QUERY_DEFAULTS[key];
+        setQ(next);
+    };
 
     // Reset selection whenever the matching set changes (filter change, not page change).
     useEffect(() => {
         setSelectedKeys(new Set());
         setAllMatching(false);
         rowCache.current = new Map();
-    }, [dSearch, statusFilter, dSerial, dSan, dIssuer, caIdFilter, keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo]);
+    }, [currentView, caIdFilter]);
 
     useEffect(() => {
         let cancelled = false;
@@ -156,9 +197,9 @@ const Certificates: React.FC = () => {
                 setCertificates(items);
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load certificates'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load certificates')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [page, buildParams, reloadKey]);
+    }, [page, pageSize, buildParams, reloadKey]);
 
     // Bulk-revoke the explicitly-selected serials with one reason behind a single step-up prompt.
     // (Leaf certs only — the server skips CA certs, which need the RevokeCa op / a ceremony.)
@@ -185,7 +226,14 @@ const Certificates: React.FC = () => {
         }
     };
 
+    // A from-date after its to-date matches nothing; the server answers an empty page rather than
+    // an error, so the list (and a CSV export) would silently come back empty.
+    const expiresRangeInverted = !!(notAfterFrom && notAfterTo && notAfterFrom > notAfterTo);
+    const issuedRangeInverted = !!(issuedFrom && issuedTo && issuedFrom > issuedTo);
+    const rangeInverted = expiresRangeInverted || issuedRangeInverted;
+
     const handleExport = async () => {
+        if (rangeInverted) { showToast('warning', 'Fix the date range first: the "after" date is later than the "before" date, so nothing matches.'); return; }
         // Specific selection across pages → export those from the cache.
         if (selectedKeys.size > 0 && !allMatching) {
             const rows = Array.from(selectedKeys).map((k) => rowCache.current.get(k)).filter(Boolean);
@@ -215,38 +263,67 @@ const Certificates: React.FC = () => {
         }
     };
 
-    const columns: DataTableColumn<any>[] = [
-        { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusBadge status={certStatus(c)} /> },
-        { key: 'serial', header: 'Serial', defaultWidth: 180, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{c.serialNumber}</span> },
-        { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{c.subjectDN}</span> },
-        { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm || '-'}</span> },
-        { key: 'expires', header: 'Expires', defaultWidth: 160, minWidth: 120, exportValue: (c) => formatDate(c.notAfter), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.notAfter)}</span> },
-    ];
-
-    const drawer = (c: any) => {
-        const sans = parseSans(c.subjectAlternativeNames);
-        return (
-            <div className="text-sm">
-                <DetailField label="Status" value={certStatus(c)} />
-                <DetailField label="Serial" value={c.serialNumber} mono />
-                <DetailField label="Subject" value={c.subjectDN} />
-                <DetailField label="Issuer" value={c.issuer} />
-                <DetailField label="Not Before" value={formatDate(c.notBefore)} />
-                <DetailField label="Not After" value={formatDate(c.notAfter)} />
-                <DetailField label="Key Algorithm" value={c.keyAlgorithm} />
-                {sans && sans.length > 0 && <DetailField label="SANs" value={sans.join(', ')} />}
-                <p className="text-[11px] text-gray-500 pt-3">Open the full page for extensions, downloads, revoke or reissue.</p>
-            </div>
-        );
+    // The certificate as a record: its row, its drawer (overview, audit trail, other certificates
+    // for the same subject) and its page, from one description.
+    const record: RecordDescriptor<any> = {
+        kind: 'certificate',
+        key: certKey,
+        title: (c) => (c.subjectDN || '').match(/CN=([^,]+)/)?.[1] || c.serialNumber,
+        status: (c) => { const st = certStatus(c); return { label: st, tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'expired' ? 'warn' : 'neutral' }; },
+        columns: [
+            { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusBadge status={certStatus(c)} /> },
+            { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{c.serialNumber}</span> },
+            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{c.subjectDN}</span> },
+            { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm || '-'}</span> },
+            { key: 'notAfter', header: 'Expires', defaultWidth: 160, minWidth: 120, sortable: true, exportValue: (c) => formatDate(c.notAfter), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.notAfter)}</span> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Serial', value: (c) => c.serialNumber, mono: true, copyable: true },
+                { label: 'Subject', value: (c) => c.subjectDN },
+                { label: 'Issuer', value: (c) => c.issuer },
+                { label: 'Key Algorithm', value: (c) => c.keyAlgorithm },
+            ] },
+            { title: 'Validity', fields: [
+                { label: 'Not Before', value: (c) => formatDate(c.notBefore) },
+                { label: 'Not After', value: (c) => formatDate(c.notAfter) },
+            ] },
+            { title: 'Names', fields: [
+                { label: 'SANs', value: (c) => { const sans = parseSans(c.subjectAlternativeNames); return sans && sans.length > 0 ? sans.join(', ') : null; } },
+            ] },
+        ],
+        audit: { tab: 'General', target: (c) => (c.serialNumber ? { type: 'Certificate', id: c.serialNumber } : null) },
+        related: [{
+            title: 'Other certificates for this subject',
+            load: async (c) => {
+                const cn = (c.subjectDN || '').match(/CN=([^,]+)/)?.[1];
+                if (!cn) return [];
+                const r = await apiGet<any>(`/api/v1/admin/certificates?search=${encodeURIComponent(cn)}&pageSize=10`);
+                return (r?.items ?? []).filter((x: any) => certKey(x) !== certKey(c));
+            },
+            descriptor: {
+                kind: 'certificate-sibling',
+                key: certKey,
+                title: (c) => c.subjectDN,
+                columns: [
+                    { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, render: (c) => <StatusBadge status={certStatus(c)} /> },
+                    { key: 'serial', header: 'Serial', defaultWidth: 150, render: (c) => <span className="font-mono text-xs truncate">{c.serialNumber}</span> },
+                    { key: 'notAfter', header: 'Expires', defaultWidth: 140, render: (c) => <span className="text-xs">{formatDate(c.notAfter)}</span> },
+                ],
+                sections: [],
+                page: { path: (c) => `/certificates/${c.serialNumber}` },
+            },
+            listPath: (c) => { const cn = (c.subjectDN || '').match(/CN=([^,]+)/)?.[1]; return `/certificates?search=${encodeURIComponent(cn || '')}`; },
+        }],
+        page: { path: (c) => `/certificates/${c.serialNumber}` },
     };
 
     const advInput = 'w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
     const advLabel = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
     const advancedActive = !!(serialFilter || sanFilter || issuerFilter || caIdFilter || keyAlgorithmFilter || notAfterFrom || notAfterTo || issuedFrom || issuedTo);
     const clearAdvanced = () => {
-        setSerialFilter(''); setSanFilter(''); setIssuerFilter(''); setCaIdFilter('');
-        setKeyAlgorithmFilter(''); setNotAfterFrom(''); setNotAfterTo(''); setIssuedFrom(''); setIssuedTo('');
-        setDSerial(''); setDSan(''); setDIssuer(''); setPage(1);
+        setSerialFilter(''); setSanFilter(''); setIssuerFilter('');
+        setQ({ serial: '', san: '', issuer: '', caId: scopeLocked && scopeCaId ? scopeCaId : '', keyAlgorithm: '', notAfterFrom: '', notAfterTo: '', issuedFrom: '', issuedTo: '' });
     };
 
     return (
@@ -257,7 +334,7 @@ const Certificates: React.FC = () => {
             <div className="flex flex-wrap gap-4 items-center">
                 <input type="text" placeholder="Search subject, serial, SAN, or issuer..." value={search} onChange={(e) => setSearch(e.target.value)}
                     className="flex-1 min-w-[250px] px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
-                <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as any); setPage(1); }}
+                <select value={statusFilter} onChange={(e) => setQ({ status: e.target.value })}
                     className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                     <option value="all">All Statuses</option>
                     <option value="active">Active</option>
@@ -277,7 +354,7 @@ const Certificates: React.FC = () => {
                     <div><label className={advLabel}>Subject Alternative Name</label><input type="text" value={sanFilter} onChange={(e) => setSanFilter(e.target.value)} placeholder="e.g. *.example.com" className={advInput} /></div>
                     <div>
                         <label className={advLabel}>Issuing CA</label>
-                        <select value={caIdFilter} onChange={(e) => { setCaIdFilter(e.target.value); setPage(1); }} className={advInput}>
+                        <select value={caIdFilter} onChange={(e) => setQ({ caId: e.target.value })} className={advInput} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}>
                             <option value="">All CAs</option>
                             {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>)}
                         </select>
@@ -285,7 +362,7 @@ const Certificates: React.FC = () => {
                     <div><label className={advLabel}>Issuer DN</label><input type="text" value={issuerFilter} onChange={(e) => setIssuerFilter(e.target.value)} placeholder="e.g. CN=My CA" className={advInput} /></div>
                     <div>
                         <label className={advLabel}>Key Algorithm</label>
-                        <select value={keyAlgorithmFilter} onChange={(e) => { setKeyAlgorithmFilter(e.target.value); setPage(1); }} className={advInput}>
+                        <select value={keyAlgorithmFilter} onChange={(e) => setQ({ keyAlgorithm: e.target.value })} className={advInput}>
                             <option value="">All Algorithms</option>
                             <option value="RSA">RSA</option>
                             <option value="ECDSA">ECDSA</option>
@@ -295,34 +372,40 @@ const Certificates: React.FC = () => {
                         </select>
                     </div>
                     <div className="hidden lg:block" />
-                    <div><label className={advLabel}>Expires After</label><input type="date" value={notAfterFrom} onChange={(e) => { setNotAfterFrom(e.target.value); setPage(1); }} className={advInput} /></div>
-                    <div><label className={advLabel}>Expires Before</label><input type="date" value={notAfterTo} onChange={(e) => { setNotAfterTo(e.target.value); setPage(1); }} className={advInput} /></div>
+                    <div><label className={advLabel}>Expires After</label><input type="date" value={notAfterFrom} max={notAfterTo || undefined} onChange={(e) => setQ({ notAfterFrom: e.target.value })} className={advInput} /></div>
+                    <div>
+                        <label className={advLabel}>Expires Before</label>
+                        <input type="date" value={notAfterTo} min={notAfterFrom || undefined} onChange={(e) => setQ({ notAfterTo: e.target.value })} className={advInput} />
+                        {expiresRangeInverted && <FieldHint tone="warn">"Expires After" is later than "Expires Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
+                    </div>
                     <div className="hidden lg:block" />
-                    <div><label className={advLabel}>Issued After</label><input type="date" value={issuedFrom} onChange={(e) => { setIssuedFrom(e.target.value); setPage(1); }} className={advInput} /></div>
-                    <div><label className={advLabel}>Issued Before</label><input type="date" value={issuedTo} onChange={(e) => { setIssuedTo(e.target.value); setPage(1); }} className={advInput} /></div>
+                    <div><label className={advLabel}>Issued After</label><input type="date" value={issuedFrom} max={issuedTo || undefined} onChange={(e) => setQ({ issuedFrom: e.target.value })} className={advInput} /></div>
+                    <div>
+                        <label className={advLabel}>Issued Before</label>
+                        <input type="date" value={issuedTo} min={issuedFrom || undefined} onChange={(e) => setQ({ issuedTo: e.target.value })} className={advInput} />
+                        {issuedRangeInverted && <FieldHint tone="warn">"Issued After" is later than "Issued Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
+                    </div>
                     <div className="flex items-end">
                         {advancedActive && <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 rounded transition-colors">Clear advanced</button>}
                     </div>
                 </div>
             )}
 
+            <SavedViews tableId="certificates" current={currentView} onApply={applyView} />
+
             <DataTable<any>
                 tableId="certificates"
                 title="All Certificates"
                 rows={certificates}
-                rowKey={certKey}
                 loading={loading}
                 error={error}
                 empty="No certificates found"
-                columns={columns}
+                {...recordTableProps(record)}
                 selectable
                 bulkActions={[
                     { label: 'Revoke', variant: 'danger', onClick: () => { setRevokeReason('Unspecified'); setRevokeOpen(true); } },
                 ]}
                 exportFileName="certificates"
-                renderDrawer={drawer}
-                drawerTitle={(c) => (c.subjectDN || '').match(/CN=([^,]+)/)?.[1] || c.serialNumber}
-                detailPath={(c) => `/certificates/${c.serialNumber}`}
                 selectedKeys={selectedKeys}
                 onSelectedKeysChange={(next) => { setSelectedKeys(next); setAllMatching(false); }}
                 totalCount={totalCount}
@@ -331,6 +414,14 @@ const Certificates: React.FC = () => {
                 onClearSelection={() => { setSelectedKeys(new Set()); setAllMatching(false); }}
                 onExport={handleExport}
                 exporting={exporting}
+                sort={sort}
+                onSortChange={(next) => setQ({ sort: formatSort(next) || QUERY_DEFAULTS.sort })}
+                page={page}
+                pageSize={pageSize}
+                totalPages={totalPages}
+                onPageChange={setPage}
+                pageSizeOptions={PAGE_SIZES}
+                onPageSizeChange={(n) => setQ({ pageSize: String(n), page: '1' })}
             />
 
             {/* Bulk revoke — one reason, one step-up prompt */}
@@ -341,13 +432,14 @@ const Certificates: React.FC = () => {
                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Revoke {selectedKeys.size} certificate{selectedKeys.size === 1 ? '' : 's'}</h3>
                         </div>
                         <div className="px-6 py-4 space-y-3">
-                            <p className="text-xs text-gray-600 dark:text-gray-400">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. This cannot be undone.</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. Only Certificate Hold can be lifted afterwards; every other reason is permanent.</p>
                             {allMatching && <p className="text-[11px] text-amber-700 dark:text-amber-400">Note: this revokes the {selectedKeys.size} explicitly selected on loaded pages, not every match across all pages.</p>}
                             <div className="space-y-1">
                                 <label htmlFor="bulk-revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400">Revocation reason</label>
                                 <select id="bulk-revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeBusy} className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
                                     {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                 </select>
+                                <RevocationReasonHint reason={revokeReason} />
                             </div>
                         </div>
                         <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
@@ -358,16 +450,6 @@ const Certificates: React.FC = () => {
                 </div>
             )}
 
-            {/* Pagination */}
-            {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-4">
-                    <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
-                        className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Previous</button>
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Page {page} of {totalPages}</span>
-                    <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
-                        className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
-                </div>
-            )}
         </div>
     );
 };

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -8,6 +10,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
+
+const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -88,6 +93,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                 <DetailField label="Status" value={ceremony.status} />
                 <DetailField label="Initiator" value={ceremony.initiatedByUsername || '-'} />
                 <DetailField label="Approvals" value={`${ceremony.currentApprovals ?? 0} / ${ceremony.requiredApprovals ?? '-'}`} />
+                <FieldHint className="-mt-1 mb-1">{APPROVALS_HINT}</FieldHint>
                 <DetailField label="Created" value={formatDate(ceremony.createdAt)} />
                 <DetailField label="Expires" value={formatDate(ceremony.expiresAt)} />
                 {ceremony.executedAt && <DetailField label="Executed" value={formatDate(ceremony.executedAt)} />}
@@ -163,9 +169,12 @@ const Ceremonies: React.FC = () => {
     const { showToast } = useToast();
     const [ceremonies, setCeremonies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string; confirmLabel: string } | null>(null);
+    // `confirmClass` distinguishes the destructive confirmations (Reject, Cancel: red) from the
+    // affirmative ones added for Approve and Execute, which used to fire with no confirmation at
+    // all while the harmless actions had one.
+    const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: React.ReactNode; confirmLabel: string; confirmClass?: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
     const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
@@ -177,7 +186,7 @@ const Ceremonies: React.FC = () => {
             const data = await apiGet<any>('/api/v1/admin/ceremonies');
             setCeremonies(Array.isArray(data) ? data : (data.items || data.ceremonies || []));
         } catch (err: any) {
-            setError(err.message || 'Failed to load ceremonies');
+            setError(errorNotice(err, 'Failed to load ceremonies'));
         } finally {
             setLoading(false);
         }
@@ -197,14 +206,26 @@ const Ceremonies: React.FC = () => {
         return () => clearInterval(interval);
     }, [ceremonies, fetchCeremonies]);
 
-    const handleApprove = async (ceremony: any) => {
-        try {
-            await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/approve`, {}, requireStepUp, StepUpOps.ApproveCeremony, ceremony.id);
-            showToast('success', 'Ceremony approved.');
-            setRefreshTrigger((t) => t + 1);
-        } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to approve ceremony');
-        }
+    const primaryConfirmClass = 'px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors';
+    const executeConfirmClass = 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors';
+
+    const handleApprove = (ceremony: any) => {
+        setConfirmAction({
+            title: 'Approve Ceremony',
+            message: (
+                <>
+                    <p>Approve &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <p className="mt-2">You are one of the approvers of record for this ceremony; your approval is audited under your name.</p>
+                </>
+            ),
+            confirmLabel: 'Approve',
+            confirmClass: primaryConfirmClass,
+            action: async () => {
+                await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/approve`, {}, requireStepUp, StepUpOps.ApproveCeremony, ceremony.id);
+                showToast('success', 'Ceremony approved.');
+                setRefreshTrigger((t) => t + 1);
+            },
+        });
     };
 
     const handleReject = (ceremony: any) => {
@@ -233,14 +254,30 @@ const Ceremonies: React.FC = () => {
         });
     };
 
-    const handleExecute = async (ceremony: any) => {
-        try {
-            const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, StepUpOps.ExecuteCeremony, ceremony.id);
-            showToast('success', result?.message || 'Ceremony executed successfully.');
-            setRefreshTrigger((t) => t + 1);
-        } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to execute ceremony');
-        }
+    const handleExecute = (ceremony: any) => {
+        // Only a CA-creation ceremony generates keys; the other two families apply a policy or
+        // user change. The irreversibility is the same for all three.
+        const isCa = ceremonyFamily(ceremony) === 'CaCreation';
+        setConfirmAction({
+            title: 'Execute Ceremony',
+            message: (
+                <>
+                    <p>Execute &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <p className="mt-2">
+                        {isCa
+                            ? 'This generates the CA’s key pair now. It cannot be re-run; a mistake means a new ceremony.'
+                            : 'This applies the approved change now. It cannot be re-run; a mistake means a new ceremony.'}
+                    </p>
+                </>
+            ),
+            confirmLabel: 'Execute',
+            confirmClass: executeConfirmClass,
+            action: async () => {
+                const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, StepUpOps.ExecuteCeremony, ceremony.id);
+                showToast('success', result?.message || 'Ceremony executed successfully.');
+                setRefreshTrigger((t) => t + 1);
+            },
+        });
     };
 
     const isInitiator = (c: any) =>
@@ -274,8 +311,8 @@ const Ceremonies: React.FC = () => {
             render: (c) => <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded border w-fit ${FAMILY_META[ceremonyFamily(c)].cls}`}>{FAMILY_META[ceremonyFamily(c)].label}</span> },
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
             render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status} /> },
-        { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
-            render: (c) => <span className="text-gray-600 dark:text-gray-400">{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
+        { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', headerTitle: APPROVALS_HINT, exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
+            render: (c) => <span className="text-gray-600 dark:text-gray-400" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
         { key: 'initiator', header: 'Initiator', defaultWidth: 140, exportValue: (c) => c.initiatedByUsername || '',
             render: (c) => c.initiatedByUsername || '-' },
         { key: 'created', header: 'Created', defaultWidth: 150, exportValue: (c) => c.createdAt, render: (c) => formatDate(c.createdAt) },
@@ -335,7 +372,7 @@ const Ceremonies: React.FC = () => {
                 title={confirmAction?.title || ''}
                 message={confirmAction?.message || ''}
                 confirmLabel={confirmAction?.confirmLabel || 'Confirm'}
-                confirmClass="bg-red-600 hover:bg-red-700"
+                confirmClass={confirmAction?.confirmClass || 'px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors'}
                 loading={confirmLoading}
                 onConfirm={async () => {
                     if (!confirmAction) return;

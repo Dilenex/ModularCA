@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using ModularCA.Auth.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
@@ -17,7 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/manage/cert-permissions")]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
     public class AdminCertPermissionManagerController(ICertificateStore certStore, ICurrentUserService currentUser, ICertificateAccessAssignment accessAssignment, IAuditService audit, ModularCADbContext db) : ControllerBase
     {
         private readonly ICertificateStore _certStore = certStore;
@@ -34,6 +35,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// only the supplementary ACL.
         /// </summary>
         [HttpGet("serial/{serial}")]
+        [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> GetBySerial(string serial)
         {
             var cert = await _db.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
@@ -145,6 +147,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// the user currently has Manage is a downgrade; granting Manage is an upgrade.
         /// </summary>
         [HttpPost("serial/{serial}/set")]
+        [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
         public async Task<IActionResult> SetBySerial(string serial, [FromBody] SetCertPermissionRequest request)
         {
@@ -174,6 +177,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <summary>Removes a user's ACL entry on a certificate (by serial). Implicit access via RBAC or
         /// being the original requestor is unaffected.</summary>
         [HttpPost("serial/{serial}/revoke-user")]
+        [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
         public async Task<IActionResult> RevokeBySerial(string serial, [FromBody] SetCertPermissionRequest request)
         {
@@ -198,6 +202,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         // Grant read or manage access
         [HttpPost("allow/view")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
         public async Task<IActionResult> GrantViewPermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -235,6 +241,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         [HttpPost("allow/manage")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
         public async Task<IActionResult> GrantManagePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -268,6 +276,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         // Downgrade manage to read
         [HttpPost("downgrade")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
         public async Task<IActionResult> DowngradePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -301,6 +311,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         // Revoke access
         [HttpPost("revoke")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
         public async Task<IActionResult> RevokePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();

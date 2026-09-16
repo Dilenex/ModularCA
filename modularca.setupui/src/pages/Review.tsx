@@ -80,6 +80,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
         security.enableEst && 'EST',
         security.enableScep && 'SCEP',
         security.enableCmp && 'CMP',
+        security.enableMsae && 'MSAE',
     ].filter(Boolean);
 
     const handleInitialize = async () => {
@@ -117,6 +118,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 enableEst: security.enableEst,
                 enableScep: security.enableScep,
                 enableCmp: security.enableCmp,
+                enableMsae: security.enableMsae,
             },
             security: {
                 maxFailedLoginAttempts: security.maxFailedLoginAttempts,
@@ -240,7 +242,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                     </p>
                 </div>
                 <a
-                    href="/admin/login"
+                    href="/login"
                     className="inline-block px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
                 >
                     Go to Login

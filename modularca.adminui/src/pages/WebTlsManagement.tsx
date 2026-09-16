@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
-import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { inputClass as inputCls, labelClass as labelCls, FieldHint } from '@shared/components/forms';
+import ConfirmModal from '../components/ConfirmModal';
 
 interface WebTlsCertStatusResponse {
     serialNumber: string;
@@ -67,7 +71,7 @@ const emptyForm: ReissueFormState = {
 const CurrentCertCard: React.FC<{
     status: WebTlsCertStatusResponse | null;
     loading: boolean;
-    error: string | null;
+    error: NoticeInput | null;
     onRefresh: () => void;
 }> = ({ status, loading, error, onRefresh }) => {
     const renderExpiryBadge = () => {
@@ -111,9 +115,7 @@ const CurrentCertCard: React.FC<{
             )}
 
             {error && !loading && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
-                    {error}
-                </div>
+                <InlineNotice notice={error} />
             )}
 
             {!loading && !error && status && (
@@ -241,7 +243,15 @@ const ReissueCard: React.FC<{
         }
     }, [status]);
 
+    const [confirmReissue, setConfirmReissue] = useState(false);
+    // The hostname this console is being reached on must survive the reissue, or the operator is
+    // locked out the moment the new certificate is swapped in; nothing on this page can undo that.
+    const consoleHost = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : '';
+    const requestedSans = form.sansText.split(/[\n,]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const consoleHostCovered = !consoleHost || requestedSans.some((san) => san === consoleHost || (san.startsWith('*.') && consoleHost.endsWith(san.slice(1)) && !consoleHost.slice(0, -san.length + 1).includes('.')));
+
     const handleReissue = async () => {
+        setConfirmReissue(false);
         setError(null);
         setSuccess(null);
 
@@ -306,9 +316,7 @@ const ReissueCard: React.FC<{
             </div>
 
             {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
-                    {error}
-                </div>
+                <InlineNotice notice={error} />
             )}
             {success && (
                 <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm">
@@ -389,6 +397,9 @@ const ReissueCard: React.FC<{
                     rows={5}
                     className={`${inputCls} font-mono`}
                 />
+                {!consoleHostCovered && (
+                    <FieldHint tone="warn">You are reaching this console as <span className="font-mono">{consoleHost}</span>, which is not in this list. Reissuing without it makes the console unreachable, and this page cannot undo that.</FieldHint>
+                )}
                 <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
                     One per line. Each entry must be prefixed with a type, e.g.{' '}
                     <code className="px-1 bg-gray-200 dark:bg-gray-900 rounded">DNS:api.example.com</code>{' '}
@@ -503,13 +514,25 @@ const ReissueCard: React.FC<{
 
             <div>
                 <button
-                    onClick={handleReissue}
+                    onClick={() => setConfirmReissue(true)}
                     disabled={submitting || loading}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors"
                 >
                     {submitting ? 'Reissuing...' : 'Reissue Web TLS Certificate'}
                 </button>
             </div>
+            <ConfirmModal
+                isOpen={confirmReissue}
+                title="Reissue the console's TLS certificate?"
+                message={<>
+                    <p>A new key pair is generated, the running certificate is swapped at once, and the current one is revoked as Superseded and stops validating.</p>
+                    {!consoleHostCovered && <p className="mt-2 text-amber-800 dark:text-amber-300 font-medium">The name you are connected as, {consoleHost}, is not among the requested names. You will lose access to this console.</p>}
+                </>}
+                confirmLabel={consoleHostCovered ? 'Reissue' : 'Reissue anyway'}
+                loading={submitting}
+                onConfirm={handleReissue}
+                onCancel={() => setConfirmReissue(false)}
+            />
         </div>
     );
 };
@@ -533,7 +556,7 @@ function normalizeKeySize(stored: string | null | undefined): string {
 const WebTlsManagement: React.FC = () => {
     const [status, setStatus] = useState<WebTlsCertStatusResponse | null>(null);
     const [loading, setLoading] = useState(true);
-    const [loadError, setLoadError] = useState<string | null>(null);
+    const [loadError, setLoadError] = useState<NoticeInput | null>(null);
 
     const loadStatus = async () => {
         setLoading(true);
@@ -542,7 +565,7 @@ const WebTlsManagement: React.FC = () => {
             const data = await apiGet<WebTlsCertStatusResponse>('/api/v1/admin/webtls');
             setStatus(data);
         } catch (err: any) {
-            setLoadError(err.message || 'Failed to load Web TLS certificate');
+            setLoadError(errorNotice(err, 'Failed to load Web TLS certificate'));
         } finally {
             setLoading(false);
         }

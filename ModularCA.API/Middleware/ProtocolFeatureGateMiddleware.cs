@@ -44,6 +44,10 @@ public class ProtocolFeatureGateMiddleware
         // CMP — Certificate Management Protocol endpoints
         ("/api/v1/cmp", "CMP.Enabled"),
         ("/cmp/",       "CMP.Enabled"),
+
+        // Windows autoenrollment (MS-WSTEP)
+        ("/api/v1/msae", "MSAE.Enabled"),
+        ("/msae/",       "MSAE.Enabled"),
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new()

@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPut, apiDelete, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, CeilingList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName } from './profileHelpers';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, ALLOWED_KEY_ALGORITHM_OPTIONS, ALLOWED_KEY_SIZE_OPTIONS, ALLOWED_SIGNATURE_ALGORITHM_OPTIONS, formatSignatureAlgorithmLabel, SIGNING_ALLOWED_ALGORITHM_OPTIONS, SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, CeilingList, MultiToggle, formatKeySizeLabel, caRowId, caCertId, caDisplayName,
+    CEILING_HINT, REQUESTED_USAGE_HINT, DurationHint, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint,
+    NAME_CONSTRAINTS_HINT, NAME_CONSTRAINTS_PLACEHOLDER, MAX_PATH_LENGTH_HINT, CT_LOG_IDS_HINT, CT_ENABLED_HINT,
+    FORCE_COMMAND_HINT, SSH_REQUIRED_EXTENSIONS_HINT, sshExtensionTitle, sshRequiredNotAllowed } from './profileHelpers';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 
 import RequestProfilesTab from './RequestProfiles';
 import { StepUpOps } from '@shared/generated';
@@ -25,7 +31,7 @@ const CertProfilesTab: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [authorities, setAuthorities] = useState<any[]>([]);
@@ -60,12 +66,14 @@ const CertProfilesTab: React.FC = () => {
         allowWildcard: false,
     });
 
+    const { caQuery, caId: scopeCaId } = useScope();
+
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/cert-profiles')
+        apiGet<any>(`/api/v1/admin/cert-profiles${caQuery()}`)
             .then((data) => setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -74,7 +82,7 @@ const CertProfilesTab: React.FC = () => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => setAuthorities(Array.isArray(data) ? data : (data.items || data.authorities || [])))
             .catch(() => {});
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /** Resolve parent profile name from ID */
     const resolveParentName = (id: string | undefined | null) => {
@@ -191,15 +199,18 @@ const CertProfilesTab: React.FC = () => {
                         </div>
                         <div>
                             <label className={labelClass}>Validity Period Min (ISO 8601)</label>
-                            <input type="text" placeholder='e.g. P90D' value={form.validityPeriodMin} onChange={(e) => setForm({ ...form, validityPeriodMin: e.target.value })} className={inputClass} />
+                            <input type="text" placeholder='e.g. P90D' value={form.validityPeriodMin} onChange={(e) => setForm({ ...form, validityPeriodMin: e.target.value })} className={inputClass} aria-describedby="cp-create-validity-min-hint" />
+                            <DurationHint id="cp-create-validity-min-hint" value={form.validityPeriodMin} />
                         </div>
                         <div>
                             <label className={labelClass}>Validity Period Max (ISO 8601)</label>
-                            <input type="text" placeholder='e.g. P1Y' value={form.validityPeriodMax} onChange={(e) => setForm({ ...form, validityPeriodMax: e.target.value })} className={inputClass} />
+                            <input type="text" placeholder='e.g. P1Y' value={form.validityPeriodMax} onChange={(e) => setForm({ ...form, validityPeriodMax: e.target.value })} className={inputClass} aria-describedby="cp-create-validity-max-hint" />
+                            <DurationHint id="cp-create-validity-max-hint" value={form.validityPeriodMax} />
                         </div>
                         <div>
                             <label className={labelClass}>CT Log IDs</label>
-                            <input type="text" placeholder="Comma-separated log IDs" value={form.ctLogIds} onChange={(e) => setForm({ ...form, ctLogIds: e.target.value })} className={inputClass} />
+                            <input type="text" placeholder='e.g. ["<log-id>", "<log-id>"]' value={form.ctLogIds} onChange={(e) => setForm({ ...form, ctLogIds: e.target.value })} className={inputClass} aria-describedby="cp-create-ct-logs-hint" />
+                            <FieldHint id="cp-create-ct-logs-hint">{CT_LOG_IDS_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Inherits From</label>
@@ -237,6 +248,8 @@ const CertProfilesTab: React.FC = () => {
                             Enable Inheritance
                         </label>
                     </div>
+                    {form.ctEnabled && <FieldHint>{CT_ENABLED_HINT}</FieldHint>}
+                    <InheritanceHint inheritsFromId={form.inheritsFromId} inheritanceEnabled={form.inheritanceEnabled} />
                     <div>
                         <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
                             <input type="checkbox" checked={form.allowWildcard} onChange={(e) => setForm({ ...form, allowWildcard: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
@@ -251,33 +264,37 @@ const CertProfilesTab: React.FC = () => {
                     <div>
                         <label className={labelClass}>Key Usages</label>
                         <MultiToggle options={KEY_USAGE_OPTIONS} formatLabel={keyUsageLabel} selected={form.keyUsages}
-                            onChange={(next) => setForm({ ...form, keyUsages: next })} />
+                            onChange={(next) => setForm({ ...form, keyUsages: next })} hint={REQUESTED_USAGE_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Extended Key Usages</label>
                         <MultiToggle options={ekuCatalog.options} formatLabel={ekuCatalog.label} selected={form.extendedKeyUsages}
-                            onChange={(next) => setForm({ ...form, extendedKeyUsages: next })} />
+                            onChange={(next) => setForm({ ...form, extendedKeyUsages: next })} hint={REQUESTED_USAGE_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Key Algorithms</label>
                         <MultiToggle options={ALLOWED_KEY_ALGORITHM_OPTIONS} selected={form.allowedKeyAlgorithms}
-                            onChange={(next) => setForm({ ...form, allowedKeyAlgorithms: next })} />
+                            onChange={(next) => setForm({ ...form, allowedKeyAlgorithms: next })} hint={CEILING_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Key Sizes</label>
                         <MultiToggle options={ALLOWED_KEY_SIZE_OPTIONS} selected={form.allowedKeySizes}
                             onChange={(next) => setForm({ ...form, allowedKeySizes: next })}
-                            formatLabel={formatKeySizeLabel} />
+                            formatLabel={formatKeySizeLabel} hint={CEILING_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Signature Algorithms</label>
                         <MultiToggle options={ALLOWED_SIGNATURE_ALGORITHM_OPTIONS} selected={form.allowedSignatureAlgorithms}
-                            onChange={(next) => setForm({ ...form, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} />
+                            onChange={(next) => setForm({ ...form, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} hint={CEILING_HINT} />
                     </div>
-                    <button onClick={handleCreate} disabled={creating || !form.name}
+                    <button onClick={handleCreate} disabled={creating || !form.name || inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled)}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
+                    <SubmitBlockedHint reasons={[
+                        !form.name && 'A name is required before the profile can be created.',
+                        inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled) && 'Resolve the inheritance settings above: either choose a parent and turn inheritance on, or clear both.',
+                    ]} />
                 </div>
             )}
 
@@ -321,7 +338,7 @@ const SigningProfilesTab: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [authorities, setAuthorities] = useState<any[]>([]);
@@ -355,12 +372,20 @@ const SigningProfilesTab: React.FC = () => {
         extendedKeyUsageCritical: false, policyQualifiersJson: '{}',
     });
 
+    // A signing profile belongs to the CA whose certificate it issues under; a CA scope keeps
+    // the ones issued by the scoped CA (and any with no issuer yet).
+    const { caId: scopeCaId } = useScope();
+    const scopedCa = scopeCaId ? authorities.find((a) => a.id === scopeCaId) : null;
+    const visibleProfiles = scopedCa
+        ? profiles.filter((p) => !p.issuerId || p.issuerId === scopedCa.certificateId || p.issuerId === scopedCa.id)
+        : profiles;
+
     const load = () => {
         setLoading(true);
         setError(null);
         apiGet<any>('/api/v1/admin/signing-profiles')
             .then((data) => setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -502,7 +527,7 @@ const SigningProfilesTab: React.FC = () => {
                         </div>
                         <div>
                             <label className={labelClass}>Issuer</label>
-                            <select value={form.issuerId} onChange={(e) => setForm({ ...form, issuerId: e.target.value })} className={inputClass}>
+                            <select value={form.issuerId} onChange={(e) => setForm({ ...form, issuerId: e.target.value })} className={inputClass} aria-describedby="sp-create-issuer-hint">
                                 <option value="">-- Select Issuing Authority --</option>
                                 {authorities.map((a) => (
                                     <option key={caCertId(a)} value={caCertId(a)}>
@@ -510,18 +535,26 @@ const SigningProfilesTab: React.FC = () => {
                                     </option>
                                 ))}
                             </select>
+                            <FieldHint id="sp-create-issuer-hint" tone={form.issuerId ? 'muted' : 'warn'}>
+                                {form.issuerId
+                                    ? 'Every certificate issued through this profile is signed by this authority.'
+                                    : 'Required. A signing profile with no issuing authority cannot sign anything; Create stays disabled until one is chosen.'}
+                            </FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Max Path Length</label>
-                            <input type="text" inputMode="numeric" value={form.maxPathLength} onChange={(e) => setForm({ ...form, maxPathLength: e.target.value.replace(/\D/g, '') })} className={inputClass} />
+                            <input type="text" inputMode="numeric" value={form.maxPathLength} onChange={(e) => setForm({ ...form, maxPathLength: e.target.value.replace(/\D/g, '') })} className={inputClass} aria-describedby="sp-create-maxpath-hint" />
+                            <FieldHint id="sp-create-maxpath-hint">{MAX_PATH_LENGTH_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Name Constraints Permitted (JSON)</label>
-                            <input type="text" placeholder='e.g. {"permitted":[".example.com"]}' value={form.nameConstraintsPermitted} onChange={(e) => setForm({ ...form, nameConstraintsPermitted: e.target.value })} className={inputClass} />
+                            <input type="text" placeholder={NAME_CONSTRAINTS_PLACEHOLDER} value={form.nameConstraintsPermitted} onChange={(e) => setForm({ ...form, nameConstraintsPermitted: e.target.value })} className={inputClass} aria-describedby="sp-create-nc-permitted-hint" />
+                            <FieldHint id="sp-create-nc-permitted-hint">Names issued certificates may carry. {NAME_CONSTRAINTS_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Name Constraints Excluded (JSON)</label>
-                            <input type="text" placeholder='e.g. {"excluded":[".test.com"]}' value={form.nameConstraintsExcluded} onChange={(e) => setForm({ ...form, nameConstraintsExcluded: e.target.value })} className={inputClass} />
+                            <input type="text" placeholder={NAME_CONSTRAINTS_PLACEHOLDER} value={form.nameConstraintsExcluded} onChange={(e) => setForm({ ...form, nameConstraintsExcluded: e.target.value })} className={inputClass} aria-describedby="sp-create-nc-excluded-hint" />
+                            <FieldHint id="sp-create-nc-excluded-hint">Names issued certificates may never carry. {NAME_CONSTRAINTS_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Allowed EKUs</label>
@@ -546,6 +579,7 @@ const SigningProfilesTab: React.FC = () => {
                                     );
                                 })}
                             </div>
+                            <FieldHint>{CEILING_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Policy OIDs (comma-separated)</label>
@@ -593,7 +627,7 @@ const SigningProfilesTab: React.FC = () => {
                     <div>
                         <label className={labelClass}>Allowed Algorithms</label>
                         <MultiToggle options={SIGNING_ALLOWED_ALGORITHM_OPTIONS} selected={form.allowedAlgorithms}
-                            onChange={(next) => setForm({ ...form, allowedAlgorithms: next })} />
+                            onChange={(next) => setForm({ ...form, allowedAlgorithms: next })} hint={CEILING_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Cert Profiles</label>
@@ -621,17 +655,21 @@ const SigningProfilesTab: React.FC = () => {
                             })}
                         </div>
                     </div>
-                    <button onClick={handleCreate} disabled={creating || !form.name}
+                    <button onClick={handleCreate} disabled={creating || !form.name || !form.issuerId}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
+                    <SubmitBlockedHint reasons={[
+                        !form.name && 'A name is required before the profile can be created.',
+                        !form.issuerId && 'Choose an issuing authority; a signing profile without one cannot sign.',
+                    ]} />
                 </div>
             )}
 
             <DataTable<any>
                 tableId="signing-profiles"
                 title="Signing Profiles"
-                rows={profiles}
+                rows={visibleProfiles}
                 rowKey={(p) => p.id || p.signingProfileId || p.name}
                 loading={loading}
                 error={error}
@@ -665,7 +703,7 @@ const SshSigningProfilesTab: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [caKeys, setCaKeys] = useState<any[]>([]);
@@ -690,7 +728,7 @@ const SshSigningProfilesTab: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/ssh/profiles/signing')
             .then((data) => setProfiles(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -807,12 +845,14 @@ const SshSigningProfilesTab: React.FC = () => {
                             </select>
                         </div>
                         <div>
-                            <label className={labelClass}>Max Validity Hours</label>
-                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} />
+                            <label className={labelClass}>Max Validity (hours)</label>
+                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} aria-describedby="ssh-sp-validity-hint" />
+                            <FieldHint id="ssh-sp-validity-hint">Whole hours, not an ISO 8601 duration: 720 is thirty days. Blank or 0 falls back to 720.</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Force Command (optional)</label>
-                            <input type="text" value={form.forceCommand} onChange={(e) => setForm({ ...form, forceCommand: e.target.value })} className={inputClass} placeholder="e.g. /usr/bin/rsync" />
+                            <input type="text" value={form.forceCommand} onChange={(e) => setForm({ ...form, forceCommand: e.target.value })} className={inputClass} placeholder="e.g. /usr/bin/rsync" aria-describedby="ssh-sp-force-hint" />
+                            <FieldHint id="ssh-sp-force-hint">{FORCE_COMMAND_HINT}</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Source Address Restrictions (comma-separated)</label>
@@ -832,7 +872,8 @@ const SshSigningProfilesTab: React.FC = () => {
                     <div>
                         <label className={labelClass}>Default Extensions</label>
                         <MultiToggle options={SSH_EXTENSION_OPTIONS} selected={form.defaultExtensions}
-                            onChange={(next) => setForm({ ...form, defaultExtensions: next })} />
+                            onChange={(next) => setForm({ ...form, defaultExtensions: next })} titleFor={sshExtensionTitle}
+                            hint="Applied only when a request names no extensions of its own; a request that lists any extension replaces this set entirely. These are defaults, not a ceiling: the SSH cert profile's Allowed Extensions decide what a request may ask for." />
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || !form.sshCaKeyId}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
@@ -878,7 +919,7 @@ const SshCertProfilesTab: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
@@ -904,7 +945,7 @@ const SshCertProfilesTab: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/ssh/profiles/cert')
             .then((data) => setProfiles(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -999,30 +1040,39 @@ const SshCertProfilesTab: React.FC = () => {
                             <input type="text" inputMode="numeric" value={form.maxPrincipals} onChange={(e) => setForm({ ...form, maxPrincipals: e.target.value.replace(/\D/g, '') })} className={inputClass} />
                         </div>
                         <div>
-                            <label className={labelClass}>Max Validity Hours</label>
-                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} />
+                            <label className={labelClass}>Max Validity (hours)</label>
+                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} aria-describedby="ssh-cp-validity-hint" />
+                            <FieldHint id="ssh-cp-validity-hint">Whole hours, not an ISO 8601 duration: 720 is thirty days. Blank or 0 falls back to 720. A request asking for longer is refused.</FieldHint>
                         </div>
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Principal Patterns (one regex per line)</label>
                         <textarea rows={3} value={form.allowedPrincipalPatterns}
                             onChange={(e) => setForm({ ...form, allowedPrincipalPatterns: e.target.value })}
-                            className={inputClass} placeholder={"^[a-z_][a-z0-9_-]*$\n^admin$"} />
+                            className={inputClass} placeholder={"^[a-z_][a-z0-9_-]*$\n^admin$"} aria-describedby="ssh-cp-principals-hint" />
+                        <FieldHint id="ssh-cp-principals-hint">Every requested principal must match at least one pattern. Leave empty to allow any principal; this is a ceiling, so no patterns means unrestricted, not none.</FieldHint>
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Extensions</label>
                         <MultiToggle options={SSH_EXTENSION_OPTIONS} selected={form.allowedExtensions}
-                            onChange={(next) => setForm({ ...form, allowedExtensions: next })} />
+                            onChange={(next) => setForm({ ...form, allowedExtensions: next })} titleFor={sshExtensionTitle} hint={CEILING_HINT} />
                     </div>
                     <div>
                         <label className={labelClass}>Required Extensions</label>
                         <MultiToggle options={SSH_EXTENSION_OPTIONS} selected={form.requiredExtensions}
-                            onChange={(next) => setForm({ ...form, requiredExtensions: next })} />
+                            onChange={(next) => setForm({ ...form, requiredExtensions: next })} titleFor={sshExtensionTitle}
+                            hint={SSH_REQUIRED_EXTENSIONS_HINT}
+                            warning={sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).length > 0
+                                && `Required but not allowed: ${sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).join(', ')}.`} />
                     </div>
-                    <button onClick={handleCreate} disabled={creating || !form.name}
+                    <button onClick={handleCreate} disabled={creating || !form.name || sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).length > 0}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
+                    <SubmitBlockedHint reasons={[
+                        !form.name && 'A name is required before the profile can be created.',
+                        sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).length > 0 && 'Every required extension must also be allowed; fix the two pickers above.',
+                    ]} />
                 </div>
             )}
 
@@ -1063,7 +1113,7 @@ const SshRequestProfilesTab: React.FC = () => {
     const { showToast } = useToast();
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
@@ -1091,7 +1141,7 @@ const SshRequestProfilesTab: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/ssh/profiles/request')
             .then((data) => setProfiles(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -1203,8 +1253,9 @@ const SshRequestProfilesTab: React.FC = () => {
                             <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={inputClass} placeholder="Optional" />
                         </div>
                         <div>
-                            <label className={labelClass}>Max Validity Hours</label>
-                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} />
+                            <label className={labelClass}>Max Validity (hours)</label>
+                            <input type="text" inputMode="numeric" value={form.maxValidityHours} onChange={(e) => setForm({ ...form, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} aria-describedby="ssh-rp-validity-hint" />
+                            <FieldHint id="ssh-rp-validity-hint">Whole hours, not an ISO 8601 duration: 720 is thirty days. Blank or 0 falls back to 720.</FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>CA Scope</label>

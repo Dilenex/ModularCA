@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { apiGet, getToken } from '../api/client';
+import type { Capability } from '@shared/generated';
+import { can as canOn, canAnywhere as canOnAny, canUseAdminConsole as computeCanUseAdminConsole, NO_CAPABILITIES, type EffectiveCapabilities } from '../authz';
 
 /**
- * Shape returned by GET /api/v1/me. The SPA uses this
- * instead of decoding the JWT body to learn the current identity, group memberships,
- * and effective scopes for ProtectedRoute and Layout sidenav gating.
+ * Shape returned by GET /api/v1/me. The SPA uses this instead of decoding the JWT body to
+ * learn the current identity and, through `capabilities`, what the caller may do at system
+ * scope and on each CA. The group list is informational; nothing gates on it.
  */
 export interface AuthGroup {
     id: string;
@@ -27,6 +29,12 @@ export interface AuthMeResponse {
     isActive: boolean;
     groups: AuthGroup[];
     scopes: string[];
+    isSuper?: boolean;
+    capabilities: EffectiveCapabilities;
+    /** The access badge this session wears, or null when badgeless. */
+    badge: { id: string; name: string } | null;
+    /** Every badge the user could put on. */
+    badges: Array<{ id: string; name: string; description: string | null; isDefault: boolean }>;
     mfa: {
         configured: boolean;
         totp: boolean;
@@ -41,17 +49,18 @@ export interface AuthContextValue {
     loading: boolean;
     error: string | null;
     refresh: () => Promise<void>;
+    /** The caller's effective capabilities; `NO_CAPABILITIES` until `/api/v1/me` answers. */
+    capabilities: EffectiveCapabilities;
+    /** Whether `capability` is held on `caId`, or at system scope when no CA is given. */
+    can: (capability: Capability, caId?: string | null) => boolean;
+    /** Whether `capability` is held at system scope or on any CA. */
+    canAnywhere: (capability: Capability) => boolean;
     /**
-     * Returns true if the user has any of the listed role levels (case-insensitive).
-     * A SystemAdmin satisfies any role; a system-level role satisfies the same role
-     * scoped to any CA.
+     * Whether the signed-in user has anything to do in the management console (see
+     * `canUseAdminConsole` in portal.ts). A user without it landing on `/admin` is sent to
+     * `/user` instead of a dashboard of failing admin calls.
      */
-    hasAnyRole: (roles: string[]) => boolean;
-    /**
-     * Returns true if the user has access to the given scope string.
-     * Scope formats: "system:Admin", "ca:<id>:Operator", or just "Admin" for any-CA.
-     */
-    hasScope: (scope: string) => boolean;
+    canUseAdminConsole: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -59,8 +68,10 @@ const AuthContext = createContext<AuthContextValue>({
     loading: true,
     error: null,
     refresh: async () => { },
-    hasAnyRole: () => false,
-    hasScope: () => false,
+    capabilities: NO_CAPABILITIES,
+    can: () => false,
+    canAnywhere: () => false,
+    canUseAdminConsole: false,
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -93,32 +104,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         refresh();
     }, [refresh]);
 
-    const hasAnyRole = useCallback((roles: string[]) => {
-        if (!user) return false;
-        if (!roles || roles.length === 0) return true;
-        const wanted = new Set(roles.map(r => r.toLowerCase()));
-        // SystemAdmin is treated as a wildcard for client-side gating; the server
-        // remains the authoritative check, but UX should not deny a system admin
-        // a page they will succeed on at the server.
-        const isSystemAdmin = user.groups.some(g => g.isSystemGroup && g.templateName?.toLowerCase() === 'administrator');
-        if (isSystemAdmin) return true;
-        return user.groups.some(g => g.templateName != null && wanted.has(g.templateName.toLowerCase()));
-    }, [user]);
+    const capabilities = user?.capabilities ?? NO_CAPABILITIES;
+    const can = useCallback((capability: Capability, caId?: string | null) => canOn(capabilities, capability, caId), [capabilities]);
+    const canAnywhere = useCallback((capability: Capability) => canOnAny(capabilities, capability), [capabilities]);
 
-    const hasScope = useCallback((scope: string) => {
-        if (!user) return false;
-        if (!scope) return true;
-        const lc = scope.toLowerCase();
-        if (user.scopes.some(s => s.toLowerCase() === lc)) return true;
-        // bare role string like "Admin" — match any system: or ca: scope ending in that role
-        if (!lc.includes(':')) {
-            return user.scopes.some(s => s.toLowerCase().endsWith(`:${lc}`));
-        }
-        return false;
-    }, [user]);
+    const canUseAdminConsole = computeCanUseAdminConsole(capabilities);
 
     return (
-        <AuthContext.Provider value={{ user, loading, error, refresh, hasAnyRole, hasScope }}>
+        <AuthContext.Provider value={{ user, loading, error, refresh, capabilities, can, canAnywhere, canUseAdminConsole }}>
             {children}
         </AuthContext.Provider>
     );

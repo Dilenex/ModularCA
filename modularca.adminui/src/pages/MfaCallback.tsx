@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { API_BASE } from '../api/client';
+import { API_BASE, apiGet } from '../api/client';
+import { consumeReturnUrl, homeFor, type PortalUser } from '../portal';
 import { useNavigate } from 'react-router-dom';
 
 /**
@@ -32,7 +33,7 @@ const MfaCallback: React.FC = () => {
                 // The certificate identified a user who also has TOTP or WebAuthn. Continue on
                 // the verify page with the MFA session in navigation state, never in the URL.
                 if (data.requiresMfa) {
-                    window.history.replaceState(null, '', '/admin/mfa-callback');
+                    window.history.replaceState(null, '', '/mfa-callback');
                     navigate('/mfa-verify', {
                         replace: true,
                         state: { mfaToken: data.mfaToken, method: data.method, availableMethods: data.availableMethods },
@@ -46,7 +47,7 @@ const MfaCallback: React.FC = () => {
                 localStorage.removeItem('mfaSetupRequired');
 
                 // Clear the code from the URL
-                window.history.replaceState(null, '', '/admin/mfa-callback');
+                window.history.replaceState(null, '', '/mfa-callback');
 
                 // Show the mTLS-only disclaimer (user logged in with cert only)
                 setShowDisclaimer(true);
@@ -71,13 +72,13 @@ const MfaCallback: React.FC = () => {
                         <p className="text-yellow-800 dark:text-yellow-300 text-sm font-semibold">Recommendation: Set up TOTP or a Security Key</p>
                         <p className="text-yellow-800 dark:text-yellow-200/80 text-xs leading-relaxed">
                             Your account currently uses only a client certificate for MFA.
-                            Destructive operations (revoking CAs, deleting users, changing security settings)
+                            Destructive operations (revoking certificates or CAs, changing security settings)
                             require active step-up verification via TOTP or a security key —
                             client certificates alone cannot be used for step-up.
                         </p>
                         <p className="text-yellow-800 dark:text-yellow-200/80 text-xs leading-relaxed">
                             Without TOTP or WebAuthn configured, you will be unable to perform
-                            sensitive administrative operations.
+                            sensitive operations.
                         </p>
                     </div>
 
@@ -89,7 +90,10 @@ const MfaCallback: React.FC = () => {
                             Set Up Now
                         </button>
                         <button
-                            onClick={() => navigate('/dashboard', { replace: true })}
+                            onClick={async () => {
+                                const me = await apiGet<PortalUser>('/api/v1/me').catch(() => null);
+                                window.location.replace(consumeReturnUrl() ?? homeFor(me));
+                            }}
                             className="flex-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-2 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors text-sm"
                         >
                             Skip for Now
