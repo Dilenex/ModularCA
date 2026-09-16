@@ -43,6 +43,12 @@ public static class WstepMessages
     private static readonly TimeSpan TimestampValidity = TimeSpan.FromMinutes(5);
 
     public const string IssueRequestType = WsTrust + "/Issue";
+
+    /// <summary>MS-WSTEP request type for asking after a request submitted earlier.</summary>
+    public const string QueryTokenStatusRequestType = Enrollment + "/QueryTokenStatus";
+
+    /// <summary>The disposition Microsoft's CES reports for a request awaiting approval.</summary>
+    public const string PendingDisposition = "Taken Under Submission";
     public const string ResponseAction = Enrollment + "/RSTRC/wstep";
     public const string X509TokenType = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3";
     public const string EncodingBase64 = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary";
@@ -81,7 +87,14 @@ public static class WstepMessages
         string? RequestId,
         bool FromCmc,
         WstepUsernameToken? UsernameToken = null,
-        WstepKerberosToken? KerberosToken = null);
+        WstepKerberosToken? KerberosToken = null)
+    {
+        /// <summary>The renewal evidence a CMC request carried, or null for a first enrollment.</summary>
+        public MsaeRenewal? Renewal { get; init; }
+
+        /// <summary>True for a QueryTokenStatus request: <see cref="RequestId"/> names the request, and there is no PKCS#10.</summary>
+        public bool IsStatusQuery { get; init; }
+    }
 
     /// <summary>A WS-Security <c>UsernameToken</c> carrying a clear-text password.</summary>
     public sealed record WstepUsernameToken(string Username, string Password);
@@ -110,24 +123,39 @@ public static class WstepMessages
         // Every BinarySecurityToken in the message, regardless of prefix or the section it sits in.
         var tokens = doc.Descendants(XName.Get("BinarySecurityToken", Wsse)).ToList();
 
+        var requestId = doc.Descendants(XName.Get("RequestID", Enrollment)).FirstOrDefault()?.Value?.Trim();
+
+        // A status query names a request and carries no PKCS#10; anything else is an Issue.
+        var requestType = doc.Descendants(XName.Get("RequestType", WsTrust)).FirstOrDefault()?.Value?.Trim();
+        if (string.Equals(requestType, QueryTokenStatusRequestType, StringComparison.Ordinal))
+        {
+            if (string.IsNullOrEmpty(requestId))
+                throw new WstepParseException("A QueryTokenStatus request must name the RequestID it asks after.");
+            return new WstepIssueRequest([], ReadMessageId(doc), requestId, false,
+                ReadUsernameToken(doc), ReadKerberosToken(doc)) { IsStatusQuery = true };
+        }
+        if (requestType != null && !string.Equals(requestType, IssueRequestType, StringComparison.Ordinal))
+            throw new WstepParseException($"Request type '{requestType}' is not supported; expected Issue or QueryTokenStatus.");
+
         // certreq -submit sends the PKCS#10 itself. The autoenrollment engine, Get-Certificate and
         // the Certificates snap-in send a CMC request instead: the PKCS#10 wrapped in a PKIData
         // and signed with the new key, as a #PKCS7 token. Both end in the same PKCS#10.
         var fromCmc = false;
+        MsaeRenewal? renewal = null;
         var pkcs10 = FirstTokenBytesByValueType(tokens, Pkcs10Suffix);
         if (pkcs10 == null)
         {
             var pkcs7 = FirstTokenBytesByValueType(tokens, Pkcs7Suffix)
                 ?? throw new WstepParseException(
                     "No certificate request found. Expected a PKCS#10 or CMC (PKCS#7) BinarySecurityToken.");
-            pkcs10 = CmcRequests.UnwrapPkcs10(pkcs7);
+            var unwrapped = CmcRequests.Unwrap(pkcs7);
+            pkcs10 = unwrapped.Pkcs10Der;
+            renewal = unwrapped.Renewal;
             fromCmc = true;
         }
 
-        var requestId = doc.Descendants(XName.Get("RequestID", Enrollment)).FirstOrDefault()?.Value?.Trim();
-
         return new WstepIssueRequest(pkcs10, ReadMessageId(doc), EmptyToNull(requestId), fromCmc,
-            ReadUsernameToken(doc), ReadKerberosToken(doc));
+            ReadUsernameToken(doc), ReadKerberosToken(doc)) { Renewal = renewal };
     }
 
     /// <summary>
@@ -261,6 +289,56 @@ public static class WstepMessages
             new XElement(t + "RequestedSecurityToken", IssuedToken()));
         if (!string.IsNullOrEmpty(requestId))
             rstr.Add(new XElement(e + "RequestID", requestId));
+
+        var envelope = new XElement(s + "Envelope",
+            new XAttribute(XNamespace.Xmlns + "s", Soap12),
+            new XAttribute(XNamespace.Xmlns + "a", Wsa),
+            new XAttribute(XNamespace.Xmlns + "wst", WsTrust),
+            new XAttribute(XNamespace.Xmlns + "wsse", Wsse),
+            new XAttribute(XNamespace.Xmlns + "wsu", Wsu),
+            new XAttribute(XNamespace.Xmlns + "enr", Enrollment),
+            header,
+            new XElement(s + "Body",
+                new XElement(t + "RequestSecurityTokenResponseCollection", rstr)));
+
+        return Serialize(envelope);
+    }
+
+    /// <summary>
+    /// Builds the response for a request taken under submission, shaped the way Microsoft's CES
+    /// shapes it and the Windows client insists on: the pending disposition, a <c>#PKCS7</c> token
+    /// carrying a CMC full PKI response with status pending, a <c>RequestedSecurityToken</c> whose
+    /// <c>SecurityTokenReference</c> points back at the service where the request can be
+    /// collected, and the request id the client must quote when it asks again. A reply without the
+    /// token is refused by the client as <c>WS_E_INVALID_FORMAT</c>.
+    /// </summary>
+    /// <param name="relatesToMessageId">The request's <c>wsa:MessageID</c>, or null to omit RelatesTo.</param>
+    /// <param name="requestId">The id the client must quote in QueryTokenStatus.</param>
+    /// <param name="cesUrl">This service's URL, where the pended request is collected.</param>
+    public static string BuildPendingResponse(string? relatesToMessageId, string requestId, string cesUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cesUrl);
+        XNamespace s = Soap12, a = Wsa, t = WsTrust, o = Wsse, e = Enrollment;
+
+        var header = new XElement(s + "Header",
+            new XElement(a + "Action", new XAttribute(s + "mustUnderstand", "1"), ResponseAction));
+        if (!string.IsNullOrEmpty(relatesToMessageId))
+            header.Add(new XElement(a + "RelatesTo", relatesToMessageId));
+        header.Add(SecurityTimestamp(DateTime.UtcNow));
+
+        var cmc = Convert.ToBase64String(CmcResponses.BuildPending(requestId, DateTime.UtcNow));
+        var rstr = new XElement(t + "RequestSecurityTokenResponse",
+            new XElement(t + "TokenType", X509TokenType),
+            new XElement(e + "DispositionMessage", new XAttribute(XNamespace.Xml + "lang", "en-US"), PendingDisposition),
+            new XElement(o + "BinarySecurityToken",
+                new XAttribute("ValueType", Pkcs7ValueType),
+                new XAttribute("EncodingType", ResponseEncodingBase64),
+                cmc),
+            new XElement(t + "RequestedSecurityToken",
+                new XElement(o + "SecurityTokenReference",
+                    new XElement(o + "Reference", new XAttribute("URI", cesUrl)))),
+            new XElement(e + "RequestID", requestId));
 
         var envelope = new XElement(s + "Envelope",
             new XAttribute(XNamespace.Xmlns + "s", Soap12),

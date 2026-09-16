@@ -1,4 +1,4 @@
-﻿using ModularCA.Shared.Errors;
+using ModularCA.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Models;
 using ModularCA.Database;
@@ -341,6 +341,7 @@ namespace ModularCA.Core.Services
                     startMsg,
                     field: "validFrom"));
             }
+            CertificateValidityUtil.EnsureUsableWindow(validFrom, validTo);
 
             // Generate 128-bit random serial number (CA/BF BR §7.1
             // requires ≥64 bits from CSPRNG). Use 17 bytes with a forced 0x00
@@ -389,7 +390,8 @@ namespace ModularCA.Core.Services
                 validFrom, validTo, standardOids, extendedOids,
                 effectiveSans, refCACert.CertificateId, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
-                allowWildcardSans: effectiveCertProfile.AllowWildcard);
+                allowWildcardSans: effectiveCertProfile.AllowWildcard,
+                additionalExtensions: RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);
@@ -780,6 +782,7 @@ namespace ModularCA.Core.Services
                     startMsg,
                     field: "validFrom"));
             }
+            CertificateValidityUtil.EnsureUsableWindow(validFrom, validTo);
 
             // 17 bytes with leading 0x00 → 128 bits of random magnitude, positive.
             var reissueSerialBytes = new byte[17];
@@ -839,7 +842,8 @@ namespace ModularCA.Core.Services
                 validFrom, validTo, standardOids, extendedOids,
                 reissueEffectiveSans, refCACert.CertificateId, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
-                allowWildcardSans: effectiveCertProfile.AllowWildcard);
+                allowWildcardSans: effectiveCertProfile.AllowWildcard,
+                additionalExtensions: RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);

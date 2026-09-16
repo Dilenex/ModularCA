@@ -1,6 +1,8 @@
 using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Pkcs;
+using Org.BouncyCastle.X509;
 
 namespace ModularCA.Core.Services.Msae;
 
@@ -21,9 +23,9 @@ namespace ModularCA.Core.Services.Msae;
 /// Only the first tagged certification request is taken. CMC allows several requests, CRMF
 /// requests and control attributes in one message; Windows enrollment sends one PKCS#10, and a
 /// message that does not fit that shape is refused rather than partially honoured. Renewal
-/// requests, which a client signs with its existing certificate, are handled separately once
-/// they are supported; today they are refused at this layer because the wrapper signer is not
-/// the enrolled key.
+/// requests carry the existing certificate in a PKCS#10 attribute and a second wrapper signature
+/// by that certificate's key; <see cref="Unwrap"/> reports both so the enrollment side can treat
+/// the request as a renewal, and the proof of possession by the new key is still required.
 /// </para>
 /// </remarks>
 public static class CmcRequests
@@ -31,12 +33,30 @@ public static class CmcRequests
     /// <summary>id-cct-PKIData: the CMS content type of a CMC request.</summary>
     public const string PkiDataOid = "1.3.6.1.5.5.7.12.2";
 
+    /// <summary>szOID_RENEWAL_CERTIFICATE: the PKCS#10 attribute carrying the certificate a request renews.</summary>
+    public const string RenewalCertificateOid = "1.3.6.1.4.1.311.13.1";
+
+    /// <summary>What <see cref="Unwrap"/> returns.</summary>
+    /// <param name="Pkcs10Der">The DER PKCS#10 the client wants signed.</param>
+    /// <param name="Renewal">The renewal evidence, or null for a first enrollment.</param>
+    public sealed record Unwrapped(byte[] Pkcs10Der, MsaeRenewal? Renewal);
+
     /// <summary>
     /// Returns the DER PKCS#10 inside <paramref name="cmsDer"/>. Throws
     /// <see cref="WstepMessages.WstepParseException"/> when the bytes are not a CMC request, carry
     /// no certification request, or the proof-of-possession signature does not verify.
     /// </summary>
-    public static byte[] UnwrapPkcs10(byte[] cmsDer)
+    public static byte[] UnwrapPkcs10(byte[] cmsDer) => Unwrap(cmsDer).Pkcs10Der;
+
+    /// <summary>
+    /// Unwraps a CMC request: the PKCS#10, plus the renewal evidence when the PKCS#10 names a
+    /// certificate to renew. Throws <see cref="WstepMessages.WstepParseException"/> when the bytes
+    /// are not a CMC request, carry no certification request, or the proof-of-possession
+    /// signature does not verify. A renewal attribute whose certificate did not sign the wrapper
+    /// is reported with <see cref="MsaeRenewal.SignedByOldCertificate"/> false, not thrown, so the
+    /// refusal can be audited against the caller.
+    /// </summary>
+    public static Unwrapped Unwrap(byte[] cmsDer)
     {
         ArgumentNullException.ThrowIfNull(cmsDer);
 
@@ -68,7 +88,64 @@ public static class CmcRequests
 
         var pkcs10Der = ExtractFirstCertificationRequest(pkiDataDer);
         VerifyProofOfPossession(signed, pkcs10Der);
-        return pkcs10Der;
+        return new Unwrapped(pkcs10Der, ReadRenewal(signed, pkcs10Der));
+    }
+
+    /// <summary>
+    /// The renewal evidence: the certificate in the PKCS#10's renewal attribute, and whether one
+    /// of the wrapper's signers is that certificate (matched by issuer and serial) with a
+    /// signature that verifies under its key.
+    /// </summary>
+    private static MsaeRenewal? ReadRenewal(CmsSignedData signed, byte[] pkcs10Der)
+    {
+        byte[]? oldDer = null;
+        try
+        {
+            var attributes = new Pkcs10CertificationRequest(pkcs10Der).GetCertificationRequestInfo().Attributes;
+            if (attributes != null)
+            {
+                foreach (var entry in attributes)
+                {
+                    var attribute = AttributePkcs.GetInstance(entry);
+                    if (attribute.AttrType.Id != RenewalCertificateOid || attribute.AttrValues.Count == 0) continue;
+                    oldDer = attribute.AttrValues[0].ToAsn1Object().GetDerEncoded();
+                    break;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or InvalidCastException)
+        {
+            throw new WstepMessages.WstepParseException($"The PKCS#10's attributes are not readable: {ex.Message}");
+        }
+        if (oldDer == null) return null;
+
+        X509Certificate old;
+        try
+        {
+            old = new X509CertificateParser().ReadCertificate(oldDer)
+                ?? throw new WstepMessages.WstepParseException("The renewal attribute does not carry a certificate.");
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or InvalidCastException or Org.BouncyCastle.Security.Certificates.CertificateException)
+        {
+            throw new WstepMessages.WstepParseException($"The renewal attribute does not carry a readable certificate: {ex.Message}");
+        }
+
+        var signedByOld = false;
+        foreach (var signer in signed.GetSignerInfos().GetSigners().Cast<SignerInformation>())
+        {
+            var id = signer.SignerID;
+            if (id.SerialNumber == null || !id.SerialNumber.Equals(old.SerialNumber)) continue;
+            if (id.Issuer != null && !id.Issuer.Equivalent(old.IssuerDN)) continue;
+            try
+            {
+                if (signer.Verify(old.GetPublicKey())) { signedByOld = true; break; }
+            }
+            catch (CmsException)
+            {
+                // Not this signer; the request is still reported as a renewal, unsigned by the old key.
+            }
+        }
+        return new MsaeRenewal(oldDer, signedByOld);
     }
 
     // PKIData ::= SEQUENCE {

@@ -223,6 +223,107 @@ public class MsaeEnrollmentServiceTests
         return template;
     }
 
+    /// <summary>
+    /// Issues a certificate from the harness CA the way an earlier enrollment would have, and
+    /// stores it, so a renewal has something real to name. Returns the DER.
+    /// </summary>
+    private static byte[] IssueOld(Harness h, string subject = "CN=ws-042.lab.test", string? templateOid = null,
+        string[]? dns = null, DateTime? notAfter = null, bool revoked = false, Guid? issuerCertificateId = null)
+    {
+        using var key = RSA.Create(2048);
+        var req = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        if (dns != null)
+        {
+            var san = new SubjectAlternativeNameBuilder();
+            foreach (var d in dns) san.AddDnsName(d);
+            req.CertificateExtensions.Add(san.Build());
+        }
+        if (templateOid != null)
+            req.CertificateExtensions.Add(new X509Extension(new Oid(MsaeCsrTemplate.TemplateInfoOid), MsaeCsrTemplate.TemplateInfoValue(templateOid, 100, 0), false));
+        var serial = new byte[8]; RandomNumberGenerator.Fill(serial); serial[0] &= 0x7F;
+        var end = notAfter ?? DateTime.UtcNow.AddDays(30);
+        using var cert = req.Create(h.CaCert, DateTimeOffset.UtcNow.AddDays(-2), new DateTimeOffset(end, TimeSpan.Zero), serial);
+        h.Db.Certificates.Add(new CertificateEntity
+        {
+            CertificateId = Guid.NewGuid(),
+            SerialNumber = ModularCA.Shared.Utils.CertificateUtil.FormatSerialNumber(new Org.BouncyCastle.Math.BigInteger(1, serial)),
+            Pem = cert.ExportCertificatePem(), SubjectDN = subject, Issuer = h.CaCert.Subject,
+            NotBefore = cert.NotBefore.ToUniversalTime(), NotAfter = end, Revoked = revoked,
+            IssuerCertificateId = issuerCertificateId ?? h.Ca.CertificateId,
+            SigningProfileId = h.Signing.Id, CertProfileId = h.CertProfile.Id,
+        });
+        h.Db.SaveChanges();
+        return cert.RawData;
+    }
+
+    [Fact]
+    public async Task A_renewal_signed_by_the_old_certificate_reuses_its_names_and_links_to_it()
+    {
+        var h = Build();
+        var oldDer = IssueOld(h, "CN=ws-042.lab.test", dns: ["ws-042.lab.test", "ws-042"]);
+        var oldRow = Assert.Single(await h.Db.Certificates.Where(c => c.SubjectDN == "CN=ws-042.lab.test").ToListAsync());
+
+        // The PKCS#10 of a renewal has no subject; the old certificate supplies it.
+        var pkcs7 = await h.Service.EnrollAsync(Csr(subject: ""), MsaeCaller.Credential("svc-enroll"), "10.0.0.5", "lab",
+            new MsaeRenewal(oldDer, SignedByOldCertificate: true));
+
+        var request = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal("CN=ws-042.lab.test", request.Subject);
+        Assert.Equal(["DNS:ws-042.lab.test", "DNS:ws-042"], System.Text.Json.JsonSerializer.Deserialize<string[]>(request.SubjectAlternativeNames!));
+        Assert.Equal(oldRow.CertificateId, request.RenewalOfCertificateId);
+        Assert.Equal(MsaeEnrollmentService.RenewOperation, Assert.Single(h.Audit.Entries).Action);
+        Assert.NotEmpty(Certificates(pkcs7.Pkcs7!));
+    }
+
+    [Fact]
+    public async Task A_renewal_is_refused_when_the_old_certificate_did_not_sign_or_is_not_ours_or_is_dead()
+    {
+        var h = Build();
+        async Task<string> Refused(byte[] der, bool signed)
+        {
+            h.Audit.Entries.Clear();
+            var ex = await Assert.ThrowsAsync<MsaeEnrollmentException>(() =>
+                h.Service.EnrollAsync(Csr(subject: ""), MsaeCaller.Credential("svc-enroll"), null, "lab", new MsaeRenewal(der, signed)));
+            Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
+            Assert.False(Assert.Single(h.Audit.Entries).Success);
+            return ex.Message;
+        }
+
+        Assert.Contains("not signed by the certificate", await Refused(IssueOld(h), signed: false));
+
+        using var strangerRsa = RSA.Create(2048);
+        var stranger = new CertificateRequest("CN=stranger", strangerRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+            .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        Assert.Contains("was not issued by this service", await Refused(stranger.RawData, signed: true));
+
+        Assert.Contains("was not issued by CA", await Refused(IssueOld(h, issuerCertificateId: Guid.NewGuid()), signed: true));
+        Assert.Contains("is revoked", await Refused(IssueOld(h, revoked: true), signed: true));
+        Assert.Contains("has expired", await Refused(IssueOld(h, notAfter: DateTime.UtcNow.AddMinutes(-5)), signed: true));
+    }
+
+    [Fact]
+    public async Task A_renewal_cannot_change_template_but_an_unstamped_old_certificate_may_renew()
+    {
+        var h = Build();
+        var profile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Lab Device", ValidityPeriodMax = "P7D" };
+        h.Db.CertProfiles.Add(profile);
+        AddTemplate(h, "LabDevice", profile, oid: "2.25.1.2.3.4");
+        AddTemplate(h, "LabOther", profile, oid: "2.25.9.9.9.9");
+
+        // Old certificate from LabOther, renewal asks for LabDevice: refused.
+        var swapped = IssueOld(h, templateOid: "2.25.9.9.9.9");
+        var ex = await Assert.ThrowsAsync<MsaeEnrollmentException>(() =>
+            h.Service.EnrollAsync(Csr(subject: "", templateOid: "2.25.1.2.3.4"), MsaeCaller.Credential("svc-enroll"), null, "lab", new MsaeRenewal(swapped, true)));
+        Assert.Contains("belongs to template 2.25.9.9.9.9", ex.Message);
+
+        // Same template: fine. No template extension on the old one (pre-stamping issuance): fine.
+        var same = IssueOld(h, templateOid: "2.25.1.2.3.4");
+        await h.Service.EnrollAsync(Csr(subject: "", templateOid: "2.25.1.2.3.4"), MsaeCaller.Credential("svc-enroll"), null, "lab", new MsaeRenewal(same, true));
+        var unstamped = IssueOld(h);
+        await h.Service.EnrollAsync(Csr(subject: "", templateOid: "2.25.1.2.3.4"), MsaeCaller.Credential("svc-enroll"), null, "lab", new MsaeRenewal(unstamped, true));
+        Assert.Equal(2, (await h.Db.CertificateRequests.ToListAsync()).Count);
+    }
+
     [Fact]
     public async Task A_request_naming_a_template_by_oid_issues_from_that_template()
     {
@@ -238,6 +339,17 @@ public class MsaeEnrollmentServiceTests
         Assert.Equal(templateProfile.Id, request.CertProfileId);
         // Audited under the name the OID resolved to, not the bare OID.
         Assert.Equal("LabDevice", Assert.Single(h.Audit.Entries).Template);
+
+        // The request carries the template's identity for the certificate: Windows matches a
+        // certificate to its template through this extension, so the pulse stops re-enrolling
+        // and renewal knows which template it renews under. Value as stored, not as the CSR said.
+        var stamped = Assert.Single(ModularCA.Shared.Models.RequestedExtension.FromJson(request.AdditionalExtensions));
+        Assert.Equal(MsaeCsrTemplate.TemplateInfoOid, stamped.Oid);
+        Assert.False(stamped.Critical);
+        var info = Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(Org.BouncyCastle.Asn1.Asn1Object.FromByteArray(stamped.Value));
+        Assert.Equal("2.25.4242", Org.BouncyCastle.Asn1.DerObjectIdentifier.GetInstance(info[0]).Id);
+        Assert.Equal(100, Org.BouncyCastle.Asn1.DerInteger.GetInstance(info[1]).IntValueExact);
+        Assert.Equal(0, Org.BouncyCastle.Asn1.DerInteger.GetInstance(info[2]).IntValueExact);
     }
 
     [Fact]
@@ -302,7 +414,7 @@ public class MsaeEnrollmentServiceTests
         var pkcs7 = await h.Service.EnrollAsync(Csr(), "svc-enroll", "10.0.0.5", caLabel: null);
 
         // The client gets its leaf and the issuing CA, in that order, as a certs-only PKCS#7.
-        var certs = Certificates(pkcs7);
+        var certs = Certificates(pkcs7.Pkcs7!);
         Assert.Equal(2, certs.Count);
         Assert.Contains(certs.Cast<X509Certificate2>(), c => c.Subject == "CN=device-01.lab.test");
         Assert.Contains(certs.Cast<X509Certificate2>(), c => c.Thumbprint == h.CaCert.Thumbprint);
@@ -313,6 +425,8 @@ public class MsaeEnrollmentServiceTests
         Assert.Equal(h.CertProfile.Id, request.CertProfileId);
         Assert.Equal("CN=device-01.lab.test", request.Subject);
         Assert.Equal([request.Id], h.Issuance.IssuedCsrIds);
+        // No template resolved, so there is no template identity to stamp.
+        Assert.Null(request.AdditionalExtensions);
 
         // Membership was checked on the CA that issued, and the success is attributed to the caller
         // on the MSAE audit tab, with the serial an incident responder would search for.
@@ -409,18 +523,86 @@ public class MsaeEnrollmentServiceTests
         Assert.Equal([("svc-enroll", h.Ca.Id)], h.Authorizer.Asked);
     }
 
-    [Fact]
-    public async Task An_approval_gated_request_profile_is_refused_before_a_request_row_exists()
+    private static async Task<Harness> GatedAsync()
     {
         var h = Build();
         var gated = new RequestProfileEntity { Id = Guid.NewGuid(), Name = "Gated", RequireApproval = true };
         h.Db.RequestProfiles.Add(gated);
         h.MsaeRow.RequestProfileId = gated.Id;
+        h.Db.Users.Add(new UserEntity { Id = Guid.NewGuid(), Username = "svc-enroll", Email = "svc-enroll@lab.test", PasswordHash = "x" });
+        h.Db.Users.Add(new UserEntity { Id = Guid.NewGuid(), Username = "someone-else", Email = "else@lab.test", PasswordHash = "x" });
+        await h.Db.SaveChangesAsync();
+        return h;
+    }
+
+    [Fact]
+    public async Task An_approval_gated_request_is_taken_under_submission_and_owned_by_its_submitter()
+    {
+        var h = await GatedAsync();
+
+        var result = await h.Service.EnrollAsync(Csr(), "svc-enroll", "10.0.0.5", null);
+
+        Assert.True(result.IsPending);
+        Assert.Null(result.Pkcs7);
+        var request = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal(result.PendingRequestId, request.Id);
+        Assert.Equal(MsaeEnrollmentService.PendingApprovalStatus, request.Status);   // the approval queue's status, never swept as an orphan
+        Assert.Equal((await h.Db.Users.SingleAsync(u => u.Username == "svc-enroll")).Id, request.RequestorUserId);
+        Assert.Null(request.IssuedCertificateId);
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+        var audit = Assert.Single(h.Audit.Entries);
+        Assert.Equal(MsaeEnrollmentService.PendingOperation, audit.Action);
+        Assert.True(audit.Success);
+    }
+
+    [Fact]
+    public async Task A_status_query_answers_pending_then_issued_only_to_the_submitter()
+    {
+        var h = await GatedAsync();
+        var id = (await h.Service.EnrollAsync(Csr(), "svc-enroll", null, null)).PendingRequestId!.Value.ToString();
+        h.Audit.Entries.Clear();
+
+        // Waiting for the approver.
+        Assert.Equal(MsaeRequestState.Pending, (await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("svc-enroll"), null, "lab")).State);
+        Assert.Empty(h.Audit.Entries);
+
+        // Approved, not yet issued: still pending from the client's point of view.
+        var row = await h.Db.CertificateRequests.SingleAsync();
+        row.Status = "Approved";
+        await h.Db.SaveChangesAsync();
+        Assert.Equal(MsaeRequestState.Pending, (await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("svc-enroll"), null, "lab")).State);
+
+        // Someone else asking, or an unknown id: denied, and audited as a refusal.
+        var stranger = await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("someone-else"), null, "lab");
+        Assert.Equal(MsaeRequestState.Denied, stranger.State);
+        Assert.Contains("not submitted by this caller", stranger.Reason);
+        Assert.Equal(MsaeRequestState.Denied, (await h.Service.QueryStatusAsync(Guid.NewGuid().ToString(), MsaeCaller.Credential("svc-enroll"), null, "lab")).State);
+        Assert.Equal(MsaeRequestState.Denied, (await h.Service.QueryStatusAsync("not-a-guid", MsaeCaller.Credential("svc-enroll"), null, "lab")).State);
+        Assert.Equal(3, h.Audit.Entries.Count(e => e.Action == MsaeEnrollmentService.RejectOperation && !e.Success));
+        h.Audit.Entries.Clear();
+
+        // Issued by the operator: the submitter collects the certificate and its chain.
+        await h.Issuance.IssueCertificateAsync(row.Id, null, null);
+        var collected = await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("svc-enroll"), "10.0.0.5", "lab");
+        Assert.Equal(MsaeRequestState.Issued, collected.State);
+        Assert.Contains(Certificates(collected.Pkcs7!).Cast<X509Certificate2>(), c => c.Subject == "CN=device-01.lab.test");
+        Assert.Equal(MsaeEnrollmentService.CollectOperation, Assert.Single(h.Audit.Entries).Action);
+        // Still only the submitter, even after issuance.
+        Assert.Equal(MsaeRequestState.Denied, (await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("someone-else"), null, "lab")).State);
+    }
+
+    [Fact]
+    public async Task A_rejected_request_is_reported_as_denied()
+    {
+        var h = await GatedAsync();
+        var id = (await h.Service.EnrollAsync(Csr(), "svc-enroll", null, null)).PendingRequestId!.Value.ToString();
+        var row = await h.Db.CertificateRequests.SingleAsync();
+        row.Status = "Rejected";
         await h.Db.SaveChangesAsync();
 
-        await AssertRefusedCleanly(h,
-            () => h.Service.EnrollAsync(Csr(), "svc-enroll", null, null),
-            "requires approval");
+        var denied = await h.Service.QueryStatusAsync(id, MsaeCaller.Credential("svc-enroll"), null, "lab");
+        Assert.Equal(MsaeRequestState.Denied, denied.State);
+        Assert.Contains("rejected by an operator", denied.Reason);
     }
 
     [Fact]

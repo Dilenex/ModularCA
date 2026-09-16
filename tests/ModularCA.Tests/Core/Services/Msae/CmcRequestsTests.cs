@@ -4,6 +4,7 @@ using ModularCA.Core.Services.Msae;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Xunit;
 
@@ -60,6 +61,90 @@ public class CmcRequestsTests
         var generator = new CmsSignedDataGenerator();
         generator.AddSigner(signingKey, [1, 2, 3, 4], CmsSignedDataGenerator.DigestSha256);
         return generator.Generate(CmcRequests.PkiDataOid, new CmsProcessableByteArray(pkiData.GetDerEncoded()), true).GetEncoded();
+    }
+
+    /// <summary>
+    /// A renewal the way the autoenrollment engine builds one: the PKCS#10 carries the existing
+    /// certificate in szOID_RENEWAL_CERTIFICATE, and the wrapper is signed by the new key (by key
+    /// identifier) and, when <paramref name="signWithOld"/>, by the existing certificate's key
+    /// (by issuer and serial).
+    /// </summary>
+    private static (byte[] Cmc, X509Certificate2 Old) BuildRenewal(bool signWithOld, byte[]? wrongOldKeySigner = null)
+    {
+        using var oldRsa = RSA.Create(2048);
+        var oldReq = new CertificateRequest("CN=ws-042.lab.test", oldRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var old = oldReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+
+        using var newRsa = RSA.Create(2048);
+        var req = new CertificateRequest("CN=ws-042.lab.test", newRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.OtherRequestAttributes.Add(new AsnEncodedData(new Oid(CmcRequests.RenewalCertificateOid), old.RawData));
+        var pkcs10 = req.CreateSigningRequest();
+
+        var tcr = new DerSequence(new DerInteger(1), Asn1Object.FromByteArray(pkcs10));
+        var pkiData = new DerSequence(new DerSequence(), new DerSequence(new DerTaggedObject(false, 0, tcr)), new DerSequence(), new DerSequence());
+        var generator = new CmsSignedDataGenerator();
+        generator.AddSigner(DotNetUtilities.GetRsaKeyPair(newRsa).Private, [1, 2, 3, 4], CmsSignedDataGenerator.DigestSha256);
+        if (signWithOld)
+        {
+            var oldBc = DotNetUtilities.FromX509Certificate(old);
+            var signingKey = wrongOldKeySigner == null
+                ? DotNetUtilities.GetRsaKeyPair(oldRsa).Private
+                : DotNetUtilities.GetRsaKeyPair(RSA.Create(2048)).Private;   // claims the old cert, signs with another key
+            generator.AddSigner(signingKey, oldBc, CmsSignedDataGenerator.DigestSha256);
+        }
+        var cmc = generator.Generate(CmcRequests.PkiDataOid, new CmsProcessableByteArray(pkiData.GetDerEncoded()), true).GetEncoded();
+        return (cmc, old);
+    }
+
+    [Fact]
+    public void A_renewal_names_the_old_certificate_and_is_signed_by_it()
+    {
+        var (cmc, old) = BuildRenewal(signWithOld: true);
+
+        var unwrapped = CmcRequests.Unwrap(cmc);
+        Assert.NotNull(unwrapped.Renewal);
+        Assert.True(unwrapped.Renewal!.SignedByOldCertificate);
+        Assert.Equal(old.RawData, unwrapped.Renewal.OldCertificateDer);
+        Assert.Equal(old.SerialNumber, unwrapped.Renewal.Certificate.SerialNumber.ToString(16).ToUpperInvariant().PadLeft(old.SerialNumber.Length, '0'));
+
+        // The PKCS#10 still comes out, and its proof of possession by the new key still held.
+        Assert.NotNull(new Pkcs10CertificationRequest(unwrapped.Pkcs10Der).GetPublicKey());
+    }
+
+    [Fact]
+    public void A_renewal_attribute_without_the_old_certificates_signature_is_reported_not_trusted()
+    {
+        // The old certificate is named but did not sign: a stranger asking for someone's subject.
+        var (unsigned, _) = BuildRenewal(signWithOld: false);
+        var a = CmcRequests.Unwrap(unsigned);
+        Assert.NotNull(a.Renewal);
+        Assert.False(a.Renewal!.SignedByOldCertificate);
+
+        // A signer that claims the old certificate's issuer and serial but signs with another key.
+        var (forged, _) = BuildRenewal(signWithOld: true, wrongOldKeySigner: [1]);
+        var b = CmcRequests.Unwrap(forged);
+        Assert.NotNull(b.Renewal);
+        Assert.False(b.Renewal!.SignedByOldCertificate);
+
+        // A first enrollment carries no renewal at all.
+        Assert.Null(CmcRequests.Unwrap(Convert.FromBase64String(WindowsCmcRequestBase64)).Renewal);
+    }
+
+
+    [Fact]
+    public void The_real_windows_renewal_request_is_recognised_as_signed_by_the_old_certificate()
+    {
+        // certreq -new with RenewalCert on Windows 11 against a LabShort certificate from the lab
+        // CA: CMC over a PKCS#10 with an empty subject and szOID_RENEWAL_CERTIFICATE, two signers.
+        var path = Path.Combine(AppContext.BaseDirectory, "Core", "Services", "Msae", "Fixtures", "windows-renewal-cmc.b64");
+        var cmc = Convert.FromBase64String(File.ReadAllText(path).Trim());
+
+        var unwrapped = CmcRequests.Unwrap(cmc);
+        Assert.NotNull(unwrapped.Renewal);
+        Assert.True(unwrapped.Renewal!.SignedByOldCertificate);
+        Assert.Equal("CN=desktop-kecnk6q.lab.msae.test", unwrapped.Renewal.Certificate.SubjectDN.ToString());
+        Assert.Equal("2.25.1519959719.1205029362.460501268.1492120492", MsaeCsrTemplate.ReadTemplateOid(unwrapped.Renewal.Certificate));
+        Assert.Equal("", new Pkcs10CertificationRequest(unwrapped.Pkcs10Der).GetCertificationRequestInfo().Subject.ToString());
     }
 
     [Fact]

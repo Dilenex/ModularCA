@@ -166,10 +166,7 @@ public class XcepPolicyService(
 
         // The client puts this in its CSR; the enrollment side resolves the template by it.
         extensions.Add(new XcepMessages.PolicyExtension(MsaeCsrTemplate.TemplateInfoOid, "Certificate Template Information", false,
-            new DerSequence(
-                new DerObjectIdentifier(template.MsaeTemplateOid!),
-                new DerInteger(template.MsaeMajorVersion),
-                new DerInteger(template.MsaeMinorVersion)).GetDerEncoded()));
+            MsaeCsrTemplate.TemplateInfoValue(template.MsaeTemplateOid!, template.MsaeMajorVersion, template.MsaeMinorVersion)));
 
         return new XcepMessages.PolicyTemplate(
             Name: template.Name,

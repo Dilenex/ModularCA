@@ -993,6 +993,13 @@ export interface ReissueCertificateRequestByCsrId {
     newSans?: string[] | null;
 }
 
+/** From `ModularCA.Shared/Models/RequestedExtension.cs`. */
+export interface RequestedExtension {
+    oid: string;
+    critical: boolean;
+    valueBase64: string;
+}
+
 /** From `ModularCA.Shared/Models/RequestProfiles/RequestProfileDto.cs`. */
 export interface RequestProfileDto {
     id: string;

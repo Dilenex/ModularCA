@@ -401,4 +401,69 @@ public class WstepMessagesTests
         // A PKCS#10 token in the body is never taken for a Kerberos token, and a header without one yields null.
         Assert.Null(WstepMessages.ReadKerberosToken(XDocument.Parse(Envelope("x#SomethingElse", b64))));
     }
+
+    [Fact]
+    public void A_status_query_names_its_request_and_carries_no_pkcs10()
+    {
+        var soap = """
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://www.w3.org/2005/08/addressing">
+              <s:Header><a:MessageID>urn:uuid:11111111-2222-3333-4444-555555555555</a:MessageID></s:Header>
+              <s:Body>
+                <wst:RequestSecurityToken xmlns:wst="http://docs.oasis-open.org/ws-sx/ws-trust/200512" xmlns:enr="http://schemas.microsoft.com/windows/pki/2009/01/enrollment">
+                  <wst:TokenType>http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3</wst:TokenType>
+                  <wst:RequestType>http://schemas.microsoft.com/windows/pki/2009/01/enrollment/QueryTokenStatus</wst:RequestType>
+                  <enr:RequestID>7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e</enr:RequestID>
+                </wst:RequestSecurityToken>
+              </s:Body>
+            </s:Envelope>
+            """;
+        var request = WstepMessages.ParseIssueRequest(soap);
+        Assert.True(request.IsStatusQuery);
+        Assert.Equal("7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e", request.RequestId);
+        Assert.Equal("urn:uuid:11111111-2222-3333-4444-555555555555", request.MessageId);
+        Assert.Empty(request.Pkcs10Der);
+
+        // Without an id there is nothing to ask after.
+        var withoutId = soap.Replace("<enr:RequestID>7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e</enr:RequestID>", "");
+        Assert.Throws<WstepMessages.WstepParseException>(() => WstepMessages.ParseIssueRequest(withoutId));
+
+        // An unknown request type is refused rather than treated as an Issue.
+        var odd = soap.Replace("enrollment/QueryTokenStatus", "enrollment/Renew");
+        Assert.Throws<WstepMessages.WstepParseException>(() => WstepMessages.ParseIssueRequest(odd));
+    }
+
+    [Fact]
+    public void A_pending_response_carries_the_disposition_a_cmc_pending_status_the_collection_point_and_the_request_id()
+    {
+        var xml = WstepMessages.BuildPendingResponse("urn:uuid:abc", "7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e", "https://ca.example.test/msae/lab/ces");
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        System.Xml.Linq.XNamespace t = "http://docs.oasis-open.org/ws-sx/ws-trust/200512";
+        System.Xml.Linq.XNamespace e = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment";
+        System.Xml.Linq.XNamespace a = "http://www.w3.org/2005/08/addressing";
+        System.Xml.Linq.XNamespace o = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
+        var rstr = Assert.Single(doc.Descendants(t + "RequestSecurityTokenResponse"));
+        Assert.Equal(WstepMessages.PendingDisposition, rstr.Element(e + "DispositionMessage")!.Value);
+        Assert.Equal("7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e", rstr.Element(e + "RequestID")!.Value);
+        Assert.Equal("urn:uuid:abc", doc.Descendants(a + "RelatesTo").Single().Value);
+
+        // Where to collect: the service itself.
+        var reference = rstr.Element(t + "RequestedSecurityToken")!.Element(o + "SecurityTokenReference")!.Element(o + "Reference")!;
+        Assert.Equal("https://ca.example.test/msae/lab/ces", reference.Attribute("URI")!.Value);
+
+        // The CMC full PKI response: status pending, body part 1, pend token = the request id.
+        var token = Assert.Single(rstr.Elements(o + "BinarySecurityToken"));
+        Assert.Equal(WstepMessages.Pkcs7ValueType, token.Attribute("ValueType")!.Value);
+        var cms = new Org.BouncyCastle.Cms.CmsSignedData(Convert.FromBase64String(token.Value));
+        Assert.Equal(CmcResponses.PkiResponseOid, cms.SignedContentType.Id);
+        using var buffer = new MemoryStream();
+        cms.SignedContent!.Write(buffer);
+        var response = Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(Org.BouncyCastle.Asn1.Asn1Object.FromByteArray(buffer.ToArray()));
+        var control = Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(response[0])[0]);
+        Assert.Equal(CmcResponses.StatusInfoV2Oid, Org.BouncyCastle.Asn1.DerObjectIdentifier.GetInstance(control[1]).Id);
+        var status = Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(Org.BouncyCastle.Asn1.Asn1Set.GetInstance(control[2])[0]);
+        Assert.Equal(CmcResponses.StatusPending, Org.BouncyCastle.Asn1.DerInteger.GetInstance(status[0]).IntValueExact);
+        Assert.Equal(CmcResponses.RequestBodyPartId, Org.BouncyCastle.Asn1.DerInteger.GetInstance(Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(status[1])[0]).IntValueExact);
+        var pendInfo = Org.BouncyCastle.Asn1.Asn1Sequence.GetInstance(status[3]);
+        Assert.Equal("7d3d2d8e-9d3a-4a0c-9d0a-0f9a1b2c3d4e", System.Text.Encoding.UTF8.GetString(Org.BouncyCastle.Asn1.Asn1OctetString.GetInstance(pendInfo[0]).GetOctets()));
+    }
 }

@@ -31,6 +31,38 @@ public static class MsaeCsrTemplate
     /// <summary>szOID_CERTIFICATE_TEMPLATE: template OID plus major and minor version.</summary>
     public const string TemplateInfoOid = "1.3.6.1.4.1.311.21.7";
 
+    /// <summary>
+    /// The Certificate Template Information extension for a template: SEQUENCE { templateID OID,
+    /// templateMajorVersion INTEGER, templateMinorVersion INTEGER }, not critical. The policy
+    /// service advertises this value and issuance stamps it, so the two can never disagree.
+    /// </summary>
+    public static ModularCA.Shared.Models.RequestedExtension TemplateInfoExtension(string templateOid, int majorVersion, int minorVersion)
+        => new(TemplateInfoOid, false, Convert.ToBase64String(TemplateInfoValue(templateOid, majorVersion, minorVersion)));
+
+    /// <summary>
+    /// The template OID an issued certificate carries in its Certificate Template Information
+    /// extension, or null when it has none (issued before templates were stamped) or the value
+    /// is not the expected shape.
+    /// </summary>
+    public static string? ReadTemplateOid(Org.BouncyCastle.X509.X509Certificate certificate)
+    {
+        var value = certificate.GetExtensionValue(new DerObjectIdentifier(TemplateInfoOid));
+        if (value == null) return null;
+        try
+        {
+            return Asn1Object.FromByteArray(value.GetOctets()) is Asn1Sequence { Count: > 0 } info
+                && info[0] is DerObjectIdentifier oid ? oid.Id : null;
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or InvalidCastException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The DER value of <see cref="TemplateInfoExtension"/>.</summary>
+    public static byte[] TemplateInfoValue(string templateOid, int majorVersion, int minorVersion)
+        => new DerSequence(new DerObjectIdentifier(templateOid), new DerInteger(majorVersion), new DerInteger(minorVersion)).GetDerEncoded();
+
     /// <summary>The template a request named, by name and/or OID. Either field may be null.</summary>
     public sealed record TemplateReference(string? Name, string? Oid);
 

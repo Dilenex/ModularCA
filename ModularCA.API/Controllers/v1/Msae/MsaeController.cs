@@ -132,10 +132,25 @@ public class MsaeController(
 
         try
         {
-            var pkcs7 = await enrollment.EnrollAsync(request.Pkcs10Der, caller!, SourceIp, caLabel);
+            if (request.IsStatusQuery)
+            {
+                var status = await enrollment.QueryStatusAsync(request.RequestId!, caller!, SourceIp, caLabel);
+                RecordSuccess(stopwatch);
+                MutualAuth(caller!);
+                return status.State switch
+                {
+                    MsaeRequestState.Issued => Content(WstepMessages.BuildIssueResponse(status.Pkcs7!, request.MessageId, request.RequestId), SoapContentType),
+                    MsaeRequestState.Pending => Content(WstepMessages.BuildPendingResponse(request.MessageId, request.RequestId!, ServiceUrl), SoapContentType),
+                    _ => Fault(status.Reason ?? "The request was denied.", request.MessageId, "refused"),
+                };
+            }
+
+            var result = await enrollment.EnrollAsync(request.Pkcs10Der, caller!, SourceIp, caLabel, request.Renewal);
             RecordSuccess(stopwatch);
             MutualAuth(caller!);
-            return Content(WstepMessages.BuildIssueResponse(pkcs7, request.MessageId, request.RequestId), SoapContentType);
+            if (result.IsPending)
+                return Content(WstepMessages.BuildPendingResponse(request.MessageId, result.PendingRequestId!.Value.ToString(), ServiceUrl), SoapContentType);
+            return Content(WstepMessages.BuildIssueResponse(result.Pkcs7!, request.MessageId, request.RequestId), SoapContentType);
         }
         catch (MsaeEnrollmentException ex)
         {
@@ -363,6 +378,9 @@ public class MsaeController(
     /// certreq reports it as WS_E_INVALID_FORMAT and the operator never sees the reason. The
     /// Sender/Receiver code inside the fault carries the "whose fault" distinction instead.
     /// </summary>
+    /// <summary>This request's own URL, which a pending response names as where the request is collected.</summary>
+    private string ServiceUrl => $"{Request.Scheme}://{Request.Host}{Request.PathBase}{Request.Path}";
+
     private ContentResult Fault(string reason, string? relatesTo, string errorKind, bool senderFault = true)
     {
         MetricsService.ProtocolRequestsTotal.WithLabels(MsaeEnrollmentService.Protocol, "error").Inc();

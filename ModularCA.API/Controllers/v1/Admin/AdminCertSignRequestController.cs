@@ -579,7 +579,9 @@ public class AdminCertSignRequestController(
         var fenceReject = await EnforceTenantFenceAsync(csr.SigningProfileId);
         if (fenceReject != null) return fenceReject;
 
-        if (csr.Status != "Pending")
+        // A request an approver owns (PendingApproval, or PartiallyApproved under a quorum) is
+        // exactly the kind that gets rejected; only a decided one is refused here.
+        if (csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
             return BadRequest(new { error = $"Request is already {csr.Status}" });
 
         csr.Status = "Rejected";
@@ -616,8 +618,8 @@ public class AdminCertSignRequestController(
         var fenceCancel = await EnforceTenantFenceAsync(csr.SigningProfileId);
         if (fenceCancel != null) return fenceCancel;
 
-        if (csr.Status != "Approved" && csr.Status != "Pending")
-            return BadRequest(new { error = $"Only Pending or Approved requests can be cancelled. Current status: {csr.Status}" });
+        if (csr.Status != "Approved" && csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
+            return BadRequest(new { error = $"Only requests that are still open can be cancelled. Current status: {csr.Status}" });
 
         if (csr.IssuedCertificateId != null)
             return BadRequest(new { error = "Cannot cancel a request that has already been issued." });
