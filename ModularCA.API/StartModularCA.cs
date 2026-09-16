@@ -1377,6 +1377,7 @@ builder.Services.AddScoped<RequestProfileValidationService>();
 builder.Services.AddScoped<IPolicySyncService, PolicySyncService>();
 
 builder.Services.AddScoped<CertificateTemplateService>();
+builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
 
@@ -2335,6 +2336,24 @@ if (!isSetupMode)
     {
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
         logger.LogWarning(ex, "Failed to check/apply migrations — the database may not exist yet. Setup wizard will handle initialization.");
+    }
+
+    // Generated template OIDs move under the operator's arc once Msae:TemplateOidArc is set, in
+    // one pass, so each template's OID changes exactly once. The repair only touches OIDs that
+    // equal a generated derivation of their own template id, never an operator's, and does
+    // nothing while no arc is configured.
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ModularCA.Core.Services.Msae.MsaeOptions>>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+        await ModularCA.Core.Services.Msae.MsaeTemplateOidRepair.RunAsync(db, options.Value.TemplateOidArc, logger);
+    }
+    catch (Exception ex)
+    {
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup")
+            .LogWarning(ex, "Template OID repair skipped; it runs again at the next start.");
     }
 }
 

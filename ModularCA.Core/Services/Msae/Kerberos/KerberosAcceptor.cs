@@ -153,7 +153,11 @@ public sealed class KerberosAcceptor(
         var ticketEType = apReq.Ticket.EncryptedPart?.EType;
         DecryptedKrbApReq? decrypted = null;
         var attempts = new List<string>();
-        foreach (var key in binding.Keys.OrderByDescending(k => k.Version == ticketKvno))
+        // A key of another encryption type cannot decrypt this ticket, so trying it only adds
+        // noise to the detail. The keys that are skipped for that reason are named once.
+        var candidates = binding.Keys.Where(k => ticketEType == null || k.EncryptionType == ticketEType).ToList();
+        var skipped = binding.Keys.Count - candidates.Count;
+        foreach (var key in candidates.OrderByDescending(k => k.Version == ticketKvno))
         {
             try
             {
@@ -175,6 +179,8 @@ public sealed class KerberosAcceptor(
         if (decrypted == null)
         {
             if (binding.Keys.Count == 0) attempts.Add("the realm has no live key");
+            else if (candidates.Count == 0) attempts.Add($"none of the {binding.Keys.Count} live keys is {ticketEType}");
+            else if (skipped > 0) attempts.Add($"{skipped} key(s) of other types not tried");
             var detail = $"ticket kvno {ticketKvno?.ToString() ?? "?"} {ticketEType}; " + string.Join(" | ", attempts);
             return new KerberosAcceptResult(null, KerberosRefusal.Invalid, realm, sname) { Detail = detail };
         }

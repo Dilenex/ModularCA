@@ -13,12 +13,14 @@ namespace ModularCA.Core.Services;
 public class CertificateTemplateService
 {
     private readonly ModularCADbContext _db;
+    private readonly string? _templateOidArc;
 
     /// <summary>
     /// Initializes the service with the application database context.
     /// </summary>
-    public CertificateTemplateService(ModularCADbContext db)
+    public CertificateTemplateService(ModularCADbContext db, Microsoft.Extensions.Options.IOptions<Msae.MsaeOptions>? msaeOptions = null)
     {
+        _templateOidArc = msaeOptions?.Value.TemplateOidArc;
         _db = db;
     }
 
@@ -148,7 +150,7 @@ public class CertificateTemplateService
     /// from its id unless one was supplied; a template not offered carries none. Throws
     /// <see cref="ArgumentException"/> for an OID that is not dotted-decimal.
     /// </summary>
-    private static void ApplyWindowsOffer(CertificateTemplateEntity entity, CreateCertificateTemplateRequest request)
+    private void ApplyWindowsOffer(CertificateTemplateEntity entity, CreateCertificateTemplateRequest request)
     {
         entity.MsaeMajorVersion = request.MsaeMajorVersion;
         entity.MsaeMinorVersion = request.MsaeMinorVersion;
@@ -161,10 +163,10 @@ public class CertificateTemplateService
         }
 
         var oid = string.IsNullOrWhiteSpace(request.MsaeTemplateOid)
-            ? entity.MsaeTemplateOid ?? Msae.MsaeTemplateOids.FromTemplateId(entity.Id)
+            ? entity.MsaeTemplateOid ?? Msae.MsaeTemplateOids.FromTemplateId(entity.Id, _templateOidArc)
             : request.MsaeTemplateOid.Trim();
         if (!Msae.MsaeTemplateOids.IsValid(oid))
-            throw new ArgumentException($"'{oid}' is not a valid object identifier (dotted decimal, e.g. 1.3.6.1.4.1.311.21.8.1).");
+            throw new ArgumentException($"'{oid}' is not an object identifier Windows can use: dotted decimal, e.g. 1.3.6.1.4.1.311.21.8.1, with no arc above {long.MaxValue}.");
         entity.MsaeTemplateOid = oid;
     }
 

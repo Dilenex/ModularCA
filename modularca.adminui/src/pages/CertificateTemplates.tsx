@@ -275,6 +275,7 @@ const X509TemplatesTab: React.FC = () => {
                                 <input type="text" value={form.msaeTemplateOid}
                                     onChange={(e) => setForm({ ...form, msaeTemplateOid: e.target.value })}
                                     className={inputClass} placeholder="Generated if blank; set to keep an AD CS template's OID" />
+                                <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Dotted decimal, no arc above 9223372036854775807: Windows silently drops templates it cannot parse.</p>
                             </div>
                         </div>
                     )}

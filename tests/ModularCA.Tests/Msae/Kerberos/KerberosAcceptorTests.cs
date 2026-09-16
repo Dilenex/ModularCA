@@ -124,6 +124,34 @@ public class KerberosAcceptorTests
     }
 
     [Fact]
+    public async Task Keys_of_another_encryption_type_are_not_tried_and_the_detail_says_so()
+    {
+        var forest = new InProcessKdc("corp.customer-a.local");
+        forest.AddAccount("alice", "Alice-P@ss-1");
+        var ticket = await forest.ServiceTicketAsync("alice", "Alice-P@ss-1");   // sealed with AES256
+        var name = new PrincipalName(PrincipalNameType.NT_PRINCIPAL, forest.Realm, new[] { "svc-enroll" });
+        var aes128 = new KerberosKey("Other-P@ss-9", name, etype: EncryptionType.AES128_CTS_HMAC_SHA1_96, saltType: SaltType.ActiveDirectoryUser);
+        var wrongAes256 = new KerberosKey("Other-P@ss-9", name, etype: EncryptionType.AES256_CTS_HMAC_SHA1_96, saltType: SaltType.ActiveDirectoryUser);
+
+        // A wrong AES256 key is attempted and reported; the AES128 key is counted, not attempted.
+        var mixed = await Acceptor(new Realms().Bind(forest, TenantA, keys: new[] { aes128, wrongAes256 })).AcceptAsync(ticket, TenantA);
+        Assert.Equal(KerberosRefusal.Invalid, mixed.Refusal);
+        Assert.Contains("ticket kvno", mixed.Detail);
+        Assert.Contains("AES256_CTS_HMAC_SHA1_96: SecurityException", mixed.Detail);
+        Assert.Contains("1 key(s) of other types not tried", mixed.Detail);
+        Assert.DoesNotContain("must match the encrypted data", mixed.Detail);
+
+        // Only keys of the wrong type: nothing is attempted and the detail names the gap.
+        var none = await Acceptor(new Realms().Bind(forest, TenantA, keys: aes128)).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        Assert.Equal(KerberosRefusal.Invalid, none.Refusal);
+        Assert.Contains("none of the 1 live keys is AES256_CTS_HMAC_SHA1_96", none.Detail);
+
+        // The right key among wrong-typed ones still wins.
+        var right = await Acceptor(new Realms().Bind(forest, TenantA, keys: new[] { aes128, forest.ServiceKey })).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        Assert.True(right.Accepted, right.Detail);
+    }
+
+    [Fact]
     public async Task Garbage_is_malformed_not_an_exception()
     {
         var result = await Acceptor(new Realms()).AcceptAsync(new byte[] { 1, 2, 3, 4 }, TenantA);
