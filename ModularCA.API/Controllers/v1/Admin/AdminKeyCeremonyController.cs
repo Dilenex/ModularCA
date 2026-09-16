@@ -26,7 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ceremonies")]
-[Authorize(Policy = "CaAdmin")]
+[Authorize]
 public class AdminKeyCeremonyController : ControllerBase
 {
     private readonly IKeyCeremonyService _ceremonySvc;
@@ -79,6 +79,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// is auto-approved and can be executed immediately.
     /// </summary>
     [HttpPost]
+    [Authorize]
     public async Task<IActionResult> Initiate(
         [FromBody] InitiateCeremonyRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -96,6 +97,16 @@ public class AdminKeyCeremonyController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(request.OperationType))
             return BadRequest(new { error = "OperationType is required." });
+
+        // The tenant and parent are in the body, so the route policy cannot scope this action;
+        // the same rules as direct CA creation apply (see CaCreationAccess). Other operation
+        // types need ca.manage tenant-wide for the ceremony's tenant.
+        if (!await MayInitiateAsync(request.OperationType, request.Parameters, _currentUser.User.Id))
+        {
+            Log.Warning("Authorization denied for user {UserId} ({Username}) initiating ceremony {OperationType} in tenant {TenantId}",
+                _currentUser.User.Id, _currentUser.User.Username, request.OperationType, request.Parameters?.TenantId);
+            return StatusCode(403, new { error = "You need ca.manage for the ceremony's tenant, and for the parent CA when it belongs to another tenant." });
+        }
 
         try
         {
@@ -146,6 +157,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// CA-scoped admins (without tenant-wide CaManage) cannot see ceremonies.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> List([FromQuery] string? status = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -156,7 +168,8 @@ public class AdminKeyCeremonyController : ControllerBase
 
         List<KeyCeremonyEntity> ceremonies;
 
-        if (await _groupAuth.IsSystemAdminAsync(_currentUser.User.Id))
+        if (await _groupAuth.IsSystemAdminAsync(_currentUser.User.Id)
+            || await _groupAuth.HasSystemCapabilityAsync(_currentUser.User.Id, Capabilities.CaManage))
         {
             ceremonies = await _ceremonySvc.ListAsync(status);
         }
@@ -205,6 +218,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Enforces tenant-level access: only system admins or tenant-level CA admins can view.
     /// </summary>
     [HttpGet("{id:guid}")]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> GetById(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -259,6 +273,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
     [HttpPost("{id:guid}/approve")]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Approve(
         Guid id,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -321,6 +336,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// key-rotation workflow.
     /// </summary>
     [HttpPost("{id:guid}/reject")]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -365,6 +381,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// in-progress ceremonies.
     /// </summary>
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Cancel(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -410,6 +427,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Requires step-up MFA verification.
     /// </summary>
     [HttpPost("{id:guid}/execute")]
+    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Execute(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -720,29 +738,11 @@ public class AdminKeyCeremonyController : ControllerBase
     }
 
     /// <summary>
-    /// Gets tenant IDs where the user has tenant-wide CaManage capability
-    /// (i.e., groups with CaManage where CertificateAuthorityId is null).
-    /// CA-scoped admins are excluded since ceremonies are org-wide.
+    /// The tenants whose ceremonies the caller may see: those where they hold <c>ca.manage</c>
+    /// tenant-wide, from any grant source. A system-scoped holder is handled by the caller.
     /// </summary>
-    private async Task<List<Guid>> GetUserCeremonyTenantIdsAsync(Guid userId)
-    {
-        var groups = await _groupAuth.GetUserGroupsAsync(userId);
-        var tenantWideAdminGroups = new List<CaGroupEntity>();
-
-        foreach (var g in groups)
-        {
-            if (g.CertificateAuthorityId != null) continue; // skip CA-scoped groups
-            if (g.IsSystemGroup) continue; // system groups handled by IsSystemAdminAsync
-
-            // Check if this tenant-wide group has CaManage
-            var hasCaManage = await _db.CapabilityGrants
-                .AnyAsync(gr => gr.GroupId == g.Id && gr.Capability == Capabilities.CaManage);
-            if (hasCaManage)
-                tenantWideAdminGroups.Add(g);
-        }
-
-        return tenantWideAdminGroups.Select(g => g.TenantId).Distinct().ToList();
-    }
+    private Task<List<Guid>> GetUserCeremonyTenantIdsAsync(Guid userId)
+        => _groupAuth.GetTenantIdsWithCapabilityAsync(userId, Capabilities.CaManage);
 
     /// <summary>
     /// Checks if the current user can access the given ceremony (system admin or tenant-level admin).
@@ -755,8 +755,28 @@ public class AdminKeyCeremonyController : ControllerBase
         if (ceremony.TenantId == null)
             return false;
 
-        var tenantIds = await GetUserCeremonyTenantIdsAsync(_currentUser.User.Id);
-        return tenantIds.Contains(ceremony.TenantId.Value);
+        return await _groupAuth.HasTenantCapabilityAsync(_currentUser.User.Id, ceremony.TenantId.Value, Capabilities.CaManage);
+    }
+
+    /// <summary>
+    /// Whether the caller may start a ceremony of this type with these parameters. CA creation
+    /// follows <see cref="CaCreationAccess"/>; anything else needs <c>ca.manage</c> tenant-wide
+    /// for the tenant named in the parameters, or <c>system.manage</c> when there is none.
+    /// </summary>
+    private async Task<bool> MayInitiateAsync(string operationType, KeyCeremonyParameters? parameters, Guid userId)
+    {
+        if (await _groupAuth.IsSystemAdminAsync(userId))
+            return true;
+        if (parameters == null || parameters.TenantId == Guid.Empty)
+            return false;
+
+        if (string.Equals(operationType, "CreateRootCA", StringComparison.OrdinalIgnoreCase))
+            return await CaCreationAccess.MayCreateRootAsync(_groupAuth, userId, parameters.TenantId);
+        if (string.Equals(operationType, "CreateIntermediateCA", StringComparison.OrdinalIgnoreCase))
+            return parameters.ParentCaId is Guid parent
+                && await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, userId, parameters.TenantId, parent);
+
+        return await _groupAuth.HasTenantCapabilityAsync(userId, parameters.TenantId, Capabilities.CaManage);
     }
 }
 

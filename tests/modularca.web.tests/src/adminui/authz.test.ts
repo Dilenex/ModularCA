@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Capabilities } from '@shared/generated';
-import { can, canAnywhere, canInTenant, canUseAdminConsole, consoleCas, NO_CAPABILITIES, tenantsOf, type EffectiveCapabilities } from '@adminui/authz';
+import { can, canAnywhere, canAtTenant, canInTenant, canUseAdminConsole, consoleCas, NO_CAPABILITIES, tenantsOf, type EffectiveCapabilities } from '@adminui/authz';
 
 /**
  * The capability checks the console gates on, over the `capabilities` payload of
@@ -79,5 +79,27 @@ describe('tenants', () => {
         expect(canInTenant(operatorOnA, Capabilities.CertRevoke, 't1')).toBe(true);
         expect(canInTenant(operatorOnA, Capabilities.CertRevoke, 't2')).toBe(false);
         expect(canInTenant(null, Capabilities.CertRevoke, 't1')).toBe(false);
+    });
+});
+
+describe('canAtTenant', () => {
+    const tenantAdmin: EffectiveCapabilities = {
+        system: [],
+        cas: [{ ...caA, capabilities: [Capabilities.CaManage] }],
+        tenants: [{ id: 't3', name: 'Tenant Three', slug: 'three', capabilities: [Capabilities.CaManage] }],
+    };
+
+    it('is true only for a tenant-wide or system-scoped holder', () => {
+        expect(canAtTenant(tenantAdmin, Capabilities.CaManage, 't3')).toBe(true);
+        expect(canAtTenant(tenantAdmin, Capabilities.CaManage, 't1')).toBe(false); // held on ca-a only
+        expect(canAtTenant(tenantAdmin, Capabilities.SystemManage, 't3')).toBe(false);
+        expect(canAtTenant({ system: [Capabilities.CaManage], cas: [] }, Capabilities.CaManage, 'any')).toBe(true);
+        expect(canAtTenant(null, Capabilities.CaManage, 't3')).toBe(false);
+    });
+
+    it('lists a tenant administered tenant-wide even before it has a CA', () => {
+        expect(tenantsOf(tenantAdmin).map(t => t.id)).toEqual(['t1', 't3']);
+        const requesterOnly: EffectiveCapabilities = { system: [], cas: [], tenants: [{ id: 't4', name: 'Four', slug: 'four', capabilities: [Capabilities.CertRequest] }] };
+        expect(tenantsOf(requesterOnly)).toEqual([]);
     });
 });

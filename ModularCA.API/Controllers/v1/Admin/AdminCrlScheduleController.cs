@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -21,7 +23,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/crl-schedules")]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize]
     public class AdminCrlScheduleController(
         ICrlConfigurationService crlConfigService,
         IAuditService audit,
@@ -92,6 +94,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// owning CA belongs to a tenant in their <c>AccessibleTenantIds</c>.
         /// </summary>
         [HttpGet]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetAll()
         {
             var jobs = (await _crlConfigService.GetAllAsync()).ToList();
@@ -125,7 +128,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// access the target CA's tenant. Audit fires on success and on access-failure paths.
         /// </summary>
         [HttpPost]
-        [Authorize(Policy = "CaOperator")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.CaCertificate, "request.CaCertificateId")]
         [RequireStepUp(StepUpOps.CreateCrlSchedule)]
         public async Task<IActionResult> Create([FromBody] CreateCrlConfigurationRequest request)
         {
@@ -166,6 +170,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// callers receive a 404 even if the row exists.
         /// </summary>
         [HttpGet("{id:guid}")]
+        [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetById(Guid id)
         {
             if (await ResolveAndFenceScheduleAsync(id) == null)
@@ -325,7 +330,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             && NCrontab.CrontabSchedule.TryParse(expression) != null;
 
         [HttpPost("bulk")]
-        [Authorize(Policy = "CaOperator")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.CrlConfigurations, "request.Actions")]
         public async Task<IActionResult> BulkUpdate([FromBody] BulkCrlScheduleRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
             await _currentUser.EnsureLoadedAsync();

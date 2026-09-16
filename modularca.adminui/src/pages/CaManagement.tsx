@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { useAuth } from '../context/AuthContext';
+import { can, canAtTenant, tenantsOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
 import { inputClass, labelClass } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
@@ -128,6 +130,18 @@ const CaManagement: React.FC = () => {
     };
 
     const { caId: scopeCaId, tenantId: scopeTenantId, inScope } = useScope();
+    const { capabilities } = useAuth();
+    const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
+    /** System-scoped ca.manage may create in any tenant and under any parent, as the server allows. */
+    const managesAllTenants = isSystemAdmin || can(capabilities, Capabilities.CaManage);
+    /**
+     * The tenants the caller may create a CA in. The tenant list endpoint is system-only, so a
+     * tenant administrator's choices come from their own capabilities instead.
+     */
+    const creatableTenants: Array<{ id: string; name: string }> = managesAllTenants
+        ? tenants.filter(t => t.isEnabled)
+        : tenantsOf(capabilities).filter(t => canAtTenant(capabilities, Capabilities.CaManage, t.id));
+    const canCreateCa = isSystemAdmin || creatableTenants.length > 0;
 
     /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
     const subtreeOf = (list: any[], id: string): any | null => {
@@ -163,10 +177,19 @@ const CaManagement: React.FC = () => {
     };
 
     useEffect(() => {
-        loadAuthorities();
+        if (!managesAllTenants) return;
         apiGet<any>('/api/v1/admin/tenants')
             .then(data => setTenants(Array.isArray(data) ? data : data.items || []))
             .catch(() => {});
+    }, [managesAllTenants]);
+
+    // A tenant administrator of one tenant has nothing to choose; a system administrator picks.
+    useEffect(() => {
+        if (!formTenant && creatableTenants.length === 1) setFormTenant(creatableTenants[0].id);
+    }, [formTenant, creatableTenants.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        loadAuthorities();
         apiGet<any>('/api/v1/admin/cert-profiles?isCaProfile=true')
             .then(data => {
                 const items = Array.isArray(data) ? data : (data.items || []);
@@ -177,6 +200,19 @@ const CaManagement: React.FC = () => {
     }, [scopeCaId, scopeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const allCasFlat = flattenCas(authorities);
+    /**
+     * Parents the caller may sign under: any CA for a system-scoped holder, otherwise the chosen
+     * tenant's own CAs and any CA they hold ca.manage on. Mirrors CaCreationAccess on the server.
+     */
+    const parentKey = (ca: any) => ca.id || ca.certificateId || ca.name;
+    const parentCandidates = allCasFlat.filter((ca) =>
+        managesAllTenants || (!!formTenant && ca.tenantId === formTenant) || can(capabilities, Capabilities.CaManage, ca.id));
+
+    useEffect(() => {
+        if (!parentCandidates.some((ca) => parentKey(ca) === formParentCa)) {
+            setFormParentCa(parentCandidates[0] ? parentKey(parentCandidates[0]) : '');
+        }
+    }, [formTenant, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleCreateCa = async () => {
         if (!formTenant) {
@@ -283,6 +319,7 @@ const CaManagement: React.FC = () => {
             />
 
             {/* Section 2: Create Intermediate CA */}
+            {canCreateCa && (
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
                 <button
                     onClick={() => setCreateExpanded(!createExpanded)}
@@ -298,7 +335,7 @@ const CaManagement: React.FC = () => {
                             <label className={labelClass}>Tenant *</label>
                             <select value={formTenant} onChange={(e) => setFormTenant(e.target.value)} className={inputClass}>
                                 <option value="">-- Select Tenant --</option>
-                                {tenants.filter(t => t.isEnabled).map(t => (
+                                {creatableTenants.map(t => (
                                     <option key={t.id} value={t.id}>{t.name}</option>
                                 ))}
                             </select>
@@ -306,12 +343,14 @@ const CaManagement: React.FC = () => {
 
                         {/* CA Type Toggle */}
                         <div className="flex gap-2">
+                            {isSystemAdmin && (
                             <button
                                 onClick={() => { setFormCaType('root'); setFormValidityYears('25'); }}
                                 className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'root' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
                             >
                                 Root CA
                             </button>
+                            )}
                             <button
                                 onClick={() => { setFormCaType('intermediate'); setFormValidityYears('10'); }}
                                 className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'intermediate' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
@@ -397,9 +436,9 @@ const CaManagement: React.FC = () => {
                                 <div>
                                     <label className={labelClass}>Parent CA *</label>
                                     <select value={formParentCa} onChange={(e) => setFormParentCa(e.target.value)} className={inputClass}>
-                                        {allCasFlat.length === 0 && <option value="">No CAs available</option>}
-                                        {allCasFlat.map((ca) => {
-                                            const id = ca.id || ca.certificateId || ca.name;
+                                        {parentCandidates.length === 0 && <option value="">{formTenant ? 'No CA you may sign under in this tenant' : 'Select a tenant first'}</option>}
+                                        {parentCandidates.map((ca) => {
+                                            const id = parentKey(ca);
                                             return (
                                                 <option key={id} value={id}>
                                                     {ca.name || ca.subjectDN}
@@ -508,6 +547,7 @@ const CaManagement: React.FC = () => {
                     </div>
                 )}
             </div>
+            )}
 
         </div>
     );

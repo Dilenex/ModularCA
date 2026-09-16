@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -18,13 +18,14 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, IAuditService audit, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache) : ControllerBase
 {
     /// <summary>
     /// Lists all SSH CA keys with their metadata, including the public KRL download URL.
     /// </summary>
     [HttpGet("ca-keys")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCaKeys()
     {
         var baseUrl = !string.IsNullOrWhiteSpace(config.Https.PublicDomain)
@@ -46,6 +47,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// If the target tenant requires key ceremonies, initiates a ceremony instead.
     /// </summary>
     [HttpPost("ca-keys")]
+    [Authorize(Policy = "SystemOperator")]
     public async Task<IActionResult> GenerateCaKey(
         [FromBody] GenerateSshCaKeyRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -99,6 +101,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Returns the public key text for a specific SSH CA key.
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/public-key")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCaPublicKey(Guid id)
     {
         var pubKey = await sshCaService.GetPublicKeyAsync(id);
@@ -111,6 +114,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> SignUserKey(Guid caKeyId, [FromBody] SignSshUserKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -186,6 +190,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-host")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> SignHostKey(Guid caKeyId, [FromBody] SignSshHostKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -297,6 +302,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Lists issued SSH certificates for a specific CA key with pagination.
     /// </summary>
     [HttpGet("ca-keys/{caKeyId:guid}/certificates")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCertificates(Guid caKeyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, [FromQuery] string? sort = null)
     {
         var certs = await sshCaService.GetCertificatesAsync(page, pageSize, caKeyId, sort);
@@ -307,6 +313,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Downloads the signed SSH certificate content as a text file.
     /// </summary>
     [HttpGet("certificates/{id:guid}/download")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> DownloadCertificate(Guid id)
     {
         var cert = await sshCaService.GetCertificateByIdAsync(id);
@@ -321,6 +328,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Generates and downloads a binary KRL (Key Revocation List) for the specified SSH CA key.
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/krl")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> DownloadKrl(Guid id)
     {
         try
@@ -341,6 +349,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Revokes an SSH certificate by its identifier, scoped to a specific CA key.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/{id:guid}/revoke")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeCertificate(Guid caKeyId, Guid id)
     {
         await currentUser.EnsureLoadedAsync();
@@ -362,6 +371,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// If the CA's tenant requires key ceremonies, initiates a ceremony instead.
     /// </summary>
     [HttpDelete("ca-keys/{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> DisableSshCaKey(
         Guid id,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

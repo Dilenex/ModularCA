@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using ModularCA.API.Filters;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -29,7 +30,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/certificates")]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
 
     public class AdminIssuanceController(ModularCADbContext dbContext,
         ICertificateIssuanceService certificateIssuanceService,
@@ -149,6 +150,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <param name="certProfileId">The certificate profile whose maximum validity is the baseline.</param>
         /// <param name="notBefore">Optional proposed start; defaults to what issuance would use.</param>
         [HttpGet("validity-ceiling")]
+        [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> GetValidityCeiling(
             [FromQuery] Guid signingProfileId,
             [FromQuery] Guid certProfileId,
@@ -179,6 +181,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// capability checks before delegating to the issuance service.
         /// </summary>
         [HttpPost("issue")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Csr, "req.CsrId")]
         public async Task<IActionResult> IssueCertificate([FromBody] IssueCertificateRequest req)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -272,6 +276,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <param name="req">The request body containing subject, SANs, key algorithm, profiles, and validity dates.</param>
         /// <returns>Certificate serial, subject DN, validity dates, and a message directing to the export endpoint.</returns>
         [HttpPost("issue-with-key")]
+        [Authorize]
+        [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "req.SigningProfileId")]
         public async Task<IActionResult> IssueWithServerKey([FromBody] IssueWithKeyRequest req)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -485,6 +491,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         [HttpPost("{certId:guid}/reissue")]
+        [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCertId([FromBody] ReissueCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -578,6 +585,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
         /// </summary>
         [HttpPost("serial/{serial}/reissue")]
+        [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCertSn([FromBody] ReissueCertificateRequestByCertSn request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -671,6 +679,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
         /// </summary>
         [HttpPost("csr/{csrId:guid}/reissue")]
+        [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCsrId([FromBody] ReissueCertificateRequestByCsrId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
 

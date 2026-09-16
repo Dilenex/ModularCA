@@ -1,3 +1,6 @@
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh/templates")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminSshTemplateController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
@@ -26,6 +29,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// Lists all SSH certificate templates with resolved profile and CA key names.
     /// </summary>
     [HttpGet]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll()
     {
         var templates = await _db.SshCertificateTemplates
@@ -59,6 +63,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// Retrieves a single SSH certificate template by its identifier.
     /// </summary>
     [HttpGet("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var t = await _db.SshCertificateTemplates
@@ -91,6 +96,8 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// Creates a new SSH certificate template.
     /// </summary>
     [HttpPost]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
     public async Task<IActionResult> Create([FromBody] CreateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -120,6 +127,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// Updates an existing SSH certificate template by its identifier.
     /// </summary>
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -148,6 +156,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// Deletes an SSH certificate template by its identifier.
     /// </summary>
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Delete(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();

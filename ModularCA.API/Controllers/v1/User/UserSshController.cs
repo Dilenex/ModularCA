@@ -16,7 +16,7 @@ namespace ModularCA.API.Controllers.v1.User;
 /// </summary>
 [ApiController]
 [Route("api/v1/user/ssh")]
-[Authorize(Policy = "CaUser")]
+[Authorize]
 public class UserSshController(
     ModularCADbContext db,
     ISshCaService sshCaService,
@@ -35,6 +35,7 @@ public class UserSshController(
     /// filtered to only those belonging to CAs the current user has access to.
     /// </summary>
     [HttpGet("ca-keys")]
+    [Authorize(Policy = "CaUser")]
     public async Task<IActionResult> GetCaKeys()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -59,6 +60,7 @@ public class UserSshController(
     /// as "did not match" — the request is refused rather than issued unchecked.
     /// </summary>
     [HttpPost("sign-user")]
+    [Authorize]
     public async Task<IActionResult> SignUserKey([FromBody] UserSshSignRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -224,6 +226,7 @@ public class UserSshController(
     /// Lists SSH certificates issued by or for the currently authenticated user.
     /// </summary>
     [HttpGet("certificates")]
+    [Authorize(Policy = "CaUser")]
     public async Task<IActionResult> GetCertificates()
     {
         await _currentUser.EnsureLoadedAsync();
@@ -252,6 +255,7 @@ public class UserSshController(
     /// Downloads the signed SSH certificate content for a certificate owned by the current user.
     /// </summary>
     [HttpGet("certificates/{id:guid}/download")]
+    [Authorize(Policy = "CaUser")]
     public async Task<IActionResult> DownloadCertificate(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();

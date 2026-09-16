@@ -20,13 +20,33 @@ namespace ModularCA.Auth.Authorization;
 /// </remarks>
 /// <param name="System">Capabilities held at system scope. These apply to every CA.</param>
 /// <param name="Cas">Every CA on which the user holds at least one capability, ordered by label.</param>
+/// <param name="Tenants">
+/// Every tenant on which the user holds at least one capability tenant-wide, ordered by name.
+/// A tenant-wide holder of <c>ca.manage</c> may create CAs in the tenant, which is why a
+/// tenant with no CAs yet still appears here; per-CA grants never produce an entry.
+/// </param>
 public sealed record EffectiveCapabilities(
     IReadOnlyList<string> System,
-    IReadOnlyList<CaCapabilities> Cas)
+    IReadOnlyList<CaCapabilities> Cas,
+    IReadOnlyList<TenantCapabilities> Tenants)
 {
     /// <summary>An empty result: no capabilities anywhere.</summary>
-    public static readonly EffectiveCapabilities None = new([], []);
+    public static readonly EffectiveCapabilities None = new([], [], []);
 }
+
+/// <summary>
+/// The capabilities a user holds across a whole tenant: the system-scoped ones plus the ones
+/// granted tenant-wide. Nothing granted on a single CA is included.
+/// </summary>
+/// <param name="Id">The tenant's id.</param>
+/// <param name="Name">The tenant's display name.</param>
+/// <param name="Slug">The tenant's slug, which is what a tenant scope in a console URL names.</param>
+/// <param name="Capabilities">The capabilities that apply tenant-wide, sorted.</param>
+public sealed record TenantCapabilities(
+    Guid Id,
+    string Name,
+    string Slug,
+    IReadOnlyList<string> Capabilities);
 
 /// <summary>
 /// The capabilities a user holds on one certificate authority: the system-scoped ones, the

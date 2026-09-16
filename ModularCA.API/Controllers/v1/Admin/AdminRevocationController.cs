@@ -1,4 +1,7 @@
-﻿using System.Text.Json;
+using ModularCA.Shared.Authorization;
+using ModularCA.Auth.Authorization;
+using ModularCA.API.Filters;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
@@ -21,7 +24,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/certificates")]
-[Authorize(Policy = "CaOperator")]
+[Authorize]
 public class AdminRevocationController(
     ICertificateRevocationService revocationService,
     ICurrentUserService currentUser,
@@ -48,6 +51,7 @@ public class AdminRevocationController(
     /// the underlying revocation service throws, so SIEM can correlate failed attempts.
     /// </summary>
     [HttpPost("{certId:guid}/revoke")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeByCertId(Guid certId, [FromBody] RevokeCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         // The {certId} route segment was declared but never bound, so every one of these
@@ -126,6 +130,7 @@ public class AdminRevocationController(
     /// failed revocation attempts.
     /// </summary>
     [HttpPost("serial/{serial}/revoke")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeByCertSerial(string serial, [FromBody] RevokeCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -207,6 +212,8 @@ public class AdminRevocationController(
     /// too. Never aborts the batch on one failure; returns a per-serial summary.
     /// </summary>
     [HttpPost("bulk-revoke")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Serials, "request.SerialNumbers")]
     public async Task<IActionResult> BulkRevoke([FromBody] BulkRevokeRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -270,6 +277,7 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
     [HttpPost("{certId:guid}/hold")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> HoldByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         // The {certId} route segment was declared but never bound, so every one of these
@@ -325,6 +333,7 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
     [HttpPost("serial/{serial}/hold")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> HoldByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -378,6 +387,7 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
     [HttpPost("{certId:guid}/unhold")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> UnholdByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         // The {certId} route segment was declared but never bound, so every one of these
@@ -432,6 +442,7 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
     [HttpPost("serial/{serial}/unhold")]
+    [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> UnholdByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();

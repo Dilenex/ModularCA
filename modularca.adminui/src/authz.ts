@@ -30,16 +30,30 @@ export interface TenantOption {
     slug: string;
 }
 
-/** System-scoped capabilities plus every CA the user holds anything on. */
+/** The capabilities held across a whole tenant, as `/api/v1/me` reports them. */
+export interface TenantCapabilities {
+    id: string;
+    name: string;
+    slug: string;
+    /** Held tenant-wide (plus the system-scoped ones); a grant on one CA never lands here. */
+    capabilities: Capability[];
+}
+
+/** System-scoped capabilities plus every CA and tenant the user holds anything on. */
 export interface EffectiveCapabilities {
     /** Held at system scope; these apply to every CA. */
     system: Capability[];
     /** Every CA with at least one capability, ordered by label. */
     cas: CaCapabilities[];
+    /**
+     * Every tenant with at least one capability held tenant-wide, ordered by name. A tenant
+     * administrator of a tenant with no CA yet appears here and nowhere else.
+     */
+    tenants?: TenantCapabilities[];
 }
 
 /** No capabilities anywhere: the shape to use while `/api/v1/me` has not answered. */
-export const NO_CAPABILITIES: EffectiveCapabilities = { system: [], cas: [] };
+export const NO_CAPABILITIES: EffectiveCapabilities = { system: [], cas: [], tenants: [] };
 
 /**
  * Whether `capability` is held on `caId`, or at system scope when no CA is given.
@@ -80,11 +94,17 @@ export function consoleCas(caps: EffectiveCapabilities | null | undefined): CaCa
     return caps.cas.filter(ca => ca.capabilities.some(c => !SELF_SERVICE_ONLY.has(c)));
 }
 
-/** The tenants the user may scope to, in first-seen order of their administrable CAs. */
+/**
+ * The tenants the user may scope to: those holding an administrable CA, in first-seen order,
+ * then those administered tenant-wide that have no CA yet.
+ */
 export function tenantsOf(caps: EffectiveCapabilities | null | undefined): TenantOption[] {
     const seen = new Map<string, TenantOption>();
     for (const ca of consoleCas(caps)) {
         if (!seen.has(ca.tenantId)) seen.set(ca.tenantId, { id: ca.tenantId, name: ca.tenantName || ca.tenantSlug, slug: ca.tenantSlug });
+    }
+    for (const t of caps?.tenants ?? []) {
+        if (!seen.has(t.id) && t.capabilities.some(c => !SELF_SERVICE_ONLY.has(c))) seen.set(t.id, { id: t.id, name: t.name || t.slug, slug: t.slug });
     }
     return [...seen.values()];
 }
@@ -93,4 +113,16 @@ export function tenantsOf(caps: EffectiveCapabilities | null | undefined): Tenan
 export function canInTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
     if (!caps) return false;
     return caps.cas.some(c => c.tenantId === tenantId && c.capabilities.includes(capability));
+}
+
+/**
+ * Whether `capability` is held for the whole tenant: at system scope or tenant-wide. This is
+ * what creating a CA in the tenant takes; holding it on one CA of the tenant is not enough,
+ * which is why this is not `canInTenant`.
+ */
+export function canAtTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
+    if (!caps) return false;
+    if (caps.system.includes(capability)) return true;
+    const t = caps.tenants?.find(x => x.id === tenantId);
+    return !!t && t.capabilities.includes(capability);
 }

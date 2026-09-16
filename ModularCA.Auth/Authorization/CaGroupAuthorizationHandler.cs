@@ -1,4 +1,4 @@
-﻿using System.IdentityModel.Tokens.Jwt;
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -100,6 +100,23 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         {
             // CA ID found in route — check CA-level access (includes system.manage bypass)
             if (await _authService.HasCaCapabilityAsync(userId.Value, caId.Value, requirement.RequiredCapability))
+            {
+                context.Succeed(requirement);
+            }
+            else
+            {
+                LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
+            }
+            return;
+        }
+
+        // Some routes name a tenant rather than a CA: a key ceremony belongs to the tenant it
+        // will create a CA in, and there is no CA yet. A tenant-wide holder of the capability
+        // passes; a per-CA holder inside the tenant does not.
+        var tenantId = await ResolveTenantIdFromRouteAsync();
+        if (tenantId != null)
+        {
+            if (await _authService.HasTenantCapabilityAsync(userId.Value, tenantId.Value, requirement.RequiredCapability))
             {
                 context.Succeed(requirement);
             }
@@ -213,7 +230,7 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
     ///   <item><c>serial</c> (issued cert serial → signing profile → CA)</item>
     ///   <item><c>csrId</c> (CSR → signing profile → CA)</item>
     ///   <item><c>tokenId</c> (enrollment token → stored tenant/CA)</item>
-    ///   <item><c>id</c> + path hint (cert/request/signing-profile endpoints)</item>
+    ///   <item><c>id</c> + path hint (profiles, requests, enrollment tokens, whitelists, CRL schedules, SSH CA keys, SSH profiles and templates)</item>
     /// </list>
     /// The result is cached on
     /// <c>HttpContext.Items["ResolvedCaId"]</c> so controllers can reuse the lookup
@@ -344,9 +361,78 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
                 var tok = await _db.EnrollmentTokens.AsNoTracking().FirstOrDefaultAsync(t => t.Id == idGuid);
                 if (tok?.CertificateAuthorityId != null) return tok.CertificateAuthorityId;
             }
+            else if (path.Contains("/whitelists/", StringComparison.OrdinalIgnoreCase))
+            {
+                // A global whitelist (no CA) resolves to nothing and stays a system matter.
+                return await _db.Whitelists.AsNoTracking()
+                    .Where(w => w.Id == idGuid).Select(w => w.CertificateAuthorityId).FirstOrDefaultAsync();
+            }
+            else if (path.Contains("/crl-schedules/", StringComparison.OrdinalIgnoreCase))
+            {
+                var crlCaCertId = await _db.CrlConfigurations.AsNoTracking()
+                    .Where(c => c.TaskId == idGuid).Select(c => (Guid?)c.CaCertificateId).FirstOrDefaultAsync();
+                if (crlCaCertId != null)
+                {
+                    var crlCa = await _db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(ca => ca.CertificateId == crlCaCertId);
+                    if (crlCa != null) return crlCa.Id;
+                }
+            }
+            else if (path.Contains("/ssh/ca-keys/", StringComparison.OrdinalIgnoreCase))
+            {
+                return await _db.SshCaKeys.AsNoTracking()
+                    .Where(k => k.Id == idGuid).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync();
+            }
+            else if (path.Contains("/ssh/profiles/signing/", StringComparison.OrdinalIgnoreCase))
+            {
+                var keyId = await _db.SshSigningProfiles.AsNoTracking()
+                    .Where(p => p.Id == idGuid).Select(p => p.SshCaKeyId).FirstOrDefaultAsync();
+                if (keyId != null)
+                    return await _db.SshCaKeys.AsNoTracking()
+                        .Where(k => k.Id == keyId).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync();
+            }
+            else if (path.Contains("/ssh/profiles/request/", StringComparison.OrdinalIgnoreCase))
+            {
+                return await _db.SshRequestProfiles.AsNoTracking()
+                    .Where(p => p.Id == idGuid).Select(p => p.CertificateAuthorityId).FirstOrDefaultAsync();
+            }
+            else if (path.Contains("/ssh/templates/", StringComparison.OrdinalIgnoreCase))
+            {
+                var keyId = await _db.SshCertificateTemplates.AsNoTracking()
+                    .Where(t => t.Id == idGuid).Select(t => (Guid?)t.SshCaKeyId).FirstOrDefaultAsync();
+                if (keyId != null)
+                    return await _db.SshCaKeys.AsNoTracking()
+                        .Where(k => k.Id == keyId).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync();
+            }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Attempts to resolve a tenant, rather than a CA, from the route: currently the
+    /// <c>{id}</c> of a key ceremony (<c>/admin/ceremonies/{id}/...</c>), which carries the
+    /// tenant it was initiated for. Only consulted when no CA could be resolved. A ceremony
+    /// with no tenant (a system-level operation) resolves to nothing, so the caller falls
+    /// through to the system-only rules.
+    /// </summary>
+    private async Task<Guid?> ResolveTenantIdFromRouteAsync()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        if (httpContext == null)
+            return null;
+
+        var path = httpContext.Request.Path.Value ?? "";
+        if (!path.Contains("/ceremonies/", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (!TryGetGuid(httpContext.Request.RouteValues, "id", out var ceremonyId))
+            return null;
+
+        return await _db.KeyCeremonies
+            .AsNoTracking()
+            .Where(c => c.Id == ceremonyId)
+            .Select(c => c.TenantId)
+            .FirstOrDefaultAsync();
     }
 
     private async Task<Guid?> ResolveCaFromCertIdAsync(Guid certId)

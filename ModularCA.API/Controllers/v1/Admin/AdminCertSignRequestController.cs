@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using ModularCA.API.Filters;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Authorization;
@@ -26,7 +27,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/requests")]
-[Authorize(Policy = "CaAuditor")]
+[Authorize]
 public class AdminCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,
@@ -55,6 +56,7 @@ public class AdminCertSignRequestController(
     /// <param name="caId">Optional: only requests routed to this CA (the console's scope).</param>
     /// <param name="tenantId">Optional: only requests routed to CAs of this tenant.</param>
     [HttpGet]
+    [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -88,7 +90,8 @@ public class AdminCertSignRequestController(
     /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> Generate([FromBody] CreateCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -107,6 +110,8 @@ public class AdminCertSignRequestController(
     /// This is a read-only operation that does not store anything.
     /// </summary>
     [HttpPost("parse-csr")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertView, CaTarget.AnyCa)]
     public IActionResult ParseCsr([FromBody] ParseCsrRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Pem))
@@ -136,6 +141,8 @@ public class AdminCertSignRequestController(
     /// of previewing as a pass and then behaving differently at issuance time.
     /// </summary>
     [HttpPost("validate-against-profile")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertView, CaTarget.AnyCa)]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
     {
         var profile = await _db.RequestProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == request.RequestProfileId);
@@ -390,7 +397,8 @@ public class AdminCertSignRequestController(
     /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost("upload")]
-    [Authorize(Policy = "CaOperator")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
     public async Task<IActionResult> UploadCsrRequest([FromBody] UploadCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();

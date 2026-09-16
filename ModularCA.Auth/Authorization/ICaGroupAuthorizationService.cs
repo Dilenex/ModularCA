@@ -22,6 +22,21 @@ public interface ICaGroupAuthorizationService
     Task<bool> HasCaCapabilityAsync(Guid userId, Guid caId, string capability);
 
     /// <summary>
+    /// Checks if the user has the specified capability for a whole tenant: held at system
+    /// scope, through a tenant-wide group, or through a tenant-scoped role or grant on the
+    /// user. A grant on one CA of the tenant does not count. Users with system.manage
+    /// implicitly have access to every tenant.
+    /// </summary>
+    Task<bool> HasTenantCapabilityAsync(Guid userId, Guid tenantId, string capability);
+
+    /// <summary>
+    /// The tenants for which the user holds the capability tenant-wide, from the same four
+    /// sources as <see cref="HasTenantCapabilityAsync"/>. System-scoped holders are not
+    /// expanded to every tenant; check <see cref="HasSystemCapabilityAsync"/> for that.
+    /// </summary>
+    Task<List<Guid>> GetTenantIdsWithCapabilityAsync(Guid userId, string capability);
+
+    /// <summary>
     /// Canonical "is the caller a system super-admin?" check. Returns true when the user
     /// holds <see cref="ModularCA.Shared.Authorization.Capabilities.SystemManage"/> via
     /// any of the four grant sources (direct group grant, role via group, direct user
