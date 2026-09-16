@@ -42,7 +42,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const PROJECTS = [
     'modularca.adminui',
-    'modularca.userui',
     'modularca.publicui',
     'modularca.setupui',
     'modularca.docsui',

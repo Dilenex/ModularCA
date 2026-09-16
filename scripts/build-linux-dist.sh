@@ -103,7 +103,7 @@ chmod 0755 "$STAGE/install.sh" 2>/dev/null || true
 # Sanity: refuse to ship an archive missing a piece, or carrying a host-platform binary.
 note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
-                wwwroot/user/index.html wwwroot/public/index.html \
+                wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done

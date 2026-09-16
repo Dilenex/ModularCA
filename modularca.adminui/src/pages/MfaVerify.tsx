@@ -1,8 +1,8 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { API_BASE } from '../api/client';
+import { API_BASE, apiGet } from '../api/client';
 import { createDpopProof } from '@shared-auth/api/dpop';
-import { useAuth } from '../context/AuthContext';
+import { consumeReturnUrl, homeFor, type PortalUser } from '../portal';
 
 interface MfaVerifyState {
     mfaToken: string;
@@ -45,14 +45,14 @@ const MfaVerify: React.FC = () => {
     const { mfaToken, availableMethods } = state;
     const methods = (availableMethods || [activeMethod]).filter(m => m !== 'mtls' || mtlsInfo?.enabled);
 
-    const { refresh: refreshAuth } = useAuth();
-
     const storeTokensAndRedirect = async (data: { token: string; expiresAt: string; refreshToken: string }) => {
         localStorage.setItem('authToken', data.token);
         localStorage.setItem('expiresAt', data.expiresAt);
         localStorage.setItem('refreshToken', data.refreshToken);
-        await refreshAuth();
-        navigate('/dashboard');
+        // The portals live under their own basenames: a full navigation, back to where the
+        // browser was bounced from or to the portal that fits the account.
+        const me = await apiGet<PortalUser>('/api/v1/me').catch(() => null);
+        window.location.replace(consumeReturnUrl() ?? homeFor(me));
     };
 
     const handleTotpVerify = async (e: React.FormEvent) => {

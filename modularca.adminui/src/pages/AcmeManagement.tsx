@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost, apiDeleteWithMfa, API_BASE } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -253,6 +254,7 @@ const EabKeyManagementSection: React.FC = () => {
 
 /* ─── ACME Accounts Section ─── */
 const AcmeEndpointsSection: React.FC = () => {
+    const { caId: scopeCaId } = useScope();
     const [cas, setCas] = useState<any[]>([]);
     const [selectedCa, setSelectedCa] = useState<string>('');
     const [directory, setDirectory] = useState<any>(null);
@@ -272,13 +274,17 @@ const AcmeEndpointsSection: React.FC = () => {
                 };
                 flatten(Array.isArray(data) ? data : []);
                 // Hide the System Signing CA — it never serves enrollment protocols.
-                const visible = flat.filter(ca => (ca.label || '').toLowerCase() !== 'system-signing-ca');
+                // Under a CA scope, only that CA; it never serves protocols for another one.
+                const visible = flat
+                    .filter(ca => (ca.label || '').toLowerCase() !== 'system-signing-ca')
+                    .filter(ca => !scopeCaId || (ca.id || ca.caId) === scopeCaId);
                 setCas(visible);
                 if (visible.length > 0) setSelectedCa(visible[0].label || '');
+                else setSelectedCa('');
             })
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (!selectedCa) return;

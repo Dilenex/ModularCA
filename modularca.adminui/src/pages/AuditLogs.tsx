@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
@@ -108,7 +109,11 @@ const AuditLogs: React.FC = () => {
     const [totalPages, setTotalPages] = useState(1);
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
-    const [filterCaId, setFilterCaId] = useState('');
+    // The sidebar scope pins the CA filter; the select below is locked while it does.
+    const { caId: scopeCaId } = useScope();
+    const scopeLocked = !!scopeCaId;
+    const [filterCaId, setFilterCaId] = useState(scopeCaId ?? '');
+    useEffect(() => { setFilterCaId(scopeCaId ?? ''); setPage(1); }, [scopeCaId]);
     const [filterActionType, setFilterActionType] = useState('');
     const [filterUser, setFilterUser] = useState('');
     const [authorities, setAuthorities] = useState<any[]>([]);
@@ -216,6 +221,8 @@ const AuditLogs: React.FC = () => {
                     <select
                         value={filterCaId}
                         onChange={(e) => { setFilterCaId(e.target.value); setPage(1); }}
+                        disabled={scopeLocked}
+                        title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}
                         className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                     >
                         <option value="">All CAs</option>

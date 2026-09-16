@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPut, apiDelete, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -60,10 +61,12 @@ const CertProfilesTab: React.FC = () => {
         allowWildcard: false,
     });
 
+    const { caQuery, caId: scopeCaId } = useScope();
+
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/cert-profiles')
+        apiGet<any>(`/api/v1/admin/cert-profiles${caQuery()}`)
             .then((data) => setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])))
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
@@ -74,7 +77,7 @@ const CertProfilesTab: React.FC = () => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => setAuthorities(Array.isArray(data) ? data : (data.items || data.authorities || [])))
             .catch(() => {});
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /** Resolve parent profile name from ID */
     const resolveParentName = (id: string | undefined | null) => {
@@ -355,6 +358,14 @@ const SigningProfilesTab: React.FC = () => {
         extendedKeyUsageCritical: false, policyQualifiersJson: '{}',
     });
 
+    // A signing profile belongs to the CA whose certificate it issues under; a CA scope keeps
+    // the ones issued by the scoped CA (and any with no issuer yet).
+    const { caId: scopeCaId } = useScope();
+    const scopedCa = scopeCaId ? authorities.find((a) => a.id === scopeCaId) : null;
+    const visibleProfiles = scopedCa
+        ? profiles.filter((p) => !p.issuerId || p.issuerId === scopedCa.certificateId || p.issuerId === scopedCa.id)
+        : profiles;
+
     const load = () => {
         setLoading(true);
         setError(null);
@@ -631,7 +642,7 @@ const SigningProfilesTab: React.FC = () => {
             <DataTable<any>
                 tableId="signing-profiles"
                 title="Signing Profiles"
-                rows={profiles}
+                rows={visibleProfiles}
                 rowKey={(p) => p.id || p.signingProfileId || p.name}
                 loading={loading}
                 error={error}

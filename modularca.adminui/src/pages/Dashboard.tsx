@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import DataCard from '../components/cards/DataCard';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -79,6 +80,8 @@ const Dashboard: React.FC = () => {
     const { showToast } = useToast();
 
     // Reissue modal state
+    const { caId: scopeCaId, inScope, caQuery } = useScope();
+
     const [reissueOpen, setReissueOpen] = useState(false);
     const [reissueTarget, setReissueTarget] = useState<{
         id: string;
@@ -158,7 +161,7 @@ const Dashboard: React.FC = () => {
     // Fetch certificate stats
     useEffect(() => {
         setCertStatsLoading(true);
-        apiGet<any>('/api/v1/admin/certificates')
+        apiGet<any>(`/api/v1/admin/certificates${caQuery()}`)
             .then((data) => {
                 const items: any[] = Array.isArray(data) ? data : (data.items || []);
                 const now = new Date();
@@ -227,7 +230,7 @@ const Dashboard: React.FC = () => {
                 setCertStatsLoading(false);
                 setHealth([{ label: 'Database', ok: false, detail: 'Failed to connect' }]);
             });
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch CA list
     useEffect(() => {
@@ -243,21 +246,23 @@ const Dashboard: React.FC = () => {
                     }
                 };
                 flatten(cas);
-                setCaList(flat);
+                setCaList(flat.filter((ca) => inScope(ca.id || ca.caId)));
                 setCaLoading(false);
             })
             .catch((err) => {
                 setCaError(err.message || 'Failed to load CAs');
                 setCaLoading(false);
             });
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch group stats
     useEffect(() => {
         setGroupsLoading(true);
         apiGet<any>('/api/v1/admin/groups')
             .then((data) => {
-                const groups: any[] = Array.isArray(data) ? data : (data.items || data.groups || []);
+                const all: any[] = Array.isArray(data) ? data : (data.items || data.groups || []);
+                // Under a CA scope, count that CA's groups only.
+                const groups = scopeCaId ? all.filter((g) => inScope(g.certificateAuthorityId || g.caId)) : all;
                 const system = groups.filter((g) => g.isSystem || g.type === 'System').length;
                 const caScoped = groups.filter((g) => g.caId || g.certificateAuthorityId || g.type === 'CA').length;
                 setGroupStats({
@@ -271,12 +276,12 @@ const Dashboard: React.FC = () => {
                 setGroupsError(err.message || 'Failed to load groups');
                 setGroupsLoading(false);
             });
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch pending requests count
     useEffect(() => {
         setPendingLoading(true);
-        apiGet<any>('/api/v1/admin/requests')
+        apiGet<any>(`/api/v1/admin/requests${caQuery()}`)
             .then((data) => {
                 const items: any[] = Array.isArray(data) ? data : (data.items || []);
                 // "Pending" = awaiting approval; matches the Certificate Requests page's Pending bucket
@@ -293,7 +298,7 @@ const Dashboard: React.FC = () => {
                 setPendingError(err.message || 'Failed to load requests');
                 setPendingLoading(false);
             });
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const statCardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4';
     const statLabelClass = 'text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide';
@@ -449,8 +454,9 @@ const Dashboard: React.FC = () => {
 
                 {/* Recent Certificates */}
                 <DataCard
+                    key={`recent-${scopeCaId ?? "all"}`}
                     title="Recent Certificates"
-                    fetchData={async () => { const r = await apiGet<any>('/api/v1/admin/certificates?pageSize=10'); return r.items || []; }}
+                    fetchData={async () => { const r = await apiGet<any>(`/api/v1/admin/certificates?pageSize=10${caQuery(true)}`); return r.items || []; }}
                     keyExtractor={(c: any) => c.serialNumber || c.certificateId}
                     onViewAll={() => navigate('/certificates')}
                     maxItems={5}
@@ -514,9 +520,10 @@ const Dashboard: React.FC = () => {
 
                 {/* Recent Audit Logs */}
                 <DataCard
+                    key={`recent-${scopeCaId ?? "all"}`}
                     title="Recent Activity"
                     fetchData={async () => {
-                        const data = await apiGet<any>('/api/v1/admin/audit?pageSize=10');
+                        const data = await apiGet<any>(`/api/v1/admin/audit?pageSize=10${caQuery(true)}`);
                         return data.items || [];
                     }}
                     keyExtractor={(log: any) => log.id}
@@ -550,12 +557,13 @@ const Dashboard: React.FC = () => {
 
                 {/* Pending CSRs */}
                 <DataCard
+                    key={`pending-${scopeCaId ?? "all"}`}
                     title="Pending Certificate Requests"
                     fetchData={async () => {
                         // /admin/requests returns ALL requests; this card must show only the ones
                         // awaiting approval, otherwise issued/approved requests appear under a "pending"
                         // badge (and look like they're all still pending).
-                        const data = await apiGet<any>('/api/v1/admin/requests');
+                        const data = await apiGet<any>(`/api/v1/admin/requests${caQuery()}`);
                         const items: any[] = Array.isArray(data) ? data : (data?.items || []);
                         return items.filter((csr: any) => {
                             if (csr.issuedCertificateId) return false;

@@ -55,9 +55,14 @@ export interface ApiRequestOptions extends RequestInit {
 }
 
 export interface AuthClientConfig {
-    /** Route basename for this SPA: '/admin' or '/user'. Used for same-origin detection and
-     *  for the login / mfa-setup redirects the client performs on 401. */
+    /** Route basename for this SPA: '/admin' or '/user' (or '' on the site-root sign-in pages).
+     *  Used for same-origin detection. */
     basename: string;
+    /** Where a 401 sends the browser. Defaults to `${basename}/login`; the console passes the
+     *  site-root `/login` its sign-in pages live at. */
+    loginPath?: string;
+    /** Where a "set up MFA first" response sends the browser. Defaults to `${basename}/mfa-setup`. */
+    mfaSetupPath?: string;
     /** Surface errors in the host app's notification system. Optional: omit and errors are
      *  thrown but not toasted. */
     toast?: ToastFn;
@@ -80,6 +85,8 @@ export interface LoginResponse {
 
 export function createAuthClient(config: AuthClientConfig) {
     const basename = config.basename;
+    const loginPath = config.loginPath ?? `${basename}/login`;
+    const mfaSetupPath = config.mfaSetupPath ?? `${basename}/mfa-setup`;
     const globalToast: ToastFn = config.toast ?? (() => { /* no notifier configured */ });
 
     // When served from the same origin (Staging/Release), use empty base (relative paths).
@@ -185,11 +192,11 @@ export function createAuthClient(config: AuthClientConfig) {
           // token; now we clear everything and force re-auth so the user does not get
           // stuck in a 401 loop with widgets disagreeing on session state.
           clearTokens();
-          window.location.href = `${basename}/login`;
+          window.location.href = loginPath;
           return null;
         } catch {
           clearTokens();
-          window.location.href = `${basename}/login`;
+          window.location.href = loginPath;
           return null;
         } finally {
           inflightRefresh = null;
@@ -250,7 +257,7 @@ export function createAuthClient(config: AuthClientConfig) {
         const isStepUp = path.includes('/verify-stepup');
         if (!isStepUp) {
           clearTokens();
-          window.location.href = `${basename}/login`;
+          window.location.href = loginPath;
         }
         const errBody = await resp.json().catch(() => ({ error: 'Unauthorized' }));
         throw new Error(errBody.error || 'Unauthorized');
@@ -262,7 +269,7 @@ export function createAuthClient(config: AuthClientConfig) {
           const parsed = JSON.parse(body);
           if (parsed.mfaSetupRequired && !window.location.pathname.includes('/mfa-setup')) {
             localStorage.setItem('mfaSetupRequired', 'true');
-            window.location.href = `${basename}/mfa-setup`;
+            window.location.href = mfaSetupPath;
             throw new Error('MFA setup required');
           }
           if (parsed.requiresStepUp) {
@@ -373,7 +380,7 @@ export function createAuthClient(config: AuthClientConfig) {
 
       if (resp.status === 401) {
         clearTokens();
-        window.location.href = `${basename}/login`;
+        window.location.href = loginPath;
         throw new Error('Unauthorized');
       }
 
@@ -524,7 +531,7 @@ export function createAuthClient(config: AuthClientConfig) {
         // Ignore — we're logging out client-side either way.
       }
       clearTokens();
-      window.location.href = `${basename}/login`;
+      window.location.href = loginPath;
     }
 
     /// Checks whether an error indicates that step-up MFA is required.

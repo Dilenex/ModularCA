@@ -3,6 +3,7 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { isAuthenticated, isMfaSetupRequired, setMfaSetupRequired } from '../components/auth';
 import { apiGet, apiPost, apiLogout, apiBlob, clearTokens } from '../api/client';
 import { generateQrSvg } from '@shared-auth/utils/qrcode';
+import { LOGIN_PATH } from '../portal';
 
 interface AllowedCa {
     caId: string;
@@ -16,10 +17,13 @@ const MfaSetup: React.FC = () => {
     // TOTP state
     const [totpSecret, setTotpSecret] = useState<string | null>(null);
     const [provisioningUri, setProvisioningUri] = useState<string | null>(null);
+    const [totpDeviceName, setTotpDeviceName] = useState('');
     const [totpCode, setTotpCode] = useState('');
     const [totpLoading, setTotpLoading] = useState(false);
     const [totpError, setTotpError] = useState<string | null>(null);
     const [totpSuccess, setTotpSuccess] = useState(false);
+    /** One-time recovery codes returned by verify-setup. The server will never show them again. */
+    const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
     // WebAuthn state
     const [webauthnLoading, setWebauthnLoading] = useState(false);
@@ -58,18 +62,21 @@ const MfaSetup: React.FC = () => {
         return <Navigate to="/login" replace />;
     }
 
-    // If MFA is already set up (no mfaSetupRequired flag), redirect to the security page.
-    // Users should use /admin/security to manage MFA, not this page directly.
+    // If MFA is already set up (no mfaSetupRequired flag), redirect to the account page
+    // (security is a tab there). MFA is managed from there, not from this page.
     if (!isMfaSetupRequired()) {
-        return <Navigate to="/security" replace />;
+        return <Navigate to="/account" replace />;
     }
 
     const handleTotpSetup = async () => {
         setTotpLoading(true);
         setTotpError(null);
         try {
+            const body: { deviceName?: string } = {};
+            const trimmedName = totpDeviceName.trim();
+            if (trimmedName.length > 0) body.deviceName = trimmedName;
             const data = await apiPost<{ secret: string; provisioningUri: string }>(
-                '/auth/totp/setup', {}
+                '/auth/totp/setup', body
             );
             setTotpSecret(data.secret);
             setProvisioningUri(data.provisioningUri);
@@ -87,17 +94,27 @@ const MfaSetup: React.FC = () => {
         try {
             // Route through apiPost so auth + CSRF + refresh
             // is shared with every other request.
-            await apiPost('/auth/totp/verify-setup', { code: totpCode });
+            //
+            // verify-setup returns one-time recovery codes that the server hashes and never
+            // reveals again. This page used to discard the whole response and redirect after
+            // 1.5s, so the codes were generated, stored, and lost, leaving a user who lost
+            // their authenticator with no way back in short of an admin MFA reset. (The
+            // self-service portal had the fix before the two apps were merged.)
+            const result: any = await apiPost('/auth/totp/verify-setup', { code: totpCode });
+            const codes: string[] = Array.isArray(result?.recoveryCodes) ? result.recoveryCodes : [];
             // Scrub the displayed shared secret from React state
             // immediately on successful verification.
             setTotpSecret(null);
             setProvisioningUri(null);
             setTotpCode('');
+            setRecoveryCodes(codes);
             setTotpSuccess(true);
-            // Redirect after a brief delay so the user sees the success message.
-            // Clear tokens and redirect in one step to avoid a race where the auth
-            // context fires an API call with a stale token during the delay.
-            setTimeout(() => { clearTokens(); window.location.href = '/admin/login'; }, 1500);
+            // Clear tokens now so no context fires an API call with a stale token while the
+            // user reads the codes. Auto-redirect only when there is nothing to copy down.
+            clearTokens();
+            if (codes.length === 0) {
+                setTimeout(() => { window.location.href = LOGIN_PATH; }, 1500);
+            }
         } catch (err: any) {
             setTotpError(err.message || 'Invalid verification code');
         } finally {
@@ -152,7 +169,7 @@ const MfaSetup: React.FC = () => {
             });
 
             setWebauthnSuccess(true);
-            setTimeout(() => { clearTokens(); window.location.href = '/admin/login'; }, 1500);
+            setTimeout(() => { clearTokens(); window.location.href = LOGIN_PATH; }, 1500);
         } catch (err: any) {
             if (err.name === 'NotAllowedError') {
                 setWebauthnError('Security key registration was cancelled or timed out.');
@@ -224,17 +241,55 @@ const MfaSetup: React.FC = () => {
                     <h3 className="text-lg font-medium text-gray-900 dark:text-white">Authenticator App (TOTP)</h3>
 
                     {totpSuccess ? (
-                        <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
-                            Authenticator app configured successfully. Redirecting to login...
+                        <div className="space-y-4">
+                            <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
+                                {recoveryCodes.length > 0
+                                    ? 'Authenticator app configured successfully.'
+                                    : 'Authenticator app configured successfully. Redirecting to login...'}
+                            </div>
+                            {recoveryCodes.length > 0 && (
+                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-4 space-y-3">
+                                    <p className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+                                        Save your recovery codes now — they will not be shown again.
+                                    </p>
+                                    <p className="text-xs text-amber-800 dark:text-amber-400">
+                                        Each code works once. They are the only way back into your account if you
+                                        lose your authenticator.
+                                    </p>
+                                    <ul className="grid grid-cols-2 gap-1 font-mono text-sm text-gray-900 dark:text-gray-100">
+                                        {recoveryCodes.map((code) => (<li key={code}>{code}</li>))}
+                                    </ul>
+                                    <button
+                                        type="button"
+                                        onClick={() => { window.location.href = LOGIN_PATH; }}
+                                        className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors"
+                                    >
+                                        I have saved my recovery codes — continue to login
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     ) : !totpSecret ? (
-                        <button
-                            onClick={handleTotpSetup}
-                            disabled={totpLoading}
-                            className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                        >
-                            {totpLoading ? 'Setting up...' : 'Set up Authenticator App'}
-                        </button>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="totp-device-name">Device Name (optional)</label>
+                                <input
+                                    id="totp-device-name"
+                                    type="text"
+                                    className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 focus:border-blue-500 focus:outline-none"
+                                    value={totpDeviceName}
+                                    onChange={(e) => setTotpDeviceName(e.target.value)}
+                                    placeholder="e.g., Authy on iPhone"
+                                />
+                            </div>
+                            <button
+                                onClick={handleTotpSetup}
+                                disabled={totpLoading}
+                                className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            >
+                                {totpLoading ? 'Setting up...' : 'Set up Authenticator App'}
+                            </button>
+                        </div>
                     ) : (
                         <form onSubmit={handleTotpVerify} className="space-y-4">
                             <div className="space-y-4">

@@ -2872,6 +2872,18 @@ if (sinkFlagsQueryFailed && !isSetupMode)
 // would otherwise 401 the SPA HTML shell before the browser can even load the login page.
 // Auth for admin/user pages happens client-side (AuthContext redirects to login) and
 // server-side (API endpoints enforce their own [Authorize] policies).
+// The console's sign-in pages sit at the site root, shared by /admin and /user.
+static bool IsConsoleAuthPath(string path)
+{
+    foreach (var p in new[] { "/login", "/banner", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
+    {
+        if (path.Equals(p, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase))
+            return true;
+    }
+    return false;
+}
+
 app.MapFallback(context =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -2894,10 +2906,11 @@ app.MapFallback(context =>
     }
 
     string indexPath;
-    if (path.StartsWith("/admin"))
+    // /admin, /user and the site-root sign-in pages are one console bundle: the SPA reads the
+    // prefix it was loaded under and becomes the management console, the self-service portal,
+    // or the shared sign-in flow. Its assets live under /admin/assets regardless of the prefix.
+    if (path.StartsWith("/admin") || path.StartsWith("/user") || IsConsoleAuthPath(path))
         indexPath = Path.Combine(webRoot, "admin", "index.html");
-    else if (path.StartsWith("/user"))
-        indexPath = Path.Combine(webRoot, "user", "index.html");
     else if (path.StartsWith("/public"))
         indexPath = Path.Combine(webRoot, "public", "index.html");
     else if (path.StartsWith("/setup"))
@@ -2906,13 +2919,13 @@ app.MapFallback(context =>
     {
         // Require authentication for docs SPA — if a Bearer token was sent and validated, allow access.
         // Browser page loads without a Bearer header are allowed through so the SPA can boot and
-        // perform its own client-side auth check (redirecting to /admin/login if no token in localStorage).
+        // perform its own client-side auth check (redirecting to /login if no token in localStorage).
         var authHeader = context.Request.Headers.Authorization.ToString();
         var hasBearerHeader = !string.IsNullOrEmpty(authHeader) &&
                               authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
         if (hasBearerHeader && context.User?.Identity?.IsAuthenticated != true)
         {
-            context.Response.Redirect($"/admin/login?returnUrl={Uri.EscapeDataString(path)}");
+            context.Response.Redirect($"/login?returnUrl={Uri.EscapeDataString(path)}");
             return Task.CompletedTask;
         }
         indexPath = Path.Combine(webRoot, "docs", "index.html");

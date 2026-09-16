@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useLocation, matchPath } from 'react-router-dom';
+import { PORTAL } from '../portal';
 
 /**
  * Sets the browser tab title per route (replacing the hardcoded "ModularCA Dashboard"). Mounted once
@@ -13,7 +14,38 @@ import { useLocation, matchPath } from 'react-router-dom';
  */
 const SUFFIX = 'ModularCA';
 
-const ROUTE_TITLES: Array<[string, string]> = [
+// Sign-in pages at the site root, shared by both portals.
+const AUTH_ROUTE_TITLES: Array<[string, string]> = [
+    ['/login', 'Sign In'],
+    ['/mfa-setup', 'MFA Setup'],
+    ['/mfa-verify', 'Verify MFA'],
+    ['/mfa-callback', 'Signing In'],
+    ['/banner', 'Login Banner'],
+];
+
+// Self-service portal (/user). Flat: every page is one segment deep.
+const USER_ROUTE_TITLES: Array<[string, string]> = [
+    ['/dashboard', 'Dashboard'],
+    ['/request', 'Request Certificate'],
+    ['/requests', 'My Requests'],
+    ['/certificates', 'My Certificates'],
+    ['/ssh', 'SSH Certificates'],
+    ['/authorities', 'CA Information'],
+    ['/account', 'My Account'],
+    ['/security', 'My Account'], // legacy path → redirects to /account
+
+    // Auth (outside the main shell)
+    ['/login', 'Sign In'],
+    ['/mfa-setup', 'MFA Setup'],
+    ['/mfa-verify', 'Verify MFA'],
+    ['/mfa-callback', 'Signing In'],
+    ['/banner', 'Login Banner'],
+
+    ['/', 'Dashboard'],
+];
+
+// Management console (/admin).
+const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
     ['/dashboard', 'Dashboard'],
     ['/health', 'System Health'],
     ['/account', 'My Account'],
@@ -95,6 +127,8 @@ const ROUTE_TITLES: Array<[string, string]> = [
     ['/mfa-verify', 'Verify MFA'],
     ['/mfa-callback', 'Signing In'],
 ];
+
+const ROUTE_TITLES = PORTAL === 'admin' ? ADMIN_ROUTE_TITLES : PORTAL === 'user' ? USER_ROUTE_TITLES : AUTH_ROUTE_TITLES;
 
 function titleForPath(pathname: string): string | null {
     for (const [pattern, title] of ROUTE_TITLES) {

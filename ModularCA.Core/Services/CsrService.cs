@@ -483,9 +483,11 @@ public class CsrService : ICsrService
     public async Task<List<CertRequestDto>> GetPendingRequests(List<Guid>? accessibleCaIds = null)
     {
         // When scoping is requested, pre-compute the set of signing profile IDs whose
-        // issuer certificate belongs to one of the accessible CAs.
+        // issuer certificate belongs to one of the accessible CAs. A non-null empty set means
+        // "no CA at all" and must yield nothing; it used to be read as "no scoping", which
+        // handed a caller with no accessible CA every request in the system.
         HashSet<Guid>? allowedSigningProfileIds = null;
-        if (accessibleCaIds is { Count: > 0 })
+        if (accessibleCaIds != null)
         {
             // Resolve which certificate IDs belong to the accessible CAs.
             var caCertIds = await _dbContext.CertificateAuthorities

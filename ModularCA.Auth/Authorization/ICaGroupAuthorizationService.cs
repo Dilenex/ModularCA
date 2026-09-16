@@ -66,6 +66,14 @@ public interface ICaGroupAuthorizationService
     Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId);
 
     /// <summary>
+    /// Resolves everything the user may do, across all four grant sources, as the
+    /// capabilities held at system scope plus the capabilities that apply on each CA. One
+    /// call, a handful of queries; this is what <c>GET /api/v1/me</c> reports so the console
+    /// can derive navigation and scope from capabilities rather than role names.
+    /// </summary>
+    Task<EffectiveCapabilities> GetEffectiveCapabilitiesAsync(Guid userId);
+
+    /// <summary>
     /// Gets all CA IDs the user has the specified capability for.
     /// Users with system.manage get all CA IDs.
     /// </summary>

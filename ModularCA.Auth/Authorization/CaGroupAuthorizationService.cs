@@ -253,6 +253,117 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     }
 
     /// <inheritdoc />
+    public async Task<EffectiveCapabilities> GetEffectiveCapabilitiesAsync(Guid userId)
+    {
+        // Load the user's grant sources once and fold them in memory. The per-capability
+        // checks above each run several queries; walking them per capability per CA would be
+        // hundreds of round trips for one page load.
+        var memberGroupIds = await _db.CaGroupMembers
+            .AsNoTracking()
+            .Where(m => m.UserId == userId)
+            .Select(m => m.GroupId)
+            .ToListAsync();
+
+        var groups = await _db.CaGroups
+            .AsNoTracking()
+            .Where(g => memberGroupIds.Contains(g.Id))
+            .Select(g => new { g.Id, g.IsSystemGroup, g.CertificateAuthorityId, g.TenantId })
+            .ToListAsync();
+        var groupById = groups.ToDictionary(g => g.Id);
+
+        // (capability, scope) pairs. Scope is one of: system, a tenant, or a CA.
+        var systemCaps = new HashSet<string>(StringComparer.Ordinal);
+        var tenantCaps = new Dictionary<Guid, HashSet<string>>();
+        var caCaps = new Dictionary<Guid, HashSet<string>>();
+
+        void AddGroupScoped(Guid groupId, string capability)
+        {
+            if (!groupById.TryGetValue(groupId, out var g)) return;
+            if (g.IsSystemGroup) systemCaps.Add(capability);
+            else if (g.CertificateAuthorityId is Guid caId) Bucket(caCaps, caId).Add(capability);
+            else Bucket(tenantCaps, g.TenantId).Add(capability);
+        }
+
+        void AddUserScoped(string capability, Guid? tenantId, Guid? certificateAuthorityId)
+        {
+            if (certificateAuthorityId is Guid caId) Bucket(caCaps, caId).Add(capability);
+            else if (tenantId is Guid tid) Bucket(tenantCaps, tid).Add(capability);
+            else systemCaps.Add(capability);
+        }
+
+        // Source 1: direct group grants.
+        var groupGrants = await _db.CapabilityGrants
+            .AsNoTracking()
+            .Where(g => memberGroupIds.Contains(g.GroupId) && g.ResourceType == null)
+            .Select(g => new { g.GroupId, g.Capability })
+            .ToListAsync();
+        foreach (var g in groupGrants) AddGroupScoped(g.GroupId, g.Capability);
+
+        // Source 2: roles assigned to the user's groups.
+        var groupRoles = await _db.RoleAssignments
+            .AsNoTracking()
+            .Include(ra => ra.Role).ThenInclude(r => r.Capabilities)
+            .Where(ra => ra.GroupId != null && memberGroupIds.Contains(ra.GroupId.Value))
+            .ToListAsync();
+        foreach (var ra in groupRoles)
+            foreach (var rc in ra.Role.Capabilities.Where(rc => rc.ResourceType == null))
+                AddGroupScoped(ra.GroupId!.Value, rc.Capability);
+
+        // Source 3: grants on the user directly, at global, tenant or CA scope.
+        var userGrants = await _db.UserCapabilityGrants
+            .AsNoTracking()
+            .Where(ug => ug.UserId == userId && ug.ResourceType == null)
+            .Select(ug => new { ug.Capability, ug.TenantId, ug.CertificateAuthorityId })
+            .ToListAsync();
+        foreach (var ug in userGrants) AddUserScoped(ug.Capability, ug.TenantId, ug.CertificateAuthorityId);
+
+        // Source 4: roles assigned to the user directly, at global, tenant or CA scope.
+        var userRoles = await _db.RoleAssignments
+            .AsNoTracking()
+            .Include(ra => ra.Role).ThenInclude(r => r.Capabilities)
+            .Where(ra => ra.UserId == userId && ra.GroupId == null)
+            .ToListAsync();
+        foreach (var ra in userRoles)
+            foreach (var rc in ra.Role.Capabilities.Where(rc => rc.ResourceType == null))
+                AddUserScoped(rc.Capability, ra.TenantId, ra.CertificateAuthorityId);
+
+        // system.manage at system scope passes every check (see HasCaCapabilityAsync), so
+        // report it as everything rather than as the literal grants.
+        if (systemCaps.Contains(Capabilities.SystemManage))
+            systemCaps.UnionWith(Capabilities.All);
+
+        var cas = await _db.CertificateAuthorities
+            .AsNoTracking()
+            .Select(ca => new { ca.Id, ca.Label, ca.Name, ca.IsSshCa, ca.TenantId })
+            .ToListAsync();
+
+        var perCa = new List<CaCapabilities>();
+        foreach (var ca in cas)
+        {
+            var caps = new HashSet<string>(systemCaps, StringComparer.Ordinal);
+            if (tenantCaps.TryGetValue(ca.TenantId, out var t)) caps.UnionWith(t);
+            if (caCaps.TryGetValue(ca.Id, out var c)) caps.UnionWith(c);
+            if (caps.Count == 0) continue;
+            perCa.Add(new CaCapabilities(ca.Id, ca.Label ?? string.Empty, ca.Name, ca.IsSshCa,
+                caps.OrderBy(x => x, StringComparer.Ordinal).ToList()));
+        }
+
+        return new EffectiveCapabilities(
+            systemCaps.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            perCa.OrderBy(x => x.Label, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList());
+
+        static HashSet<string> Bucket(Dictionary<Guid, HashSet<string>> map, Guid key)
+        {
+            if (!map.TryGetValue(key, out var set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                map[key] = set;
+            }
+            return set;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability)
     {
         if (await IsSystemAdminAsync(userId))

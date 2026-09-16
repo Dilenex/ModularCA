@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -72,17 +73,24 @@ const X509TemplatesTab: React.FC = () => {
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
 
+    const { caId: scopeCaId } = useScope();
+
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/templates')
+        apiGet<any>(`/api/v1/admin/templates${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
             .then((data) => setTemplates(extractList(data)))
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
     };
 
+    // The scope narrows the list; a new template defaults to the scoped CA.
     useEffect(() => {
         load();
+        if (scopeCaId) setForm((f) => ({ ...f, caId: f.caId || scopeCaId }));
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => {
                 const list = extractList(data);

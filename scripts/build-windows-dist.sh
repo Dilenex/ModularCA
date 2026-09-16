@@ -117,7 +117,7 @@ note "verifying payload"
 EXE_EXT=".exe"
 for required in "ModularCA.API${EXE_EXT}" "ModularCA.Keystore.Unlocker${EXE_EXT}" \
                 LICENSE THIRD-PARTY-NOTICES.md RUN-WINDOWS.md \
-                wwwroot/admin/index.html wwwroot/user/index.html wwwroot/public/index.html \
+                wwwroot/admin/index.html wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done

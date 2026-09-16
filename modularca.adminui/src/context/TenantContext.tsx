@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { apiGet, getToken } from '../api/client';
+import { PORTAL } from '../portal';
 
 interface TenantContextValue {
     tenants: any[];
@@ -25,6 +26,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const refreshTenants = () => {
         if (!getToken()) return; // Not authenticated — skip
+        if (PORTAL !== 'admin') return; // The self-service portal has no tenant picker and its users cannot list tenants.
         apiGet<any>('/api/v1/admin/tenants')
             .then(data => setTenants(Array.isArray(data) ? data : data.items || []))
             .catch(() => {});

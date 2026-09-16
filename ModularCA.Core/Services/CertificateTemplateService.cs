@@ -23,12 +23,15 @@ public class CertificateTemplateService
     }
 
     /// <summary>
-    /// Returns all certificate templates with resolved CA and profile names.
+    /// Returns all certificate templates with resolved CA and profile names, optionally only
+    /// those issued by one CA.
     /// </summary>
-    public async Task<List<CertificateTemplateDto>> GetAllAsync()
+    /// <param name="caId">When set, only templates whose issuing CA this is.</param>
+    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null)
     {
         var entities = await _db.CertificateTemplates
             .AsNoTracking()
+            .Where(t => caId == null || t.CaId == caId)
             .Include(t => t.Ca)
             .Include(t => t.CertProfile)
             .Include(t => t.SigningProfile)

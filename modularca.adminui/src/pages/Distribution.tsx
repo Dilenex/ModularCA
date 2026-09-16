@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPutWithMfa, API_BASE } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+import { Capabilities } from '@shared/generated';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
@@ -54,6 +56,16 @@ const CrlSchedulesSection: React.FC = () => {
         caId: '',
         overlapPeriod: '',
     });
+
+    // CRL schedules key on the CA's certificate; under a CA scope keep the scoped CA's only.
+    const { caId: scopeCaId } = useScope();
+    const scopedCa = scopeCaId ? cas.find((c) => (c.id || c.caId) === scopeCaId) : null;
+    const visibleSchedules = scopeCaId
+        ? schedules.filter((sch) => {
+            const key = sch.caCertificateId || sch.caId;
+            return !!scopedCa && (key === scopedCa.certificateId || key === scopedCa.id);
+        })
+        : schedules;
 
     const load = () => {
         setLoading(true);
@@ -208,7 +220,7 @@ const CrlSchedulesSection: React.FC = () => {
             <DataTable<any>
                 tableId="distribution-crl-schedules"
                 title="CRL Schedules"
-                rows={schedules}
+                rows={visibleSchedules}
                 rowKey={crlId}
                 loading={loading}
                 error={error}
@@ -329,6 +341,7 @@ interface ServiceUrlRow { caCertId: string; name: string; label: string; publicB
 const ServiceUrlsTab: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
+    const { inScope, caId: scopeCaId } = useScope();
     const [rows, setRows] = useState<ServiceUrlRow[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState<string | null>(null);
@@ -344,7 +357,8 @@ const ServiceUrlsTab: React.FC = () => {
             apiGet<any>('/api/v1/admin/authorities/hierarchy').catch(() => []),
             apiGet<any>('/api/v1/admin/ca-service-urls').catch(() => []),
         ]).then(([h, su]) => {
-            const flat = flatten(Array.isArray(h) ? h : (h.items || h.authorities || []));
+            const flat = flatten(Array.isArray(h) ? h : (h.items || h.authorities || []))
+                .filter((ca: any) => inScope(ca.id || ca.caId));
             const list = Array.isArray(su) ? su : (su.items || []);
             const byKey: Record<string, string> = {};
             for (const s of list) { const k = s.caCertificateId || s.caId; if (k) byKey[k] = s.publicBaseUrl || ''; }
@@ -362,7 +376,7 @@ const ServiceUrlsTab: React.FC = () => {
                 .filter((r): r is ServiceUrlRow => r !== null);
             setRows(next);
         }).finally(() => setLoading(false));
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const update = (caCertId: string, value: string) =>
         setRows((prev) => prev.map((r) => (r.caCertId === caCertId ? { ...r, publicBaseUrl: value } : r)));
@@ -443,10 +457,11 @@ function toTimeSpan(text: string): string | null {
 
 /* ─── CA Distribution Page ─── */
 const Distribution: React.FC = () => {
-    const { hasAnyRole } = useAuth();
-    const isAdmin = hasAnyRole(['Administrator']);
+    const { can } = useAuth();
+    const isAdmin = can(Capabilities.SystemManage);
     const [searchParams, setSearchParams] = useSearchParams();
-    const caIdParam = searchParams.get('caId') || undefined;
+    const { caId: scopeCaId } = useScope();
+    const caIdParam = searchParams.get('caId') || scopeCaId || undefined;
     type Tab = 'crl' | 'ldap' | 'serviceurls';
     const requestedTab = searchParams.get('tab');
     const [tab, setTab] = useState<Tab>(
@@ -485,7 +500,7 @@ const Distribution: React.FC = () => {
                     <CurrentCrlsSection />
                 </div>
             )}
-            {tab === 'ldap' && isAdmin && <LdapTab initialCaId={caIdParam} />}
+            {tab === 'ldap' && isAdmin && <LdapTab key={caIdParam ?? 'all'} initialCaId={caIdParam} />}
             {tab === 'serviceurls' && isAdmin && <ServiceUrlsTab />}
         </div>
     );

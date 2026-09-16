@@ -1,7 +1,9 @@
 # shared/ — code shared across the ModularCA front ends
 
-Five independent Vite SPAs (`modularca.adminui`, `docsui`, `publicui`, `setupui`, `userui`) live in
-this repo. Anything they all need used to be copy-pasted between them, and the copies drifted —
+Four independent Vite SPAs (`modularca.adminui`, `docsui`, `publicui`, `setupui`) live in this
+repo. (There were five: `userui` merged into `adminui` in September 2026 and now lives on as the
+`/user` prefix of that one bundle, see `modularca.adminui/src/portal.ts`. The history below still
+names it because the drift it suffered is the reason this directory exists.) Anything they all need used to be copy-pasted between them, and the copies drifted —
 which is not a tidiness problem but a correctness one. Two of the worst findings in the August 2026
 review were exactly this shape: `userui/api/client.ts` never received the single-flight refresh
 guard or DPoP binding that `adminui` has, and `userui/StepUpMfaModal.tsx` stayed TOTP-only, locking
@@ -11,8 +13,8 @@ security-key users out of every step-up action.
 
 | Module | Alias | Consumed by | Contents |
 |---|---|---|---|
-| `shared/common` | `@shared/*` | **all five** SPAs | Pure utilities, presentational primitives, and generated backend contracts. No auth, no API client, no session state. |
-| `shared/authenticated` | `@shared-auth/*` | `adminui`, `userui` **only** | Auth-aware code: the API client factory, DPoP proofs, and the step-up MFA prompt. |
+| `shared/common` | `@shared/*` | **all four** SPAs | Pure utilities, presentational primitives, and generated backend contracts. No auth, no API client, no session state. |
+| `shared/authenticated` | `@shared-auth/*` | `adminui` **only** | Auth-aware code: the API client factory, DPoP proofs, and the step-up MFA prompt. |
 
 Inside `shared/common/src`:
 
@@ -20,12 +22,12 @@ Inside `shared/common/src`:
 |---|---|
 | `hostname.ts` | DNS name helpers. |
 | `components/`, `context/` | React primitives every SPA rendered identically: `Chevron`, `Toast`, `ScrollToTop`, `ThemeContext`. |
-| `components/DataTable.tsx`, `components/Drawer.tsx`, `context/TablePrefsContext.tsx` | The sortable/resizable table, its column-visibility drawer, and the per-user preference store. `adminui` and `userui` only — the anonymous SPAs never mount them. |
+| `components/DataTable.tsx`, `components/Drawer.tsx`, `context/TablePrefsContext.tsx` | The sortable/resizable table, its column-visibility drawer, and the per-user preference store. `adminui` only — the anonymous SPAs never mount them. |
 | `validation/profileValidation.ts` | Client-side mirror of the server's request-profile rules. Pure — no imports at all. |
 | `context/ToastContext.tsx`, `components/cards/` | The toast provider and the `DetailField` / `StatusBadge` presentational pair. |
 | `generated/` | **Machine-generated. Do not edit.** DTO interfaces, enums, `StepUpOps`, and the X.509 usage vocabulary, all derived from C#. See below. |
 
-The split is enforced by wiring: `@shared-auth/*` is only aliased in the two SPAs entitled to it, so
+The split is enforced by wiring: `@shared-auth/*` is only aliased in the one SPA entitled to it, so
 `setupui` (which runs before authentication exists) and `docsui` (nearly static) cannot import auth
 machinery even by accident. The specifier simply will not resolve there.
 
@@ -144,10 +146,11 @@ provider is only how shared code receives it. Unlike `useTablePrefs`, `useAuthCl
 no provider is mounted: a page that cannot reach the API has no meaningful fallback, and failing
 at mount beats `undefined is not a function` somewhere deeper in.
 
-### Deliberately NOT shared
+### Deliberately NOT shared (historical: resolved by the merge)
 
-`Login`, `MfaVerify`, `MfaCallback`, `LoginBanner` and `NotFound` are 4–9% apart and were left
-as two copies. Their differences are real rather than accidental: adminui refreshes an
+`Login`, `MfaVerify`, `MfaCallback`, `LoginBanner` and `NotFound` were 4–9% apart and were left
+as two copies until the apps merged; adminui's copies won, with the user-portal recovery-code
+flow folded into `MfaSetup`. Their differences are real rather than accidental: adminui refreshes an
 `AuthContext` that userui does not have, the route basename differs, and the user-facing copy
 names the portal it belongs to ("the admin route you requested" vs "your self-service portal").
 Sharing them would mean prop-driving strings through ~100-line pages to save little.

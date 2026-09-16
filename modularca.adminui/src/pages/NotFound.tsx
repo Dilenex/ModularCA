@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 /**
- * Catch-all NotFound page rendered inside the authenticated admin Layout when
+ * Catch-all NotFound page rendered inside the authenticated Layout (either portal) when
  * the URL doesn't match any registered route. Shows the path the operator hit
  * so a typo or stale bookmark surfaces immediately, plus two actions: go back
  * (browser history) or jump to the dashboard.
@@ -19,7 +19,7 @@ const NotFound: React.FC = () => {
                 We couldn't find that page
             </h1>
             <p className="text-base text-gray-700 dark:text-gray-300 mb-2 max-w-xl">
-                The admin route you requested isn't registered. This usually means a typo in the URL or a stale bookmark from an earlier version.
+                The page you requested isn't registered on this portal. This usually means a typo in the URL or a stale bookmark from an earlier version.
             </p>
             {location.pathname && (
                 <p className="text-sm font-mono text-gray-500 dark:text-gray-400 mb-8 break-all">

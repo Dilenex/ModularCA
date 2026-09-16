@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -20,15 +21,18 @@ namespace ModularCA.API.Controllers.v1.Account
     [Authorize]
     public class MeController(
         ICurrentUserService currentUser,
-        ModularCADbContext db) : ControllerBase
+        ModularCADbContext db,
+        ICaGroupAuthorizationService groupAuth) : ControllerBase
     {
         private readonly ICurrentUserService _currentUser = currentUser;
         private readonly ModularCADbContext _db = db;
+        private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
 
         /// <summary>
-        /// Returns identity, group memberships, MFA enrollment, and primary tenant for
-        /// the caller. Used by SPAs to drive client-side role gating and avoid
-        /// localStorage-based identity decoding.
+        /// Returns identity, group memberships, effective capabilities (system-scoped and per
+        /// CA), MFA enrollment, and primary tenant for the caller. The console derives its
+        /// navigation, page gates and CA scope switcher from <c>capabilities</c>; the group
+        /// list is informational.
         /// </summary>
         [HttpGet]
         public async Task<IActionResult> GetMe()
@@ -79,6 +83,20 @@ namespace ModularCA.API.Controllers.v1.Account
 
             var mfaConfigured = hasTotp || hasWebAuthn || hasMtls;
 
+            var effective = await _groupAuth.GetEffectiveCapabilitiesAsync(user.Id);
+            var capabilities = new
+            {
+                system = effective.System,
+                cas = effective.Cas.Select(c => new
+                {
+                    id = c.Id,
+                    label = c.Label,
+                    name = c.Name,
+                    isSshCa = c.IsSshCa,
+                    capabilities = c.Capabilities,
+                }),
+            };
+
             // Pick a primary tenant from the user's group memberships. System groups have
             // a TenantId pointing at the System tenant — prefer a non-system tenant if any
             // is present, otherwise fall back to the system tenant.
@@ -100,6 +118,7 @@ namespace ModularCA.API.Controllers.v1.Account
                 isSuper,
                 groups,
                 scopes,
+                capabilities,
                 mfa = new
                 {
                     configured = mfaConfigured,

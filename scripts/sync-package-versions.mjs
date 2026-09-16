@@ -20,7 +20,6 @@ const version = readFileSync(resolve(root, 'VERSION'), 'utf-8').trim();
 const uis = [
     'modularca.adminui',
     'modularca.publicui',
-    'modularca.userui',
     'modularca.setupui',
     'modularca.docsui',
 ];

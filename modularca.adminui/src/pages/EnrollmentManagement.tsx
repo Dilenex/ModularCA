@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { apiGet, apiPost, apiDelete } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
@@ -34,6 +35,7 @@ interface CreatedCmp {
 }
 
 const EnrollmentManagement: React.FC = () => {
+    const { caId: scopeCaId, inScope } = useScope();
     const [tokens, setTokens] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -58,7 +60,9 @@ const EnrollmentManagement: React.FC = () => {
         setError(null);
         try {
             const data = await apiGet<any[]>('/api/v1/admin/enrollment-tokens');
-            setTokens(Array.isArray(data) ? data : ((data as any).items || []));
+            const all: any[] = Array.isArray(data) ? data : ((data as any).items || []);
+            // Under a CA scope, only the credentials bound to that CA.
+            setTokens(scopeCaId ? all.filter((t) => inScope(t.certificateAuthorityId || t.caId)) : all);
         } catch (err: any) {
             setError(err.message || 'Failed to load tokens');
         }
@@ -70,7 +74,7 @@ const EnrollmentManagement: React.FC = () => {
         apiGet<any>('/api/v1/admin/signing-profiles')
             .then(data => setSigningProfiles(Array.isArray(data) ? data : (data?.items || [])))
             .catch(() => setSigningProfiles([]));
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const openCreate = () => {
         setForm(emptyEnrollmentForm());

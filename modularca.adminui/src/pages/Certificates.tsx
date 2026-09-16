@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -65,7 +66,17 @@ const Certificates: React.FC = () => {
     const [serialFilter, setSerialFilter] = useState(() => searchParams.get('serial') || '');
     const [sanFilter, setSanFilter] = useState(() => searchParams.get('san') || '');
     const [issuerFilter, setIssuerFilter] = useState(() => searchParams.get('issuer') || '');
-    const [caIdFilter, setCaIdFilter] = useState(() => searchParams.get('caId') || '');
+    // The console's CA scope supplies the issuing-CA filter; under a single-CA scope the
+    // filter is fixed to that CA and the select below is locked to say so.
+    const { scope, caId: scopeCaId } = useScope();
+    const scopeLocked = scope.kind === 'ca';
+    const [caIdFilter, setCaIdFilter] = useState(() => searchParams.get('caId') || scopeCaId || '');
+    useEffect(() => {
+        // Follow the scope both ways: a CA scope pins the filter, widening it back to all CAs
+        // clears the pin (an explicit ?caId= in the URL still wins on first load).
+        setCaIdFilter(scopeLocked && scopeCaId ? scopeCaId : '');
+        setPage(1);
+    }, [scopeLocked, scopeCaId]);
     const [keyAlgorithmFilter, setKeyAlgorithmFilter] = useState(() => searchParams.get('keyAlgorithm') || '');
     const [notAfterFrom, setNotAfterFrom] = useState(() => searchParams.get('notAfterFrom') || '');
     const [notAfterTo, setNotAfterTo] = useState(() => searchParams.get('notAfterTo') || '');
@@ -277,7 +288,7 @@ const Certificates: React.FC = () => {
                     <div><label className={advLabel}>Subject Alternative Name</label><input type="text" value={sanFilter} onChange={(e) => setSanFilter(e.target.value)} placeholder="e.g. *.example.com" className={advInput} /></div>
                     <div>
                         <label className={advLabel}>Issuing CA</label>
-                        <select value={caIdFilter} onChange={(e) => { setCaIdFilter(e.target.value); setPage(1); }} className={advInput}>
+                        <select value={caIdFilter} onChange={(e) => { setCaIdFilter(e.target.value); setPage(1); }} className={advInput} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}>
                             <option value="">All CAs</option>
                             {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>)}
                         </select>

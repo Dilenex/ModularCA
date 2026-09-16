@@ -72,7 +72,6 @@ public class SourceOfferTests
         {
             Path.Combine("modularca.publicui", "src", "components", "Layout.tsx"),
             Path.Combine("modularca.adminui", "src", "components", "Layout.tsx"),
-            Path.Combine("modularca.userui", "src", "components", "Layout.tsx"),
             Path.Combine("modularca.docsui", "src", "App.tsx"),
             Path.Combine("modularca.setupui", "src", "App.tsx"),
         };

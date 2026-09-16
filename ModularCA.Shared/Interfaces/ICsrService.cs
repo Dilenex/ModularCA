@@ -32,6 +32,7 @@ namespace ModularCA.Shared.Interfaces
         /// include CSRs whose signing profile's issuer certificate belongs to one of the
         /// accessible CAs (CLM-022 tenant scoping fix).
         /// </summary>
+        /// <param name="accessibleCaIds">CAs to restrict to; <c>null</c> for all, an empty list for none.</param>
         Task<List<CertRequestDto>> GetPendingRequests(List<Guid>? accessibleCaIds = null);
 
         /// <summary>

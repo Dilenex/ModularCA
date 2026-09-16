@@ -4,7 +4,11 @@ import { Link, useLocation } from 'react-router-dom';
 import { apiLogout } from '../api/client';
 import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { useScope } from '../context/ScopeContext';
+import { PORTAL, PORTAL_LABEL, OTHER_BASENAME } from '../portal';
+import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, CERT_VIEW, CERT_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from '../gates';
 import LogPanel from './LogPanel';
+import ScopeSwitcher from './ScopeSwitcher';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
@@ -13,11 +17,11 @@ interface NavItem {
     path: string;
     icon: string;
     /**
-     * Optional list of role levels the current user must hold
-     * for this nav item to render. Omit for entries every authenticated user can see.
-     * SystemAdmin satisfies any required role (matches AuthContext.hasAnyRole).
+     * The gate the current user must pass for this entry to render, checked under the
+     * selected scope (see gates.ts and ScopeContext.allows). Omit for entries every
+     * authenticated user can see.
      */
-    requiredRoles?: string[];
+    gate?: Gate;
 }
 
 interface NavSection {
@@ -25,53 +29,48 @@ interface NavSection {
     items: NavItem[];
 }
 
-// Keep these role lists in sync with the matching ProtectedRoute
-// declarations in App.tsx so a hidden link cannot be reached by typing the URL.
-const ADMIN_ONLY = ['Administrator'];
-const ADMIN_OPERATOR = ['Administrator', 'Operator'];
-const ADMIN_AUDITOR = ['Administrator', 'Auditor'];
-
-const navSections: NavSection[] = [
+// Management console navigation, shown under /admin.
+const adminNavSections: NavSection[] = [
     {
         title: 'Overview',
         items: [
             { name: 'Dashboard', path: '/dashboard', icon: '\u2302' },
-            { name: 'System Health', path: '/health', icon: '\u2665', requiredRoles: ADMIN_OPERATOR },
+            { name: 'System Health', path: '/health', icon: '\u2665', gate: SYSTEM_ADMIN },
         ]
     },
     {
         title: 'Certificates',
         items: [
-            { name: 'All Certificates', path: '/certificates', icon: '\u2387' },
-            { name: 'Request Certificate', path: '/certificates/request', icon: '+' },
-            { name: 'Pending Requests', path: '/certificates/requests', icon: '\u2709' },
-            { name: 'Cert Inventory', path: '/intel/inventory', icon: '\u2690' },
-            { name: 'Compliance', path: '/intel/compliance', icon: '\u2611', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Expiry Calendar', path: '/certificates/expiry', icon: '\u2612' },
+            { name: 'All Certificates', path: '/certificates', icon: '\u2387', gate: CERT_VIEW },
+            { name: 'Request Certificate', path: '/certificates/request', icon: '+', gate: CERT_REQUEST },
+            { name: 'Pending Requests', path: '/certificates/requests', icon: '\u2709', gate: CERT_VIEW },
+            { name: 'Cert Inventory', path: '/intel/inventory', icon: '\u2690', gate: CERT_VIEW },
+            { name: 'Compliance', path: '/intel/compliance', icon: '\u2611', gate: CA_MANAGE },
+            { name: 'Expiry Calendar', path: '/certificates/expiry', icon: '\u2612', gate: CERT_VIEW },
         ]
     },
     {
         title: 'CA Management',
         items: [
-            { name: 'Authorities', path: '/authorities/manage', icon: '\u26BF', requiredRoles: ADMIN_ONLY },
-            { name: 'Profiles', path: '/profiles', icon: '\u2630', requiredRoles: ADMIN_OPERATOR },
+            { name: 'Authorities', path: '/authorities/manage', icon: '\u26BF', gate: CA_MANAGE },
+            { name: 'Profiles', path: '/profiles', icon: '\u2630', gate: CA_MANAGE },
             // Templates are consumed by Windows autoenrollment (MSAE): the policy service offers
             // them to clients and the enrollment service issues from the one a CSR names.
-            { name: 'Templates', path: '/templates', icon: '\u2702', requiredRoles: ADMIN_OPERATOR },
-            { name: 'CA Distribution', path: '/distribution', icon: '\u2716', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Trust Anchors', path: '/trust-anchors', icon: '\u2693', requiredRoles: ADMIN_ONLY },
-            { name: 'SSH CA', path: '/ssh', icon: '\u2318' },
-            { name: 'Protocol Config', path: '/authorities/protocols', icon: '\u21C4', requiredRoles: ADMIN_ONLY },
+            { name: 'Templates', path: '/templates', icon: '\u2702', gate: CA_MANAGE },
+            { name: 'CA Distribution', path: '/distribution', icon: '\u2716', gate: CA_MANAGE },
+            { name: 'Trust Anchors', path: '/trust-anchors', icon: '\u2693', gate: SYSTEM_ADMIN },
+            { name: 'SSH CA', path: '/ssh', icon: '\u2318', gate: CERT_VIEW },
+            { name: 'Protocol Config', path: '/authorities/protocols', icon: '\u21C4', gate: CA_MANAGE },
         ]
     },
     {
         title: 'Access & Identity',
         items: [
-            { name: 'Users', path: '/users', icon: '\u263A', requiredRoles: ADMIN_ONLY },
-            { name: 'Groups', path: '/groups', icon: '\u2302', requiredRoles: ADMIN_ONLY },
-            { name: 'Roles', path: '/roles', icon: '\u2606', requiredRoles: ADMIN_ONLY },
-            { name: 'Enrollment', path: '/enrollment', icon: '\u2611', requiredRoles: ADMIN_OPERATOR },
-            { name: 'ACME', path: '/acme', icon: 'A', requiredRoles: ADMIN_OPERATOR },
+            { name: 'Users', path: '/users', icon: '\u263A', gate: USER_MANAGE },
+            { name: 'Groups', path: '/groups', icon: '\u2302', gate: GROUP_MANAGE },
+            { name: 'Roles', path: '/roles', icon: '\u2606', gate: SYSTEM_ADMIN },
+            { name: 'Enrollment', path: '/enrollment', icon: '\u2611', gate: TOKEN_MANAGE },
+            { name: 'ACME', path: '/acme', icon: 'A', gate: CA_MANAGE },
         ]
     },
     {
@@ -81,23 +80,57 @@ const navSections: NavSection[] = [
             // (promote/demote/delete of privileged users), so it lives with governance/oversight
             // here rather than CA Management; its quorum config is in Settings, also Administration.
             // Placed at the top of this group as it's used more often than the rest.
-            { name: 'Ceremonies', path: '/ceremonies', icon: '\u2638', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Tenants & Quotas', path: '/tenants', icon: '\u2616', requiredRoles: ADMIN_ONLY },
-            { name: 'Settings', path: '/settings', icon: '\u2699', requiredRoles: ADMIN_ONLY },
-            { name: 'Audit Logs', path: '/audit', icon: '\u2709', requiredRoles: ADMIN_AUDITOR },
-            { name: 'Notifications', path: '/notifications', icon: '\u2709', requiredRoles: ADMIN_OPERATOR },
-            { name: 'Whitelists', path: '/whitelists', icon: '\u26E8', requiredRoles: ADMIN_ONLY },
-            { name: 'Backup & Restore', path: '/backup', icon: '\u2B07', requiredRoles: ADMIN_ONLY },
-            { name: 'Schedules', path: '/schedules', icon: '\u29D6', requiredRoles: ADMIN_ONLY },
-            { name: 'Web TLS Certificate', path: '/webtls', icon: '\u26BF', requiredRoles: ADMIN_ONLY },
+            { name: 'Ceremonies', path: '/ceremonies', icon: '\u2638', gate: CA_MANAGE },
+            { name: 'Tenants & Quotas', path: '/tenants', icon: '\u2616', gate: SYSTEM_ADMIN },
+            { name: 'Settings', path: '/settings', icon: '\u2699', gate: SYSTEM_ADMIN },
+            { name: 'Audit Logs', path: '/audit', icon: '\u2709', gate: CA_AUDIT },
+            { name: 'Notifications', path: '/notifications', icon: '\u2709', gate: CA_MANAGE },
+            { name: 'Whitelists', path: '/whitelists', icon: '\u26E8', gate: SYSTEM_ADMIN },
+            { name: 'Backup & Restore', path: '/backup', icon: '\u2B07', gate: SYSTEM_ADMIN },
+            { name: 'Schedules', path: '/schedules', icon: '\u29D6', gate: SYSTEM_ADMIN },
+            { name: 'Web TLS Certificate', path: '/webtls', icon: '\u26BF', gate: SYSTEM_ADMIN },
         ]
     }
 ];
 
+// Self-service navigation, shown under /user. Every entry is reachable by any authenticated
+// user; the pages behind them call the /api/v1/user/* endpoints, which scope to the caller.
+const userNavSections: NavSection[] = [
+    {
+        title: 'Overview',
+        items: [
+            { name: 'Dashboard', path: '/dashboard', icon: '⌂' },
+        ]
+    },
+    {
+        title: 'Certificates',
+        items: [
+            { name: 'Request Certificate', path: '/request', icon: '+' },
+            { name: 'My Certificates', path: '/certificates', icon: '⎇' },
+            { name: 'Request Status', path: '/requests', icon: '✉' },
+        ]
+    },
+    {
+        title: 'SSH',
+        items: [
+            { name: 'SSH Certificates', path: '/ssh', icon: '⌘' },
+        ]
+    },
+    {
+        title: 'CA Information',
+        items: [
+            { name: 'Trusted CAs', path: '/authorities', icon: '⚿' },
+        ]
+    },
+];
+
+const navSections: NavSection[] = PORTAL === 'admin' ? adminNavSections : userNavSections;
+
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const location = useLocation();
     const { theme, toggleTheme } = useTheme();
-    const { hasAnyRole, loading: authLoading } = useAuth();
+    const { loading: authLoading, canUseAdminConsole } = useAuth();
+    const { allows } = useScope();
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -141,16 +174,16 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         setCollapsed(prev => ({ ...prev, [title]: !prev[title] }));
     };
 
-    // Hide nav items the user cannot reach. While the auth
+    // Hide nav items the user cannot reach under the selected scope. While the auth
     // context hydrates we render every link to avoid a content flash; the
-    // ProtectedRoute server-side gate is still authoritative.
+    // ProtectedRoute gate and the API remain authoritative.
     const visibleSections = navSections
         .map(section => ({
             ...section,
             items: section.items.filter(item => {
-                if (!item.requiredRoles || item.requiredRoles.length === 0) return true;
+                if (!item.gate) return true;
                 if (authLoading) return true;
-                return hasAnyRole(item.requiredRoles);
+                return allows(item.gate);
             }),
         }))
         .filter(section => section.items.length > 0);
@@ -168,7 +201,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                             v{APP_VERSION}
                         </span>
                     </h2>
-                    <p className="text-xs text-gray-600">Administration</p>
+                    <p className="text-xs text-gray-600">{PORTAL_LABEL}</p>
                 </Link>
                 <button
                     onClick={toggleTheme}
@@ -182,6 +215,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     )}
                 </button>
             </div>
+
+            <ScopeSwitcher />
 
             <div className="flex-1 py-2 overflow-y-auto">
                 {visibleSections.map(section => (
@@ -197,7 +232,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         {!collapsed[section.title] && (
                             <ul className="px-2 space-y-0.5">
                                 {section.items.map(item => {
-                                    const isActive = location.pathname === item.path;
+                                    const isActive = location.pathname === item.path ||
+                                        (PORTAL === 'user' && item.path !== '/dashboard' && location.pathname.startsWith(item.path));
                                     return (
                                         <li key={item.path}>
                                             <Link
@@ -218,6 +254,22 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </div>
                 ))}
             </div>
+
+            {/* Portal switch. A full navigation, not a router Link: the other prefix is the same
+                bundle loaded under a different basename, and the session (tokens in localStorage)
+                carries across. Admins see both directions; a self-service user sees none, since
+                the console would only bounce them back. */}
+            {(PORTAL === 'user' ? canUseAdminConsole : true) && (
+                <div className="px-3 pt-3 border-t border-gray-200 dark:border-gray-800 flex-shrink-0">
+                    <a
+                        href={`${OTHER_BASENAME}/dashboard`}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+                    >
+                        <span aria-hidden="true">{'⇄'}</span>
+                        {PORTAL === 'admin' ? 'Self-service portal' : 'Management console'}
+                    </a>
+                </div>
+            )}
 
             <div className="p-3 border-t border-gray-200 dark:border-gray-800 flex-shrink-0 flex items-center gap-2">
                 <button
@@ -276,7 +328,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     >
                         <span>
                             <span className="font-semibold">Version mismatch.</span>{' '}
-                            This admin UI is <span className="font-mono">v{APP_VERSION}</span> but the server is{' '}
+                            This console is <span className="font-mono">v{APP_VERSION}</span> but the server is{' '}
                             <span className="font-mono">v{serverVersion.version}</span>. Reload once the deploy finishes;
                             if it persists, the UI and API were built from different versions.
                         </span>
@@ -309,13 +361,14 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         </svg>
                     </button>
                     <span className="text-base font-bold text-blue-800 dark:text-blue-400">ModularCA</span>
-                    <span className="text-xs text-gray-600">Administration</span>
+                    <span className="text-xs text-gray-600">{PORTAL_LABEL}</span>
                 </header>
 
                 {/* Explicit landmark + id so a future skip-to-content link
                     can target the main region. */}
                 <main id="content" role="main" className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900">{children}</main>
-                <LogPanel />
+                {/* The live audit tail reads admin audit endpoints; self-service users cannot. */}
+                {PORTAL === 'admin' && <LogPanel />}
 
                 {/* AGPL section 13 source offer. In the content column rather than the sidebar:
                     sidebarContent is rendered twice (desktop rail and mobile overlay), so a copy

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -64,7 +65,11 @@ const GroupManagement: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-    const [filterCa, setFilterCa] = useState('');
+    // The sidebar scope pins the CA filter; the select below is locked while it does.
+    const { caId: scopeCaId } = useScope();
+    const scopeLocked = !!scopeCaId;
+    const [filterCa, setFilterCa] = useState(scopeCaId ?? '');
+    useEffect(() => { setFilterCa(scopeCaId ?? ''); }, [scopeCaId]);
     const [filterTemplate, setFilterTemplate] = useState('');
     const [filterType, setFilterType] = useState('');
 
@@ -220,7 +225,7 @@ const GroupManagement: React.FC = () => {
             <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
                     <label className="text-xs text-gray-600 dark:text-gray-400">CA:</label>
-                    <select value={filterCa} onChange={(e) => setFilterCa(e.target.value)} className={selectCls}>
+                    <select value={filterCa} onChange={(e) => setFilterCa(e.target.value)} className={selectCls} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}>
                         <option value="">All</option>
                         <option value="system">System Groups</option>
                         {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.commonName || ca.id}</option>)}

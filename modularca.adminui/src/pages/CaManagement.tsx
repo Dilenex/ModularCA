@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -126,12 +127,26 @@ const CaManagement: React.FC = () => {
         return result;
     };
 
+    const { caId: scopeCaId } = useScope();
+
+    /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
+    const subtreeOf = (list: any[], id: string): any | null => {
+        for (const ca of list) {
+            if ((ca.id || ca.caId) === id) return ca;
+            const found = ca.children?.length ? subtreeOf(ca.children, id) : null;
+            if (found) return found;
+        }
+        return null;
+    };
+
     const loadAuthorities = () => {
         setLoading(true);
         setError(null);
         apiGet<any>('/api/v1/admin/authorities/hierarchy')
             .then((data) => {
-                const items = Array.isArray(data) ? data : (data.items || data.authorities || []);
+                const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
+                const scoped = scopeCaId ? subtreeOf(all, scopeCaId) : null;
+                const items = scopeCaId ? (scoped ? [scoped] : []) : all;
                 setAuthorities(items);
                 const flat = flattenCas(items);
                 if (flat.length > 0 && !formParentCa) {
@@ -157,7 +172,7 @@ const CaManagement: React.FC = () => {
                 if (items.length > 0 && !formCertProfile) setFormCertProfile(items[0].id);
             })
             .catch(() => {});
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const allCasFlat = flattenCas(authorities);
 

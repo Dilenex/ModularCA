@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -98,10 +99,12 @@ const CertificateRequests: React.FC = () => {
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [issueValidity, setIssueValidity] = useState<Record<string, string>>({}); // csrId → yyyy-MM-dd
 
+    const { caId: scopeCaId } = useScope();
+
     const loadRequests = () => {
         setLoading(true);
         setError(null);
-        apiGet<any[]>('/api/v1/admin/requests')
+        apiGet<any[]>(`/api/v1/admin/requests${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
             .then((data) => { setRequests(Array.isArray(data) ? data : []); setLoading(false); })
             .catch((err) => { setError(err.message || 'Failed to load requests'); setLoading(false); });
     };
@@ -112,7 +115,7 @@ const CertificateRequests: React.FC = () => {
         apiGet<any>('/api/v1/admin/cert-profiles')
             .then((d) => setCertProfiles(Array.isArray(d) ? d : (d.items || d.profiles || [])))
             .catch(() => { /* picker just falls back to unbounded + backend enforcement */ });
-    }, []);
+    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const today = new Date().toISOString().slice(0, 10);
     const csrProfileMaxDate = (c: any): string | undefined => {

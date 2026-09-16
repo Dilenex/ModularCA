@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -20,7 +21,12 @@ const ProtocolConfig: React.FC = () => {
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [selectedCaId, setSelectedCaId] = useState('');
+    const { caId: scopeCaId } = useScope();
+    const [selectedCaId, setSelectedCaId] = useState(scopeCaId ?? '');
+    // Follow the sidebar scope: picking a CA there selects it here too.
+    useEffect(() => {
+        if (scopeCaId) { setSelectedCaId(scopeCaId); setExpandedProtocol(null); }
+    }, [scopeCaId]);
     const [expandedProtocol, setExpandedProtocol] = useState<string | null>(null);
     const [protocolConfigs, setProtocolConfigs] = useState<any[]>([]);
     const [configLoading, setConfigLoading] = useState(false);
@@ -59,7 +65,8 @@ const ProtocolConfig: React.FC = () => {
                 const flat = flattenCas(items);
                 if (flat.length > 0) {
                     const firstId = flat[0].id || flat[0].certificateId || flat[0].name || '';
-                    setSelectedCaId(firstId);
+                    // Keep a scoped CA; otherwise start on the first one.
+                    setSelectedCaId((current) => current || firstId);
                 }
                 setLoading(false);
             })

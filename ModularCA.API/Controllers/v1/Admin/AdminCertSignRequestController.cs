@@ -52,8 +52,9 @@ public class AdminCertSignRequestController(
     /// <c>accessibleCaIds</c> parameter now filters at the database level so non-system-admin
     /// callers only receive CSRs belonging to CAs they can access. System admins receive all.
     /// </summary>
+    /// <param name="caId">Optional: only requests routed to this CA (the console's scope).</param>
     [HttpGet]
-    public async Task<IActionResult> RetrievePendingRequests()
+    public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -66,7 +67,7 @@ public class AdminCertSignRequestController(
                 _currentUser.User.Id, Capabilities.CertView);
         }
 
-        var requests = await _csrService.GetPendingRequests(accessibleCaIds);
+        var requests = await _csrService.GetPendingRequests(ModularCA.Core.Authorization.CaScope.Narrow(accessibleCaIds, caId));
         if (requests == null)
             return NotFound();
 
