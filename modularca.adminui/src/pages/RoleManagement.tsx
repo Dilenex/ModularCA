@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -63,9 +65,14 @@ interface RoleDetail {
 /* ── read-only drawer (fetches role detail incl. capabilities) ───────────────── */
 const RoleDrawer: React.FC<{ role: RoleSummary }> = ({ role }) => {
     const [detail, setDetail] = useState<RoleDetail | null>(null);
+    const [detailError, setDetailError] = useState<string | null>(null);
     useEffect(() => {
         let cancelled = false;
-        apiGet<RoleDetail>(`/api/v1/admin/roles/${role.id}`).then((d) => { if (!cancelled) setDetail(d); }).catch(() => { });
+        setDetail(null);
+        setDetailError(null);
+        apiGet<RoleDetail>(`/api/v1/admin/roles/${role.id}`)
+            .then((d) => { if (!cancelled) setDetail(d); })
+            .catch((err) => { if (!cancelled) setDetailError(err.message || 'request failed'); });
         return () => { cancelled = true; };
     }, [role.id]);
     const caps: RoleCapability[] = detail?.capabilities || [];
@@ -76,8 +83,9 @@ const RoleDrawer: React.FC<{ role: RoleSummary }> = ({ role }) => {
             <DetailField label="Type" value={role.isBuiltIn ? 'Built-in' : 'Custom'} />
             {detail?.tenantId && <DetailField label="Tenant" value={detail.tenantId} mono />}
             <div className="mt-3">
-                <span className="text-xs text-gray-500">Capabilities ({detail ? caps.length : '…'})</span>
+                <span className="text-xs text-gray-500">Capabilities ({detail ? caps.length : detailError ? 'unavailable' : '…'})</span>
                 <div className="mt-1 space-y-0.5">
+                    {detailError && <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load the capability list ({detailError}).</span>}
                     {detail && caps.length === 0 && <span className="text-xs text-gray-500">No capabilities.</span>}
                     {caps.map((c) => (
                         <div key={c.id} className="text-xs text-gray-800 dark:text-gray-200 font-mono">
@@ -103,8 +111,9 @@ const RoleManagement: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [roles, setRoles] = useState<RoleSummary[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+    const [search, setSearch] = useState('');
 
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ name: '', description: '' });
@@ -125,12 +134,18 @@ const RoleManagement: React.FC = () => {
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load roles');
+                    setError(errorNotice(err, 'Failed to load roles'));
                     setLoading(false);
                 }
             });
         return () => { cancelled = true; };
     }, [refreshTrigger]);
+
+    const filteredRoles = roles.filter((r) => {
+        if (!search) return true;
+        const s = search.toLowerCase();
+        return (r.name || '').toLowerCase().includes(s) || (r.description || '').toLowerCase().includes(s);
+    });
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -182,7 +197,7 @@ const RoleManagement: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Role Management</h1>
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Roles</h1>
                 <button
                     onClick={() => setShowCreate(!showCreate)}
                     className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
@@ -222,14 +237,17 @@ const RoleManagement: React.FC = () => {
                 </form>
             )}
 
+            <input type="text" placeholder="Search by name or description..." value={search} onChange={(e) => setSearch(e.target.value)}
+                className="w-full max-w-md px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+
             <DataTable<RoleSummary>
                 tableId="roles"
-                title="All Roles"
-                rows={roles}
+                title="Roles"
+                rows={filteredRoles}
                 rowKey={(r) => r.id}
                 loading={loading}
                 error={error}
-                empty="No roles found"
+                empty={search ? 'No roles match this search' : 'No roles found'}
                 columns={columns}
                 selectable
                 bulkActions={bulkActions}

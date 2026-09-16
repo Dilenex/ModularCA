@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../api/client';
 import { DataTable } from '@shared/components/DataTable';
 import { AuditDrawer, buildColumns, type Tab } from '../pages/AuditLogs';
@@ -15,7 +17,7 @@ const AuditTable: React.FC<{
 }> = ({ tab, target, pageSize = 25 }) => {
     const [rows, setRows] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [page, setPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
     const [totalCount, setTotalCount] = useState(0);
@@ -35,7 +37,7 @@ const AuditTable: React.FC<{
                 setTotalCount(data.total ?? data.totalCount ?? items.length);
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load audit entries'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load audit entries')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [tab, target.type, target.id, page, pageSize]);
 

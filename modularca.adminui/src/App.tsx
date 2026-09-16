@@ -15,7 +15,7 @@ import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
-import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE } from './gates';
+import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
 import LoginPage from './pages/Login';
@@ -196,14 +196,14 @@ const App: React.FC = () => {
                                                             <Route path="/health" element={<ProtectedRoute {...SYSTEM_ADMIN}><SystemHealth /></ProtectedRoute>} />
 
                                                             {/* Certificates */}
-                                                            <Route path="/certificates" element={<Certificates />} />
-                                                            <Route path="/certificates/request" element={<IssueCertificate />} />
+                                                            <Route path="/certificates" element={<ProtectedRoute {...CERT_VIEW}><Certificates /></ProtectedRoute>} />
+                                                            <Route path="/certificates/request" element={<ProtectedRoute {...CERT_REQUEST}><IssueCertificate /></ProtectedRoute>} />
                                                             {/* Certificate Search merged into the Certificates page (advanced filters). */}
                                                             <Route path="/certificates/search" element={<Navigate to="/certificates" replace />} />
-                                                            <Route path="/certificates/expiry" element={<ExpiryCalendar />} />
-                                                            <Route path="/certificates/requests" element={<CertificateRequests />} />
-                                                            <Route path="/certificates/requests/:id" element={<CertificateRequestDetail />} />
-                                                            <Route path="/certificates/:serial" element={<CertificateDetail />} />
+                                                            <Route path="/certificates/expiry" element={<ProtectedRoute {...CERT_VIEW}><ExpiryCalendar /></ProtectedRoute>} />
+                                                            <Route path="/certificates/requests" element={<ProtectedRoute {...CERT_VIEW}><CertificateRequests /></ProtectedRoute>} />
+                                                            <Route path="/certificates/requests/:id" element={<ProtectedRoute {...CERT_VIEW}><CertificateRequestDetail /></ProtectedRoute>} />
+                                                            <Route path="/certificates/:serial" element={<ProtectedRoute {...CERT_VIEW}><CertificateDetail /></ProtectedRoute>} />
 
                                                             {/* CA Management */}
                                                             <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE}><CaManagement /></ProtectedRoute>} />
@@ -229,7 +229,7 @@ const App: React.FC = () => {
 
                                                             {/* Protocols */}
                                                             <Route path="/acme" element={<ProtectedRoute {...CA_MANAGE}><AcmeManagement /></ProtectedRoute>} />
-                                                            <Route path="/ssh" element={<SshCertificates />} />
+                                                            <Route path="/ssh" element={<ProtectedRoute {...CERT_VIEW}><SshCertificates /></ProtectedRoute>} />
                                                             <Route path="/ssh/ca-keys/:id" element={<SshCaKeyDetail />} />
                                                             <Route path="/ssh/certs/:id" element={<SshCertDetail />} />
 
@@ -246,7 +246,7 @@ const App: React.FC = () => {
                                                             <Route path="/quotas" element={<Navigate to="/tenants" replace />} />
 
                                                             {/* Intelligence */}
-                                                            <Route path="/intel/inventory" element={<CertInventory />} />
+                                                            <Route path="/intel/inventory" element={<ProtectedRoute {...CERT_VIEW}><CertInventory /></ProtectedRoute>} />
                                                             {/* Vulnerabilities merged into Compliance — redirect the old path. */}
                                                             <Route path="/intel/vulnerabilities" element={<Navigate to="/intel/compliance" replace />} />
                                                             <Route path="/intel/compliance" element={<ProtectedRoute {...CA_MANAGE}><Compliance /></ProtectedRoute>} />

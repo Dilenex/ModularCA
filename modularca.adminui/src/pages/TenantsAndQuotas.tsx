@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -130,7 +132,7 @@ const TenantsAndQuotas: React.FC = () => {
     const [tenants, setTenants] = useState<Tenant[]>([]);
     const [totals, setTotals] = useState<{ totalTenants: number; totalCAs: number; casAtLimit: number; casNearLimit: number } | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // create-tenant form
     const [showCreate, setShowCreate] = useState(false);
@@ -141,7 +143,7 @@ const TenantsAndQuotas: React.FC = () => {
         setLoading(true);
         apiGet<any>('/api/v1/admin/quotas/by-tenant')
             .then((data) => { setTenants(data.tenants || []); setTotals(data.totals || null); setError(null); })
-            .catch((err) => setError(err.message || 'Failed to load'))
+            .catch((err) => setError(errorNotice(err, 'Failed to load')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -196,7 +198,7 @@ const TenantsAndQuotas: React.FC = () => {
             <DetailField label="CAs" value={fmtLimit(t.caCount, t.maxCertificateAuthorities)} />
             <DetailField label="Users" value={fmtLimit(t.userCount, t.maxUsers)} />
             <DetailField label="Active Certs" value={fmtLimit(t.issuedCertificates, t.maxCertificatesTotal)} />
-            <DetailField label="Key Ceremony" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approvals)` : 'No'} />
+            <DetailField label="Key Ceremony" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No'} />
             <DetailField label="Created" value={formatDate(t.createdAt)} />
             <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit ceilings, toggle status, or set per-CA quotas.</p>
         </div>

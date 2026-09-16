@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
@@ -31,7 +34,7 @@ const GroupDetail: React.FC = () => {
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [allUsers, setAllUsers] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [form, setForm] = useState({ displayName: '', mtlsSigningCaId: '' });
@@ -64,7 +67,7 @@ const GroupDetail: React.FC = () => {
             setAuthorities(flat);
             setAllUsers(Array.isArray(usersData) ? usersData : (usersData.items || usersData.users || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load group'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load group')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -98,8 +101,7 @@ const GroupDetail: React.FC = () => {
 
     // One step-up prompt authorizes the whole batch; the server adds uncontrolled users directly and
     // starts a controlled-user ceremony PER privileged user.
-    const addMembers = async () => {
-        if (selectedUserIds.length === 0) return;
+    const performAddMembers = async () => {
         try {
             const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk`, { userIds: selectedUserIds }, requireStepUp, StepUpOps.AddGroupMember, id!);
             setSelectedUserIds([]);
@@ -115,6 +117,24 @@ const GroupDetail: React.FC = () => {
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to add members');
         }
+    };
+
+    // Adding to an Administrator group hands every capability to the chosen users, which is as
+    // consequential as removal (which already confirms), so it confirms too. Other templates add
+    // straight away as before.
+    const addMembers = () => {
+        if (selectedUserIds.length === 0) return;
+        if ((group?.templateName || '').toLowerCase() !== 'administrator') { void performAddMembers(); return; }
+        const n = selectedUserIds.length;
+        const names = selectedUserIds
+            .map((uid) => allUsers.find((u) => u.id === uid)?.username || uid)
+            .slice(0, 5);
+        const more = n - names.length;
+        setConfirm({
+            title: 'Add to an Administrator group',
+            message: `Add ${n} user${n === 1 ? '' : 's'} (${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}) to "${group.displayName || group.name}"? Members of an Administrator group hold every capability${group.certificateAuthorityId ? ' on this CA' : group.isSystemGroup ? ' across the whole system' : ' in this tenant'}. Privileged users will each require a controlled-user ceremony.`,
+            action: performAddMembers,
+        });
     };
 
     // One step-up prompt authorizes the whole batch; the server removes uncontrolled users directly,
@@ -153,7 +173,7 @@ const GroupDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!group) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Group not found.</p>

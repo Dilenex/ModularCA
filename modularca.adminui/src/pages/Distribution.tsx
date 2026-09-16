@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPutWithMfa, API_BASE } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
+import { FieldHint } from '@shared/components/forms';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
@@ -26,7 +31,7 @@ const CrlScheduleDrawer: React.FC<{ schedule: any }> = ({ schedule: s }) => (
         <DetailField label="Name" value={s.name} />
         <DetailField label="CA" value={s.caName || s.caId || '-'} />
         <DetailField label="Status" value={s.enabled ? 'Enabled' : 'Disabled'} />
-        <DetailField label="Update Interval" value={s.updateInterval || s.cronExpression} mono />
+        <DetailField label="Update interval (cron)" value={s.updateInterval || s.cronExpression} mono />
         <DetailField label="Delta Interval" value={s.deltaInterval || '-'} mono />
         <DetailField label="Overlap Period" value={s.overlapPeriod ? String(s.overlapPeriod) : '-'} />
         <DetailField label="Description" value={s.description || '-'} />
@@ -42,10 +47,13 @@ const CrlSchedulesSection: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [schedules, setSchedules] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
     const [cas, setCas] = useState<any[]>([]);
+    // The CA list is what the scope filter and the CA selector are built from; when it cannot be
+    // loaded the page must say so rather than showing an empty selector and an empty table.
+    const [casError, setCasError] = useState<string | null>(null);
     // Bulk delete confirm
     const [confirmBulk, setConfirmBulk] = useState<any[] | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
@@ -58,7 +66,7 @@ const CrlSchedulesSection: React.FC = () => {
     });
 
     // CRL schedules key on the CA's certificate; under a CA scope keep the scoped CA's only.
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, scope } = useScope();
     const scopedCa = scopeCaId ? cas.find((c) => (c.id || c.caId) === scopeCaId) : null;
     const visibleSchedules = scopeCaId
         ? schedules.filter((sch) => {
@@ -72,15 +80,15 @@ const CrlSchedulesSection: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/crl-schedules')
             .then((data) => setSchedules(Array.isArray(data) ? data : (data.items || data.schedules || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
     useEffect(() => {
         load();
         apiGet<any>('/api/v1/admin/authorities')
-            .then((data) => setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])))
-            .catch(() => {});
+            .then((data) => { setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])); setCasError(null); })
+            .catch((err) => setCasError(err.message || 'request failed'));
     }, []);
 
     const handleCreate = async () => {
@@ -187,9 +195,10 @@ const CrlSchedulesSection: React.FC = () => {
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Cron Expression</label>
+                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Update interval (cron)</label>
                             <input type="text" placeholder="e.g. 0 */6 * * *" value={form.cronExpression} onChange={(e) => setForm({ ...form, cronExpression: e.target.value })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                            <FieldHint>A five-field cron expression saying when a fresh CRL is signed and published.</FieldHint>
                         </div>
                         <div>
                             <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Certificate Authority</label>
@@ -203,17 +212,25 @@ const CrlSchedulesSection: React.FC = () => {
                                     <option key={ca.certificateId} value={ca.certificateId}>{ca.name || ca.subjectDN}</option>
                                 ))}
                             </select>
+                            {casError && <FieldHint tone="warn">Unavailable: could not load the CA list ({casError}). Reload the page to try again.</FieldHint>}
                         </div>
                         <div>
                             <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Overlap Period</label>
                             <input type="text" placeholder="e.g. 1h, 30m, 1h30m" value={form.overlapPeriod} onChange={(e) => setForm({ ...form, overlapPeriod: e.target.value })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                            <FieldHint>{OVERLAP_HINT}</FieldHint>
                         </div>
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || !form.cronExpression || !form.caId}
                         className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
+                </div>
+            )}
+
+            {scopeCaId && casError && (
+                <div className="text-xs text-red-800 dark:text-red-400" role="status">
+                    Unavailable: could not load the CA list ({casError}), so the schedules for {scopeLabel(scope)} cannot be picked out. The table below is not a statement that there are none.
                 </div>
             )}
 
@@ -224,7 +241,7 @@ const CrlSchedulesSection: React.FC = () => {
                 rowKey={crlId}
                 loading={loading}
                 error={error}
-                empty="No CRL schedules configured"
+                empty={scopeCaId ? `No CRL schedules in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No CRL schedules configured'}
                 columns={columns}
                 selectable
                 bulkActions={bulkActions}
@@ -251,12 +268,12 @@ const CrlSchedulesSection: React.FC = () => {
 const CurrentCrlsSection: React.FC = () => {
     const [cas, setCas] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -265,7 +282,7 @@ const CurrentCrlsSection: React.FC = () => {
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Current CRLs</h2>
 
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400">{error}</div>}
+            {error && <InlineNotice notice={error} />}
             {!loading && !error && cas.length === 0 && (
                 <div className="p-4 text-sm text-gray-600">No certificate authorities found</div>
             )}
@@ -302,6 +319,7 @@ const CurrentCrlsSection: React.FC = () => {
 /* ─── LDAP Tab — CA selector + per-CA publisher manager (admin only) ─── */
 const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
     const [cas, setCas] = useState<any[]>([]);
+    const [casError, setCasError] = useState<string | null>(null);
     const [selectedCa, setSelectedCa] = useState<string>(initialCaId || '');
 
     useEffect(() => {
@@ -309,10 +327,11 @@ const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
             .then((data) => {
                 const list = Array.isArray(data) ? data : (data.items || data.authorities || []);
                 setCas(list);
+                setCasError(null);
                 // Default to the deep-linked CA, else the first CA so the manager has a target.
                 setSelectedCa((cur) => cur || (list[0] ? (list[0].id || list[0].caId) : ''));
             })
-            .catch(() => {});
+            .catch((err) => setCasError(err.message || 'request failed'));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -328,9 +347,12 @@ const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
                     ))}
                 </select>
             </div>
+            {casError && (
+                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the CA list ({casError}). The selector above is empty because of that, not because there are no CAs.</div>
+            )}
             {selectedCa
                 ? <LdapPublisherManager caId={selectedCa} />
-                : <div className="text-sm text-gray-600 dark:text-gray-400">Select a CA to manage its LDAP publishers.</div>}
+                : !casError && <div className="text-sm text-gray-600 dark:text-gray-400">Select a CA to manage its LDAP publishers.</div>}
         </div>
     );
 };
@@ -341,9 +363,14 @@ interface ServiceUrlRow { caCertId: string; name: string; label: string; publicB
 const ServiceUrlsTab: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const { inScope, caId: scopeCaId } = useScope();
+    const { inScope, caId: scopeCaId, scope } = useScope();
     const [rows, setRows] = useState<ServiceUrlRow[]>([]);
     const [loading, setLoading] = useState(true);
+    // Each source is tracked separately: without the hierarchy there are no rows to show, and
+    // without the saved URLs every row would silently present as "unset" and invite a save that
+    // clobbers a real value.
+    const [hierarchyError, setHierarchyError] = useState<string | null>(null);
+    const [urlsError, setUrlsError] = useState<string | null>(null);
     const [saving, setSaving] = useState<string | null>(null);
 
     const flatten = (list: any[]): any[] => {
@@ -353,9 +380,11 @@ const ServiceUrlsTab: React.FC = () => {
     };
 
     useEffect(() => {
+        setHierarchyError(null);
+        setUrlsError(null);
         Promise.all([
-            apiGet<any>('/api/v1/admin/authorities/hierarchy').catch(() => []),
-            apiGet<any>('/api/v1/admin/ca-service-urls').catch(() => []),
+            apiGet<any>('/api/v1/admin/authorities/hierarchy').catch((err) => { setHierarchyError(err.message || 'request failed'); return []; }),
+            apiGet<any>('/api/v1/admin/ca-service-urls').catch((err) => { setUrlsError(err.message || 'request failed'); return []; }),
         ]).then(([h, su]) => {
             const flat = flatten(Array.isArray(h) ? h : (h.items || h.authorities || []))
                 .filter((ca: any) => inScope(ca.id || ca.caId));
@@ -404,7 +433,17 @@ const ServiceUrlsTab: React.FC = () => {
                 can fetch CRLs/OCSP without a TLS chicken-and-egg. Leave empty to issue without CDP/AIA extensions.
             </div>
             {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
-            {!loading && rows.length === 0 && <div className="text-sm text-gray-600 dark:text-gray-400">No certificate authorities found.</div>}
+            {hierarchyError && (
+                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the CA hierarchy ({hierarchyError}). Nothing is listed because of that, not because there are no CAs.</div>
+            )}
+            {urlsError && (
+                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the saved public base URLs ({urlsError}). The fields below may show as empty even where a URL is set; saving now would overwrite it. Reload before editing.</div>
+            )}
+            {!loading && !hierarchyError && rows.length === 0 && (
+                <div className="text-sm text-gray-600 dark:text-gray-400">
+                    {scopeCaId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found.'}
+                </div>
+            )}
             {rows.map((row) => (
                 <div key={row.caCertId} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{row.name}</h3>
@@ -432,15 +471,28 @@ const ServiceUrlsTab: React.FC = () => {
 };
 
 /**
+ * What the overlap period is for, worded once and shown on both the create form here and the
+ * edit form on `CrlScheduleDetail`, so the two never drift apart again.
+ */
+export const OVERLAP_HINT =
+    "How long the outgoing CRL stays valid after its replacement is published: the CRL's nextUpdate is set to the update interval plus this period. " +
+    'Relying parties keep using a cached CRL until its nextUpdate, so the overlap covers publication delay and clock skew. ' +
+    'Too short and a client whose cached CRL has expired before the new one reached it has no valid CRL at all, and validation fails. ' +
+    "Accepts 1h, 30m, 1h30m, 90s, a bare number of minutes, or hh:mm:ss.";
+
+/**
  * Converts a friendly overlap duration into the `hh:mm:ss` form System.Text.Json binds to a
  * TimeSpan. Accepts `90s`, `30m`, `1h`, `1h30m`, a bare number (minutes), or an already
- * well-formed `hh:mm:ss`. Empty means no overlap. Returns null when the text is unparseable,
- * so the caller can say so instead of posting something the API rejects with a 400.
+ * well-formed `hh:mm:ss` (with an optional `d.` day prefix, which is how a TimeSpan of a day or
+ * more comes back from the server). Empty means no overlap. Returns null when the text is
+ * unparseable, so the caller can say so instead of posting something the API rejects with a 400.
+ *
+ * Exported so the edit form on `CrlScheduleDetail` normalises exactly what the create form does.
  */
-function toTimeSpan(text: string): string | null {
+export function toTimeSpan(text: string): string | null {
     const trimmed = text.trim();
     if (trimmed === '') return '00:00:00';
-    if (/^\d{1,3}:[0-5]?\d:[0-5]?\d$/.test(trimmed)) return trimmed;
+    if (/^(?:\d+\.)?\d{1,3}:[0-5]?\d:[0-5]?\d$/.test(trimmed)) return trimmed;
 
     let seconds: number;
     if (/^\d+$/.test(trimmed)) {

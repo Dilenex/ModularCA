@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiPut, apiDelete, apiPostWithMfa, getToken } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -54,7 +57,7 @@ async function fetchHealthReady(): Promise<any> {
 const HealthCheckCard: React.FC = () => {
     const [health, setHealth] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
     const fetchHealth = () => {
@@ -65,7 +68,7 @@ const HealthCheckCard: React.FC = () => {
                 setError(null);
                 setLastRefresh(new Date());
             })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -115,7 +118,7 @@ const HealthCheckCard: React.FC = () => {
             </div>
 
             {loading && !health && <div className="text-sm text-gray-600 dark:text-gray-400">Checking...</div>}
-            {error && !health && <div className="text-sm text-red-800 dark:text-red-400">{error}</div>}
+            {error && !health && <InlineNotice notice={error} />}
 
             {health && (
                 <div className="space-y-1">
@@ -170,6 +173,7 @@ const SystemStatusCard: React.FC = () => {
     // time), then ticked locally. Re-reads on mount, so a page refresh shows the
     // actual server uptime instead of restarting a page-local stopwatch.
     const [serverUptimeMs, setServerUptimeMs] = useState<number | null>(null);
+    const [uptimeError, setUptimeError] = useState<string | null>(null);
     const [fetchedAt, setFetchedAt] = useState(Date.now());
     const [now, setNow] = useState(Date.now());
 
@@ -177,12 +181,15 @@ const SystemStatusCard: React.FC = () => {
         let active = true;
         fetchHealthReady()
             .then((data) => {
-                if (active && typeof data?.uptimeSeconds === 'number') {
+                if (!active) return;
+                if (typeof data?.uptimeSeconds === 'number') {
                     setServerUptimeMs(data.uptimeSeconds * 1000);
                     setFetchedAt(Date.now());
+                } else {
+                    setUptimeError('readiness payload carried no uptime');
                 }
             })
-            .catch(() => { /* leave uptime unknown if the probe fails */ });
+            .catch((err: any) => { if (active) setUptimeError(err?.message || 'request failed'); });
         const interval = setInterval(() => setNow(Date.now()), 1000);
         return () => { active = false; clearInterval(interval); };
     }, []);
@@ -193,7 +200,7 @@ const SystemStatusCard: React.FC = () => {
         <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
             <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">System Status</h2>
             <DetailField label="Application" value={`ModularCA v${APP_VERSION}`} />
-            <DetailField label="Server Uptime" value={serverUptime != null ? formatUptime(serverUptime) : '—'} />
+            <DetailField label="Server Uptime" value={serverUptime != null ? formatUptime(serverUptime) : uptimeError ? `Unavailable: could not load /health/ready (${uptimeError})` : '—'} />
             <DetailField label="Current Time" value={new Date(now).toLocaleString()} />
         </div>
     );
@@ -203,7 +210,7 @@ const SystemStatusCard: React.FC = () => {
 const CertStatsCard: React.FC = () => {
     const [stats, setStats] = useState<{ total: number; active: number; revoked: number; expired: number; expiring30: number } | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/certificates')
@@ -222,7 +229,7 @@ const CertStatsCard: React.FC = () => {
                 });
                 setStats({ total: certs.length, active, revoked, expired, expiring30 });
             })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -238,7 +245,7 @@ const CertStatsCard: React.FC = () => {
         <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
             <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Certificate Statistics</h2>
             {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
-            {error && <div className="text-sm text-red-800 dark:text-red-400">{error}</div>}
+            {error && <InlineNotice notice={error} />}
             {stats && (
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                     {statItems.map((s) => (
@@ -253,24 +260,40 @@ const CertStatsCard: React.FC = () => {
     );
 };
 
+/**
+ * A fetch that failed, kept apart from a fetch that returned nothing. On the page whose job is
+ * spotting broken subsystems, a dead endpoint must never read as "zero traffic" or "no
+ * schedules"; the caller renders an explicit "Unavailable" state for it instead.
+ */
+type Fetched<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function fetched<T>(p: Promise<T>): Promise<Fetched<T>> {
+    return p.then((value) => ({ ok: true as const, value })).catch((err: any) => ({ ok: false as const, error: err?.message || 'request failed' }));
+}
+
+const Unavailable: React.FC<{ what: string; error: string }> = ({ what, error }) => (
+    <div className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load {what} ({error}).</div>
+);
+
 /* ─── Scheduler Status Card ─── */
 const SchedulerStatusCard: React.FC = () => {
-    const [schedules, setSchedules] = useState<any[]>([]);
-    const [features, setFeatures] = useState<any[]>([]);
+    const [schedules, setSchedules] = useState<Fetched<any[]> | null>(null);
+    const [features, setFeatures] = useState<Fetched<any[]> | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         Promise.all([
-            apiGet<any>('/api/v1/admin/crl-schedules').then((d) => Array.isArray(d) ? d : (d.items || d.schedules || [])).catch(() => []),
-            apiGet<any>('/api/v1/admin/features').then((d) => Array.isArray(d) ? d : (d.items || d.features || [])).catch(() => []),
+            fetched(apiGet<any>('/api/v1/admin/crl-schedules').then((d) => (Array.isArray(d) ? d : (d.items || d.schedules || [])) as any[])),
+            fetched(apiGet<any>('/api/v1/admin/features').then((d) => (Array.isArray(d) ? d : (d.items || d.features || [])) as any[])),
         ]).then(([s, f]) => {
             setSchedules(s);
             setFeatures(f);
         }).finally(() => setLoading(false));
     }, []);
 
-    const enabledCount = features.filter((f) => f.enabled).length;
-    const disabledCount = features.filter((f) => !f.enabled).length;
+    const featureList = features?.ok ? features.value : [];
+    const enabledCount = featureList.filter((f) => f.enabled).length;
+    const disabledCount = featureList.filter((f) => !f.enabled).length;
 
     return (
         <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
@@ -280,11 +303,13 @@ const SchedulerStatusCard: React.FC = () => {
                 <div className="space-y-3">
                     <div>
                         <span className="text-xs text-gray-600 dark:text-gray-400">CRL Schedules</span>
-                        {schedules.length === 0 ? (
+                        {!schedules || !schedules.ok ? (
+                            <div className="mt-1"><Unavailable what="CRL schedules" error={schedules?.error || 'no response'} /></div>
+                        ) : schedules.value.length === 0 ? (
                             <div className="text-sm text-gray-600 mt-1">No CRL schedules</div>
                         ) : (
                             <div className="mt-1 space-y-1">
-                                {schedules.map((s, i) => (
+                                {schedules.value.map((s, i) => (
                                     <div key={i} className="flex items-center gap-2 text-xs">
                                         <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} />
                                         <span className="text-gray-700 dark:text-gray-300">{s.name}</span>
@@ -296,10 +321,14 @@ const SchedulerStatusCard: React.FC = () => {
                     </div>
                     <div className="border-t border-gray-300 dark:border-gray-700 pt-3">
                         <span className="text-xs text-gray-600 dark:text-gray-400">Feature Flags Summary</span>
-                        <div className="flex gap-3 mt-1">
-                            <StatusBadge status="enabled" label={`${enabledCount} Enabled`} />
-                            <StatusBadge status="disabled" label={`${disabledCount} Disabled`} />
-                        </div>
+                        {!features || !features.ok ? (
+                            <div className="mt-1"><Unavailable what="feature flags" error={features?.error || 'no response'} /></div>
+                        ) : (
+                            <div className="flex gap-3 mt-1">
+                                <StatusBadge status="enabled" label={`${enabledCount} Enabled`} />
+                                <StatusBadge status="disabled" label={`${disabledCount} Disabled`} />
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -309,17 +338,18 @@ const SchedulerStatusCard: React.FC = () => {
 
 /* ─── Protocol Activity Card ─── */
 const ProtocolActivityCard: React.FC = () => {
-    const [counts, setCounts] = useState<{ est: number; scep: number; cmp: number; acme: number; msae: number } | null>(null);
+    type Counts = { est: Fetched<number>; scep: Fetched<number>; cmp: Fetched<number>; acme: Fetched<number>; msae: Fetched<number> };
+    const [counts, setCounts] = useState<Counts | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const fetchCount = (path: string): Promise<number> =>
-            apiGet<any>(path)
-                .then((d) => {
-                    const items = Array.isArray(d) ? d : (d.items || d.entries || d.logs || []);
-                    return items.length;
-                })
-                .catch(() => 0);
+        // A failed audit endpoint is reported as such, never as a count of zero: on this page a
+        // silent zero is indistinguishable from "the protocol is idle", which is the wrong answer.
+        const fetchCount = (path: string): Promise<Fetched<number>> =>
+            fetched(apiGet<any>(path).then((d) => {
+                const items = Array.isArray(d) ? d : (d.items || d.entries || d.logs || []);
+                return items.length as number;
+            }));
 
         Promise.all([
             fetchCount('/api/v1/admin/audit/est?pageSize=100'),
@@ -339,6 +369,7 @@ const ProtocolActivityCard: React.FC = () => {
         { label: 'ACME', value: counts.acme, color: 'bg-cyan-900/50 text-cyan-300 border-cyan-700' },
         { label: 'MSAE', value: counts.msae, color: 'bg-sky-900/50 text-sky-300 border-sky-700' },
     ] : [];
+    const failed = protocols.filter((p) => !p.value.ok);
 
     return (
         <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
@@ -347,11 +378,23 @@ const ProtocolActivityCard: React.FC = () => {
             {counts && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {protocols.map((p) => (
-                        <div key={p.label} className={`rounded border p-3 text-center ${p.color}`}>
-                            <div className="text-2xl font-bold">{p.value}</div>
-                            <div className="text-xs mt-1">{p.label}</div>
-                        </div>
+                        p.value.ok ? (
+                            <div key={p.label} className={`rounded border p-3 text-center ${p.color}`}>
+                                <div className="text-2xl font-bold">{p.value.value}</div>
+                                <div className="text-xs mt-1">{p.label}</div>
+                            </div>
+                        ) : (
+                            <div key={p.label} className="rounded border border-dashed border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-center text-red-800 dark:text-red-300" title={p.value.error}>
+                                <div className="text-sm font-semibold">Unavailable</div>
+                                <div className="text-xs mt-1">{p.label}</div>
+                            </div>
+                        )
                     ))}
+                </div>
+            )}
+            {failed.length > 0 && (
+                <div className="mt-3 space-y-0.5">
+                    {failed.map((p) => <Unavailable key={p.label} what={`${p.label} audit entries`} error={p.value.ok ? '' : p.value.error} />)}
                 </div>
             )}
         </div>
@@ -363,7 +406,7 @@ const DrStatusCard: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [drStatus, setDrStatus] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
     const [creatingBackup, setCreatingBackup] = useState(false);
     const [backupMsg, setBackupMsg] = useState<string | null>(null);
@@ -376,7 +419,7 @@ const DrStatusCard: React.FC = () => {
                 setError(null);
                 setLastRefresh(new Date());
             })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -417,7 +460,7 @@ const DrStatusCard: React.FC = () => {
             </div>
 
             {loading && !drStatus && <div className="text-sm text-gray-600 dark:text-gray-400">Checking DR status...</div>}
-            {error && !drStatus && <div className="text-sm text-red-800 dark:text-red-400">{error}</div>}
+            {error && !drStatus && <InlineNotice notice={error} />}
 
             {drStatus && (
                 <div className="space-y-3">

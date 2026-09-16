@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiBlob } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useToast } from '@shared/context/ToastContext';
+import { FieldHint } from '@shared/components/forms';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -153,13 +157,13 @@ const Compliance: React.FC = () => {
     // --- Live compliance report (inventory / algorithms / expiry / history) ---
     const [report, setReport] = useState<ComplianceReport | null>(null);
     const [reportLoading, setReportLoading] = useState(true);
-    const [reportError, setReportError] = useState<string | null>(null);
+    const [reportError, setReportError] = useState<NoticeInput | null>(null);
 
     // --- Live vulnerability findings (interactive) ---
     const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
     const [vulnSummary, setVulnSummary] = useState<VulnerabilitySummary>({ critical: 0, warning: 0, info: 0, resolved: 0 });
     const [vulnLoading, setVulnLoading] = useState(true);
-    const [vulnError, setVulnError] = useState<string | null>(null);
+    const [vulnError, setVulnError] = useState<NoticeInput | null>(null);
     const [severityFilter, setSeverityFilter] = useState<string>('all');
     const [typeFilter, setTypeFilter] = useState<string>('all');
     const [showResolved, setShowResolved] = useState(false);
@@ -187,7 +191,7 @@ const Compliance: React.FC = () => {
             });
             setReport(data);
         } catch (e: any) {
-            setReportError(e.message || 'Failed to load compliance data');
+            setReportError(errorNotice(e, 'Failed to load compliance data'));
         } finally {
             setReportLoading(false);
         }
@@ -206,7 +210,7 @@ const Compliance: React.FC = () => {
             setVulnerabilities(items);
             setVulnSummary(sum);
         } catch (e: any) {
-            setVulnError(e.message || 'Failed to load findings');
+            setVulnError(errorNotice(e, 'Failed to load findings'));
         } finally {
             setVulnLoading(false);
         }
@@ -233,7 +237,11 @@ const Compliance: React.FC = () => {
         }
     };
 
+    // An inverted range is accepted by the server and yields a CSV with no history rows at all.
+    const rangeInverted = !!(dateFrom && dateTo && dateFrom > dateTo);
+
     const handleExportCsv = async () => {
+        if (rangeInverted) { showToast('warning', 'The "from" date is after the "to" date; the export would contain no history.'); return; }
         setExporting(true);
         try {
             const body: any = { fromDate: dateFrom, toDate: dateTo };
@@ -301,8 +309,9 @@ const Compliance: React.FC = () => {
                         <input
                             type="date"
                             value={dateFrom}
+                            max={dateTo || undefined}
                             onChange={(e) => setDateFrom(e.target.value)}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
@@ -310,8 +319,9 @@ const Compliance: React.FC = () => {
                         <input
                             type="date"
                             value={dateTo}
+                            min={dateFrom || undefined}
                             onChange={(e) => setDateTo(e.target.value)}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
@@ -326,7 +336,8 @@ const Compliance: React.FC = () => {
                     </div>
                     <button
                         onClick={handleExportCsv}
-                        disabled={exporting}
+                        disabled={exporting || rangeInverted}
+                        title={rangeInverted ? 'The "from" date is after the "to" date' : undefined}
                         className="px-4 py-2 text-sm bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors disabled:opacity-50"
                     >
                         {exporting ? 'Exporting...' : 'Export Report (CSV)'}
@@ -335,11 +346,14 @@ const Compliance: React.FC = () => {
                         Issuance/revocation history in the export is bounded by this range.
                     </span>
                 </div>
+                {rangeInverted && (
+                    <FieldHint tone="warn" className="mt-2">The "from" date is later than the "to" date, so the range contains no days and the export would hold no issuance or revocation history. Swap the two dates.</FieldHint>
+                )}
             </div>
 
             {/* Report load error */}
             {reportError && (
-                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 text-red-800 dark:text-red-300">{reportError}</div>
+                <InlineNotice notice={reportError} />
             )}
 
             {/* Inventory Summary */}
@@ -391,6 +405,10 @@ const Compliance: React.FC = () => {
                     <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
                 ) : (
                     <div className="space-y-1">
+                        {/* Cumulative buckets: a certificate expiring in 20 days is counted in every row. The
+                            inventory page uses exclusive bands (0–30, 31–60, 61–90), so the two pages word
+                            their labels differently on purpose. */}
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-1">Each row is cumulative: "within 90 days" includes everything already counted within 30 and 60 days.</p>
                         {forecastEntries.map(item => {
                             const pct = forecastMax > 0 ? (item.count / forecastMax) * 100 : 0;
                             return (
@@ -412,7 +430,7 @@ const Compliance: React.FC = () => {
                 <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Findings</h2>
 
                 {vulnError && (
-                    <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 text-red-800 dark:text-red-300">{vulnError}</div>
+                    <InlineNotice notice={vulnError} />
                 )}
 
                 {/* Summary cards */}

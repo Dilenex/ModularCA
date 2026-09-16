@@ -1,4 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -10,7 +13,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/UserQuorumPanel';
 import KerberosRealmsPanel from '../components/KerberosRealmsPanel';
 import { Tenant, CaQuotaRow, formatDate, numInput } from './TenantsAndQuotas';
-import { labelClass as labelCls } from '@shared/components/forms';
+import { labelClass as labelCls, FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 import type { ValidityCeilingBehavior } from '@shared/generated';
 
@@ -33,7 +36,7 @@ const TenantDetail: React.FC = () => {
     const [tenant, setTenant] = useState<Tenant | null>(null);
     const [quorum, setQuorum] = useState<TenantQ | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; confirmClass?: string; action: () => Promise<void> } | null>(null);
 
     // ── edit buffers (seeded from source on load / Cancel) ──
@@ -75,7 +78,7 @@ const TenantDetail: React.FC = () => {
             const q: TenantQ | null = quorumData ? ((quorumData.tenants || []).find((x: TenantQ) => x.id === id) || null) : null;
             setTenant(t); setQuorum(q); setError(null);
             if (t) seed(t, q);
-        }).catch((err) => setError(err.message || 'Failed to load tenant'))
+        }).catch((err) => setError(errorNotice(err, 'Failed to load tenant')))
             .finally(() => setLoading(false));
     }, [id, seed]);
 
@@ -84,7 +87,7 @@ const TenantDetail: React.FC = () => {
     const resetEdits = useCallback(() => { if (tenant) seed(tenant, quorum); }, [tenant, quorum, seed]);
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!tenant) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Tenant not found.</p>
@@ -242,7 +245,9 @@ const TenantDetail: React.FC = () => {
                                 {form.requireKeyCeremony && (
                                     <div><label className={labelCls}>Required Approvals</label>
                                         <input inputMode="numeric" value={form.ceremonyRequiredApprovals}
-                                            onChange={(e) => setForm({ ...form, ceremonyRequiredApprovals: parseInt(e.target.value.replace(/\D/g, '') || '1', 10) || 1 })} className={numInput} /></div>
+                                            onChange={(e) => setForm({ ...form, ceremonyRequiredApprovals: parseInt(e.target.value.replace(/\D/g, '') || '1', 10) || 1 })} className={numInput} />
+                                        <FieldHint>Approvals from other tenant admins before a CA key ceremony may execute. The initiator is always excluded, so the effective minimum is 1 other approver.</FieldHint>
+                                    </div>
                                 )}
                             </div>
                             {downgrade && (
@@ -264,7 +269,7 @@ const TenantDetail: React.FC = () => {
                                     ? 'Refuse admin requests (protocol enrollments still shorten)'
                                     : 'Shorten and warn')
                                 : 'n/a — no ceiling set'} />
-                            <DetailField label="Key Ceremony Required" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approvals)` : 'No'} />
+                            <DetailField label="Key Ceremony Required" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No'} />
                             <DetailField label="Created" value={formatDate(t.createdAt)} />
                         </div>
                     )}

@@ -201,6 +201,7 @@ public class AdminGroupController(
     /// </summary>
     [HttpPost]
     [Authorize(Policy = "SystemAdmin")]
+    [RequireStepUp(StepUpOps.CreateGroup)]
     public async Task<IActionResult> Create([FromBody] CreateGroupRequest request)
     {
         await _currentUser.EnsureLoadedAsync();

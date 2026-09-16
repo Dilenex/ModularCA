@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, API_BASE } from '../../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -54,7 +56,7 @@ const MySshCertificates: React.FC = () => {
     const { showToast } = useToast();
     const [certificates, setCertificates] = useState<SshCertificate[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [endpointUnavailable, setEndpointUnavailable] = useState(false);
 
     useEffect(() => {
@@ -64,7 +66,7 @@ const MySshCertificates: React.FC = () => {
                 if (err.message?.includes('404') || err.message?.includes('Not Found')) {
                     setEndpointUnavailable(true);
                 } else {
-                    setError(err.message);
+                    setError(errorNotice(err, 'The request failed.'));
                 }
             })
             .finally(() => setLoading(false));

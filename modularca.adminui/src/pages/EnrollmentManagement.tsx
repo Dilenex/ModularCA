@@ -1,8 +1,13 @@
+import { useToast } from '@shared/context/ToastContext';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import React, { useEffect, useState, useMemo } from 'react';
 import { apiGet, apiPost, apiDelete } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
@@ -37,17 +42,17 @@ interface CreatedCmp {
 }
 
 const EnrollmentManagement: React.FC = () => {
-    const { caId: scopeCaId, inScope } = useScope();
+    const { caId: scopeCaId, inScope, scope } = useScope();
     const [tokens, setTokens] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
 
     // One form, one button. The selected protocol decides which fields show and which endpoint
     // the Generate button calls; see components/enrollmentForm for the branching.
     const [showCreate, setShowCreate] = useState(false);
     const [form, setForm] = useState<EnrollmentFormState>(emptyEnrollmentForm());
-    const [formError, setFormError] = useState<string | null>(null);
+    const [formError, setFormError] = useState<NoticeInput | null>(null);
     const [submitting, setSubmitting] = useState(false);
 
     // Exactly one of these is set after a successful create, matching the selected protocol's kind.
@@ -66,7 +71,7 @@ const EnrollmentManagement: React.FC = () => {
             // Under a CA scope, only the credentials bound to that CA.
             setTokens(scopeCaId ? all.filter((t) => inScope(t.certificateAuthorityId || t.caId)) : all);
         } catch (err: any) {
-            setError(err.message || 'Failed to load tokens');
+            setError(errorNotice(err, 'Failed to load tokens'));
         }
         setLoading(false);
     };
@@ -124,21 +129,28 @@ const EnrollmentManagement: React.FC = () => {
             setShowCreate(false);
             loadTokens();
         } catch (err: any) {
-            setFormError(err?.message || 'Failed to create the enrollment credential');
+            setFormError(errorNotice(err, 'Failed to create the enrollment credential'));
         } finally {
             setSubmitting(false);
         }
     };
 
+    const { showToast } = useToast();
     const performBulkRevoke = async () => {
         if (!confirmBulk) return;
         setConfirmLoading(true);
         try {
+            // One failure must not stop the rest, and it must not pass unnoticed either: a
+            // credential the operator believes revoked and that is still live is the worst outcome.
+            let ok = 0;
+            const failed: string[] = [];
             for (const t of confirmBulk) {
                 if (t.isRevoked) continue;
-                try { await apiDelete(`/api/v1/admin/enrollment-tokens/${t.id}`); }
-                catch { /* one failure should not stop the rest */ }
+                try { await apiDelete(`/api/v1/admin/enrollment-tokens/${t.id}`); ok++; }
+                catch (err: any) { failed.push(`${t.name || t.id}: ${err?.message || 'failed'}`); }
             }
+            if (failed.length === 0) showToast('success', `Revoked ${ok} credential${ok !== 1 ? 's' : ''}.`);
+            else showToast('error', `Revoked ${ok}, failed ${failed.length}. Still live: ${failed.join('; ')}`);
             loadTokens();
         } finally {
             setConfirmLoading(false);
@@ -274,7 +286,7 @@ const EnrollmentManagement: React.FC = () => {
                         </p>
                     )}
 
-                    {formError && <p className="text-xs text-red-700 dark:text-red-400">{formError}</p>}
+                    {formError && <InlineNotice notice={formError} variant="line" />}
                     <button onClick={handleGenerate} disabled={submitting || kind === null}
                         className="px-4 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
                         {submitting ? 'Generating…' : 'Generate'}
@@ -350,7 +362,7 @@ const EnrollmentManagement: React.FC = () => {
                 rows={tokens}
                 loading={loading}
                 error={error}
-                empty="No active tokens"
+                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No active tokens'}
                 {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}

@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost } from '../../api/client';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
@@ -102,7 +105,7 @@ const RequestCertificate: React.FC = () => {
 
     // Parsed CSR data
     const [parsedCsr, setParsedCsr] = useState<ParseCsrResponse | null>(null);
-    const [parseError, setParseError] = useState<string | null>(null);
+    const [parseError, setParseError] = useState<NoticeInput | null>(null);
     const [parsing, setParsing] = useState(false);
 
     // Editable fields
@@ -120,7 +123,7 @@ const RequestCertificate: React.FC = () => {
 
     // Submit state
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [success, setSuccess] = useState<{ message: string; requiresApproval: boolean; hasPrivateKey?: boolean } | null>(null);
 
     // --- Initial data load ---
@@ -162,7 +165,7 @@ const RequestCertificate: React.FC = () => {
             setSanList(result.sans.length > 0 ? result.sans.map(s => ({ ...s })) : []);
         } catch (err: any) {
             setParsedCsr(null); setSubjectFields({}); setSanList([]);
-            setParseError(err.message || 'Failed to parse CSR');
+            setParseError(errorNotice(err, 'Failed to parse CSR'));
         } finally { setParsing(false); }
     }, []);
 
@@ -352,7 +355,7 @@ const RequestCertificate: React.FC = () => {
 
             setCsrPem(''); setFileName(''); setParsedCsr(null); setSubjectFields({}); setSanList([]); setValidationResult(null);
         } catch (err: any) {
-            setError(err.message || 'Certificate request failed');
+            setError(errorNotice(err, 'Certificate request failed'));
         } finally { setLoading(false); }
     };
 
@@ -466,7 +469,7 @@ const RequestCertificate: React.FC = () => {
                     )}
 
                     {parsing && <p className="text-xs text-gray-600 dark:text-gray-400">Parsing CSR...</p>}
-                    {parseError && <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3"><p className="text-sm text-red-800 dark:text-red-300">{parseError}</p></div>}
+                    {parseError && <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3"><InlineNotice notice={parseError} variant="line" /></div>}
 
                     {parsedCsr && (
                         <div className="flex flex-wrap gap-2">
@@ -637,7 +640,7 @@ const RequestCertificate: React.FC = () => {
                 {hasValidationErrors && <span className="text-xs text-red-800 dark:text-red-400">Fix validation errors before submitting.</span>}
             </div>
 
-            {error && <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4"><p className="text-sm text-red-800 dark:text-red-300">{error}</p></div>}
+            {error && <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4"><InlineNotice notice={error} variant="line" /></div>}
 
             {success && (
                 <div className={`${success.requiresApproval ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700' : 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700'} border rounded-lg p-4 space-y-3`}>

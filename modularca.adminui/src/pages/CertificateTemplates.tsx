@@ -1,16 +1,20 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
 
 const TEMPLATE_TABS = ['X.509 CA', 'SSH CA'] as const;
@@ -49,7 +53,7 @@ const X509TemplatesTab: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [templates, setTemplates] = useState<CertificateTemplate[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
 
@@ -75,14 +79,14 @@ const X509TemplatesTab: React.FC = () => {
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
 
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, scope } = useScope();
 
     const load = () => {
         setLoading(true);
         setError(null);
         apiGet<any>(`/api/v1/admin/templates${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
             .then((data) => setTemplates(extractList(data)))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -253,12 +257,18 @@ const X509TemplatesTab: React.FC = () => {
                                 className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
                             Enabled
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.offerToWindows}
-                                onChange={(e) => setForm({ ...form, offerToWindows: e.target.checked })}
-                                className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
-                            Offer to Windows clients (MSAE)
-                        </label>
+                        <div>
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={form.offerToWindows}
+                                    onChange={(e) => setForm({ ...form, offerToWindows: e.target.checked })}
+                                    aria-describedby="template-msae-hint"
+                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                Offer to Windows clients (MSAE)
+                            </label>
+                            <FieldHint id="template-msae-hint">
+                                Windows autoenrollment (MSAE) is the only protocol that issues from a template: it lists the offered ones through the policy service and enrolls against them. ACME, EST, SCEP, CMP and manual requests pick profiles directly; a template left unoffered is reachable by nothing.
+                            </FieldHint>
+                        </div>
                         {form.offerToWindows && (
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
                                 <input type="checkbox" checked={form.msaeMachineType}
@@ -289,16 +299,18 @@ const X509TemplatesTab: React.FC = () => {
 
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
                 {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+                {error && <InlineNotice notice={error} />}
                 {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-gray-600 text-center">No certificate templates found</div>
+                    <div className="p-4 text-sm text-gray-600 text-center">
+                        {scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                    </div>
                 )}
                 {!loading && !error && templates.length > 0 && (
                     <DataTable<CertificateTemplate>
                         tableId="templates-x509"
                         title="Templates"
                         rows={templates}
-                        empty="No templates"
+                        empty={scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
                         sort={{ key: 'name', dir: 'asc' }}
                         {...recordTableProps(record)}
                     />
@@ -335,7 +347,7 @@ const SshTemplatesTab: React.FC = () => {
     const { showToast } = useToast();
     const [templates, setTemplates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [creating, setCreating] = useState(false);
 
@@ -365,7 +377,7 @@ const SshTemplatesTab: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/ssh/templates')
             .then((data) => setTemplates(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 
@@ -534,7 +546,7 @@ const SshTemplatesTab: React.FC = () => {
 
             <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
                 {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+                {error && <InlineNotice notice={error} />}
                 {!loading && !error && templates.length === 0 && (
                     <div className="p-4 text-sm text-gray-600 text-center">No SSH certificate templates found</div>
                 )}

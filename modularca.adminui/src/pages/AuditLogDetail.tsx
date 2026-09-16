@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -10,7 +13,7 @@ function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'network']);
+const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'msae', 'network']);
 // Keys rendered with their own formatting / not in the generic dump.
 const TIMESTAMP_KEYS = new Set(['timestamp']);
 
@@ -40,7 +43,7 @@ const AuditLogDetail: React.FC = () => {
 
     const [log, setLog] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         if (!TYPES.has(type)) { setError(`Unknown audit type "${type}".`); setLoading(false); return; }
@@ -50,14 +53,14 @@ const AuditLogDetail: React.FC = () => {
         const path = type === 'general' ? `/api/v1/admin/audit/${id}` : `/api/v1/admin/audit/${type}/${id}`;
         apiGet<any>(path)
             .then((data) => { if (!cancelled) { setLog(data); setLoading(false); } })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load audit entry'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load audit entry')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [type, id]);
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
+            <InlineNotice notice={error} variant="line" />
             <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
         </div>
     );

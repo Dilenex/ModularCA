@@ -1,4 +1,7 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
@@ -8,7 +11,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { caRowId, caDisplayName } from './profileHelpers';
+import { caRowId, caDisplayName, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint } from './profileHelpers';
 import { inputClass, labelClass } from '@shared/components/forms';
 import {
     RequestProfileRulesEditor, emptyRules, parseRules, serializeRules,
@@ -59,7 +62,7 @@ const RequestProfileDetail: React.FC = () => {
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [resolvedProfile, setResolvedProfile] = useState<any | null>(null);
@@ -83,6 +86,8 @@ const RequestProfileDetail: React.FC = () => {
     const [initialForm, setInitialForm] = useState(emptyForm);
 
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
+    // Either half of the inheritance pair on its own is a setting the server accepts and ignores.
+    const inheritanceInconsistent = inheritancePairInconsistent(editForm.inheritsFromId, editForm.inheritanceEnabled);
 
     useEffect(() => {
         let cancelled = false;
@@ -113,7 +118,7 @@ const RequestProfileDetail: React.FC = () => {
             setCertProfiles(Array.isArray(cpData) ? cpData : (cpData.items || cpData.profiles || []));
             setAuthorities(Array.isArray(authData) ? authData : (authData.items || authData.authorities || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load request profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load request profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -181,7 +186,7 @@ const RequestProfileDetail: React.FC = () => {
     };
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">Request profile not found.</p>
@@ -201,12 +206,16 @@ const RequestProfileDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name || !!rulesError}
+            saveDisabled={!dirty || !editForm.name || !!rulesError || inheritanceInconsistent}
             actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Request Profile">
                     <div className="space-y-3 max-w-3xl">
+                        <SubmitBlockedHint reasons={[
+                            !editForm.name && 'A name is required before the profile can be saved.',
+                            inheritanceInconsistent && 'Save is disabled until the inheritance settings agree: either choose a parent and turn inheritance on, or clear both.',
+                        ]} />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
                             <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
@@ -236,6 +245,7 @@ const RequestProfileDetail: React.FC = () => {
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
                             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
+                        <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
                         <RequestProfileRulesEditor
                             value={editForm.rules}
                             onChange={(rules) => setEditForm({ ...editForm, rules })}

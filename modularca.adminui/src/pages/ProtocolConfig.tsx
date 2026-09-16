@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Link } from 'react-router-dom';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiPutWithMfa } from '../api/client';
@@ -21,7 +24,7 @@ const ProtocolConfig: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const { caId: scopeCaId } = useScope();
     const [selectedCaId, setSelectedCaId] = useState(scopeCaId ?? '');
     // Follow the sidebar scope: picking a CA there selects it here too.
@@ -72,7 +75,7 @@ const ProtocolConfig: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                setError(err.message || 'Failed to load data');
+                setError(errorNotice(err, 'Failed to load data'));
                 setLoading(false);
             });
     }, []);
@@ -81,8 +84,10 @@ const ProtocolConfig: React.FC = () => {
         if (!selectedCaId) return;
         setConfigLoading(true);
         apiGet<any>(`/api/v1/admin/protocol-configs/${selectedCaId}`)
-            .then((data) => setProtocolConfigs(Array.isArray(data) ? data : []))
-            .catch(() => setProtocolConfigs([]))
+            .then((data) => { setProtocolConfigs(Array.isArray(data) ? data : []); setError(null); })
+            // A failed load must not paint every protocol "Not Configured": that reads as a true
+            // state and sends the operator to re-enable things that are fine.
+            .catch((err) => { setProtocolConfigs([]); setError(errorNotice(err, 'Could not load the protocol configuration for this CA.')); })
             .finally(() => setConfigLoading(false));
     }, [selectedCaId]);
 
@@ -120,7 +125,7 @@ const ProtocolConfig: React.FC = () => {
                 </div>
                 <div className="p-4">
                     {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading authorities...</p>}
-                    {error && <p className="text-sm text-red-800 dark:text-red-400">{error}</p>}
+                    {error && <InlineNotice notice={error} variant="line" />}
                     {!loading && !error && (
                         <select
                             value={selectedCaId}

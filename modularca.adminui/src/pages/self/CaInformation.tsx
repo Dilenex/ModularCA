@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { API_BASE, apiGetAllPages } from '../../api/client';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
+import { apiBlob, apiGetAllPages } from '../../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -33,6 +35,30 @@ function parseCn(dn: string): string {
     return match ? match[1] : dn || '-';
 }
 
+/**
+ * The SHA-256 fingerprint of the CA certificate, read from the `thumbprints` JSON the API
+ * attaches to every certificate (`{"SHA 1": "...", "SHA 256": "..."}`). This page exists so a
+ * user can check, out of band, that the CA they are about to trust is the one the operator
+ * published; the fingerprint is the value that check is made against. Null when absent.
+ */
+function sha256Thumbprint(cert: { thumbprints?: string | null }): string | null {
+    if (!cert.thumbprints) return null;
+    try {
+        const obj = JSON.parse(cert.thumbprints);
+        if (typeof obj !== 'object' || obj === null) return null;
+        const key = Object.keys(obj).find((k) => k.replace(/[\s-]/g, '').toUpperCase() === 'SHA256');
+        const v = key ? String(obj[key]) : '';
+        return /^[0-9A-Fa-f]{64}$/.test(v) ? v.toUpperCase() : null;
+    } catch {
+        return null;
+    }
+}
+
+/** AB:CD:... grouping, the form openssl and browsers print, so it can be compared by eye. */
+function colonised(hex: string): string {
+    return hex.match(/.{2}/g)?.join(':') ?? hex;
+}
+
 interface CaCertificate {
     certificateId: string;
     serialNumber: string;
@@ -45,13 +71,14 @@ interface CaCertificate {
     signatureAlgorithm: string;
     isCA: boolean;
     revoked: boolean;
+    thumbprints?: string | null;
 }
 
 const CaInformation: React.FC = () => {
     const { showToast } = useToast();
     const [authorities, setAuthorities] = useState<CaCertificate[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         // The endpoint returns a pagination envelope — { total, page, pageSize, totalPages,
@@ -62,7 +89,7 @@ const CaInformation: React.FC = () => {
         // ...and it pages at 25, so taking only the first response also capped the list.
         apiGetAllPages<CaCertificate>('/api/v1/user/authorities')
             .then(({ items }) => setAuthorities(items))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -78,10 +105,12 @@ const CaInformation: React.FC = () => {
 
     const handleDownloadPem = async (cert: CaCertificate) => {
         try {
-            const resp = await fetch(`${API_BASE}/api/v1/public/ca/${cert.serialNumber}`, {
+            // The public CA endpoint is the one that serves CA certificates (the user-scoped
+            // /file route hides them); apiBlob still routes it through the shared client so the
+            // same base URL, refresh and error handling apply as for the chain below.
+            const resp = await apiBlob(`/api/v1/public/ca/${cert.serialNumber}`, {
                 headers: { Accept: 'application/x-pem-file' }
             });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const pem = await resp.text();
             const name = parseCn(cert.subjectDN).replace(/[^a-zA-Z0-9._-]/g, '_');
             downloadBlob(pem, `${name}.pem`, 'application/x-pem-file');
@@ -92,10 +121,9 @@ const CaInformation: React.FC = () => {
 
     const handleDownloadDer = async (cert: CaCertificate) => {
         try {
-            const resp = await fetch(`${API_BASE}/api/v1/public/ca/${cert.serialNumber}`, {
+            const resp = await apiBlob(`/api/v1/public/ca/${cert.serialNumber}`, {
                 headers: { Accept: 'application/pkix-cert' }
             });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const blob = await resp.blob();
             const name = parseCn(cert.subjectDN).replace(/[^a-zA-Z0-9._-]/g, '_');
             downloadBlob(blob, `${name}.cer`, 'application/pkix-cert');
@@ -106,10 +134,7 @@ const CaInformation: React.FC = () => {
 
     const handleDownloadChain = async (cert: CaCertificate) => {
         try {
-            const resp = await fetch(`${API_BASE}/api/v1/user/authorities/${cert.serialNumber}/chain`, {
-                headers: { Authorization: `Bearer ${localStorage.getItem('authToken')}` }
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const resp = await apiBlob(`/api/v1/user/authorities/${cert.serialNumber}/chain`);
             const chainPem = await resp.text();
             const name = parseCn(cert.subjectDN).replace(/[^a-zA-Z0-9._-]/g, '_');
             downloadBlob(chainPem, `${name}-chain.pem`, 'application/x-pem-file');
@@ -142,6 +167,16 @@ const CaInformation: React.FC = () => {
             render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{parseCn(c.subjectDN)}</span>,
         },
         {
+            key: 'sha256', header: 'SHA-256 Fingerprint', defaultWidth: 260,
+            exportValue: (c) => sha256Thumbprint(c) ?? '',
+            render: (c) => {
+                const fp = sha256Thumbprint(c);
+                return fp
+                    ? <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate" title={colonised(fp)}>{colonised(fp)}</span>
+                    : <span className="text-xs text-gray-500">not available</span>;
+            },
+        },
+        {
             key: 'expires', header: 'Expires', defaultWidth: 210, truncate: false,
             exportValue: (c) => formatDate(c.notAfter),
             render: (c) => {
@@ -157,11 +192,29 @@ const CaInformation: React.FC = () => {
         },
     ];
 
+    const copyFingerprint = (fp: string) =>
+        navigator.clipboard.writeText(colonised(fp)).then(() => showToast('success', 'Fingerprint copied')).catch(() => showToast('error', 'Could not copy'));
+
     const renderExpanded = (cert: CaCertificate) => {
         const status = caStatus(cert);
         const type = caType(cert);
+        const fp = sha256Thumbprint(cert);
         return (
             <div className="space-y-3">
+                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">SHA-256 fingerprint</span>
+                        {fp && (
+                            <button onClick={() => copyFingerprint(fp)} className="px-2 py-0.5 text-[11px] bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Copy</button>
+                        )}
+                    </div>
+                    {fp ? (
+                        <code className="block font-mono text-xs text-gray-900 dark:text-white break-all select-all">{colonised(fp)}</code>
+                    ) : (
+                        <span className="text-xs text-gray-500">The server did not include a fingerprint for this certificate.</span>
+                    )}
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">Compare this with the value your administrator published through another channel before trusting the download. Run <code className="font-mono">openssl x509 -noout -fingerprint -sha256 -in file.pem</code> on the file to check it matches.</p>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <DetailField label="Subject" value={cert.subjectDN} />
                     <DetailField label="Issuer" value={cert.issuer} />

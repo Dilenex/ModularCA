@@ -49,6 +49,7 @@ public static class StepUpOps
     public const string UpdateUserGroups = "update-user-groups";
 
     // Group lifecycle (CA-scoped authorization groups)
+    public const string CreateGroup = "create-group";
     public const string DeleteGroup = "delete-group";
     public const string UpdateGroup = "update-group";
 
@@ -234,7 +235,7 @@ public static class StepUpOps
         UpdateCertAcl,
         CreateUser, UpdateUser, DeleteUser,
         AddGroupMember, RemoveGroupMember, UpdateUserGroups,
-        DeleteGroup, UpdateGroup,
+        CreateGroup, DeleteGroup, UpdateGroup,
         GrantUserCapability, RevokeUserCapability,
         CreateRole, UpdateRole, DeleteRole,
         AssignRole, UnassignRole,

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate, Link } from 'react-router-dom';
 import { apiPost, apiBlob, apiPostWithMfa, apiGetAllPages } from '../../api/client';
 import { useStepUp } from '../../components/StepUpMfaContext';
@@ -8,6 +10,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { inputClassNarrow as inputClass } from '@shared/components/forms';
+import { RevocationReasonHint } from '../CertificateDetail';
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in
 // sync with UserCertificateController.SelfRevokeAllowedReasons on the backend — CA-level reasons
@@ -48,7 +51,7 @@ const MyCertificates: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [certificates, setCertificates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'revoked' | 'expired'>('all');
 
     // PFX export modal state
@@ -70,7 +73,7 @@ const MyCertificates: React.FC = () => {
         // below does its own client-side paging, so a plain apiGet capped the whole view at 25.
         apiGetAllPages<any>('/api/v1/user/certificates')
             .then(({ items }) => setCertificates(items))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -403,6 +406,7 @@ const MyCertificates: React.FC = () => {
                                     <option key={r.value} value={r.value}>{r.label}</option>
                                 ))}
                             </select>
+                            <RevocationReasonHint reason={revokeReason} />
                         </div>
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setRevokeTarget(null)} disabled={revokeLoading}

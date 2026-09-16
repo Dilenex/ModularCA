@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
@@ -6,6 +8,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { FieldHint } from '@shared/components/forms';
 
 interface TrustAnchor {
     id: string;
@@ -36,6 +39,13 @@ function parseThumbprints(raw: string | null | undefined): Record<string, string
         // not JSON, return as single entry
     }
     return { thumbprint: raw };
+}
+
+/** The SHA-256 thumbprint out of the stored thumbprint set, whichever key spelling the server used. */
+function sha256Thumbprint(raw: string | null | undefined): string | null {
+    const all = parseThumbprints(raw);
+    const key = Object.keys(all).find((k) => /sha[-_]?256/i.test(k));
+    return key ? all[key] : null;
 }
 
 /* --- Expanded detail panel (accordion) --- */
@@ -75,14 +85,21 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
     const [label, setLabel] = useState('');
     const [description, setDescription] = useState('');
     const [importing, setImporting] = useState(false);
-    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string; subject?: string; thumbprint?: string | null } | null>(null);
 
     const handleImport = async () => {
         setImporting(true);
         setMessage(null);
         try {
-            await apiPost('/api/v1/admin/trust-anchors', { certificate, label, description });
-            setMessage({ type: 'success', text: 'Trust anchor imported successfully.' });
+            const result = await apiPost<TrustAnchor>('/api/v1/admin/trust-anchors', { certificate, label, description });
+            // Echo what was just trusted so the thumbprint can be checked against the one obtained
+            // out of band; a bare "imported successfully" gives nothing to compare.
+            setMessage({
+                type: 'success',
+                text: 'Trust anchor imported. Compare this SHA-256 thumbprint with the one you obtained out of band; if they differ, disable or delete the anchor now.',
+                subject: result?.subjectDN,
+                thumbprint: sha256Thumbprint(result?.thumbprints) ?? Object.values(parseThumbprints(result?.thumbprints))[0] ?? null,
+            });
             setCertificate(''); setLabel(''); setDescription('');
             onImported();
         } catch (err: any) {
@@ -101,6 +118,9 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
             </button>
             {expanded && (
                 <div className="px-4 pb-4 space-y-3">
+                    <FieldHint tone="warn">
+                        Importing makes this certificate an authority the whole system trusts: every certificate chaining to it is accepted wherever trust anchors are consulted. Verify its SHA-256 thumbprint against a copy obtained out of band (from the issuing organisation directly, not from the same channel the PEM came through) before importing. The thumbprint is shown again after import.
+                    </FieldHint>
                     <div>
                         <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">PEM Certificate</label>
                         <textarea value={certificate} onChange={(e) => setCertificate(e.target.value)} rows={8}
@@ -123,10 +143,14 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
                         </div>
                     </div>
                     {message && (
-                        <div className={`text-xs px-3 py-2 rounded border ${message.type === 'success'
+                        <div className={`text-xs px-3 py-2 rounded border space-y-1 ${message.type === 'success'
                             ? 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
                             : 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700'}`}>
-                            {message.text}
+                            <div>{message.text}</div>
+                            {message.subject && <div>Subject: <span className="font-mono break-all">{message.subject}</span></div>}
+                            {message.type === 'success' && (
+                                <div>SHA-256: <span className="font-mono break-all">{message.thumbprint || 'not returned by the server; open the anchor in the list to read it'}</span></div>
+                            )}
                         </div>
                     )}
                     <button onClick={handleImport} disabled={importing || !certificate.trim()}
@@ -144,7 +168,7 @@ const TrustAnchors: React.FC = () => {
     const { showToast } = useToast();
     const [anchors, setAnchors] = useState<TrustAnchor[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     const [confirmBulk, setConfirmBulk] = useState<TrustAnchor[] | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
@@ -154,7 +178,7 @@ const TrustAnchors: React.FC = () => {
         setError(null);
         apiGet<any>('/api/v1/admin/trust-anchors')
             .then((data) => setAnchors(Array.isArray(data) ? data : (data.items || data.trustAnchors || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     };
 

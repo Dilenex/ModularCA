@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
-import { ToggleField, inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, ToggleField, inputClass, labelClass } from '@shared/components/forms';
+import ConfirmModal from './ConfirmModal';
 import { StepUpOps } from '@shared/generated';
 import AuditTable from './AuditTable';
 
@@ -38,7 +41,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
     const [users, setUsers] = useState<UserOption[]>([]);
     const [tenantCaLabels, setTenantCaLabels] = useState<string[]>(caLabels);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [adding, setAdding] = useState(false);
     const [form, setForm] = useState(blankRealm);
     const [busy, setBusy] = useState(false);
@@ -47,7 +50,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
         setLoading(true);
         apiGet<Realm[]>(base)
             .then((r) => { setRealms(Array.isArray(r) ? r : []); setError(null); })
-            .catch((e) => setError(e.message || 'Failed to load realms'))
+            .catch((e) => setError(errorNotice(e, 'Failed to load realms')))
             .finally(() => setLoading(false));
     }, [base]);
 
@@ -137,7 +140,10 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
                         </div>
                         <div>
                             <label className={labelClass}>Service principal *</label>
-                            <input className={`${inputClass} font-mono`} value={form.servicePrincipal} onChange={(e) => setForm({ ...form, servicePrincipal: e.target.value })} />
+                            <input className={`${inputClass} font-mono`} value={form.servicePrincipal} onChange={(e) => setForm({ ...form, servicePrincipal: e.target.value })} aria-describedby="kerberos-spn-hint" placeholder="HTTP/ca.corp.example.com" />
+                            <FieldHint id="kerberos-spn-hint">
+                                The SPN on the AD service account, in service/host.fqdn form, for example HTTP/ca.corp.example.com. It must match the account's setspn entry exactly; a mismatch shows up as a ticket-decryption failure, not a clear error.
+                            </FieldHint>
                         </div>
                         <div>
                             <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(create one under Users, Service identities)</span></label>
@@ -216,13 +222,25 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
         showToast('success', `Key version ${result.kvno} stored (${(result.encryptionTypes || []).length} types${result.retired ? `, ${result.retired} older retired` : ''}).`);
     });
 
-    const retire = (kvno: number) => run('Retire', async () => {
-        await apiPostWithMfa(`${path}/keys/${kvno}/retire`, {}, requireStepUp, StepUpOps.ManageKerberosRealm, realm.id);
+    const [confirm, setConfirm] = useState<{ title: string; message: React.ReactNode; label: string; action: () => void } | null>(null);
+
+    const retire = (kvno: number) => setConfirm({
+        title: `Retire key version ${kvno}?`,
+        message: `Tickets sealed under version ${kvno} are refused from now on. Machines still holding one keep failing until they fetch a new ticket, up to ten hours. Retire only a version the forest no longer issues under.`,
+        label: 'Retire key',
+        action: () => run('Retire', async () => {
+            await apiPostWithMfa(`${path}/keys/${kvno}/retire`, {}, requireStepUp, StepUpOps.ManageKerberosRealm, realm.id);
+        }),
     });
 
-    const remove = () => run('Delete', async () => {
-        await apiDeleteWithMfa(path, requireStepUp, StepUpOps.ManageKerberosRealm, realm.id);
-        showToast('success', `Realm ${realm.realm} deleted.`);
+    const remove = () => setConfirm({
+        title: `Delete the binding for ${realm.realm}?`,
+        message: 'Every key version is destroyed with it and every machine and user in this forest stops enrolling at once. To pause the forest instead, use Disable, which keeps the keys.',
+        label: 'Delete binding',
+        action: () => run('Delete', async () => {
+            await apiDeleteWithMfa(path, requireStepUp, StepUpOps.ManageKerberosRealm, realm.id);
+            showToast('success', `Realm ${realm.realm} deleted.`);
+        }),
     });
 
     const fetchScript = () => {
@@ -250,6 +268,8 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
 
     return (
         <div className="space-y-3">
+            <ConfirmModal isOpen={!!confirm} title={confirm?.title ?? ''} message={confirm?.message ?? ''} confirmLabel={confirm?.label} loading={busy}
+                onConfirm={() => { const a = confirm?.action; setConfirm(null); a?.(); }} onCancel={() => setConfirm(null)} />
             <div className="flex items-center justify-between gap-2 flex-wrap">
                 <StatusBadge status={realm.isEnabled ? 'enabled' : 'disabled'} label={realm.isEnabled ? 'Enabled' : 'Disabled'} />
                 <span className="flex items-center gap-1.5 flex-wrap">
@@ -334,7 +354,10 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                             </div>
                             <div>
                                 <label className={labelClass}>Key version (kvno)</label>
-                                <input className={inputClass} type="number" min={1} value={key.kvno} onChange={(e) => setKey({ ...key, kvno: e.target.value })} />
+                                <input className={inputClass} type="number" min={1} value={key.kvno} onChange={(e) => setKey({ ...key, kvno: e.target.value })} aria-describedby="kerberos-kvno-hint" />
+                                <FieldHint id="kerberos-kvno-hint">
+                                    The version Active Directory reports for the account (msDS-KeyVersionNumber). A wrong number is harmless because every stored version is tried, but the key table and refusal details read better when it matches.
+                                </FieldHint>
                             </div>
                             {key.source !== 'Keytab' && (
                                 <>

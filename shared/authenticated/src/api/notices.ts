@@ -120,3 +120,32 @@ export function errorNotices(err: unknown): Notice[] {
     const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
     return [{ severity: 'error', detail: message || 'The request failed.' }];
 }
+
+/**
+ * The message a step-up prompt rejects with when the operator closes it. Not a failure: nothing
+ * was attempted, so nothing should be shown.
+ */
+export const STEP_UP_CANCELLED = 'Step-up MFA cancelled';
+
+/**
+ * Whatever a `catch` block caught, as the one notice an inline surface shows, or null when the
+ * operator simply backed out of a step-up prompt.
+ *
+ * This is what replaces `setError(err.message || 'Failed to …')`. A refusal keeps its title,
+ * detail, remediation, code and correlation id, and any per-field messages become items under it,
+ * so the red block under a form carries everything the toast did. A plain client-side throw keeps
+ * its sentence, and an error with no message at all gets the caller's fallback, which is the same
+ * text the caller used to put after `||`.
+ */
+export function errorNotice(err: unknown, fallback: string): Notice | null {
+    const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+    if (message === STEP_UP_CANCELLED) return null;
+    const problem = (err as { problem?: ApiProblem } | null | undefined)?.problem;
+    if (problem && typeof problem.status === 'number' && typeof problem.title === 'string') {
+        const notice = problemNotice(problem);
+        const fieldItems = Object.entries(problem.fieldErrors ?? {}).map(([field, messages]) => `${field}: ${messages.join(' ')}`);
+        const items = [...(notice.items ?? []), ...fieldItems];
+        return items.length ? { ...notice, items } : notice;
+    }
+    return { severity: 'error', detail: message || fallback };
+}

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
@@ -15,7 +17,7 @@ function formatDate(d: string | null) {
 
 /** Converts an ISO-8601 period (e.g. "P1Y", "P90D") to a yyyy-MM-dd "max date" from today — the upper
  *  bound for the per-cert validity picker. Time components are ignored. Undefined if absent/unparseable. */
-function isoPeriodToMaxDate(iso?: string | null): string | undefined {
+export function isoPeriodToMaxDate(iso?: string | null): string | undefined {
     if (!iso) return undefined;
     const m = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?/.exec(iso);
     if (!m || (!m[1] && !m[2] && !m[3] && !m[4])) return undefined;
@@ -91,7 +93,7 @@ const CertificateRequests: React.FC = () => {
     const [requests, setRequests] = useState<any[]>([]);
     const [statusFilter, setStatusFilter] = useState<string>('Pending');
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Bulk approve/deny/issue — approve & deny carry one shared message; issue takes an optional
     // per-certificate "valid until" (within each cert's profile range).
@@ -108,7 +110,7 @@ const CertificateRequests: React.FC = () => {
         setError(null);
         apiGet<any[]>(`/api/v1/admin/requests${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
             .then((data) => { setRequests(Array.isArray(data) ? data : []); setLoading(false); })
-            .catch((err) => { setError(err.message || 'Failed to load requests'); setLoading(false); });
+            .catch((err) => { setError(errorNotice(err, 'Failed to load requests')); setLoading(false); });
     };
 
     useEffect(() => {

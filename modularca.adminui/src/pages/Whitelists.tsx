@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiPutWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
@@ -72,14 +75,14 @@ const Whitelists: React.FC = () => {
     const [whitelists, setWhitelists] = useState<Whitelist[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     // Modal / form state
     const [showModal, setShowModal] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [form, setForm] = useState<FormState>(emptyForm);
-    const [formError, setFormError] = useState<string | null>(null);
+    const [formError, setFormError] = useState<NoticeInput | null>(null);
     const [saving, setSaving] = useState(false);
 
     // Bulk-delete confirm modal state
@@ -108,7 +111,7 @@ const Whitelists: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                if (!cancelled) { setError(err.message || 'Failed to load whitelists'); setLoading(false); }
+                if (!cancelled) { setError(errorNotice(err, 'Failed to load whitelists')); setLoading(false); }
             });
 
         return () => { cancelled = true; };
@@ -165,7 +168,7 @@ const Whitelists: React.FC = () => {
             closeModal();
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {
-            setFormError(err.message || 'Failed to save whitelist');
+            setFormError(errorNotice(err, 'Failed to save whitelist'));
         } finally {
             setSaving(false);
         }
@@ -175,6 +178,7 @@ const Whitelists: React.FC = () => {
     /// Bulk enable/disable selected rules. Skips rows already in the target state, runs sequentially,
     /// and aborts the batch if the operator cancels a step-up prompt.
     /// </summary>
+    const [confirmToggle, setConfirmToggle] = useState<{ rows: Whitelist[]; enabled: boolean } | null>(null);
     const bulkSetEnabled = async (rows: Whitelist[], enabled: boolean) => {
         const targets = rows.filter((wl) => wl.isEnabled !== enabled);
         if (targets.length === 0) { showToast('info', `All selected are already ${enabled ? 'enabled' : 'disabled'}.`); return; }
@@ -280,8 +284,8 @@ const Whitelists: React.FC = () => {
     // Edit moved to the per-entry detail page (open via the drawer's "Open full page", then the
     // View/Edit toggle). The modal below is now create-only.
     const bulkActions: DataTableBulkAction<Whitelist>[] = [
-        { label: 'Enable', onClick: (rows) => bulkSetEnabled(rows, true) },
-        { label: 'Disable', onClick: (rows) => bulkSetEnabled(rows, false) },
+        { label: 'Enable', onClick: (rows) => setConfirmToggle({ rows, enabled: true }) },
+        { label: 'Disable', onClick: (rows) => setConfirmToggle({ rows, enabled: false }) },
         { label: 'Delete', variant: 'danger', enabledFor: (wl) => !wl.isSystemDefault, onClick: (rows) => setConfirmBulk(rows) },
     ];
 
@@ -379,7 +383,7 @@ const Whitelists: React.FC = () => {
                             </div>
                             {formError && (
                                 <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
-                                    <p className="text-sm text-red-800 dark:text-red-300">{formError}</p>
+                                    <InlineNotice notice={formError} variant="line" />
                                 </div>
                             )}
                         </div>
@@ -393,6 +397,28 @@ const Whitelists: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            <ConfirmModal
+
+                isOpen={!!confirmToggle}
+
+                title={confirmToggle?.enabled ? `Enable ${confirmToggle.rows.length} rule(s)?` : `Disable ${confirmToggle?.rows.length ?? 0} rule(s)?`}
+
+                message={confirmToggle?.enabled
+
+                    ? 'An enabled rule with an empty address list blocks every address for what it matches, including yours. Check that your own address is covered before enabling.'
+
+                    : 'Disabling a rule removes its protection immediately. If it was the rule letting you in, the next rule that matches decides, and a rule with no address list blocks everything.'}
+
+                confirmLabel={confirmToggle?.enabled ? 'Enable' : 'Disable'}
+
+                confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+
+                onConfirm={() => { const t = confirmToggle; setConfirmToggle(null); if (t) bulkSetEnabled(t.rows, t.enabled); }}
+
+                onCancel={() => setConfirmToggle(null)}
+
+            />
 
             <ConfirmModal
                 isOpen={!!confirmBulk}

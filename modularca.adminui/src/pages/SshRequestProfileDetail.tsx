@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -28,7 +31,7 @@ const SshRequestProfileDetail: React.FC = () => {
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -70,7 +73,7 @@ const SshRequestProfileDetail: React.FC = () => {
                 setInitialForm(seeded);
             }
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load SSH request profile'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load SSH request profile')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, refresh]);
 
@@ -120,7 +123,7 @@ const SshRequestProfileDetail: React.FC = () => {
         setEditForm({ ...editForm, [key]: editForm[key].includes(val) ? editForm[key].filter((x) => x !== val) : [...editForm[key], val] });
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
-    if (error) return <div className="p-6 text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">SSH request profile not found.</p>

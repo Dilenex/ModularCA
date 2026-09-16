@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
@@ -32,12 +34,12 @@ interface CertRequest {
 const CertificateRequests: React.FC = () => {
     const [requests, setRequests] = useState<CertRequest[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         apiGet<CertRequest[]>('/api/v1/user/requests')
             .then((data) => setRequests(Array.isArray(data) ? data : []))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 

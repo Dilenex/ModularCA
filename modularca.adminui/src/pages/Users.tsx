@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -52,7 +54,7 @@ const Users: React.FC = () => {
     const [users, setUsers] = useState<any[]>([]);
     const [allGroups, setAllGroups] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [search, setSearch] = useState('');
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', firstName: '', lastName: '', groupIds: [] as string[] });
@@ -72,7 +74,7 @@ const Users: React.FC = () => {
             setUsers(Array.isArray(usersData) ? usersData : (usersData.items || usersData.users || []));
             setAllGroups(Array.isArray(groupsData) ? groupsData : (groupsData.items || groupsData.groups || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load users'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load users')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
@@ -210,12 +212,12 @@ const Users: React.FC = () => {
 
             <DataTable<any>
                 tableId="users"
-                title="All Users"
+                title="Users"
                 rows={filteredUsers}
                 rowKey={(u) => u.id || u.username}
                 loading={loading}
                 error={error}
-                empty="No users found"
+                empty={search ? 'No users match this search' : 'No users found'}
                 columns={columns}
                 selectable
                 exportFileName="users"

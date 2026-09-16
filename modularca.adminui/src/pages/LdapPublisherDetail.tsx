@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
@@ -49,7 +52,7 @@ const LdapPublisherDetail: React.FC = () => {
 
     const [pub, setPub] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
 
     const [form, setForm] = useState({ ...emptyForm });
@@ -83,7 +86,7 @@ const LdapPublisherDetail: React.FC = () => {
                 }
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load publisher'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load publisher')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [id, caId, refresh]);
 
@@ -143,7 +146,7 @@ const LdapPublisherDetail: React.FC = () => {
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
+            <InlineNotice notice={error} variant="line" />
             <button onClick={() => navigate('/distribution?tab=ldap')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Distribution</button>
         </div>
     );
@@ -182,7 +185,7 @@ const LdapPublisherDetail: React.FC = () => {
                             <DetailField label="Host" value={`${pub.host}:${pub.port}`} mono />
                             <DetailField label="Status" value={pub.enabled ? 'Enabled' : 'Disabled'} />
                             <DetailField label="Use SSL" value={pub.useSsl ? 'Yes' : 'No'} />
-                            <DetailField label="Username" value={pub.username || '-'} />
+                            <DetailField label="Bind DN" value={pub.username || '-'} mono />
                             <DetailField label="Base DN" value={pub.baseDn} mono />
                             <DetailField label="User DN Template" value={pub.userDnTemplate || '-'} mono />
                             <DetailField label="Update Interval" value={pub.updateInterval || '-'} mono />
@@ -198,7 +201,7 @@ const LdapPublisherDetail: React.FC = () => {
                                 <div><label className={labelCls}>Name *</label><input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></div>
                                 <div><label className={labelCls}>Host *</label><input type="text" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} className={inputCls} /></div>
                                 <div><label className={labelCls}>Port</label><input type="text" inputMode="numeric" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value.replace(/\D/g, '') })} placeholder="636 for LDAPS, 389 plain" className={inputCls} /></div>
-                                <div><label className={labelCls}>Username</label><input type="text" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className={inputCls} /></div>
+                                <div><label className={labelCls}>Bind DN</label><input type="text" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="cn=admin,dc=example,dc=com" className={`${inputCls} font-mono`} /></div>
                                 <div><label className={labelCls}>Password</label><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="(unchanged)" className={inputCls} /></div>
                                 <div><label className={labelCls}>Base DN *</label><input type="text" value={form.baseDn} onChange={(e) => setForm({ ...form, baseDn: e.target.value })} className={inputCls} /></div>
                                 <div className="md:col-span-2"><label className={labelCls}>User DN Template</label><input type="text" value={form.userDnTemplate} onChange={(e) => setForm({ ...form, userDnTemplate: e.target.value })} placeholder="uid={email},ou=People,{baseDn}" className={inputCls} /></div>

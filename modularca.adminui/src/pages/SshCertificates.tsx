@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -7,6 +9,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -31,7 +34,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const [tenants, setTenants] = useState<any[]>([]);
     const [pendingCeremonies, setPendingCeremonies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [generating, setGenerating] = useState(false);
     const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', tenantId: '' });
     const [showGenForm, setShowGenForm] = useState(false);
@@ -58,7 +61,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load SSH CA keys');
+                    setError(errorNotice(err, 'Failed to load SSH CA keys'));
                     setLoading(false);
                 }
             });
@@ -66,8 +69,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
+    // A key that is neither a user nor a host CA is useless and the server would accept it anyway.
+    const caRoleMissing = !genForm.isUserCa && !genForm.isHostCa;
+
     const handleGenerate = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (caRoleMissing) return;
         setGenerating(true);
         try {
             const result: any = await apiPostWithMfa('/api/v1/admin/ssh/ca-keys', {
@@ -273,19 +280,26 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                             </select>
                         </div>
                     </div>
-                    <div className="flex gap-4">
-                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={genForm.isUserCa} onChange={(e) => setGenForm({ ...genForm, isUserCa: e.target.checked })} className="rounded" />
-                            User CA
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={genForm.isHostCa} onChange={(e) => setGenForm({ ...genForm, isHostCa: e.target.checked })} className="rounded" />
-                            Host CA
-                        </label>
+                    <div>
+                        <div className="flex gap-4">
+                            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={genForm.isUserCa} onChange={(e) => setGenForm({ ...genForm, isUserCa: e.target.checked })} className="rounded" />
+                                User CA
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={genForm.isHostCa} onChange={(e) => setGenForm({ ...genForm, isHostCa: e.target.checked })} className="rounded" />
+                                Host CA
+                            </label>
+                        </div>
+                        {caRoleMissing ? (
+                            <FieldHint tone="warn">Choose at least one role. A key that is neither a User CA nor a Host CA can be trusted by nothing and can sign nothing.</FieldHint>
+                        ) : (
+                            <FieldHint>A User CA signs certificates that people present to servers; a Host CA signs certificates that servers present to clients. One key may do both, but separate keys keep a host-key leak from minting user access.</FieldHint>
+                        )}
                     </div>
                     <button
                         type="submit"
-                        disabled={generating}
+                        disabled={generating || caRoleMissing}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
                     >
                         {generating ? 'Generating...' : 'Generate'}
@@ -365,10 +379,10 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [requestProfiles, setRequestProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [showSignForm, setShowSignForm] = useState(false);
     const [confirmRevoke, setConfirmRevoke] = useState<any[] | null>(null);
-    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', validityHours: '' });
+    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' });
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [signing, setSigning] = useState(false);
     const [signResult, setSignResult] = useState<any>(null);
@@ -403,7 +417,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load SSH data');
+                    setError(errorNotice(err, 'Failed to load SSH data'));
                     setLoading(false);
                 }
             });
@@ -486,10 +500,16 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     // Profile selection is complete when all three are chosen
     const profilesSelected = !!(signForm.sshRequestProfileId && signForm.sshSigningProfileId && signForm.sshCertProfileId);
 
+    // An empty principal list is the most dangerous value the form can send: OpenSSH treats it as
+    // "valid for every principal". It is only accepted behind an explicit opt-in.
+    const principalsEmpty = signForm.principals.split(',').map(s => s.trim()).filter(Boolean).length === 0;
+    const principalsMissing = principalsEmpty && !signForm.allowAnyPrincipal;
+
     const handleSign = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedCaKeyId) { showToast('warning', 'Please select a CA key first.'); return; }
         if (validationErrors.length > 0) { showToast('error', 'Fix validation errors before submitting.'); return; }
+        if (principalsMissing) { showToast('error', signForm.certType === 'user' ? 'Enter at least one principal, or tick "Allow any principal".' : 'Enter at least one hostname, or tick "Allow any principal".'); return; }
         setSigning(true);
         setSignResult(null);
         try {
@@ -514,7 +534,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             const result = await apiPost(endpoint, body);
             setSignResult(result);
             setShowSignForm(false);
-            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', validityHours: '' });
+            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' });
             onRefresh();
         } catch (err: any) {
             showToast('error', err.message || 'Signing failed');
@@ -763,9 +783,33 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                         value={signForm.principals}
                                         onChange={(e) => setSignForm({ ...signForm, principals: e.target.value })}
                                         className={`w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 ${
-                                            validationErrors.some(e => e.includes('principal') || e.includes('hostname')) ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'
+                                            validationErrors.some(e => e.includes('principal') || e.includes('hostname')) || principalsMissing ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'
                                         }`}
                                     />
+                                    <FieldHint tone="warn">
+                                        One or more names this certificate authorises. Leave it blank and OpenSSH treats the certificate as valid for every principal; for a user certificate that is a wildcard. For a host certificate these must match the hostname clients actually type.
+                                    </FieldHint>
+                                    <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={signForm.allowAnyPrincipal}
+                                            onChange={(e) => setSignForm({ ...signForm, allowAnyPrincipal: e.target.checked })}
+                                            className="rounded mt-0.5"
+                                        />
+                                        <span>Allow any principal (issue with an empty list)</span>
+                                    </label>
+                                    {signForm.allowAnyPrincipal && (
+                                        <FieldHint tone="warn">
+                                            {signForm.certType === 'user'
+                                                ? 'The certificate will log in as any account on any server that trusts this CA, subject only to the server\'s own AuthorizedPrincipals rules. Use it for break-glass keys, not people.'
+                                                : 'Clients will accept this host certificate for any hostname they connect to, so it no longer proves which server they reached.'}
+                                        </FieldHint>
+                                    )}
+                                    {principalsMissing && (
+                                        <FieldHint tone="warn">
+                                            Enter at least one {signForm.certType === 'user' ? 'principal' : 'hostname'}, or tick the box above to issue a certificate that is valid for every principal.
+                                        </FieldHint>
+                                    )}
                                 </div>
                                 <div>
                                     <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
@@ -796,14 +840,14 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                     <div className="flex gap-2">
                         <button
                             type="submit"
-                            disabled={signing || !profilesSelected || validationErrors.length > 0}
+                            disabled={signing || !profilesSelected || validationErrors.length > 0 || principalsMissing}
                             className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
                         >
                             {signing ? 'Signing...' : 'Sign Key'}
                         </button>
                         <button
                             type="button"
-                            onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', validityHours: '' }); }}
+                            onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' }); }}
                             className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
                         >
                             Cancel

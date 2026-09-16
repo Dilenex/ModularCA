@@ -11,6 +11,8 @@
  * context/TablePrefsContext.tsx.
  */
 import React, { useState, useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
+import { InlineNotice } from './InlineNotice';
+import type { NoticeInput } from '../notifications/notice';
 import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../context/TablePrefsContext';
 import { Chevron } from './Chevron';
@@ -67,7 +69,8 @@ export interface DataTableProps<Row> {
     rows: Row[];
     rowKey: (row: Row) => string;
     loading?: boolean;
-    error?: string | null;
+    /** A failure to load, shown in place of the rows. A string or a structured notice. */
+    error?: NoticeInput | null;
     empty?: React.ReactNode;
     title?: string;
     /** Show selection checkboxes + bulk-action toolbar. */
@@ -412,7 +415,7 @@ export function DataTable<Row>({
 
             {/* states */}
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading…</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+            {error && <div className="p-3"><InlineNotice notice={error} /></div>}
             {!loading && !error && rows.length === 0 && (
                 <div className="p-6 text-sm text-gray-600 text-center">{empty || 'No rows'}</div>
             )}

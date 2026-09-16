@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
@@ -122,7 +125,7 @@ const AuditLogs: React.FC = () => {
     const { from: dateFrom, to: dateTo, actionType: filterActionType } = q;
     const [logs, setLogs] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [totalPages, setTotalPages] = useState(1);
     const [totalCount, setTotalCount] = useState(0);
     // The username filter is typed; it reaches the URL after a pause.
@@ -134,7 +137,7 @@ const AuditLogs: React.FC = () => {
     }, [filterUser]);
     useEffect(() => { setFilterUser(q.user); }, [q.user]);
     // The sidebar scope pins the CA filter; the select below is locked while it does.
-    const { caId: scopeCaId, caQuery } = useScope();
+    const { caId: scopeCaId, caQuery, scope } = useScope();
     const scopeLocked = !!scopeCaId;
     const filterCaId = q.caId;
     // Only a change of scope clears the pin, so a deep link with ?caId= survives the first render.
@@ -210,7 +213,7 @@ const AuditLogs: React.FC = () => {
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load audit logs');
+                    setError(errorNotice(err, 'Failed to load audit logs'));
                     setLoading(false);
                 }
             });
@@ -288,13 +291,15 @@ const AuditLogs: React.FC = () => {
                 </div>
                 {activeTab === 'General' && (
                     <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-600 dark:text-gray-400">Action:</label>
+                        <label className="text-xs text-gray-600 dark:text-gray-400" htmlFor="audit-action-filter">Action <span className="text-gray-500">(seen in the loaded entries)</span>:</label>
                         <select
+                            id="audit-action-filter"
                             value={filterActionType}
                             onChange={(e) => setQ({ actionType: e.target.value })}
+                            title="Actions seen in the loaded entries. This is not the full list of action types; an action that has not appeared on a page you have viewed is not offered here."
                             className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                         >
-                            <option value="">All Actions</option>
+                            <option value="">All actions</option>
                             {knownActionTypes.map((t) => (
                                 <option key={t} value={t}>{t}</option>
                             ))}
@@ -330,7 +335,7 @@ const AuditLogs: React.FC = () => {
                 rowKey={(l) => l.id || `${l.timestamp}-${l.actionType || l.operation || l.messageType || ''}`}
                 loading={loading}
                 error={error}
-                empty="No audit entries found"
+                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No audit entries found'}
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}

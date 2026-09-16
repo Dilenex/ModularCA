@@ -1,13 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import { apiGet, apiPost, apiDelete, apiDeleteWithMfa } from '../api/client';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
+import { apiGet, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
+
+/**
+ * What each template grants, taken from `Capabilities.*Template` in ModularCA.Shared. Shown under
+ * the template select so the choice is made on what it does, not on its name.
+ */
+const TEMPLATE_DESCRIPTIONS: Array<{ value: string; label: string; grants: string }> = [
+    { value: 'Requester', label: 'Requester', grants: 'request and view certificates, nothing else.' },
+    { value: 'Auditor', label: 'Auditor', grants: 'read-only: view certificates, profiles, CAs and groups, and read the audit log.' },
+    { value: 'Operator', label: 'Operator', grants: 'run the CA day to day: request, approve, revoke and reissue certificates, assign profiles, manage enrollment tokens and the CA itself; no user, group or system administration.' },
+    { value: 'Administrator', label: 'Administrator', grants: 'every capability there is, including user, group, backup and system management.' },
+    { value: '', label: 'Custom', grants: 'starts with no capabilities; grant them through a role.' },
+];
 
 function templateStatus(t: string | null): 'revoked' | 'held' | 'pending' | 'active' {
     switch (t?.toLowerCase() ?? '') {
@@ -28,9 +44,14 @@ function createdByStatus(g: any): 'pending' | 'active' { return (g.isAutoGenerat
 /* ── read-only drawer (fetches group detail incl. members) ─────────────────── */
 const GroupDrawer: React.FC<{ group: any; caNameById: (id: string | null) => string }> = ({ group, caNameById }) => {
     const [detail, setDetail] = useState<any | null>(null);
+    const [detailError, setDetailError] = useState<string | null>(null);
     useEffect(() => {
         let cancelled = false;
-        apiGet<any>(`/api/v1/admin/groups/${group.id}`).then((d) => { if (!cancelled) setDetail(d); }).catch(() => { });
+        setDetail(null);
+        setDetailError(null);
+        apiGet<any>(`/api/v1/admin/groups/${group.id}`)
+            .then((d) => { if (!cancelled) setDetail(d); })
+            .catch((err) => { if (!cancelled) setDetailError(err.message || 'request failed'); });
         return () => { cancelled = true; };
     }, [group.id]);
     const members: any[] = detail?.members || [];
@@ -43,8 +64,9 @@ const GroupDrawer: React.FC<{ group: any; caNameById: (id: string | null) => str
             <DetailField label="CA" value={caNameById(group.certificateAuthorityId)} />
             <DetailField label="mTLS Signing CA" value={group.mtlsSigningCaId ? caNameById(group.mtlsSigningCaId) : 'None'} />
             <div className="mt-3">
-                <span className="text-xs text-gray-500">Members ({detail ? members.length : '…'})</span>
+                <span className="text-xs text-gray-500">Members ({detail ? members.length : detailError ? 'unavailable' : '…'})</span>
                 <div className="mt-1 space-y-0.5">
+                    {detailError && <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load the member list ({detailError}).</span>}
                     {detail && members.length === 0 && <span className="text-xs text-gray-500">No members.</span>}
                     {members.map((m: any) => <div key={m.id || m.userId} className="text-xs text-gray-800 dark:text-gray-200">{m.username || m.email || m.userId}</div>)}
                 </div>
@@ -56,22 +78,27 @@ const GroupDrawer: React.FC<{ group: any; caNameById: (id: string | null) => str
 
 const GroupManagement: React.FC = () => {
     const { showToast } = useToast();
-    // These endpoints carry [RequireStepUp]; the plain helpers never attach X-MFA-Token.
+    // Delete carries [RequireStepUp]; the plain helpers never attach X-MFA-Token. Create does not:
+    // AdminGroupController.Create has no [RequireStepUp] and StepUpOps declares no create-group
+    // operation, so there is nothing for the MFA-aware helper to satisfy here. Users and Roles
+    // prompt on create; groups will only once the server gates the endpoint and the generated
+    // StepUpOps carries the value.
     const { requireStepUp } = useStepUp();
     const [groups, setGroups] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [tenants, setTenants] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     // The sidebar scope pins the CA filter; the select below is locked while it does.
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, scope } = useScope();
     const scopeLocked = !!scopeCaId;
     const [filterCa, setFilterCa] = useState(scopeCaId ?? '');
     useEffect(() => { setFilterCa(scopeCaId ?? ''); }, [scopeCaId]);
     const [filterTemplate, setFilterTemplate] = useState('');
     const [filterType, setFilterType] = useState('');
+    const [search, setSearch] = useState('');
 
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ name: '', displayName: '', templateName: 'Requester' as string | null, certificateAuthorityId: '', tenantId: '' });
@@ -98,7 +125,7 @@ const GroupManagement: React.FC = () => {
             setAuthorities(flat);
             setTenants(Array.isArray(tenantsData) ? tenantsData : (tenantsData.items || tenantsData.tenants || []));
             setLoading(false);
-        }).catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load groups'); setLoading(false); } });
+        }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load groups')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
@@ -109,6 +136,10 @@ const GroupManagement: React.FC = () => {
     };
 
     const filteredGroups = groups.filter((g) => {
+        if (search) {
+            const s = search.toLowerCase();
+            if (!(g.displayName || '').toLowerCase().includes(s) && !(g.name || '').toLowerCase().includes(s)) return false;
+        }
         if (filterCa) {
             if (filterCa === 'system' && !g.isSystemGroup) return false;
             if (filterCa !== 'system' && g.certificateAuthorityId !== filterCa) return false;
@@ -124,16 +155,16 @@ const GroupManagement: React.FC = () => {
         e.preventDefault();
         setCreating(true);
         try {
-            await apiPost('/api/v1/admin/groups', {
+            await apiPostWithMfa('/api/v1/admin/groups', {
                 ...createForm,
                 certificateAuthorityId: createForm.certificateAuthorityId || null,
                 tenantId: createForm.certificateAuthorityId ? null : (createForm.tenantId || null),
-            });
+            }, requireStepUp, StepUpOps.CreateGroup);
             setShowCreate(false);
             setCreateForm({ name: '', displayName: '', templateName: 'Requester', certificateAuthorityId: '', tenantId: '' });
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to create group');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to create group');
         } finally {
             setCreating(false);
         }
@@ -197,14 +228,24 @@ const GroupManagement: React.FC = () => {
                         <input type="text" placeholder="Display Name (e.g., Custom Reviewers)" required value={createForm.displayName}
                             onChange={(e) => setCreateForm({ ...createForm, displayName: e.target.value })}
                             className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
-                        <select value={createForm.templateName ?? ''} onChange={(e) => setCreateForm({ ...createForm, templateName: e.target.value || null })}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
-                            <option value="Administrator">Administrator</option>
-                            <option value="Operator">Operator</option>
-                            <option value="Auditor">Auditor</option>
-                            <option value="Requester">Requester</option>
-                            <option value="">Custom (no template)</option>
-                        </select>
+                        <div className="md:col-span-2">
+                            <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">Template</label>
+                            {/* Listed least to most privileged, with the default first, so the preselected
+                                value is the one at the top rather than a quiet fourth option. */}
+                            <select value={createForm.templateName ?? ''} onChange={(e) => setCreateForm({ ...createForm, templateName: e.target.value || null })}
+                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                                {TEMPLATE_DESCRIPTIONS.map((t) => (
+                                    <option key={t.value} value={t.value}>{t.label}{t.value === 'Requester' ? ' (default)' : t.value === '' ? ' (no template)' : ''}</option>
+                                ))}
+                            </select>
+                            <FieldHint>
+                                {TEMPLATE_DESCRIPTIONS.map((t) => (
+                                    <span key={t.value} className={`block ${(createForm.templateName ?? '') === t.value ? 'text-gray-800 dark:text-gray-200 font-semibold' : ''}`}>
+                                        {t.label}: {t.grants}
+                                    </span>
+                                ))}
+                            </FieldHint>
+                        </div>
                         <select value={createForm.certificateAuthorityId} onChange={(e) => setCreateForm({ ...createForm, certificateAuthorityId: e.target.value })}
                             className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                             <option value="">Tenant-wide (no CA)</option>
@@ -221,6 +262,9 @@ const GroupManagement: React.FC = () => {
                     <button type="submit" disabled={creating} className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 transition-colors">{creating ? 'Creating...' : 'Create'}</button>
                 </form>
             )}
+
+            <input type="text" placeholder="Search by display name or name..." value={search} onChange={(e) => setSearch(e.target.value)}
+                className="w-full max-w-md px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
 
             <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
@@ -251,8 +295,8 @@ const GroupManagement: React.FC = () => {
                         <option value="custom">Custom</option>
                     </select>
                 </div>
-                {(filterCa || filterTemplate || filterType) && (
-                    <button onClick={() => { setFilterCa(''); setFilterTemplate(''); setFilterType(''); }} className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">Clear filters</button>
+                {((filterCa && !scopeLocked) || filterTemplate || filterType || search) && (
+                    <button onClick={() => { if (!scopeLocked) setFilterCa(''); setFilterTemplate(''); setFilterType(''); setSearch(''); }} className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">Clear filters</button>
                 )}
             </div>
 
@@ -263,7 +307,9 @@ const GroupManagement: React.FC = () => {
                 rowKey={(g) => g.id}
                 loading={loading}
                 error={error}
-                empty="No groups found"
+                empty={scopeCaId
+                    ? `No groups in ${scopeLabel(scope)}${search || filterTemplate || filterType ? ' match these filters' : ''}. Change the scope in the sidebar to see others.`
+                    : search || filterCa || filterTemplate || filterType ? 'No groups match these filters' : 'No groups found'}
                 columns={columns}
                 selectable
                 bulkActions={bulkActions}

@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import { apiLogin, apiChangePassword, apiGet } from '../api/client';
 import { setMfaSetupRequired } from '../components/auth';
@@ -11,7 +14,7 @@ const Login: React.FC = () => {
 
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [loading, setLoading] = useState(false);
 
     // Password change form state
@@ -87,7 +90,7 @@ const Login: React.FC = () => {
                 await finishSignIn();
             }
         } catch (err: any) {
-            setError(err.message || 'Unexpected error');
+            setError(errorNotice(err, 'Unexpected error'));
         } finally {
             setLoading(false);
         }
@@ -133,7 +136,7 @@ const Login: React.FC = () => {
                 await finishSignIn();
             }
         } catch (err: any) {
-            setError(err.message || 'Unexpected error');
+            setError(errorNotice(err, 'Unexpected error'));
         } finally {
             setLoading(false);
         }
@@ -148,7 +151,7 @@ const Login: React.FC = () => {
                 >
                     <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">ModularCA</h2>
 
-                    {error && <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">{error}</div>}
+                    {error && <InlineNotice notice={error} />}
                     {changeSuccess && <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm text-center p-2 rounded">{changeSuccess}</div>}
 
                     <div>
@@ -215,7 +218,7 @@ const Login: React.FC = () => {
                         You must change your password before continuing.
                     </p>
 
-                    {error && <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">{error}</div>}
+                    {error && <InlineNotice notice={error} />}
 
                     <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Current Password</label>

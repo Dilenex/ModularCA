@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
@@ -7,6 +9,8 @@ import DataCard from '../components/cards/DataCard';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import CertificateReissueModal from '../components/CertificateReissueModal';
+import ConfirmModal from '../components/ConfirmModal';
+import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
 import { useToast } from '@shared/context/ToastContext';
 import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
 import { StepUpOps } from '@shared/generated';
@@ -93,6 +97,34 @@ const Dashboard: React.FC = () => {
     } | null>(null);
     const [reissueLoadingId, setReissueLoadingId] = useState<string | null>(null);
 
+    // Quick revoke from the Recent Certificates card. It used to fire with a hardcoded
+    // "Unspecified" reason behind a two-click confirm; the reason is a permanent, published
+    // fact about the certificate, so the operator chooses it here with the same picker and
+    // explanation the certificate page uses.
+    const [quickRevoke, setQuickRevoke] = useState<any | null>(null);
+    const [quickRevokeReason, setQuickRevokeReason] = useState('Unspecified');
+    const [quickRevokeBusy, setQuickRevokeBusy] = useState(false);
+    const [recentCertsKey, setRecentCertsKey] = useState(0);
+
+    const runQuickRevoke = async () => {
+        if (!quickRevoke) return;
+        setQuickRevokeBusy(true);
+        try {
+            await apiPostWithMfa(`/api/v1/admin/certificates/${quickRevoke.certificateId}/revoke`,
+                { certificateId: quickRevoke.certificateId, reason: quickRevokeReason },
+                requireStepUp, StepUpOps.RevokeCert, quickRevoke.certificateId);
+            showToast('success', quickRevokeReason === 'CertificateHold'
+                ? 'Certificate placed on hold. Lift it from the certificate page if it turns out to be fine.'
+                : 'Certificate revoked.');
+            setQuickRevoke(null);
+            setRecentCertsKey((k) => k + 1);
+        } catch (err: any) {
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Revocation failed');
+        } finally {
+            setQuickRevokeBusy(false);
+        }
+    };
+
     const openReissueFromCard = async (cert: any) => {
         const id = cert.certificateId;
         if (!id) {
@@ -146,11 +178,11 @@ const Dashboard: React.FC = () => {
     const [caList, setCaList] = useState<any[]>([]);
     const [certsByCa, setCertsByCa] = useState<Record<string, number>>({});
     const [caLoading, setCaLoading] = useState(true);
-    const [caError, setCaError] = useState<string | null>(null);
+    const [caError, setCaError] = useState<NoticeInput | null>(null);
 
     const [groupStats, setGroupStats] = useState<GroupStats | null>(null);
     const [groupsLoading, setGroupsLoading] = useState(true);
-    const [groupsError, setGroupsError] = useState<string | null>(null);
+    const [groupsError, setGroupsError] = useState<NoticeInput | null>(null);
 
     const [pendingCount, setPendingCount] = useState<number>(0);
     const [pendingLoading, setPendingLoading] = useState(true);
@@ -250,7 +282,7 @@ const Dashboard: React.FC = () => {
                 setCaLoading(false);
             })
             .catch((err) => {
-                setCaError(err.message || 'Failed to load CAs');
+                setCaError(errorNotice(err, 'Failed to load CAs'));
                 setCaLoading(false);
             });
     }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -273,7 +305,7 @@ const Dashboard: React.FC = () => {
                 setGroupsLoading(false);
             })
             .catch((err) => {
-                setGroupsError(err.message || 'Failed to load groups');
+                setGroupsError(errorNotice(err, 'Failed to load groups'));
                 setGroupsLoading(false);
             });
     }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -381,7 +413,7 @@ const Dashboard: React.FC = () => {
                     </div>
                     <div className="max-h-80 overflow-y-auto">
                         {caLoading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                        {caError && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{caError}</div>}
+                        {caError && <InlineNotice notice={caError} />}
                         {!caLoading && !caError && caList.length === 0 && (
                             <div className="p-4 text-sm text-gray-600 text-center">No CAs configured</div>
                         )}
@@ -432,7 +464,7 @@ const Dashboard: React.FC = () => {
                     </div>
                     <div className="p-4">
                         {groupsLoading && <div className="text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                        {groupsError && <div className="text-sm text-red-800 dark:text-red-400 text-center">{groupsError}</div>}
+                        {groupsError && <InlineNotice notice={groupsError} />}
                         {!groupsLoading && !groupsError && groupStats && (
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                                 <div>
@@ -454,7 +486,7 @@ const Dashboard: React.FC = () => {
 
                 {/* Recent Certificates */}
                 <DataCard
-                    key={`recent-${scopeCaId ?? "all"}`}
+                    key={`recent-${scopeCaId ?? "all"}-${recentCertsKey}`}
                     title="Recent Certificates"
                     fetchData={async () => { const r = await apiGet<any>(`/api/v1/admin/certificates?pageSize=10${caQuery(true)}`); return r.items || []; }}
                     keyExtractor={(c: any) => c.serialNumber || c.certificateId}
@@ -506,9 +538,9 @@ const Dashboard: React.FC = () => {
                     actions={(cert: any) => [
                         ...(certStatus(cert) === 'active' ? [{
                             label: 'Revoke',
-                            onClick: () => apiPostWithMfa(`/api/v1/admin/certificates/${cert.certificateId}/revoke`, { certificateId: cert.certificateId, reason: 'Unspecified' }, requireStepUp, StepUpOps.RevokeCert, cert.certificateId),
+                            // Opens the reason picker below; the card's own modal closes on click.
+                            onClick: () => { setQuickRevokeReason('Unspecified'); setQuickRevoke(cert); },
                             variant: 'danger' as const,
-                            confirm: 'This will permanently revoke the certificate'
                         }] : []),
                         ...(certStatus(cert) === 'active' ? [{
                             label: reissueLoadingId === cert.certificateId ? 'Loading...' : 'Reissue',
@@ -659,6 +691,32 @@ const Dashboard: React.FC = () => {
                 onClose={() => setReissueOpen(false)}
                 onSuccess={handleReissueSuccess}
                 cert={reissueTarget}
+            />
+
+            {/* Quick revoke — same reason picker and explanation as the certificate page */}
+            <ConfirmModal
+                isOpen={!!quickRevoke}
+                title="Revoke Certificate"
+                confirmLabel={quickRevokeReason === 'CertificateHold' ? 'Place on hold' : 'Revoke'}
+                loading={quickRevokeBusy}
+                onConfirm={runQuickRevoke}
+                onCancel={() => setQuickRevoke(null)}
+                message={quickRevoke ? (
+                    <div className="space-y-3 text-left">
+                        <div className="text-xs text-gray-600 dark:text-gray-400">
+                            <div className="break-all"><span className="font-semibold text-gray-700 dark:text-gray-300">Subject:</span> {quickRevoke.subjectDN}</div>
+                            <div className="font-mono break-all"><span className="font-sans font-semibold text-gray-700 dark:text-gray-300">Serial:</span> {quickRevoke.serialNumber}</div>
+                        </div>
+                        <div>
+                            <label htmlFor="dashboard-revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Revocation reason</label>
+                            <select id="dashboard-revoke-reason" value={quickRevokeReason} onChange={(e) => setQuickRevokeReason(e.target.value)} disabled={quickRevokeBusy}
+                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                            </select>
+                            <RevocationReasonHint reason={quickRevokeReason} />
+                        </div>
+                    </div>
+                ) : ''}
             />
         </div>
     );

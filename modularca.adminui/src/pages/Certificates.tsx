@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
@@ -10,8 +12,9 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { useTableQuery } from '@shared/hooks/useTableQuery';
 import { formatSort, parseSort, viewQuery, type TableQueryValues } from '@shared/tableQuery';
 import { SavedViews } from '@shared/components/SavedViews';
-import { REVOCATION_REASONS } from './CertificateDetail';
+import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
 import { StepUpOps } from '@shared/generated';
+import { FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -116,7 +119,7 @@ const Certificates: React.FC = () => {
     const [totalCount, setTotalCount] = useState(0);
     const [certificates, setCertificates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Cross-page selection (keyed by serial). Cache of every loaded row so a selected-rows export
     // has the data for keys ticked on pages no longer rendered.
@@ -194,7 +197,7 @@ const Certificates: React.FC = () => {
                 setCertificates(items);
                 setLoading(false);
             })
-            .catch((err) => { if (!cancelled) { setError(err.message || 'Failed to load certificates'); setLoading(false); } });
+            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load certificates')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [page, pageSize, buildParams, reloadKey]);
 
@@ -223,7 +226,14 @@ const Certificates: React.FC = () => {
         }
     };
 
+    // A from-date after its to-date matches nothing; the server answers an empty page rather than
+    // an error, so the list (and a CSV export) would silently come back empty.
+    const expiresRangeInverted = !!(notAfterFrom && notAfterTo && notAfterFrom > notAfterTo);
+    const issuedRangeInverted = !!(issuedFrom && issuedTo && issuedFrom > issuedTo);
+    const rangeInverted = expiresRangeInverted || issuedRangeInverted;
+
     const handleExport = async () => {
+        if (rangeInverted) { showToast('warning', 'Fix the date range first: the "after" date is later than the "before" date, so nothing matches.'); return; }
         // Specific selection across pages → export those from the cache.
         if (selectedKeys.size > 0 && !allMatching) {
             const rows = Array.from(selectedKeys).map((k) => rowCache.current.get(k)).filter(Boolean);
@@ -362,11 +372,19 @@ const Certificates: React.FC = () => {
                         </select>
                     </div>
                     <div className="hidden lg:block" />
-                    <div><label className={advLabel}>Expires After</label><input type="date" value={notAfterFrom} onChange={(e) => setQ({ notAfterFrom: e.target.value })} className={advInput} /></div>
-                    <div><label className={advLabel}>Expires Before</label><input type="date" value={notAfterTo} onChange={(e) => setQ({ notAfterTo: e.target.value })} className={advInput} /></div>
+                    <div><label className={advLabel}>Expires After</label><input type="date" value={notAfterFrom} max={notAfterTo || undefined} onChange={(e) => setQ({ notAfterFrom: e.target.value })} className={advInput} /></div>
+                    <div>
+                        <label className={advLabel}>Expires Before</label>
+                        <input type="date" value={notAfterTo} min={notAfterFrom || undefined} onChange={(e) => setQ({ notAfterTo: e.target.value })} className={advInput} />
+                        {expiresRangeInverted && <FieldHint tone="warn">"Expires After" is later than "Expires Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
+                    </div>
                     <div className="hidden lg:block" />
-                    <div><label className={advLabel}>Issued After</label><input type="date" value={issuedFrom} onChange={(e) => setQ({ issuedFrom: e.target.value })} className={advInput} /></div>
-                    <div><label className={advLabel}>Issued Before</label><input type="date" value={issuedTo} onChange={(e) => setQ({ issuedTo: e.target.value })} className={advInput} /></div>
+                    <div><label className={advLabel}>Issued After</label><input type="date" value={issuedFrom} max={issuedTo || undefined} onChange={(e) => setQ({ issuedFrom: e.target.value })} className={advInput} /></div>
+                    <div>
+                        <label className={advLabel}>Issued Before</label>
+                        <input type="date" value={issuedTo} min={issuedFrom || undefined} onChange={(e) => setQ({ issuedTo: e.target.value })} className={advInput} />
+                        {issuedRangeInverted && <FieldHint tone="warn">"Issued After" is later than "Issued Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
+                    </div>
                     <div className="flex items-end">
                         {advancedActive && <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 rounded transition-colors">Clear advanced</button>}
                     </div>
@@ -414,13 +432,14 @@ const Certificates: React.FC = () => {
                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Revoke {selectedKeys.size} certificate{selectedKeys.size === 1 ? '' : 's'}</h3>
                         </div>
                         <div className="px-6 py-4 space-y-3">
-                            <p className="text-xs text-gray-600 dark:text-gray-400">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. This cannot be undone.</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. Only Certificate Hold can be lifted afterwards; every other reason is permanent.</p>
                             {allMatching && <p className="text-[11px] text-amber-700 dark:text-amber-400">Note: this revokes the {selectedKeys.size} explicitly selected on loaded pages, not every match across all pages.</p>}
                             <div className="space-y-1">
                                 <label htmlFor="bulk-revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400">Revocation reason</label>
                                 <select id="bulk-revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeBusy} className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
                                     {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                 </select>
+                                <RevocationReasonHint reason={revokeReason} />
                             </div>
                         </div>
                         <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">

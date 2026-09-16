@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeLabel } from '../scope';
 import { useAuth } from '../context/AuthContext';
 import { can, canAtTenant, tenantsOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -11,7 +15,10 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
+
+/** ML-DSA and SLH-DSA: the FIPS 204 / FIPS 205 post-quantum signature schemes. */
+const isPostQuantum = (alg: string) => alg.startsWith('ML-DSA') || alg.startsWith('SLH-DSA');
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -50,7 +57,7 @@ const CaManagement: React.FC = () => {
     // CA List state
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     // Tenant state
     const [tenants, setTenants] = useState<any[]>([]);
@@ -74,7 +81,7 @@ const CaManagement: React.FC = () => {
     const [caCertProfiles, setCaCertProfiles] = useState<any[]>([]);
     const [formPublicBaseUrl, setFormPublicBaseUrl] = useState('');
     const [createLoading, setCreateLoading] = useState(false);
-    const [createError, setCreateError] = useState<string | null>(null);
+    const [createError, setCreateError] = useState<NoticeInput | null>(null);
     const [createSuccess, setCreateSuccess] = useState<string | null>(null);
 
     // Name constraints — committed string[] arrays sent in the POST body
@@ -129,7 +136,7 @@ const CaManagement: React.FC = () => {
         return result;
     };
 
-    const { caId: scopeCaId, tenantId: scopeTenantId, inScope } = useScope();
+    const { caId: scopeCaId, tenantId: scopeTenantId, inScope, scope } = useScope();
     const { capabilities } = useAuth();
     const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
     /** System-scoped ca.manage may create in any tenant and under any parent, as the server allows. */
@@ -171,7 +178,7 @@ const CaManagement: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                setError(err.message || 'Failed to load authorities');
+                setError(errorNotice(err, 'Failed to load authorities'));
                 setLoading(false);
             });
     };
@@ -213,6 +220,19 @@ const CaManagement: React.FC = () => {
             setFormParentCa(parentCandidates[0] ? parentKey(parentCandidates[0]) : '');
         }
     }, [formTenant, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    /**
+     * The chosen parent's remaining life in years, so the validity field can warn before the
+     * server truncates or rejects a child that would outlive its issuer. `null` when no parent
+     * applies (a root) or the parent carries no expiry we can read.
+     */
+    const selectedParent = formCaType === 'intermediate' ? parentCandidates.find((ca) => parentKey(ca) === formParentCa) : undefined;
+    const parentNotAfter: string | undefined = selectedParent?.certificate?.notAfter || selectedParent?.notAfter;
+    const parentYearsLeft: number | null = parentNotAfter && !Number.isNaN(new Date(parentNotAfter).getTime())
+        ? (new Date(parentNotAfter).getTime() - Date.now()) / (365.25 * 24 * 60 * 60 * 1000)
+        : null;
+    const requestedYears = parseInt(formValidityYears, 10);
+    const outlivesParent = parentYearsLeft !== null && !Number.isNaN(requestedYears) && requestedYears > parentYearsLeft;
 
     const handleCreateCa = async () => {
         if (!formTenant) {
@@ -279,7 +299,7 @@ const CaManagement: React.FC = () => {
             setFormNameConstraintsExcluded([]);
             loadAuthorities();
         } catch (err: any) {
-            setCreateError(err.message || 'Failed to create CA');
+            setCreateError(errorNotice(err, 'Failed to create CA'));
         } finally {
             setCreateLoading(false);
         }
@@ -309,7 +329,7 @@ const CaManagement: React.FC = () => {
                 rowKey={caKey}
                 loading={loading}
                 error={error}
-                empty="No certificate authorities found"
+                empty={scopeCaId || scopeTenantId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
                 columns={caColumns}
                 selectable
                 exportFileName="certificate-authorities"
@@ -396,6 +416,11 @@ const CaManagement: React.FC = () => {
                                     <option value="ML-DSA-87">ML-DSA-87</option>
                                     <option value="SLH-DSA-SHA2-128F">SLH-DSA-SHA2-128F</option>
                                 </select>
+                                <FieldHint tone={isPostQuantum(formKeyAlg) ? 'warn' : 'muted'}>
+                                    {isPostQuantum(formKeyAlg)
+                                        ? 'ML-DSA and SLH-DSA are post-quantum signature schemes. Almost nothing validates them yet: browsers, operating-system trust stores, TLS stacks and most PKI tooling will reject or fail to parse certificates this CA signs. Use them for a lab or a dedicated PQ hierarchy, not for a CA anything in production has to trust.'
+                                        : 'RSA and ECDSA are validated everywhere; Ed25519 and Ed448 by most current software. ML-DSA and SLH-DSA are post-quantum and almost nothing validates them yet.'}
+                                </FieldHint>
                             </div>
                             {formKeyAlg !== 'Ed25519' && formKeyAlg !== 'Ed448' && !formKeyAlg.startsWith('ML-DSA') && !formKeyAlg.startsWith('SLH-DSA') && (
                             <div>
@@ -426,7 +451,14 @@ const CaManagement: React.FC = () => {
                             )}
                             <div>
                                 <label className={labelClass}>Validity (Years)</label>
-                                <input type="text" inputMode="numeric" value={formValidityYears} onChange={(e) => setFormValidityYears(e.target.value.replace(/\D/g, ''))} className={inputClass} />
+                                <input type="text" inputMode="numeric" value={formValidityYears} onChange={(e) => setFormValidityYears(e.target.value.replace(/\D/g, ''))} className={inputClass} aria-describedby="ca-validity-hint" />
+                                {outlivesParent && parentNotAfter ? (
+                                    <FieldHint id="ca-validity-hint" tone="warn">
+                                        Longer than the parent has left: {selectedParent?.name || selectedParent?.subjectDN || 'the parent CA'} expires {formatDate(parentNotAfter)}, about {parentYearsLeft!.toFixed(1)} years from now. A CA certificate cannot be trusted past its issuer's expiry, so the effective life would be capped there (or the request refused). Shorten the validity or renew the parent first.
+                                    </FieldHint>
+                                ) : formCaType === 'intermediate' && parentNotAfter ? (
+                                    <FieldHint id="ca-validity-hint">Parent expires {formatDate(parentNotAfter)}; this CA must not outlive it.</FieldHint>
+                                ) : null}
                             </div>
                             <div>
                                 <label className={labelClass}>Label (optional, auto-generated from CN if empty)</label>
@@ -536,7 +568,7 @@ const CaManagement: React.FC = () => {
 
                         {createError && (
                             <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
-                                <p className="text-sm text-red-800 dark:text-red-300">{createError}</p>
+                                <InlineNotice notice={createError} variant="line" />
                             </div>
                         )}
                         {createSuccess && (

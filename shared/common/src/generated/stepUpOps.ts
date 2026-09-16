@@ -31,6 +31,7 @@ export const StepUpOps = {
     AddGroupMember: 'add-group-member',
     RemoveGroupMember: 'remove-group-member',
     UpdateUserGroups: 'update-user-groups',
+    CreateGroup: 'create-group',
     DeleteGroup: 'delete-group',
     UpdateGroup: 'update-group',
     GrantUserCapability: 'grant-user-capability',

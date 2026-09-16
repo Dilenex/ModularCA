@@ -258,6 +258,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return Ok(new
                 {
                     pem = cert,
+                    // The console links straight to the certificate it just issued; without the
+                    // serial here it had to parse the PEM's DER to find it.
+                    serialNumber = certSerial,
+                    certificateId = certEntry.CertificateId,
                     warnings = result.Warnings,
                     diagnostics = result.Diagnostics,
                 });

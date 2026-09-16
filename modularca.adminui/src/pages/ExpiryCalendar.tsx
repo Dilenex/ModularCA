@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import { useScope } from '../context/ScopeContext';
@@ -80,7 +83,7 @@ const ExpiryCalendar: React.FC = () => {
     const navigate = useNavigate();
     const [resp, setResp] = useState<HistogramResponse | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [authorities, setAuthorities] = useState<any[]>([]);
     // The sidebar scope pins the CA filter; the select below is locked while it does.
     const { caId: scopeCaId } = useScope();
@@ -117,7 +120,7 @@ const ExpiryCalendar: React.FC = () => {
         const qs = params.toString();
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram${qs ? `?${qs}` : ''}`)
             .then((data) => { setResp(data); setError(null); })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, [caId]);
 
@@ -296,7 +299,7 @@ const ExpiryCalendar: React.FC = () => {
             )}
 
             {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading expiry data…</div>}
-            {error && <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>}
+            {error && <InlineNotice notice={error} />}
 
             {/* Tier 1 — timeline histogram */}
             {!loading && !error && (

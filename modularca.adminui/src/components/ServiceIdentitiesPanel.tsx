@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
+import ConfirmModal from './ConfirmModal';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useAuth } from '../context/AuthContext';
@@ -44,8 +47,11 @@ const ServiceIdentitiesPanel: React.FC = () => {
 
     const [rows, setRows] = useState<ServiceIdentity[]>([]);
     const [groups, setGroups] = useState<GroupOption[]>([]);
+    // The group list is fetched separately and may fail on its own (a 403 for a caller without
+    // group.view, say). That is "could not load groups", not "no groups inside this scope".
+    const [groupsError, setGroupsError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [creating, setCreating] = useState(false);
     const [busy, setBusy] = useState(false);
 
@@ -64,9 +70,13 @@ const ServiceIdentitiesPanel: React.FC = () => {
 
     const load = useCallback(() => {
         setLoading(true);
-        Promise.all([apiGet<ServiceIdentity[]>('/api/v1/admin/service-identities'), apiGet<any>('/api/v1/admin/groups').catch(() => [])])
+        setGroupsError(null);
+        Promise.all([
+            apiGet<ServiceIdentity[]>('/api/v1/admin/service-identities'),
+            apiGet<any>('/api/v1/admin/groups').catch((e: any) => { setGroupsError(e?.message || 'request failed'); return []; }),
+        ])
             .then(([ids, gs]) => { setRows(Array.isArray(ids) ? ids : []); setGroups(Array.isArray(gs) ? gs : gs.items || []); setError(null); })
-            .catch((e) => setError(e.message || 'Failed to load service identities'))
+            .catch((e) => setError(errorNotice(e, 'Failed to load service identities')))
             .finally(() => setLoading(false));
     }, []);
     useEffect(() => { load(); }, [load]);
@@ -148,7 +158,9 @@ const ServiceIdentitiesPanel: React.FC = () => {
                                     </button>
                                 );
                             })}
-                            {offeredGroups.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
+                            {groupsError
+                                ? <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load groups ({groupsError}). The identity can still be created and given groups later.</span>
+                                : offeredGroups.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
                         </div>
                     </div>
                     <div className="flex justify-end">
@@ -167,14 +179,14 @@ const ServiceIdentitiesPanel: React.FC = () => {
                 empty="No service identities in the scopes you administer."
                 columns={columns}
                 exportFileName="service-identities"
-                renderDrawer={(r) => <IdentityDrawer identity={r} groups={groups} onChanged={load} />}
+                renderDrawer={(r) => <IdentityDrawer identity={r} groups={groups} groupsError={groupsError} onChanged={load} />}
                 drawerTitle={(r) => r.username}
             />
         </div>
     );
 };
 
-const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[]; onChanged: () => void }> = ({ identity, groups, onChanged }) => {
+const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[]; groupsError?: string | null; onChanged: () => void }> = ({ identity, groups, groupsError, onChanged }) => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
     const [tab, setTab] = useState<'overview' | 'groups' | 'audit'>('overview');
@@ -208,6 +220,7 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
         await apiPutWithMfa(`${path}/groups`, { groupIds: selected }, requireStepUp, StepUpOps.UpdateUserGroups, identity.id);
         showToast('success', 'Groups updated.');
     });
+    const [confirmDelete, setConfirmDelete] = useState(false);
     const remove = () => run('Delete', async () => {
         await apiDeleteWithMfa(path, requireStepUp, StepUpOps.DeleteUser, identity.id);
         showToast('success', `${identity.username} deleted.`);
@@ -219,11 +232,14 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
 
     return (
         <div className="space-y-3">
+            <ConfirmModal isOpen={confirmDelete} title={`Delete ${identity.username}?`}
+                message="Any Kerberos realm binding that uses this identity as its enrollment identity stops issuing for its whole forest, and the identity's group memberships are gone with it. To pause it instead, use Disable."
+                confirmLabel="Delete identity" loading={busy} onConfirm={() => { setConfirmDelete(false); remove(); }} onCancel={() => setConfirmDelete(false)} />
             <div className="flex items-center justify-between gap-2 flex-wrap">
                 <StatusBadge status={identity.isActive ? 'enabled' : 'disabled'} label={identity.isActive ? 'Active' : 'Disabled'} />
                 <span className="flex items-center gap-1.5 flex-wrap">
                     <button disabled={busy} onClick={() => save(!identity.isActive)} className="px-2.5 py-1 text-xs rounded border bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40">{identity.isActive ? 'Disable' : 'Enable'}</button>
-                    <button disabled={busy} onClick={remove} className="px-2.5 py-1 text-xs rounded border bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-40">Delete</button>
+                    <button disabled={busy} onClick={() => setConfirmDelete(true)} className="px-2.5 py-1 text-xs rounded border bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-40">Delete</button>
                 </span>
             </div>
             <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">{tabBtn('overview', 'Overview')}{tabBtn('groups', 'Groups')}{tabBtn('audit', 'Audit')}</div>
@@ -265,10 +281,12 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
                                 </button>
                             );
                         })}
-                        {offered.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
+                        {groupsError
+                            ? <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load groups ({groupsError}). Saving now would drop the memberships this identity already has, so the button is disabled.</span>
+                            : offered.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save groups</button>
+                        <button disabled={busy || !!groupsError} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save groups</button>
                     </div>
                 </div>
             )}

@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiDeleteWithMfa, API_BASE } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -38,7 +41,7 @@ const EabKeyManagementSection: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [keys, setKeys] = useState<EabKey[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [generating, setGenerating] = useState(false);
     const [newKey, setNewKey] = useState<NewEabKey | null>(null);
     const [description, setDescription] = useState('');
@@ -52,7 +55,7 @@ const EabKeyManagementSection: React.FC = () => {
         setLoading(true);
         apiGet<EabKey[]>('/api/v1/admin/acme/eab-keys')
             .then(setKeys)
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 
@@ -260,7 +263,7 @@ const AcmeEndpointsSection: React.FC = () => {
     const [directory, setDirectory] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [dirLoading, setDirLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities/hierarchy')
@@ -282,7 +285,7 @@ const AcmeEndpointsSection: React.FC = () => {
                 if (visible.length > 0) setSelectedCa(visible[0].label || '');
                 else setSelectedCa('');
             })
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -306,7 +309,7 @@ const AcmeEndpointsSection: React.FC = () => {
 
             {/* CA Selector */}
             {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading CAs...</div>}
-            {error && <div className="text-sm text-red-800 dark:text-red-400">{error}</div>}
+            {error && <InlineNotice notice={error} />}
             {!loading && cas.length > 0 && (
                 <div>
                     <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Certificate Authority</label>
@@ -366,12 +369,12 @@ const acmeAuditIp = (e: any): string => e.clientIp || e.remoteAddress || '';
 const AcmeAuditSection: React.FC = () => {
     const [entries, setEntries] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/audit/acme?pageSize=20')
             .then((data) => setEntries(Array.isArray(data) ? data : (data.items || data.entries || data.logs || [])))
-            .catch((err) => setError(err.message))
+            .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
 

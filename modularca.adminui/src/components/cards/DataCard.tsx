@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate } from 'react-router-dom';
 import ExpandableRow from './ExpandableRow';
 
@@ -46,7 +49,7 @@ export default function DataCard<T>({
     const navigate = useNavigate();
     const [items, setItems] = useState<T[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
     const [modalItem, setModalItem] = useState<T | null>(null);
     const [actionLoading, setActionLoading] = useState(false);
@@ -66,7 +69,7 @@ export default function DataCard<T>({
                 setLoading(false);
             })
             .catch((err) => {
-                setError(err.message || 'Failed to load');
+                setError(errorNotice(err, 'Failed to load'));
                 setLoading(false);
             });
     };
@@ -85,7 +88,7 @@ export default function DataCard<T>({
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(err.message || 'Failed to load');
+                    setError(errorNotice(err, 'Failed to load'));
                     setLoading(false);
                 }
             });
@@ -151,7 +154,7 @@ export default function DataCard<T>({
                     )}
 
                     {error && (
-                        <div className="p-4 text-sm text-red-800 dark:text-red-400 text-center">{error}</div>
+                        <InlineNotice notice={error} />
                     )}
 
                     {!loading && !error && items.length === 0 && (

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { describeStepUpOperation } from './stepUpOpText';
 
 /**
  * Step-up MFA prompt, shared by adminui and userui.
@@ -268,7 +269,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                 </div>
 
                 <p className="text-xs text-gray-600 text-center">
-                    Operation: <span className="font-mono text-gray-600 dark:text-gray-400">{operation}</span>
+                    {describeStepUpOperation(operation)} <span className="font-mono text-[10px] text-gray-500 dark:text-gray-500">({operation})</span>
                     {targetId && (
                         <>
                             {' '} | Target: <span className="font-mono text-gray-600 dark:text-gray-400">{targetId}</span>

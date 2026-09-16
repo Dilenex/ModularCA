@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import type { NoticeInput } from '@shared/notifications/notice';
+import { errorNotice } from '@shared-auth/api/notices';
 import { Link } from 'react-router-dom';
 import { DataTable } from '@shared/components/DataTable';
 import { RecordFields } from '@shared/components/RecordFields';
@@ -84,13 +86,13 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
 function RelatedList<T>({ related, row }: { related: NonNullable<RecordDescriptor<T>['related']>[number]; row: T }) {
     const [rows, setRows] = useState<unknown[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<NoticeInput | null>(null);
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
         related.load(row)
             .then((r) => { if (!cancelled) { setRows(r); setLoading(false); } })
-            .catch((e: any) => { if (!cancelled) { setError(e?.message || 'Failed to load'); setLoading(false); } });
+            .catch((e: any) => { if (!cancelled) { setError(errorNotice(e, 'Failed to load')); setLoading(false); } });
         return () => { cancelled = true; };
     }, [related, row]);
     const d = related.descriptor;

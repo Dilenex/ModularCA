@@ -63,9 +63,9 @@ export const adminNavSections: NavSection[] = [
         title: 'Access & Identity',
         items: [
             { name: 'Users', path: '/users', icon: '☺', gate: USER_MANAGE, keywords: ['accounts', 'people'] },
-            { name: 'Groups', path: '/groups', icon: '⌂', gate: GROUP_MANAGE, keywords: ['membership'] },
+            { name: 'Groups', path: '/groups', icon: '⚇', gate: GROUP_MANAGE, keywords: ['membership'] },
             { name: 'Roles', path: '/roles', icon: '☆', gate: SYSTEM_ADMIN, keywords: ['capabilities', 'permissions'] },
-            { name: 'Enrollment', path: '/enrollment', icon: '☑', gate: TOKEN_MANAGE, keywords: ['tokens', 'credentials', 'cmp credential'] },
+            { name: 'Enrollment', path: '/enrollment', icon: '⚷', gate: TOKEN_MANAGE, keywords: ['tokens', 'credentials', 'cmp credential'] },
             { name: 'ACME', path: '/acme', icon: 'A', gate: CA_MANAGE, keywords: ['eab', 'directory'] },
         ]
     },
@@ -79,12 +79,12 @@ export const adminNavSections: NavSection[] = [
             { name: 'Ceremonies', path: '/ceremonies', icon: '☸', gate: CA_MANAGE, keywords: ['quorum', 'approvals', 'key ceremony'] },
             { name: 'Tenants & Quotas', path: '/tenants', icon: '☖', gate: SYSTEM_ADMIN, keywords: ['tenant', 'quota'] },
             { name: 'Settings', path: '/settings', icon: '⚙', gate: SYSTEM_ADMIN, keywords: ['configuration', 'security policy', 'password policy', 'feature flags'] },
-            { name: 'Audit Logs', path: '/audit', icon: '✉', gate: CA_AUDIT, keywords: ['audit trail', 'events', 'history'] },
-            { name: 'Notifications', path: '/notifications', icon: '✉', gate: CA_MANAGE, keywords: ['email', 'webhooks', 'alerts'] },
+            { name: 'Audit Logs', path: '/audit', icon: '≣', gate: CA_AUDIT, keywords: ['audit trail', 'events', 'history'] },
+            { name: 'Notifications', path: '/notifications', icon: '♪', gate: CA_MANAGE, keywords: ['email', 'webhooks', 'alerts'] },
             { name: 'Whitelists', path: '/whitelists', icon: '⛨', gate: SYSTEM_ADMIN, keywords: ['allow list', 'ip', 'network'] },
             { name: 'Backup & Restore', path: '/backup', icon: '⬇', gate: SYSTEM_ADMIN, keywords: ['disaster recovery', 'export'] },
             { name: 'Schedules', path: '/schedules', icon: '⧖', gate: SYSTEM_ADMIN, keywords: ['jobs', 'scheduler', 'cron'] },
-            { name: 'Web TLS Certificate', path: '/webtls', icon: '⚿', gate: SYSTEM_ADMIN, keywords: ['https', 'server certificate'] },
+            { name: 'Web TLS Certificate', path: '/webtls', icon: '⛉', gate: SYSTEM_ADMIN, keywords: ['https', 'server certificate'] },
         ]
     }
 ];
