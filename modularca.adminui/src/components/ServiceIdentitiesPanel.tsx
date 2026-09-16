@@ -10,7 +10,8 @@ import { useToast } from '@shared/context/ToastContext';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
+import { Drawer } from '@shared/components/Drawer';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import AuditTable from './AuditTable';
 
@@ -54,6 +55,11 @@ const ServiceIdentitiesPanel: React.FC = () => {
     const [error, setError] = useState<NoticeInput | null>(null);
     const [creating, setCreating] = useState(false);
     const [busy, setBusy] = useState(false);
+    // The panel owns the drawer rather than handing DataTable a renderDrawer: the drawer edits, and
+    // DataTable's own drawer closes on X, backdrop and Escape with no way for the content to ask
+    // "discard unsaved changes?" first. Holding the id (not the row) also means the drawer shows
+    // the record as reloaded after a save, and disappears when the identity is deleted.
+    const [openId, setOpenId] = useState<string | null>(null);
 
     /** Scopes the caller may create in: system when ca.manage is held at system scope, then tenants held tenant-wide, then single CAs. */
     const scopes = useMemo<ScopeChoice[]>(() => {
@@ -99,8 +105,12 @@ const ServiceIdentitiesPanel: React.FC = () => {
         setCreating(false);
     });
 
+    const current = openId ? rows.find((r) => r.id === openId) ?? null : null;
+
     const columns: DataTableColumn<ServiceIdentity>[] = [
-        { key: 'username', header: 'Identity', defaultWidth: 200, minWidth: 140, exportValue: (r) => r.username, render: (r) => <span className="font-mono text-xs text-gray-900 dark:text-white">{r.username}</span> },
+        { key: 'username', header: 'Identity', defaultWidth: 200, minWidth: 140, exportValue: (r) => r.username, render: (r) => (
+            <button type="button" onClick={() => setOpenId(r.id)} title="Open" className="font-mono text-xs text-gray-900 dark:text-white hover:underline text-left">{r.username}</button>
+        ) },
         { key: 'displayName', header: 'Display name', defaultWidth: 180, exportValue: (r) => r.displayName || '', render: (r) => <span className="text-xs text-gray-700 dark:text-gray-300">{r.displayName || '-'}</span> },
         { key: 'scope', header: 'Scope', defaultWidth: 200, exportValue: scopeLabel, render: (r) => <span className="text-xs text-gray-600 dark:text-gray-400">{scopeLabel(r)}</span> },
         { key: 'groups', header: 'Groups', defaultWidth: 260, truncate: false, exportValue: (r) => r.groups.map((g) => g.displayName || g.name).join(', '), render: (r) => (
@@ -170,6 +180,7 @@ const ServiceIdentitiesPanel: React.FC = () => {
             )}
 
             <DataTable<ServiceIdentity>
+                onRowClick={(r) => setOpenId(r.id)}
                 tableId="service-identities"
                 title="Service identities"
                 rows={rows}
@@ -179,29 +190,63 @@ const ServiceIdentitiesPanel: React.FC = () => {
                 empty="No service identities in the scopes you administer."
                 columns={columns}
                 exportFileName="service-identities"
-                renderDrawer={(r) => <IdentityDrawer identity={r} groups={groups} groupsError={groupsError} onChanged={load} />}
-                drawerTitle={(r) => r.username}
             />
+            {current && <IdentityDrawer identity={current} groups={groups} groupsError={groupsError} onChanged={load} onClose={() => setOpenId(null)} />}
         </div>
     );
 };
 
-const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[]; groupsError?: string | null; onChanged: () => void }> = ({ identity, groups, groupsError, onChanged }) => {
+type DrawerTab = 'overview' | 'groups' | 'audit';
+const TAB_LABEL: Record<DrawerTab, string> = { overview: 'Overview', groups: 'Groups', audit: 'Audit' };
+
+/** Two group selections hold the same members, whatever order they were clicked in. */
+const sameMembers = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
+
+/**
+ * The drawer for one identity. Overview and Groups save through different endpoints with different
+ * bodies, so each tab keeps its own baseline (the values last loaded or last saved) and knows on its
+ * own whether it is dirty: the tab label carries a dot, Save is enabled only then, the other tab is
+ * told about it, and closing with either dirty asks first.
+ */
+const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[]; groupsError?: string | null; onChanged: () => void; onClose: () => void }> = ({ identity, groups, groupsError, onChanged, onClose }) => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
-    const [tab, setTab] = useState<'overview' | 'groups' | 'audit'>('overview');
+    const [tab, setTab] = useState<DrawerTab>('overview');
     const [busy, setBusy] = useState(false);
     const [selected, setSelected] = useState<string[]>(identity.groups.map((g) => g.groupId));
     const [displayName, setDisplayName] = useState(identity.displayName || '');
     const [description, setDescription] = useState(identity.description || '');
+    // Baselines: what the server holds as far as this drawer knows. Set from the record on open,
+    // replaced by the posted values after each successful save so the dirty mark clears at once
+    // rather than after the list reloads.
+    const [overviewBase, setOverviewBase] = useState({ displayName: identity.displayName || '', description: identity.description || '' });
+    const [groupsBase, setGroupsBase] = useState<string[]>(identity.groups.map((g) => g.groupId));
+    const [confirmDelete, setConfirmDelete] = useState(false);
+    const [confirmDiscard, setConfirmDiscard] = useState(false);
     const path = `/api/v1/admin/service-identities/${identity.id}`;
 
     useEffect(() => {
+        const groupIds = identity.groups.map((g) => g.groupId);
         setTab('overview');
-        setSelected(identity.groups.map((g) => g.groupId));
+        setSelected(groupIds);
         setDisplayName(identity.displayName || '');
         setDescription(identity.description || '');
+        setOverviewBase({ displayName: identity.displayName || '', description: identity.description || '' });
+        setGroupsBase(groupIds);
     }, [identity.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const overviewDirty = displayName !== overviewBase.displayName || description !== overviewBase.description;
+    const groupsDirty = !sameMembers(selected, groupsBase);
+    const dirty: Record<DrawerTab, boolean> = { overview: overviewDirty, groups: groupsDirty, audit: false };
+    const anyDirty = overviewDirty || groupsDirty;
+    /** The editable tabs other than the open one that still hold unsaved edits. */
+    const otherDirty = (['overview', 'groups'] as const).filter((t) => t !== tab && dirty[t]);
+    const dirtyLabels = (['overview', 'groups'] as const).filter((t) => dirty[t]).map((t) => TAB_LABEL[t]).join(' and ');
+
+    const requestClose = useCallback(() => {
+        if (overviewDirty || groupsDirty) setConfirmDiscard(true);
+        else onClose();
+    }, [overviewDirty, groupsDirty, onClose]);
 
     const offered = groups.filter((g) => groupFits(g, identity.tenantId || null, identity.caId || null));
 
@@ -212,37 +257,65 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
         finally { setBusy(false); }
     };
 
-    const save = (isActive: boolean) => run('Update', async () => {
-        await apiPutWithMfa(path, { displayName: displayName || null, description: description || null, isActive }, requireStepUp, StepUpOps.UpdateUser, identity.id);
+    /** Saves the Overview form. */
+    const save = () => run('Update', async () => {
+        await apiPutWithMfa(path, { displayName: displayName || null, description: description || null, isActive: identity.isActive }, requireStepUp, StepUpOps.UpdateUser, identity.id);
+        setOverviewBase({ displayName, description });
         showToast('success', 'Saved.');
+    });
+    /** Flips active state only. It posts the saved name and purpose, not the form, so an unsaved
+     *  Overview edit is neither committed by surprise nor lost: it stays pending with its dot. */
+    const setActive = (isActive: boolean) => run('Update', async () => {
+        await apiPutWithMfa(path, { displayName: overviewBase.displayName || null, description: overviewBase.description || null, isActive }, requireStepUp, StepUpOps.UpdateUser, identity.id);
+        showToast('success', isActive ? 'Enabled.' : 'Disabled.');
     });
     const saveGroups = () => run('Update groups', async () => {
         await apiPutWithMfa(`${path}/groups`, { groupIds: selected }, requireStepUp, StepUpOps.UpdateUserGroups, identity.id);
+        setGroupsBase(selected);
         showToast('success', 'Groups updated.');
     });
-    const [confirmDelete, setConfirmDelete] = useState(false);
     const remove = () => run('Delete', async () => {
         await apiDeleteWithMfa(path, requireStepUp, StepUpOps.DeleteUser, identity.id);
         showToast('success', `${identity.username} deleted.`);
+        onClose();
     });
 
-    const tabBtn = (k: typeof tab, label: string) => (
-        <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>{label}</button>
+    const tabBtn = (k: DrawerTab) => (
+        <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+            {TAB_LABEL[k]}{dirty[k] && <span className="ml-1 text-amber-600 dark:text-amber-400" title="Unsaved changes" aria-label="unsaved changes">•</span>}
+        </button>
+    );
+
+    /** One amber line per other tab that still holds unsaved edits, with a way back to it. */
+    const unsavedNotes = otherDirty.length > 0 && (
+        <div>
+            {otherDirty.map((t) => (
+                <FieldHint key={t} tone="warn">
+                    Unsaved changes on {TAB_LABEL[t]}.{' '}
+                    <button type="button" onClick={() => setTab(t)} className="underline hover:text-amber-950 dark:hover:text-amber-200">Go back to {TAB_LABEL[t]}</button>
+                </FieldHint>
+            ))}
+        </div>
     );
 
     return (
+        <Drawer open onClose={requestClose} title={identity.username}>
         <div className="space-y-3">
+            <ConfirmModal isOpen={confirmDiscard} title="Discard unsaved changes?"
+                message={`Unsaved changes on ${dirtyLabels} will be lost.`}
+                confirmLabel="Discard" onConfirm={() => { setConfirmDiscard(false); onClose(); }} onCancel={() => setConfirmDiscard(false)} />
             <ConfirmModal isOpen={confirmDelete} title={`Delete ${identity.username}?`}
                 message="Any Kerberos realm binding that uses this identity as its enrollment identity stops issuing for its whole forest, and the identity's group memberships are gone with it. To pause it instead, use Disable."
                 confirmLabel="Delete identity" loading={busy} onConfirm={() => { setConfirmDelete(false); remove(); }} onCancel={() => setConfirmDelete(false)} />
             <div className="flex items-center justify-between gap-2 flex-wrap">
                 <StatusBadge status={identity.isActive ? 'enabled' : 'disabled'} label={identity.isActive ? 'Active' : 'Disabled'} />
                 <span className="flex items-center gap-1.5 flex-wrap">
-                    <button disabled={busy} onClick={() => save(!identity.isActive)} className="px-2.5 py-1 text-xs rounded border bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40">{identity.isActive ? 'Disable' : 'Enable'}</button>
+                    <button disabled={busy} onClick={() => setActive(!identity.isActive)} className="px-2.5 py-1 text-xs rounded border bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40">{identity.isActive ? 'Disable' : 'Enable'}</button>
                     <button disabled={busy} onClick={() => setConfirmDelete(true)} className="px-2.5 py-1 text-xs rounded border bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-40">Delete</button>
                 </span>
             </div>
-            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">{tabBtn('overview', 'Overview')}{tabBtn('groups', 'Groups')}{tabBtn('audit', 'Audit')}</div>
+            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">{tabBtn('overview')}{tabBtn('groups')}{tabBtn('audit')}</div>
+            {unsavedNotes}
 
             {tab === 'overview' && (
                 <div className="space-y-3">
@@ -263,7 +336,7 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
                         </div>
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy} onClick={() => save(identity.isActive)} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save</button>
+                        <button disabled={busy || !overviewDirty} onClick={save} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save</button>
                     </div>
                 </div>
             )}
@@ -286,13 +359,14 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
                             : offered.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy || !!groupsError} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save groups</button>
+                        <button disabled={busy || !!groupsError || !groupsDirty} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save groups</button>
                     </div>
                 </div>
             )}
 
             {tab === 'audit' && <AuditTable tab="General" target={{ type: 'User', id: identity.id }} pageSize={10} />}
         </div>
+        </Drawer>
     );
 };
 

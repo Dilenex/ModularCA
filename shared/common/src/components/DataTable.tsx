@@ -84,6 +84,12 @@ export interface DataTableProps<Row> {
     renderExpanded?: (row: Row) => React.ReactNode;
     /** When provided, clicking a row opens a read-only slide-over drawer with this content. */
     renderDrawer?: (row: Row) => React.ReactNode;
+    /**
+     * Called when a row is clicked, for a caller that owns its own drawer or detail surface.
+     * Makes rows clickable like `renderDrawer` does; takes precedence over the built-in drawer.
+     * Exists because the built-in drawer cannot ask "discard unsaved changes?" before closing.
+     */
+    onRowClick?: (row: Row) => void;
     /** Drawer header title for a row (used with renderDrawer). */
     drawerTitle?: (row: Row) => React.ReactNode;
     /** Full-page detail route for a row. Shown as an "Open full page" CTA in the drawer, or
@@ -134,7 +140,7 @@ const EMPTY_SET: Set<string> = new Set();
 
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
-    tableId, columns, rows, rowKey, loading, error, empty, title,
+    tableId, columns, rows, rowKey, loading, error, empty, title, onRowClick: onRowOpen,
     selectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
@@ -157,7 +163,7 @@ export function DataTable<Row>({
     const paged = !!onPageChange && page != null;
     const expandable = !!renderExpanded;
     // A leading "open" column appears when a row can be expanded, peeked (drawer), or navigated.
-    const hasRowOpen = expandable || !!renderDrawer || !!detailPath;
+    const hasRowOpen = expandable || !!renderDrawer || !!detailPath || !!onRowOpen;
     const [drawerRow, setDrawerRow] = useState<Row | null>(null);
     const [prefs, setPrefs] = useTablePrefs<Prefs>(`table:${tableId}`, { widths: {}, hidden: [] });
     const prefsRef = useRef(prefs); prefsRef.current = prefs;
@@ -461,7 +467,8 @@ export function DataTable<Row>({
                             ? (e: React.MouseEvent) => {
                                 // Don't act when the click lands on an interactive control inside a cell.
                                 if ((e.target as HTMLElement).closest('button,input,a,select,textarea,label')) return;
-                                if (renderDrawer) setDrawerRow(r);
+                                if (onRowOpen) onRowOpen(r);
+                                else if (renderDrawer) setDrawerRow(r);
                                 else if (expandable) setExpandedKey((cur) => (cur === k ? null : k));
                                 else if (detailPath) navigate(detailPath(r));
                             }

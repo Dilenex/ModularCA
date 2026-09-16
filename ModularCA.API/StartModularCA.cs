@@ -1377,6 +1377,9 @@ builder.Services.AddScoped<RequestProfileValidationService>();
 builder.Services.AddScoped<IPolicySyncService, PolicySyncService>();
 
 builder.Services.AddScoped<CertificateTemplateService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
+builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
 builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();

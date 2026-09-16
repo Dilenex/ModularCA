@@ -158,6 +158,7 @@ const ProtocolConfig: React.FC = () => {
 
                 return (
                     <ProtocolCard
+                        caId={selectedCaId}
                         key={protocol}
                         protocol={protocol}
                         config={config}
@@ -183,6 +184,8 @@ const ProtocolConfig: React.FC = () => {
 };
 
 interface ProtocolCardProps {
+    /** The CA whose card this is; the Windows readiness page is keyed by it. */
+    caId: string;
     protocol: string;
     config: any;
     expanded: boolean;
@@ -196,6 +199,7 @@ interface ProtocolCardProps {
 }
 
 const ProtocolCard: React.FC<ProtocolCardProps> = ({
+    caId,
     protocol, config, expanded, onToggleExpand, onSave, saving,
     signingProfiles, certProfiles, labelClass, selectClass,
 }) => {
@@ -424,6 +428,11 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                             </div>
                         )}
 
+                        {protocol === 'MSAE' && caId && (
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                                Authentication is only one prerequisite. <Link to={`/authorities/windows/${caId}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks all of them for this CA.
+                            </p>
+                        )}
                         {protocol === 'MSAE' && (
                             <div className="space-y-2">
                                 <ToggleField size="md" labelSide="left" label="Username authentication" description="Accept the WS-Security UsernameToken (and HTTP Basic) a client configured for username authentication sends" checked={form.msaeAllowUsernameToken} onChange={(v) => setForm({ ...form, msaeAllowUsernameToken: v })} />

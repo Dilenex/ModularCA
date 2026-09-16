@@ -276,7 +276,7 @@ public class MsaeController(
                 Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}: {Detail}",
                     result.Refusal, result.Realm, result.ServicePrincipal, SourceIp, caLabel, result.Detail);
                 await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
-                    success: false, errorMessage: $"Kerberos token refused: {result.Refusal}", tenantId: tenantId,
+                    success: false, errorMessage: $"Kerberos token refused: {result.Refusal}{(string.IsNullOrEmpty(result.Detail) ? "" : " " + result.Detail)}", tenantId: tenantId,
                     callerPrincipal: result.Realm != null ? $"krb:?@{result.Realm}" : "krb:?", realm: result.Realm, authMethod: "Kerberos");
                 return (null, Fault("Authentication failed.", messageId, "auth_failed"));
             }

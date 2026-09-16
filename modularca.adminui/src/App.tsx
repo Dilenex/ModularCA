@@ -35,6 +35,7 @@ const CertificateRequests = React.lazy(() => import('./pages/CertificateRequests
 const CaManagement = React.lazy(() => import('./pages/CaManagement'));
 const CaDetail = React.lazy(() => import('./pages/CaDetail'));
 const ProtocolConfig = React.lazy(() => import('./pages/ProtocolConfig'));
+const MsaeSetup = React.lazy(() => import('./pages/MsaeSetup'));
 const Distribution = React.lazy(() => import('./pages/Distribution'));
 const CrlScheduleDetail = React.lazy(() => import('./pages/CrlScheduleDetail'));
 const LdapPublisherDetail = React.lazy(() => import('./pages/LdapPublisherDetail'));
@@ -209,6 +210,8 @@ const App: React.FC = () => {
                                                             <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE}><CaManagement /></ProtectedRoute>} />
                                                             <Route path="/authorities/manage/:id" element={<ProtectedRoute {...CA_MANAGE}><CaDetail /></ProtectedRoute>} />
                                                             <Route path="/authorities/protocols" element={<ProtectedRoute {...CA_MANAGE}><ProtocolConfig /></ProtectedRoute>} />
+                                                            <Route path="/authorities/windows" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
+                                                            <Route path="/authorities/windows/:id" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
                                                             <Route path="/distribution" element={<ProtectedRoute {...CA_MANAGE}><Distribution /></ProtectedRoute>} />
                                                             <Route path="/distribution/crl/:id" element={<ProtectedRoute {...CA_MANAGE}><CrlScheduleDetail /></ProtectedRoute>} />
                                                             <Route path="/distribution/ldap/:id" element={<ProtectedRoute {...CA_MANAGE}><LdapPublisherDetail /></ProtectedRoute>} />

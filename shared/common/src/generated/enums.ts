@@ -116,6 +116,15 @@ export const KerberosKeySource = {
 } as const;
 export type KerberosKeySource = (typeof KerberosKeySource)[keyof typeof KerberosKeySource];
 
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export const MsaeReadinessState = {
+    Pass: 'Pass',
+    Warn: 'Warn',
+    Fail: 'Fail',
+    Skip: 'Skip',
+} as const;
+export type MsaeReadinessState = (typeof MsaeReadinessState)[keyof typeof MsaeReadinessState];
+
 /** From `ModularCA.Shared/Enums/RevocationReason.cs`. */
 export const RevocationReason = {
     Unspecified: 'Unspecified',

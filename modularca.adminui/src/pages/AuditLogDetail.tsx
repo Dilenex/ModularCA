@@ -7,6 +7,7 @@ import { apiGet } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { MsaeWhyNotice } from './AuditLogs';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -34,8 +35,9 @@ function auditStatus(type: string, log: any): React.ReactNode {
 
 /// <summary>
 /// Read-only detail page for a single audit log entry. The audit table family is keyed by type
-/// (general / est / scep / cmp / acme / network), carried in the route, so the page hits the matching
-/// by-id endpoint. Audit entries are immutable, so the page is View-only (Edit disabled).
+/// (general / est / scep / cmp / acme / msae / network), carried in the route, so the page hits the matching
+/// by-id endpoint. Audit entries are immutable, so the page is View-only (Edit disabled). An MSAE
+/// refusal is explained above the raw fields (see msaeRefusals.ts) so the operator reads the fix first.
 /// </summary>
 const AuditLogDetail: React.FC = () => {
     const { type = 'general', id } = useParams<{ type: string; id: string }>();
@@ -85,6 +87,7 @@ const AuditLogDetail: React.FC = () => {
         >
             {() => (
                 <DetailSection title="Audit Entry">
+                    {type === 'msae' && <MsaeWhyNotice log={log} className="mb-4" />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
                         {entries.map(([k, v]) => (

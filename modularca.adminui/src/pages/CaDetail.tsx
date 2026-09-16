@@ -161,6 +161,9 @@ const CaDetail: React.FC = () => {
 
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">
+                        <p className="mb-2 text-xs text-gray-600 dark:text-gray-400">
+                            Setting this CA up for Windows clients? <Link to={`/authorities/windows/${ca.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks every prerequisite in order and links to each.
+                        </p>
                         <div className="overflow-x-auto">
                             <DataTable<any>
                                 tableId="ca-protocols"

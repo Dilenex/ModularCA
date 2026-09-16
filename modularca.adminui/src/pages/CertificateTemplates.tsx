@@ -46,6 +46,32 @@ interface DropdownOption {
     name: string;
 }
 
+/** A request profile as the dropdown and the approval pill need it; the list endpoint returns the full DTO. */
+interface RequestProfileOption extends DropdownOption {
+    requireApproval?: boolean;
+}
+
+/**
+ * The largest OID arc Windows reads. Its parser holds each arc in a signed 64-bit integer, so a
+ * template whose OID carries an arc above 2^63-1 is dropped from the policy response without a
+ * word to the client or the server; the template is offered and nobody ever sees it.
+ */
+const WINDOWS_OID_ARC_MAX = 9223372036854775807n;
+
+/// <summary>
+/// True when every dotted arc of the OID is a decimal integer Windows can read (at most 2^63-1).
+/// A blank or non-numeric OID is not readable either.
+/// </summary>
+function oidReadableByWindows(oid: string | null | undefined): boolean {
+    if (!oid) return false;
+    const arcs = oid.trim().split('.');
+    if (arcs.length < 2) return false;
+    return arcs.every((arc) => /^\d+$/.test(arc) && BigInt(arc) <= WINDOWS_OID_ARC_MAX);
+}
+
+const INVISIBLE_TITLE = 'An OID arc above 2^63-1; Windows drops this template silently. Regenerate or set the arc.';
+const APPROVAL_TITLE = 'Every enrollment waits in the approval queue; the client polls until it is issued.';
+
 /* ─── X.509 CA Templates Tab ─── */
 const X509TemplatesTab: React.FC = () => {
     const { showToast } = useToast();
@@ -58,13 +84,21 @@ const X509TemplatesTab: React.FC = () => {
     const [creating, setCreating] = useState(false);
 
     const [authorities, setAuthorities] = useState<DropdownOption[]>([]);
-    const [requestProfiles, setRequestProfiles] = useState<DropdownOption[]>([]);
+    const [requestProfiles, setRequestProfiles] = useState<RequestProfileOption[]>([]);
     const [certProfiles, setCertProfiles] = useState<DropdownOption[]>([]);
     const [signingProfiles, setSigningProfiles] = useState<DropdownOption[]>([]);
 
     // Confirm modal state
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
+
+    /// <summary>
+    /// True when the template's request profile is known to require approval. The template DTO
+    /// does not carry the flag; it is read off the request-profile list this page already loads,
+    /// so a profile that list does not include (not loaded yet, or not granted) reads as unknown.
+    /// </summary>
+    const requiresApproval = (t: CertificateTemplate): boolean =>
+        !!t.requestProfileId && requestProfiles.find((p) => p.id === t.requestProfileId)?.requireApproval === true;
 
     const emptyForm = {
         name: '', description: '', caId: '', requestProfileId: '',
@@ -105,7 +139,7 @@ const X509TemplatesTab: React.FC = () => {
         apiGet<any>('/api/v1/admin/request-profiles')
             .then((data) => {
                 const list = extractList(data);
-                setRequestProfiles(list.map((p: any) => ({ id: p.id, name: p.name || p.id })));
+                setRequestProfiles(list.map((p: any) => ({ id: p.id, name: p.name || p.id, requireApproval: p.requireApproval === true })));
             }).catch(() => {});
         apiGet<any>('/api/v1/admin/cert-profiles')
             .then((data) => {
@@ -170,7 +204,33 @@ const X509TemplatesTab: React.FC = () => {
             { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.caName || t.caId}</span> },
             { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
             { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
-            { key: 'windows', header: 'Windows', defaultWidth: 110, truncate: false, sortable: true, sortValue: (t) => !!t.offeredToWindows, exportValue: (t) => (t.offeredToWindows ? (t.msaeMachineType ? 'Computer' : 'User') : ''), render: (t) => t.offeredToWindows ? <StatusBadge status="active" label={t.msaeMachineType ? 'Computer' : 'User'} /> : <span className="text-gray-500">-</span> },
+            { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="font-mono text-xs text-gray-700 dark:text-gray-300 truncate">{t.msaeTemplateOid}</span> : <span className="text-gray-500">-</span>) },
+            // What a Windows client will see: whether the template survives its OID parser, the
+            // version it is advertised at, the kind of principal it is for, and whether issuance waits.
+            { key: 'windows', header: 'Windows', headerTitle: 'What a Windows client sees: Listed when the OID is readable, Invisible when an arc is too large for its parser, then the advertised version and kind.', defaultWidth: 250, truncate: false, sortable: true,
+                sortValue: (t) => (t.offeredToWindows ? (oidReadableByWindows(t.msaeTemplateOid) ? 2 : 1) : 0),
+                exportValue: (t) => {
+                    if (!t.offeredToWindows) return '';
+                    const parts = [oidReadableByWindows(t.msaeTemplateOid) ? 'Listed' : 'Invisible', `v${t.msaeMajorVersion ?? 100}.${t.msaeMinorVersion ?? 0}`, t.msaeMachineType ? 'Computer' : 'User'];
+                    if (requiresApproval(t)) parts.push('Approval');
+                    return parts.join(' ');
+                },
+                render: (t) => {
+                    if (!t.offeredToWindows) return <span className="text-gray-500">-</span>;
+                    const listed = oidReadableByWindows(t.msaeTemplateOid);
+                    return (
+                        <span className="inline-flex items-center gap-1.5 flex-wrap">
+                            <span title={listed ? 'The OID parses on Windows; the template appears in the policy list.' : INVISIBLE_TITLE}>
+                                <StatusBadge status={listed ? 'active' : 'revoked'} label={listed ? 'Listed' : 'Invisible'} />
+                            </span>
+                            <span className="font-mono text-xs text-gray-600 dark:text-gray-400">v{t.msaeMajorVersion ?? 100}.{t.msaeMinorVersion ?? 0}</span>
+                            <span className="text-xs text-gray-600 dark:text-gray-400">{t.msaeMachineType ? 'Computer' : 'User'}</span>
+                            {requiresApproval(t) && (
+                                <span title={APPROVAL_TITLE} className="inline-block px-2 py-0.5 text-xs rounded border bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-900/50 dark:text-amber-300 dark:border-amber-700">Approval</span>
+                            )}
+                        </span>
+                    );
+                } },
             { key: 'enabled', header: 'Enabled', defaultWidth: 110, truncate: false, sortable: true, sortValue: (t) => !!t.isEnabled, exportValue: (t) => (t.isEnabled ? 'Enabled' : 'Disabled'), render: (t) => <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} /> },
         ],
         sections: [

@@ -10,6 +10,9 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { useTableQuery } from '@shared/hooks/useTableQuery';
 import { formatSort, parseSort, viewQuery, type TableQueryValues } from '@shared/tableQuery';
 import { SavedViews } from '@shared/components/SavedViews';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { Link } from 'react-router-dom';
+import { explainMsaeFailure, type MsaeAuditRow } from './msaeRefusals';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -90,6 +93,13 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
                 { key: 'callerPrincipal', header: 'Caller', defaultWidth: 220, exportValue: (l: any) => l.callerPrincipal || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.callerPrincipal || '-'}</span> },
                 { key: 'realm', header: 'Realm', defaultWidth: 180, exportValue: (l: any) => l.realm || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.realm || '-'}</span> },
                 { key: 'authMethod', header: 'Auth', defaultWidth: 110, exportValue: (l: any) => l.authMethod || '', render: (l: any) => <span className="text-xs text-gray-600 dark:text-gray-400">{l.authMethod || '-'}</span> },
+                // The refusal in one phrase; the drawer and the detail page carry the explanation and the fix.
+                { key: 'why', header: 'Why', headerTitle: 'What the refusal means. Open the row for the explanation and the fix.', defaultWidth: 210, exportValue: (l: any) => explainMsaeFailure(l)?.title || '', render: (l: any) => {
+                    const why = explainMsaeFailure(l);
+                    return why
+                        ? <span title={why.explanation} className="text-xs text-amber-800 dark:text-amber-300 truncate">{why.title}</span>
+                        : <span className="text-xs text-gray-500">-</span>;
+                } },
             ] as DataTableColumn<any>[] : []),
         ];
     }
@@ -105,9 +115,35 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     ];
 }
 
-/* read-only drawer — dumps every populated field (DetailField hides null/empty) */
-export const AuditDrawer: React.FC<{ log: any }> = ({ log }) => (
+/**
+ * What an MSAE refusal means and what resolves it, rendered where the row lands. Null when the
+ * row is not a refusal this console can explain, so callers can place it unconditionally.
+ */
+export const MsaeWhyNotice: React.FC<{ log: MsaeAuditRow; className?: string }> = ({ log, className = '' }) => {
+    const why = explainMsaeFailure(log);
+    if (!why) return null;
+    return (
+        <div className={`space-y-2 ${className}`}>
+            <InlineNotice severity="warning" notice={{ title: why.title, detail: why.explanation, remediation: why.fix }} />
+            {why.link && (
+                <Link to={why.link.path}
+                    className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors">
+                    {why.link.label}
+                </Link>
+            )}
+        </div>
+    );
+};
+
+/** True when a row came from the MSAE audit table: the tab says so, or the row carries MSAE-only columns. */
+function isMsaeRow(log: any, tab?: Tab): boolean {
+    return tab ? tab === 'MSAE' : (log != null && typeof log === 'object' && ('authMethod' in log || 'callerPrincipal' in log));
+}
+
+/* read-only drawer — dumps every populated field (DetailField hides null/empty); an MSAE refusal is explained first */
+export const AuditDrawer: React.FC<{ log: any; tab?: Tab }> = ({ log, tab }) => (
     <div className="text-sm">
+        {isMsaeRow(log, tab) && <MsaeWhyNotice log={log} className="mb-3" />}
         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
         {Object.entries(log).filter(([k]) => k.toLowerCase() !== 'timestamp').map(([k, v]) => (
             <DetailField key={k} label={k} value={v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))} mono={typeof v === 'object' || /id$|serial|hash|ip$/i.test(k)} />
@@ -339,7 +375,7 @@ const AuditLogs: React.FC = () => {
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}
-                renderDrawer={(l) => <AuditDrawer log={l} />}
+                renderDrawer={(l) => <AuditDrawer log={l} tab={activeTab} />}
                 drawerTitle={(l) => l.actionType || l.operation || l.messageType || (l.requestPath ? `${l.httpMethod} ${l.requestPath}` : 'Audit entry')}
                 detailPath={(l) => `/audit/${activeTab.toLowerCase()}/${l.id}`}
                 sort={activeTab === 'General' ? sort : null}

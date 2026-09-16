@@ -57,6 +57,7 @@ export const adminNavSections: NavSection[] = [
             { name: 'Trust Anchors', path: '/trust-anchors', icon: '⚓', gate: SYSTEM_ADMIN, keywords: ['trust store', 'external ca'] },
             { name: 'SSH CA', path: '/ssh', icon: '⌘', gate: CERT_VIEW, keywords: ['ssh certificates', 'ssh keys'] },
             { name: 'Protocol Config', path: '/authorities/protocols', icon: '⇄', gate: CA_MANAGE, keywords: ['acme', 'est', 'scep', 'cmp', 'msae', 'protocols'] },
+            { name: 'Windows Autoenrollment', path: '/authorities/windows', icon: '⊞', gate: CA_MANAGE, keywords: ['msae', 'autoenrollment', 'kerberos', 'group policy', 'readiness', 'active directory'] },
         ]
     },
     {

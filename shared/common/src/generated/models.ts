@@ -905,6 +905,43 @@ export interface MetricsConfig {
     path: string;
 }
 
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadiness {
+    caId: string;
+    caLabel: string;
+    tenantId?: string | null;
+    ready: boolean;
+    cepUrl: string;
+    policyId: string;
+    steps: MsaeReadinessStep[];
+    realms: MsaeReadinessRealm[];
+    evaluatedAt: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessFix {
+    label: string;
+    path: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessRealm {
+    id: string;
+    realm: string;
+    dnsDomain: string;
+    servicePrincipal: string;
+}
+
+/** From `ModularCA.Shared/Models/Msae/MsaeReadiness.cs`. */
+export interface MsaeReadinessStep {
+    key: string;
+    title: string;
+    state: E.MsaeReadinessState;
+    detail: string;
+    items: string[];
+    fix?: MsaeReadinessFix | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface MtlsConfig {
     enabled: boolean;
