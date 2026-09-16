@@ -6,6 +6,7 @@ import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useScope } from '../context/ScopeContext';
 import { PORTAL, PORTAL_LABEL } from '../portal';
+import { scopeLabel } from '../scope';
 import LogPanel from './LogPanel';
 import TopBar from './TopBar';
 import { switchBadge } from './BadgeSwitcher';
@@ -21,7 +22,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user, loading: authLoading } = useAuth();
     const { requireStepUp } = useStepUp();
     const [badgeBusy, setBadgeBusy] = useState(false);
-    const { allows } = useScope();
+    const { allows, scope, linkScope } = useScope();
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -221,6 +222,28 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                                 {'✕'}
                             </button>
                         </div>
+                    </div>
+                )}
+
+                {/* A link set the scope. Say so, and offer the way back, so following a link
+                    never quietly moves someone out of the scope they work in. */}
+                {linkScope && (
+                    <div
+                        role="status"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-sky-50 dark:bg-sky-900/30 border-b border-sky-300 dark:border-sky-700 text-[11px] text-sky-900 dark:text-sky-200"
+                    >
+                        <span>
+                            <span className="font-semibold">Scope set by this link:</span> {scopeLabel(scope)}.
+                            {' '}Your usual scope is {scopeLabel(linkScope.usual)}; navigating elsewhere returns to it.
+                        </span>
+                        <span className="flex items-center gap-3 flex-shrink-0">
+                            <button onClick={linkScope.leave} className="font-semibold underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                                Back to {scopeLabel(linkScope.usual)}
+                            </button>
+                            <button onClick={linkScope.keep} className="underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                                Keep {scopeLabel(scope)}
+                            </button>
+                        </span>
                     </div>
                 )}
 

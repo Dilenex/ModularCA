@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiGet } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -539,40 +540,25 @@ const CertInventory: React.FC = () => {
                     <span className="text-sm text-gray-600">No CA data</span>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[600px] text-xs">
-                            <thead>
-                                <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                    <th className="text-left py-2 px-2 font-semibold">CA Name</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Total</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Active</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Expiring Soon</th>
-                                    <th className="text-right py-2 px-2 font-semibold">Revoked</th>
-                                    <th className="text-right py-2 px-2 font-semibold"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {caBreakdown.map(([issuer, data]) => (
-                                    <tr
-                                        key={issuer}
-                                        className={`border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors ${caFilter === issuer ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
-                                    >
-                                        <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-xs truncate" title={issuer}>{issuer}</td>
-                                        <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-300 tabular-nums">{data.total}</td>
-                                        <td className="py-2 px-2 text-right text-green-800 dark:text-green-400 tabular-nums">{data.active}</td>
-                                        <td className={`py-2 px-2 text-right tabular-nums ${data.expiring > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-600'}`}>{data.expiring}</td>
-                                        <td className={`py-2 px-2 text-right tabular-nums ${data.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-600'}`}>{data.revoked}</td>
-                                        <td className="py-2 px-2 text-right">
-                                            <button
-                                                onClick={() => setCaFilter(caFilter === issuer ? null : issuer)}
-                                                className="text-blue-800 dark:text-blue-400 hover:text-blue-300 text-[10px] underline"
-                                            >
-                                                {caFilter === issuer ? 'Clear' : 'Filter'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                        <DataTable<[string, any]>
+                            tableId="inventory-by-ca"
+                            rows={caBreakdown}
+                            rowKey={([issuer]) => issuer}
+                            empty="No certificates"
+                            sort={{ key: 'total', dir: 'desc' }}
+                            columns={[
+                                { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-gray-800 dark:text-gray-200 truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
+                                { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-gray-700 dark:text-gray-300 tabular-nums">{d.total}</span> },
+                                { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-green-800 dark:text-green-400 tabular-nums">{d.active}</span> },
+                                { key: 'expiring', header: 'Expiring Soon', defaultWidth: 120, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-600'}`}>{d.expiring}</span> },
+                                { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-600'}`}>{d.revoked}</span> },
+                                { key: 'filter', header: '', defaultWidth: 80, align: 'right', truncate: false, hideable: false, exportValue: () => '', render: ([issuer]) => (
+                                    <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-blue-800 dark:text-blue-400 hover:text-blue-300 text-[10px] underline">
+                                        {caFilter === issuer ? 'Clear' : 'Filter'}
+                                    </button>
+                                ) },
+                            ] as DataTableColumn<[string, any]>[]}
+                        />
                     </div>
                 )}
             </Section>
@@ -584,26 +570,19 @@ const CertInventory: React.FC = () => {
                         <span className="text-sm text-gray-600">No certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Issuer</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Issued</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {recentlyIssued.map(c => (
-                                        <tr key={c.serialNumber} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</td>
-                                            <td className="py-2 px-2 text-gray-600 dark:text-gray-400 max-w-[160px] truncate" title={c.issuer}>{c.issuer}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.validFrom)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="inventory-recently-issued"
+                                rows={recentlyIssued}
+                                rowKey={(c) => c.serialNumber}
+                                empty="Nothing issued recently"
+                                detailPath={(c) => `/certificates/${c.serialNumber}`}
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-gray-600 dark:text-gray-400 truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'issued', header: 'Issued', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.validFrom ? new Date(c.validFrom) : null, exportValue: (c) => formatDateShort(c.validFrom), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.validFrom)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>
@@ -614,26 +593,19 @@ const CertInventory: React.FC = () => {
                         <span className="text-sm text-gray-600">No revoked certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 dark:text-gray-400 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-2 px-2 font-semibold">Subject</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Serial</th>
-                                        <th className="text-left py-2 px-2 font-semibold">Reason</th>
-                                        <th className="text-right py-2 px-2 font-semibold">Revoked</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {recentlyRevoked.map(c => (
-                                        <tr key={c.serialNumber} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                            <td className="py-2 px-2 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={c.subjectDN}>{c.subjectDN}</td>
-                                            <td className="py-2 px-2 font-mono text-gray-600 dark:text-gray-400 max-w-[120px] truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</td>
-                                            <td className="py-2 px-2 text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</td>
-                                            <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.revocationDate)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="inventory-recently-revoked"
+                                rows={recentlyRevoked}
+                                rowKey={(c) => c.serialNumber}
+                                empty="Nothing revoked recently"
+                                detailPath={(c) => `/certificates/${c.serialNumber}`}
+                                columns={[
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     )}
                 </Section>

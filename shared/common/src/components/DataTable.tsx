@@ -15,6 +15,8 @@ import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../context/TablePrefsContext';
 import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
+import { sortRows } from '../tableSort';
+import type { SortSpec } from '../tableQuery';
 
 /* ── public API ───────────────────────────────────────────────────────────── */
 export interface DataTableColumn<Row> {
@@ -42,6 +44,10 @@ export interface DataTableColumn<Row> {
     align?: 'left' | 'right' | 'center';
     /** Header tooltip. */
     headerTitle?: string;
+    /** Clicking the header sorts by this column (default false). */
+    sortable?: boolean;
+    /** Value to sort by client-side. Falls back to `exportValue`. Ignored when the parent sorts (onSortChange). */
+    sortValue?: (row: Row) => string | number | boolean | Date | null | undefined;
 }
 
 export interface DataTableBulkAction<Row> {
@@ -98,6 +104,24 @@ export interface DataTableProps<Row> {
     onExport?: () => void;
     /** Show a busy/disabled state on the export button. */
     exporting?: boolean;
+
+    /* ── sorting ── */
+    /** The current sort. With `onSortChange` the parent owns it (server mode); without, the
+     *  table sorts its rows itself and this is the initial sort. */
+    sort?: SortSpec | null;
+    /** Server mode: the parent re-queries with the new sort. */
+    onSortChange?: (sort: SortSpec | null) => void;
+
+    /* ── paging (server mode) ── */
+    /** 1-based page; with `onPageChange` the table shows a pager and the parent fetches the page. */
+    page?: number;
+    pageSize?: number;
+    /** Total pages, or derive from `totalCount` and `pageSize`. */
+    totalPages?: number;
+    onPageChange?: (page: number) => void;
+    /** Offer a page-size picker with these sizes. */
+    pageSizeOptions?: number[];
+    onPageSizeChange?: (size: number) => void;
 }
 
 interface Prefs { widths: Record<string, number>; hidden: string[]; }
@@ -112,8 +136,22 @@ export function DataTable<Row>({
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
     onSelectAllMatching, onClearSelection, onExport, exporting,
+    sort: sortProp, onSortChange, page, pageSize, totalPages: totalPagesProp, onPageChange, pageSizeOptions, onPageSizeChange,
 }: DataTableProps<Row>) {
     const navigate = useNavigate();
+
+    /* sorting — the parent's when it re-queries (server mode); otherwise the table's own */
+    const [internalSort, setInternalSort] = useState<SortSpec | null>(sortProp ?? null);
+    const sort = onSortChange ? (sortProp ?? null) : internalSort;
+    const sortedRows = useMemo(() => (onSortChange ? rows : sortRows(rows, columns, sort)), [rows, columns, sort, onSortChange]);
+    const toggleSort = (key: string) => {
+        const next: SortSpec | null = !sort || sort.key !== key ? { key, dir: 'asc' } : sort.dir === 'asc' ? { key, dir: 'desc' } : null;
+        if (onSortChange) onSortChange(next); else setInternalSort(next);
+    };
+
+    /* paging (server mode): shown when the parent owns the page */
+    const totalPages = totalPagesProp ?? (totalCount != null && pageSize ? Math.max(1, Math.ceil(totalCount / pageSize)) : undefined);
+    const paged = !!onPageChange && page != null;
     const expandable = !!renderExpanded;
     // A leading "open" column appears when a row can be expanded, peeked (drawer), or navigated.
     const hasRowOpen = expandable || !!renderDrawer || !!detailPath;
@@ -160,7 +198,7 @@ export function DataTable<Row>({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, controlled]);
 
-    const allKeys = useMemo(() => rows.map(rowKey), [rows, rowKey]);
+    const allKeys = useMemo(() => sortedRows.map(rowKey), [sortedRows, rowKey]);
     const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
     const someSelected = selected.size > 0 && !allSelected;
     const selectAllRef = useRef<HTMLInputElement>(null);
@@ -173,7 +211,7 @@ export function DataTable<Row>({
     };
     const toggleRow = (k: string) => { const n = new Set(selected); n.has(k) ? n.delete(k) : n.add(k); commitSelection(n); };
     const clearSelection = () => { if (controlled && onClearSelection) onClearSelection(); else commitSelection(new Set()); };
-    const selectedRows = useMemo(() => rows.filter((r) => selected.has(rowKey(r))), [rows, selected, rowKey]);
+    const selectedRows = useMemo(() => sortedRows.filter((r) => selected.has(rowKey(r))), [sortedRows, selected, rowKey]);
     // When the parent has flagged "all matching" selected, the count reflects the server-wide total.
     const selectionCount = allMatchingSelected && totalCount != null ? totalCount : selected.size;
 
@@ -255,7 +293,7 @@ export function DataTable<Row>({
 
     /* CSV export */
     const exportCsv = useCallback(() => {
-        const rowsOut = selected.size > 0 ? selectedRows : rows;
+        const rowsOut = selected.size > 0 ? selectedRows : sortedRows;
         const cols = visibleCols;
         const esc = (v: unknown) => {
             if (typeof v === 'number') return String(v);
@@ -278,7 +316,7 @@ export function DataTable<Row>({
         a.href = url; a.download = `${exportFileName || tableId}.csv`;
         document.body.appendChild(a); a.click(); a.remove();
         URL.revokeObjectURL(url);
-    }, [rows, selectedRows, selected.size, visibleCols, exportFileName, tableId]);
+    }, [sortedRows, selectedRows, selected.size, visibleCols, exportFileName, tableId]);
 
     const alignCls = (a?: string) => (a === 'right' ? 'text-right justify-end' : a === 'center' ? 'text-center justify-center' : 'text-left');
     const bulkBtnCls = (v?: string) =>
@@ -313,7 +351,7 @@ export function DataTable<Row>({
                             <button onClick={clearSelection} className="text-xs text-gray-600 dark:text-gray-400 hover:underline">Deselect</button>
                         </>
                     ) : (
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}{title ? ' ' : ''}<span className="text-gray-500 font-normal">({rows.length})</span></h3>
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}{title ? ' ' : ''}<span className="text-gray-500 font-normal">({totalCount ?? rows.length})</span></h3>
                     )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -392,9 +430,17 @@ export function DataTable<Row>({
                             </div>
                         )}
                         {visibleCols.map((c) => (
-                            <div key={c.key} ref={(el) => { headerRefs.current[c.key] = el; }} title={c.headerTitle}
-                                className={`relative flex items-center px-3 py-2 text-xs font-semibold text-gray-600 dark:text-gray-400 select-none overflow-hidden ${alignCls(c.align)}`}>
+                            <div key={c.key} ref={(el) => { headerRefs.current[c.key] = el; }} title={c.headerTitle ?? (c.sortable ? `Sort by ${c.header}` : undefined)}
+                                onClick={c.sortable ? () => toggleSort(c.key) : undefined}
+                                role={c.sortable ? 'button' : undefined}
+                                aria-sort={c.sortable && sort?.key === c.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                                className={`relative flex items-center gap-1 px-3 py-2 text-xs font-semibold text-gray-600 dark:text-gray-400 select-none overflow-hidden ${alignCls(c.align)} ${c.sortable ? 'cursor-pointer hover:text-gray-900 dark:hover:text-white' : ''}`}>
                                 <span className="truncate">{c.header}</span>
+                                {c.sortable && (
+                                    <span aria-hidden="true" className={`text-[10px] flex-shrink-0 ${sort?.key === c.key ? 'text-blue-700 dark:text-blue-300' : 'text-gray-400 dark:text-gray-600'}`}>
+                                        {sort?.key === c.key ? (sort.dir === 'asc' ? '\u25B2' : '\u25BC') : '\u21C5'}
+                                    </span>
+                                )}
                                 {c.resizable !== false && !flexKeys.has(c.key) && (
                                     <div onMouseDown={(e) => onResizeStart(e, c)}
                                         className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400/60 active:bg-blue-500" />
@@ -404,7 +450,7 @@ export function DataTable<Row>({
                         {useSpacer && <div aria-hidden className="py-2" />}
                     </div>
                     {/* rows */}
-                    {rows.map((r) => {
+                    {sortedRows.map((r) => {
                         const k = rowKey(r);
                         const isSel = selected.has(k);
                         const isExp = expandedKey === k;
@@ -447,6 +493,37 @@ export function DataTable<Row>({
                             </React.Fragment>
                         );
                     })}
+                </div>
+            )}
+
+            {/* pager (server mode) */}
+            {paged && (
+                <div className="px-3 py-2 border-t border-gray-300 dark:border-gray-700 flex items-center justify-between gap-3 flex-wrap text-xs text-gray-600 dark:text-gray-400">
+                    <span>
+                        {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'}` : ''}
+                        {totalPages != null ? ` · page ${page} of ${totalPages}` : ` · page ${page}`}
+                    </span>
+                    <span className="flex items-center gap-2">
+                        {pageSizeOptions && onPageSizeChange && pageSize != null && (
+                            <label className="flex items-center gap-1">
+                                <span>Rows</span>
+                                <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))}
+                                    className="px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300">
+                                    {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                                </select>
+                            </label>
+                        )}
+                        <button onClick={() => onPageChange!(1)} disabled={page! <= 1}
+                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">First</button>
+                        <button onClick={() => onPageChange!(page! - 1)} disabled={page! <= 1}
+                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Previous</button>
+                        <button onClick={() => onPageChange!(page! + 1)} disabled={totalPages != null ? page! >= totalPages : rows.length < (pageSize ?? 0)}
+                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                        {totalPages != null && (
+                            <button onClick={() => onPageChange!(totalPages)} disabled={page! >= totalPages}
+                                className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Last</button>
+                        )}
+                    </span>
                 </div>
             )}
 

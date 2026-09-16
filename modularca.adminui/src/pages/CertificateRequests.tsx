@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiGet, apiPost } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -194,26 +196,34 @@ const CertificateRequests: React.FC = () => {
         loadRequests();
     };
 
-    const columns: DataTableColumn<any>[] = [
-        { key: 'status', header: 'Status', defaultWidth: 180, minWidth: 120, truncate: false, exportValue: (c) => csrStatusLabel(c), render: (c) => <StatusBadge status={csrStatus(c)} label={csrStatusLabel(c)} /> },
-        { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, exportValue: (c) => c.subjectName || c.subject || '', render: (c) => <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{c.subjectName || c.subject}</span> },
-        { key: 'algorithm', header: 'Algorithm', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm}</span> },
-        { key: 'size', header: 'Size', defaultWidth: 80, exportValue: (c) => (c.keySize ?? ''), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keySize}</span> },
-        { key: 'submitted', header: 'Submitted', defaultWidth: 160, exportValue: (c) => formatDate(c.submittedAt), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.submittedAt)}</span> },
-    ];
-
-    const drawer = (c: any) => (
-        <div className="text-sm">
-            <DetailField label="Subject" value={c.subjectName || c.subject} />
-            <DetailField label="Status" value={csrStatusLabel(c)} />
-            <DetailField label="Key Algorithm" value={c.keyAlgorithm} />
-            <DetailField label="Key Size" value={c.keySize} />
-            <DetailField label="Signature Algorithm" value={c.signatureAlgorithm} />
-            <DetailField label="SANs" value={parseJsonSafe(c.subjectAlternativeNames)} />
-            <DetailField label="Submitted" value={formatDate(c.submittedAt)} />
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to approve, reject, cancel or issue.</p>
-        </div>
-    );
+    const record: RecordDescriptor<any> = {
+        kind: 'certificate-request',
+        key: csrId,
+        title: (c) => c.subjectName || c.subject || 'Certificate Request',
+        status: (c) => { const st = csrStatus(c); return { label: csrStatusLabel(c), tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'pending' ? 'warn' : 'neutral' }; },
+        columns: [
+            { key: 'status', header: 'Status', defaultWidth: 180, minWidth: 120, truncate: false, exportValue: (c) => csrStatusLabel(c), render: (c) => <StatusBadge status={csrStatus(c)} label={csrStatusLabel(c)} /> },
+            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectName || c.subject || '', render: (c) => <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{c.subjectName || c.subject}</span> },
+            { key: 'algorithm', header: 'Algorithm', defaultWidth: 110, sortable: true, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm}</span> },
+            { key: 'size', header: 'Size', defaultWidth: 80, exportValue: (c) => (c.keySize ?? ''), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keySize}</span> },
+            { key: 'submitted', header: 'Submitted', defaultWidth: 160, sortable: true, sortValue: (c) => c.submittedAt ? new Date(c.submittedAt) : null, exportValue: (c) => formatDate(c.submittedAt), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.submittedAt)}</span> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Subject', value: (c) => c.subjectName || c.subject },
+                { label: 'SANs', value: (c) => parseJsonSafe(c.subjectAlternativeNames) },
+                { label: 'Submitted', value: (c) => formatDate(c.submittedAt) },
+            ] },
+            { title: 'Key', fields: [
+                { label: 'Key Algorithm', value: (c) => c.keyAlgorithm },
+                { label: 'Key Size', value: (c) => c.keySize },
+                { label: 'Signature Algorithm', value: (c) => c.signatureAlgorithm },
+            ] },
+            { fields: [{ label: 'Next', value: () => 'Open the full page to approve, reject, cancel or issue.' }] },
+        ],
+        audit: { tab: 'General', target: (c) => ({ type: 'CertificateRequest', id: csrId(c) }) },
+        page: { path: (c) => `/certificates/requests/${csrId(c)}` },
+    };
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
@@ -236,11 +246,10 @@ const CertificateRequests: React.FC = () => {
                 tableId="certificate-requests"
                 title="Certificate Requests"
                 rows={filtered}
-                rowKey={csrId}
                 loading={loading}
                 error={error}
                 empty="No certificate requests found"
-                columns={columns}
+                {...recordTableProps(record)}
                 selectable
                 bulkActions={[
                     { label: 'Approve', variant: 'primary', enabledFor: canApprove, onClick: (rows) => openBulk('approve', rows) },
@@ -248,9 +257,6 @@ const CertificateRequests: React.FC = () => {
                     { label: 'Issue', variant: 'primary', enabledFor: canIssue, onClick: (rows) => openBulk('issue', rows) },
                 ]}
                 exportFileName="certificate-requests"
-                renderDrawer={drawer}
-                drawerTitle={(c) => c.subjectName || c.subject || 'Certificate Request'}
-                detailPath={(c) => `/certificates/requests/${csrId(c)}`}
             />
 
             {/* Bulk approve / deny — one message for the whole batch */}

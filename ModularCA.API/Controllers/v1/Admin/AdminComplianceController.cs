@@ -103,7 +103,8 @@ public class AdminComplianceController : ControllerBase
         [FromQuery] string? type,
         [FromQuery] bool includeResolved = false,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50)
+        [FromQuery] int pageSize = 50,
+        [FromQuery] string? sort = null)
     {
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 1;
@@ -122,8 +123,18 @@ public class AdminComplianceController : ControllerBase
 
         var totalCount = await query.CountAsync();
 
-        var items = await query
-            .OrderByDescending(v => v.DetectedAt)
+        // sort: detectedAt (default, newest first), severity, type.
+        var parsedSort = ModularCA.Core.ListSort.Parse(sort, "detectedAt", "severity", "type");
+        IOrderedQueryable<Shared.Entities.CertComplianceFindingEntity> ordered = parsedSort switch
+        {
+            ("severity", false) => query.OrderBy(v => v.Severity).ThenByDescending(v => v.DetectedAt),
+            ("severity", true) => query.OrderByDescending(v => v.Severity).ThenByDescending(v => v.DetectedAt),
+            ("type", false) => query.OrderBy(v => v.Type).ThenByDescending(v => v.DetectedAt),
+            ("type", true) => query.OrderByDescending(v => v.Type).ThenByDescending(v => v.DetectedAt),
+            ("detectedAt", false) => query.OrderBy(v => v.DetectedAt),
+            _ => query.OrderByDescending(v => v.DetectedAt),
+        };
+        var items = await ordered
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(v => new

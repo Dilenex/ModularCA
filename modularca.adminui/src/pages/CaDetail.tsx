@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -158,24 +159,18 @@ const CaDetail: React.FC = () => {
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[600px] text-xs">
-                                <thead>
-                                    <tr className="text-gray-600 border-b border-gray-300 dark:border-gray-700">
-                                        <th className="text-left py-1 pr-4">Protocol</th>
-                                        <th className="text-left py-1 pr-4">Enabled</th>
-                                        <th className="text-left py-1">Profile</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {ca.protocolConfigs.map((pc: any, idx: number) => (
-                                        <tr key={idx} className="border-b border-gray-300 dark:border-gray-700/50 last:border-b-0">
-                                            <td className="py-1 pr-4 text-gray-700 dark:text-gray-300">{pc.protocol || pc.name}</td>
-                                            <td className="py-1 pr-4"><StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /></td>
-                                            <td className="py-1 text-gray-600 dark:text-gray-400">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <DataTable<any>
+                                tableId="ca-protocols"
+                                rows={ca.protocolConfigs}
+                                rowKey={(pc: any) => pc.protocol || pc.name || pc.id}
+                                empty="No protocol configuration"
+                                disableExport
+                                columns={[
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-gray-700 dark:text-gray-300">{pc.protocol || pc.name}</span> },
+                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /> },
+                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-gray-600 dark:text-gray-400 truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
+                                ] as DataTableColumn<any>[]}
+                            />
                         </div>
                     </DetailSection>
                 )}

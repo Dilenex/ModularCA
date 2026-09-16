@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPostWithMfa, API_BASE } from '../api/client';
+import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
 
@@ -341,24 +342,19 @@ const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean;
 
             {!loading && !error && backups.length > 0 && (
                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[600px] text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-left">
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Filename</th>
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Created (UTC)</th>
-                                <th className="px-4 py-2 text-xs font-medium text-gray-600 dark:text-gray-400">Size</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {backups.map((backup) => (
-                                <tr key={backup.fileName} className="border-b border-gray-300 dark:border-gray-700/50 hover:bg-gray-200/30 dark:bg-gray-700/30 transition-colors">
-                                    <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-white">{backup.fileName}</td>
-                                    <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400">{formatDate(backup.createdUtc)}</td>
-                                    <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400">{formatSize(backup.sizeBytes)}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <DataTable<any>
+                        tableId="backups"
+                        title="Backups"
+                        rows={backups}
+                        rowKey={(b) => b.fileName}
+                        empty="No backups yet"
+                        sort={{ key: 'created', dir: 'desc' }}
+                        columns={[
+                            { key: 'fileName', header: 'Filename', defaultWidth: 320, sortable: true, exportValue: (b) => b.fileName, render: (b) => <span className="font-mono text-xs text-gray-900 dark:text-white truncate">{b.fileName}</span> },
+                            { key: 'created', header: 'Created (UTC)', defaultWidth: 180, sortable: true, sortValue: (b) => b.createdUtc ? new Date(b.createdUtc) : null, exportValue: (b) => formatDate(b.createdUtc), render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(b.createdUtc)}</span> },
+                            { key: 'size', header: 'Size', defaultWidth: 110, align: 'right', sortable: true, sortValue: (b) => b.sizeBytes ?? null, exportValue: (b) => b.sizeBytes ?? '', render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400 tabular-nums">{formatSize(b.sizeBytes)}</span> },
+                        ] as DataTableColumn<any>[]}
+                    />
                 </div>
             )}
         </div>

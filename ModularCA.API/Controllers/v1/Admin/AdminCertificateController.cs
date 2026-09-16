@@ -80,6 +80,7 @@ public class AdminCertificateController(
         [FromQuery] string? issuer,
         [FromQuery] Guid? caId,
         [FromQuery] Guid? tenantId,
+        [FromQuery] string? sort,
         [FromQuery] string? status,
         [FromQuery] string? keyAlgorithm,
         [FromQuery] string? san,
@@ -205,7 +206,7 @@ public class AdminCertificateController(
             // so materialise the DB-filtered set, parse each, filter, then page in memory. The
             // other filters narrow the set first; the common no-algorithm path below still pages
             // in the database.
-            var dbFiltered = await query.OrderByDescending(c => c.NotBefore).ToListAsync();
+            var dbFiltered = await ApplySort(query, sort).ToListAsync();
             var matched = dbFiltered
                 .Where(c => string.Equals(ParseKeyInfo(c.RawCertificate).Algorithm, keyAlgorithm, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -215,8 +216,7 @@ public class AdminCertificateController(
         else
         {
             total = await query.CountAsync();
-            entities = await query
-                .OrderByDescending(c => c.NotBefore)
+            entities = await ApplySort(query, sort)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
@@ -345,6 +345,26 @@ public class AdminCertificateController(
                 .Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && allowedCaCertIds.Contains(sp.IssuerId.Value)))
             || _dbContext.CertificateRequests.Any(r => r.IssuedCertificateId == c.CertificateId && r.RequestorUserId == userId)
             || aclCertIdList.Contains(c.CertificateId));
+    }
+
+    /// <summary>
+    /// Orders the certificate list by the <c>sort</c> parameter (<c>field</c> / <c>-field</c>):
+    /// notBefore, notAfter, subject, serial, issuer. Default: newest first.
+    /// </summary>
+    private static IOrderedQueryable<ModularCA.Shared.Entities.CertificateEntity> ApplySort(
+        IQueryable<ModularCA.Shared.Entities.CertificateEntity> query, string? sort)
+    {
+        var parsed = ModularCA.Core.ListSort.Parse(sort, "notBefore", "notAfter", "subject", "serial", "issuer");
+        if (parsed == null) return query.OrderByDescending(c => c.NotBefore);
+        var (field, desc) = parsed.Value;
+        return field switch
+        {
+            "notAfter" => desc ? query.OrderByDescending(c => c.NotAfter) : query.OrderBy(c => c.NotAfter),
+            "subject" => desc ? query.OrderByDescending(c => c.SubjectDN) : query.OrderBy(c => c.SubjectDN),
+            "serial" => desc ? query.OrderByDescending(c => c.SerialNumber) : query.OrderBy(c => c.SerialNumber),
+            "issuer" => desc ? query.OrderByDescending(c => c.Issuer) : query.OrderBy(c => c.Issuer),
+            _ => desc ? query.OrderByDescending(c => c.NotBefore) : query.OrderBy(c => c.NotBefore),
+        };
     }
 
     /// <summary>

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiGet, apiPostWithMfa, apiPutWithMfa } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -216,64 +218,64 @@ const Whitelists: React.FC = () => {
         });
     }, [whitelists]);
 
-    const columns: DataTableColumn<Whitelist>[] = useMemo(() => [
-        {
-            key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false,
-            exportValue: (wl) => wl.name,
-            render: (wl) => (
-                <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                        <span className="text-gray-900 dark:text-white font-medium truncate">{wl.name}</span>
-                        {wl.isSystemDefault && (
-                            <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded shrink-0">System Default</span>
-                        )}
+    const record: RecordDescriptor<Whitelist> = useMemo(() => ({
+        kind: 'whitelist',
+        key: (wl) => wl.id,
+        title: (wl) => wl.name,
+        status: (wl) => ({ label: wl.isEnabled ? 'Enabled' : 'Disabled', tone: wl.isEnabled ? 'ok' : 'neutral' }),
+        columns: [
+            {
+                key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, sortable: true,
+                exportValue: (wl) => wl.name,
+                render: (wl) => (
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                            <span className="text-gray-900 dark:text-white font-medium truncate">{wl.name}</span>
+                            {wl.isSystemDefault && (
+                                <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded shrink-0">System Default</span>
+                            )}
+                        </div>
+                        {wl.description && <div className="text-xs text-gray-600 truncate">{wl.description}</div>}
                     </div>
-                    {wl.description && <div className="text-xs text-gray-600 truncate">{wl.description}</div>}
-                </div>
-            ),
-        },
-        { key: 'scope', header: 'Scope', defaultWidth: 100, exportValue: (wl) => wl.scope, truncate: false,
-            render: (wl) => <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span> },
-        { key: 'protocol', header: 'Protocol', defaultWidth: 90, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
-        { key: 'ca', header: 'CA', defaultWidth: 150, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
-        { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
-        { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),
-            render: (wl) => (
-                <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-                    ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
-            ) },
-        { key: 'updated', header: 'Updated', defaultWidth: 150, exportValue: (wl) => wl.updatedAt, render: (wl) => formatDate(wl.updatedAt) },
+                ),
+            },
+            { key: 'scope', header: 'Scope', defaultWidth: 100, sortable: true, exportValue: (wl) => wl.scope, truncate: false,
+                render: (wl) => <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span> },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 90, sortable: true, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
+            { key: 'ca', header: 'CA', defaultWidth: 150, sortable: true, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
+            { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', sortable: true, sortValue: (wl) => (wl.cidrs || []).length, exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
+            { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (wl) => wl.isEnabled, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),
+                render: (wl) => (
+                    <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
+                        ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
+                ) },
+            { key: 'updated', header: 'Updated', defaultWidth: 150, sortable: true, sortValue: (wl) => wl.updatedAt ? new Date(wl.updatedAt) : null, exportValue: (wl) => wl.updatedAt, render: (wl) => formatDate(wl.updatedAt) },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Scope', value: (wl) => wl.scope },
+                { label: 'System Default', value: (wl) => (wl.isSystemDefault ? 'Yes' : null) },
+                { label: 'Description', value: (wl) => wl.description },
+                { label: 'Protocol', value: (wl) => wl.protocol },
+                { label: 'CA', value: (wl) => caNameById(wl.certificateAuthorityId) },
+                { label: 'Created', value: (wl) => formatDate(wl.createdAt) },
+                { label: 'Updated', value: (wl) => formatDate(wl.updatedAt) },
+            ] },
+            { title: 'CIDRs', fields: [
+                { label: 'Rules', value: (wl) => (
+                    <div className="max-h-60 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
+                        {(wl.cidrs || []).length === 0
+                            ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
+                            : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
+                    </div>
+                ) },
+            ] },
+        ],
+        audit: { tab: 'General', target: (wl) => ({ type: 'Whitelist', id: wl.id }) },
+        page: { path: (wl) => `/whitelists/${wl.id}` },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    ], [authorities]);
-
-    const renderDrawer = (wl: Whitelist) => (
-        <div className="space-y-3 text-sm">
-            <div className="flex items-center gap-2 flex-wrap">
-                <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-                    ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
-                <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span>
-                {wl.isSystemDefault && <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded">System Default</span>}
-            </div>
-            {wl.description && <p className="text-gray-700 dark:text-gray-300">{wl.description}</p>}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <div><span className="text-gray-500">Protocol</span><div className="text-gray-900 dark:text-white">{wl.protocol || '-'}</div></div>
-                <div><span className="text-gray-500">CA</span><div className="text-gray-900 dark:text-white truncate">{caNameById(wl.certificateAuthorityId)}</div></div>
-                <div><span className="text-gray-500">Created</span><div className="text-gray-900 dark:text-white">{formatDate(wl.createdAt)}</div></div>
-                <div><span className="text-gray-500">Updated</span><div className="text-gray-900 dark:text-white">{formatDate(wl.updatedAt)}</div></div>
-            </div>
-            <div>
-                <span className="text-gray-500 text-xs">CIDRs ({(wl.cidrs || []).length})</span>
-                <div className="mt-1 max-h-60 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
-                    {(wl.cidrs || []).length === 0
-                        ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
-                        : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
-                </div>
-            </div>
-            <p className="text-[11px] text-gray-500">Select the row in the table to edit, enable/disable, or delete.</p>
-        </div>
-    );
+    }), [authorities]);
 
     // Edit moved to the per-entry detail page (open via the drawer's "Open full page", then the
     // View/Edit toggle). The modal below is now create-only.
@@ -303,17 +305,13 @@ const Whitelists: React.FC = () => {
                 tableId="whitelists"
                 title="Rules"
                 rows={sorted}
-                rowKey={(wl) => wl.id}
                 loading={loading}
                 error={error}
                 empty="No whitelist rules found. They are normally seeded on first bootstrap — reload after running setup."
-                columns={columns}
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="whitelists"
-                renderDrawer={renderDrawer}
-                drawerTitle={(wl) => wl.name}
-                detailPath={(wl) => `/whitelists/${wl.id}`}
+                {...recordTableProps(record)}
             />
 
             {/* Create/Edit Modal */}

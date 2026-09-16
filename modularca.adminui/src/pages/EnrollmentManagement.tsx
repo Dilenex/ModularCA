@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { apiGet, apiPost, apiDelete } from '../api/client';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -144,44 +146,51 @@ const EnrollmentManagement: React.FC = () => {
         }
     };
 
-    const columns: DataTableColumn<any>[] = useMemo(() => [
-        { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (t) => (t.isRevoked ? 'Revoked' : 'Active'),
-            render: (t) => <StatusBadge status={t.isRevoked ? 'revoked' : 'active'} /> },
-        { key: 'token', header: 'Token / Reference', defaultWidth: 220, exportValue: (t) => (isCmpCredentialRow(t) ? `CMP ${t.cmpReferenceValue || ''}` : t.token),
-            render: (t) => <span className="font-mono text-xs">{tokenColumnLabel(t)}</span> },
-        { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
-            render: (t) => <span className="text-gray-600 dark:text-gray-400">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
-        { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, exportValue: (t) => t.protocol || '',
-            render: (t) => (t.protocol ? <StatusBadge status="pending" label={t.protocol} /> : <span className="text-gray-500">Any</span>) },
-        { key: 'created', header: 'Created', defaultWidth: 150, exportValue: (t) => t.createdAt, render: (t) => formatDate(t.createdAt) },
-        { key: 'expires', header: 'Expires', defaultWidth: 150, exportValue: (t) => t.expiresAt, render: (t) => formatDate(t.expiresAt) },
-    ], []);
+    const record: RecordDescriptor<any> = useMemo(() => ({
+        kind: 'enrollment-token',
+        key: (t) => t.id,
+        title: drawerTitle,
+        status: (t) => ({ label: t.isRevoked ? 'Revoked' : 'Active', tone: t.isRevoked ? 'bad' : 'ok' }),
+        columns: [
+            { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (t) => !!t.isRevoked, exportValue: (t) => (t.isRevoked ? 'Revoked' : 'Active'),
+                render: (t) => <StatusBadge status={t.isRevoked ? 'revoked' : 'active'} /> },
+            { key: 'token', header: 'Token / Reference', defaultWidth: 220, exportValue: (t) => (isCmpCredentialRow(t) ? `CMP ${t.cmpReferenceValue || ''}` : t.token),
+                render: (t) => <span className="font-mono text-xs">{tokenColumnLabel(t)}</span> },
+            { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
+                render: (t) => <span className="text-gray-600 dark:text-gray-400">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
+                render: (t) => (t.protocol ? <StatusBadge status="pending" label={t.protocol} /> : <span className="text-gray-500">Any</span>) },
+            { key: 'created', header: 'Created', defaultWidth: 150, sortable: true, sortValue: (t) => t.createdAt ? new Date(t.createdAt) : null, exportValue: (t) => t.createdAt, render: (t) => formatDate(t.createdAt) },
+            { key: 'expires', header: 'Expires', defaultWidth: 150, sortable: true, sortValue: (t) => t.expiresAt ? new Date(t.expiresAt) : null, exportValue: (t) => t.expiresAt, render: (t) => formatDate(t.expiresAt) },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Type', value: (t) => (isCmpCredentialRow(t) ? 'CMP shared-secret credential' : 'Enrollment token') },
+                { label: 'Reference Value', value: (t) => (isCmpCredentialRow(t) ? t.cmpReferenceValue : null), mono: true, copyable: true },
+                { label: 'Secret', value: (t) => (isCmpCredentialRow(t) ? 'Shown once at creation; not stored in a form that can be shown again.' : null) },
+                { label: 'Token', value: (t) => (isCmpCredentialRow(t) ? null : t.token), mono: true, copyable: true },
+                { label: 'Uses Remaining', value: (t) => `${t.usesRemaining}/${t.maxUses || '∞'}` },
+                { label: 'Protocol', value: (t) => t.protocol || 'Any' },
+            ] },
+            { title: 'Validity', fields: [
+                { label: 'Created', value: (t) => formatDate(t.createdAt) },
+                { label: 'Expires', value: (t) => formatDate(t.expiresAt) },
+            ] },
+            { title: 'Restrictions', fields: [
+                { label: 'Subject Restriction', value: (t) => t.subjectRestriction },
+                { label: 'SAN Restriction', value: (t) => t.sanRestriction },
+            ] },
+        ],
+        audit: { tab: 'General', target: (t) => ({ type: 'EnrollmentToken', id: t.id }) },
+        actions: [
+            { label: 'Revoke', tone: 'danger', enabled: (t) => !t.isRevoked, run: (t) => { setConfirmBulk([t]); } },
+        ],
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }), []);
 
     const bulkActions: DataTableBulkAction<any>[] = [
         { label: 'Revoke', variant: 'danger', enabledFor: (t) => !t.isRevoked, onClick: (rows) => setConfirmBulk(rows) },
     ];
-
-    const renderDrawer = (t: any) => (
-        <div className="text-sm">
-            {isCmpCredentialRow(t) ? (
-                <>
-                    <DetailField label="Type" value="CMP shared-secret credential" />
-                    <DetailField label="Reference Value" value={t.cmpReferenceValue} mono />
-                    <DetailField label="Secret" value="Shown once at creation; not stored in a form that can be shown again." />
-                </>
-            ) : (
-                <DetailField label="Token" value={t.token} mono />
-            )}
-            <DetailField label="Status" value={<StatusBadge status={t.isRevoked ? 'revoked' : 'active'} />} />
-            <DetailField label="Uses Remaining" value={`${t.usesRemaining}/${t.maxUses || '∞'}`} />
-            <DetailField label="Created" value={formatDate(t.createdAt)} />
-            <DetailField label="Expires" value={formatDate(t.expiresAt)} />
-            <DetailField label="Subject Restriction" value={t.subjectRestriction} />
-            <DetailField label="SAN Restriction" value={t.sanRestriction} />
-            <DetailField label="Protocol" value={t.protocol || 'Any'} />
-            <p className="text-[11px] text-gray-500 pt-2">Select rows in the table to revoke.</p>
-        </div>
-    );
 
     const meta = enrollmentProtocolMeta(form.protocol);
     const kind = enrollmentKind(form.protocol);
@@ -339,16 +348,13 @@ const EnrollmentManagement: React.FC = () => {
                 tableId="enrollment-tokens"
                 title="Enrollment Tokens"
                 rows={tokens}
-                rowKey={(t) => t.id}
                 loading={loading}
                 error={error}
                 empty="No active tokens"
-                columns={columns}
+                {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="enrollment-tokens"
-                renderDrawer={renderDrawer}
-                drawerTitle={drawerTitle}
             />
 
             <ConfirmModal

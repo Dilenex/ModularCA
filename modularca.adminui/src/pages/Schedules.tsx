@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { recordTableProps } from '../components/RecordDrawer';
+import type { RecordDescriptor } from '@shared/records';
 import { useNavigate } from 'react-router-dom';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -135,25 +137,6 @@ function jobResultBadge(result: SchedulerJob['lastResult']): React.ReactElement 
 }
 
 /* ── read-only drawer for a system job ──────────────────────────────────────── */
-const JobDrawer: React.FC<{ job: SchedulerJob; now: number }> = ({ job, now }) => (
-    <div className="text-sm">
-        <DetailField label="Name" value={job.name} />
-        <DetailField label="Status" value={job.enabled ? 'Enabled' : 'Disabled'} />
-        <DetailField label="Cron" value={job.cronExpression} mono />
-        <DetailField label="Timeout" value={`${job.timeoutSeconds}s`} />
-        <DetailField label="Last Run" value={`${formatRelative(job.lastRunUtc, now)} (${job.lastResult ?? 'never run'})`} />
-        {job.lastDurationMs != null && <DetailField label="Last Duration" value={`${job.lastDurationMs} ms`} />}
-        <DetailField label="Next Run" value={formatRelative(job.nextRunUtc, now)} />
-        <DetailField label="Consecutive Failures" value={String(job.consecutiveFailureCount)} />
-        {job.lastError && (
-            <div className="mt-2">
-                <span className="text-gray-600 text-xs">Last Error</span>
-                <pre className="mt-1 text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{job.lastError}</pre>
-            </div>
-        )}
-    </div>
-);
-
 interface SystemJobsSectionProps {
     jobs: SchedulerJob[];
     health: SchedulerHealth | null;
@@ -206,36 +189,63 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
     // No column flexes — every column keeps its natural width and the DataTable's trailing spacer
     // soaks up the slack at the far right, so the row packs to the left. Last Run / Next Run sit
     // side-by-side so they read as a pair.
-    const columns: DataTableColumn<SchedulerJob>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, exportValue: (j) => j.name, render: (j) => <span className="text-gray-900 dark:text-white truncate">{j.name}</span> },
-        { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (j) => (j.enabled ? 'enabled' : 'disabled'), render: (j) => <StatusBadge status={j.enabled ? 'enabled' : 'disabled'} /> },
-        { key: 'cron', header: 'Cron', defaultWidth: 130, exportValue: (j) => j.cronExpression, render: (j) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{j.cronExpression}</span> },
-        { key: 'lastRun', header: 'Last Run', defaultWidth: 150, headerTitle: 'When this job last executed', exportValue: (j) => formatAbsoluteUtc(j.lastRunUtc), render: (j) => <TimeCell iso={j.lastRunUtc} now={now} /> },
-        { key: 'nextRun', header: 'Next Run', defaultWidth: 150, headerTitle: 'Next scheduled run, computed from the cron expression', exportValue: (j) => formatAbsoluteUtc(j.nextRunUtc), render: (j) => <TimeCell iso={j.nextRunUtc} now={now} /> },
-        {
-            key: 'lastResult', header: 'Last Run Result', defaultWidth: 170, minWidth: 120, truncate: false, exportValue: (j) => j.lastResult ?? 'never run',
-            render: (j) => (
-                <div className="min-w-0">
-                    {jobResultBadge(j.lastResult)}
-                    {j.lastError && <div className="text-[10px] text-red-700 dark:text-red-400 truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
-                </div>
-            ),
-        },
-        {
-            key: 'failures', header: 'Failures', defaultWidth: 90, exportValue: (j) => j.consecutiveFailureCount,
-            render: (j) => {
-                const over = j.consecutiveFailureCount >= alertThreshold;
-                return (
-                    <span className={`inline-block px-2 py-0.5 text-xs rounded border ${over
-                        ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-900/50 dark:text-red-300 dark:border-red-700'
-                        : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600'}`}>
-                        {j.consecutiveFailureCount}
-                    </span>
-                );
+    const record: RecordDescriptor<SchedulerJob> = {
+        kind: 'scheduler-job',
+        key: (j) => j.name,
+        title: (j) => j.name,
+        status: (j) => ({ label: j.enabled ? 'Enabled' : 'Disabled', tone: j.enabled ? 'ok' : 'neutral' }),
+        columns: [
+            { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, sortable: true, exportValue: (j) => j.name, render: (j) => <span className="text-gray-900 dark:text-white truncate">{j.name}</span> },
+            { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, sortable: true, sortValue: (j) => j.enabled, exportValue: (j) => (j.enabled ? 'enabled' : 'disabled'), render: (j) => <StatusBadge status={j.enabled ? 'enabled' : 'disabled'} /> },
+            { key: 'cron', header: 'Cron', defaultWidth: 130, exportValue: (j) => j.cronExpression, render: (j) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{j.cronExpression}</span> },
+            { key: 'lastRun', header: 'Last Run', defaultWidth: 150, sortable: true, sortValue: (j) => j.lastRunUtc ? new Date(j.lastRunUtc) : null, headerTitle: 'When this job last executed', exportValue: (j) => formatAbsoluteUtc(j.lastRunUtc), render: (j) => <TimeCell iso={j.lastRunUtc} now={now} /> },
+            { key: 'nextRun', header: 'Next Run', defaultWidth: 150, sortable: true, sortValue: (j) => j.nextRunUtc ? new Date(j.nextRunUtc) : null, headerTitle: 'Next scheduled run, computed from the cron expression', exportValue: (j) => formatAbsoluteUtc(j.nextRunUtc), render: (j) => <TimeCell iso={j.nextRunUtc} now={now} /> },
+            {
+                key: 'lastResult', header: 'Last Run Result', defaultWidth: 170, minWidth: 120, truncate: false, sortable: true, exportValue: (j) => j.lastResult ?? 'never run',
+                render: (j) => (
+                    <div className="min-w-0">
+                        {jobResultBadge(j.lastResult)}
+                        {j.lastError && <div className="text-[10px] text-red-700 dark:text-red-400 truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
+                    </div>
+                ),
             },
-        },
-        { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-gray-700 dark:text-gray-300">{j.timeoutSeconds}s</span> },
-    ];
+            {
+                key: 'failures', header: 'Failures', defaultWidth: 90, sortable: true, sortValue: (j) => j.consecutiveFailureCount, exportValue: (j) => j.consecutiveFailureCount,
+                render: (j) => {
+                    const over = j.consecutiveFailureCount >= alertThreshold;
+                    return (
+                        <span className={`inline-block px-2 py-0.5 text-xs rounded border ${over
+                            ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-900/50 dark:text-red-300 dark:border-red-700'
+                            : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600'}`}>
+                            {j.consecutiveFailureCount}
+                        </span>
+                    );
+                },
+            },
+            { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-gray-700 dark:text-gray-300">{j.timeoutSeconds}s</span> },
+        ],
+        sections: [
+            { fields: [
+                { label: 'Name', value: (j) => j.name },
+                { label: 'Cron', value: (j) => j.cronExpression, mono: true },
+                { label: 'Timeout', value: (j) => `${j.timeoutSeconds}s` },
+            ] },
+            { title: 'Runs', fields: [
+                { label: 'Last Run', value: (j) => `${formatRelative(j.lastRunUtc, now)} (${j.lastResult ?? 'never run'})` },
+                { label: 'Last Duration', value: (j) => (j.lastDurationMs != null ? `${j.lastDurationMs} ms` : null) },
+                { label: 'Next Run', value: (j) => formatRelative(j.nextRunUtc, now) },
+                { label: 'Consecutive Failures', value: (j) => String(j.consecutiveFailureCount) },
+                { label: 'Last Error', value: (j) => (j.lastError ? <pre className="text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{j.lastError}</pre> : null) },
+            ] },
+        ],
+        audit: { tab: 'General', target: (j) => ({ type: 'SchedulerJob', id: j.name }) },
+        actions: [
+            { label: 'Run now', tone: 'primary', run: (j) => { setConfirmRunJob(j); } },
+            { label: 'Enable', enabled: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && !j.enabled, run: (j) => handleToggleFlag(j) },
+            { label: 'Disable', enabled: (j) => !NON_TOGGLEABLE_JOBS.has(j.name) && j.enabled, run: (j) => handleToggleFlag(j) },
+        ],
+        page: { path: (j) => `/schedules/jobs/${encodeURIComponent(j.name)}` },
+    };
 
     // Every scheduler mutation is step-up MFA gated and there's no bulk endpoint, so the
     // mutating actions are single-select (one row → one prompt) rather than looping.
@@ -252,16 +262,12 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 tableId="scheduler-jobs"
                 title="System Jobs"
                 rows={jobs}
-                rowKey={(j) => j.name}
                 loading={loading}
                 empty="No system jobs registered."
-                columns={columns}
+                {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="scheduler-jobs"
-                renderDrawer={(j) => <JobDrawer job={j} now={now} />}
-                drawerTitle={(j) => j.name}
-                detailPath={(j) => `/schedules/jobs/${encodeURIComponent(j.name)}`}
             />
 
             <ConfirmModal

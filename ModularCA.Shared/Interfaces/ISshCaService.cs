@@ -16,7 +16,7 @@ public interface ISshCaService
     /// <summary>
     /// Lists issued SSH certificates, optionally filtered by CA key.
     /// </summary>
-    Task<List<SshCertificateEntity>> GetCertificatesAsync(int page = 1, int pageSize = 50, Guid? caKeyId = null);
+    Task<List<SshCertificateEntity>> GetCertificatesAsync(int page = 1, int pageSize = 50, Guid? caKeyId = null, string? sort = null);
     Task<bool> RevokeCertificateAsync(Guid certId, Guid? requiredCaKeyId = null);
     Task<SshCertificateEntity?> GetCertificateByIdAsync(Guid certId);
     Task<byte[]> GenerateKrlAsync(Guid caKeyId);

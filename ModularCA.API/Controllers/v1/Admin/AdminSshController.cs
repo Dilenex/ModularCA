@@ -297,9 +297,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Lists issued SSH certificates for a specific CA key with pagination.
     /// </summary>
     [HttpGet("ca-keys/{caKeyId:guid}/certificates")]
-    public async Task<IActionResult> GetCertificates(Guid caKeyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    public async Task<IActionResult> GetCertificates(Guid caKeyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, [FromQuery] string? sort = null)
     {
-        var certs = await sshCaService.GetCertificatesAsync(page, pageSize, caKeyId);
+        var certs = await sshCaService.GetCertificatesAsync(page, pageSize, caKeyId, sort);
         return Ok(certs);
     }
 

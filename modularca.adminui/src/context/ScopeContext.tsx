@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { Capability } from '@shared/generated';
 import { useAuth } from './AuthContext';
@@ -39,6 +39,13 @@ export interface ScopeContextValue {
      * the selected CA (or anywhere, under "all CAs"); an unscoped one at system scope.
      */
     allows: (gate: Gate | undefined) => boolean;
+    /**
+     * Set while the URL names a scope other than the one the user usually works in. A link
+     * can carry any scope; following it must not silently move the user, so the shell shows
+     * where they are and offers the way back. `keep` adopts the link's scope as the usual one;
+     * `leave` returns to the usual scope on the current page.
+     */
+    linkScope: { usual: Scope; keep: () => void; leave: () => void } | null;
 }
 
 const ScopeContext = createContext<ScopeContextValue>({
@@ -52,6 +59,7 @@ const ScopeContext = createContext<ScopeContextValue>({
     tenants: [],
     canScopeToAll: false,
     allows: () => false,
+    linkScope: null,
 });
 
 export const useScope = () => useContext(ScopeContext);
@@ -71,26 +79,44 @@ export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [searchParams, setSearchParams] = useSearchParams();
     const username = user?.username ?? '';
 
-    const scope = useMemo<Scope>(() => {
-        if (PORTAL === 'user') return MINE_SCOPE;
-        const fromUrl = parseScope(searchParams, capabilities);
-        if (fromUrl) return fromUrl;
+    // The scope the user usually works in: their last explicit choice, else a default from
+    // their capabilities. A scope named in the URL applies to this visit only; it is never
+    // written to storage on its own, so a link cannot quietly move someone's usual scope.
+    // Bumped on every write to storage so `usual` re-reads it.
+    const [storeVersion, setStoreVersion] = useState(0);
+    const usual = useMemo<Scope>(() => {
         const stored = username ? readStored(username) : null;
         const remembered = stored ? parseScope(stored, capabilities) : null;
         return remembered ?? defaultScope(capabilities);
-    }, [searchParams, capabilities, username]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [capabilities, username, storeVersion]);
 
-    // Remember a scope that arrived by URL, so the next plain navigation keeps it.
-    useEffect(() => {
-        if (loading || !username || PORTAL === 'user') return;
-        if (parseScope(searchParams, capabilities)) writeStored(username, withScope('', scope));
-    }, [loading, username, searchParams, capabilities, scope]);
+    const fromUrl = useMemo<Scope | null>(() => {
+        if (PORTAL !== 'admin') return null;
+        const parsed = parseScope(searchParams, capabilities);
+        // "Mine" is the self-service portal, not a console scope; a link naming it is ignored here.
+        return parsed && parsed.kind !== 'mine' ? parsed : null;
+    }, [searchParams, capabilities]);
+
+    const scope = useMemo<Scope>(() => {
+        if (PORTAL === 'user') return MINE_SCOPE;
+        return fromUrl ?? usual;
+    }, [fromUrl, usual]);
 
     const setScope = useCallback((next: Scope) => {
         if (sameScope(next, scope)) return;
-        if (username) writeStored(username, withScope('', next));
+        if (username) { writeStored(username, withScope('', next)); setStoreVersion(v => v + 1); }
         setSearchParams(withScope(searchParams, next), { replace: true });
     }, [scope, username, searchParams, setSearchParams]);
+
+    const linkScope = useMemo(() => {
+        if (loading || !fromUrl || sameScope(fromUrl, usual)) return null;
+        return {
+            usual,
+            keep: () => { if (username) { writeStored(username, withScope('', fromUrl)); setStoreVersion(v => v + 1); } },
+            leave: () => setSearchParams(withScope(searchParams, usual), { replace: true }),
+        };
+    }, [loading, fromUrl, usual, username, searchParams, setSearchParams]);
 
     const allows = useCallback((gate: Gate | undefined): boolean => {
         if (!gate) return true;
@@ -131,7 +157,8 @@ export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         tenants: tenantsOf(capabilities),
         canScopeToAll: canScopeToAll(capabilities),
         allows,
-    }), [scope, setScope, caId, tenantId, inScope, caQuery, capabilities, allows]);
+        linkScope,
+    }), [scope, setScope, caId, tenantId, inScope, caQuery, capabilities, allows, linkScope]);
 
     return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 };
