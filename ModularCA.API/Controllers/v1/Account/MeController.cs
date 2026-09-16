@@ -22,11 +22,15 @@ namespace ModularCA.API.Controllers.v1.Account
     public class MeController(
         ICurrentUserService currentUser,
         ModularCADbContext db,
-        ICaGroupAuthorizationService groupAuth) : ControllerBase
+        ICaGroupAuthorizationService groupAuth,
+        IAccessBadgeContext badgeContext,
+        AccessBadgeService badges) : ControllerBase
     {
         private readonly ICurrentUserService _currentUser = currentUser;
         private readonly ModularCADbContext _db = db;
         private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
+        private readonly IAccessBadgeContext _badgeContext = badgeContext;
+        private readonly AccessBadgeService _badges = badges;
 
         /// <summary>
         /// Returns identity, group memberships, effective capabilities (system-scoped and per
@@ -43,8 +47,13 @@ namespace ModularCA.API.Controllers.v1.Account
 
             var user = _currentUser.User;
 
+            // A worn badge keeps only some group memberships; list the groups the way the
+            // resolver counts them, so the payload never claims a group the badge set aside.
+            var worn = await _badgeContext.GetWornAsync(user.Id);
+            var wornGroupIds = worn?.GroupIds.ToList();
+
             var groups = await _db.CaGroupMembers
-                .Where(gm => gm.UserId == user.Id)
+                .Where(gm => gm.UserId == user.Id && (wornGroupIds == null || wornGroupIds.Contains(gm.GroupId)))
                 .Include(gm => gm.Group)
                 .ThenInclude(g => g!.CertificateAuthority)
                 .Select(gm => new
@@ -84,6 +93,12 @@ namespace ModularCA.API.Controllers.v1.Account
             var mfaConfigured = hasTotp || hasWebAuthn || hasMtls;
 
             var effective = await _groupAuth.GetEffectiveCapabilitiesAsync(user.Id);
+
+            // The worn badge (null when badgeless) and every badge the user could put on.
+            var badge = worn == null ? null : new { id = worn.BadgeId, name = worn.Name };
+            var badges = (await _badges.ListAsync(user.Id))
+                .Select(b => new { id = b.Id, name = b.Name, description = b.Description, isDefault = b.IsDefault })
+                .ToList();
             var capabilities = new
             {
                 system = effective.System,
@@ -93,6 +108,9 @@ namespace ModularCA.API.Controllers.v1.Account
                     label = c.Label,
                     name = c.Name,
                     isSshCa = c.IsSshCa,
+                    tenantId = c.TenantId,
+                    tenantName = c.TenantName,
+                    tenantSlug = c.TenantSlug,
                     capabilities = c.Capabilities,
                 }),
             };
@@ -119,6 +137,8 @@ namespace ModularCA.API.Controllers.v1.Account
                 groups,
                 scopes,
                 capabilities,
+                badge,
+                badges,
                 mfa = new
                 {
                     configured = mfaConfigured,

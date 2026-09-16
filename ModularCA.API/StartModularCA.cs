@@ -965,6 +965,12 @@ builder.Services.AddScoped<ModularCA.Auth.Services.IProtocolCredentialService,
                            ModularCA.Auth.Services.ProtocolCredentialService>();
 
 builder.Services.AddScoped<ModularCA.Auth.Authorization.ICaGroupAuthorizationService, ModularCA.Auth.Authorization.CaGroupAuthorizationService>();
+// Access badges: the worn badge for this request (from the token), read by the resolver and
+// stamped on audit rows; and the badge CRUD used by the account and admin endpoints.
+builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeContext>();
+builder.Services.AddScoped<ModularCA.Auth.Authorization.IAccessBadgeContext>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
+builder.Services.AddScoped<ModularCA.Shared.Interfaces.IWornBadgeProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
+builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
 
 builder.Services.AddAuthorization(options =>

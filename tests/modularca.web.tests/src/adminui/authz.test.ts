@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Capabilities } from '@shared/generated';
-import { can, canAnywhere, canUseAdminConsole, consoleCas, NO_CAPABILITIES, type EffectiveCapabilities } from '@adminui/authz';
+import { can, canAnywhere, canInTenant, canUseAdminConsole, consoleCas, NO_CAPABILITIES, tenantsOf, type EffectiveCapabilities } from '@adminui/authz';
 
 /**
  * The capability checks the console gates on, over the `capabilities` payload of
@@ -9,8 +9,8 @@ import { can, canAnywhere, canUseAdminConsole, consoleCas, NO_CAPABILITIES, type
  * system-scoped capability counts on every CA, and a Requester (the self-service pair only)
  * never reaches the console.
  */
-const caA = { id: 'a', label: 'ca-a', name: 'A', isSshCa: false, capabilities: [Capabilities.CertView, Capabilities.CertRevoke] };
-const caB = { id: 'b', label: 'ca-b', name: 'B', isSshCa: true, capabilities: [Capabilities.CertView] };
+const caA = { id: 'a', label: 'ca-a', name: 'A', isSshCa: false, tenantId: 't1', tenantName: 'Tenant One', tenantSlug: 'one', capabilities: [Capabilities.CertView, Capabilities.CertRevoke] };
+const caB = { id: 'b', label: 'ca-b', name: 'B', isSshCa: true, tenantId: 't2', tenantName: 'Tenant Two', tenantSlug: 'two', capabilities: [Capabilities.CertView] };
 
 const operatorOnA: EffectiveCapabilities = { system: [], cas: [caA, caB] };
 const systemAuditor: EffectiveCapabilities = {
@@ -68,5 +68,16 @@ describe('consoleCas', () => {
         expect(consoleCas(operatorOnA).map(c => c.id)).toEqual(['a']);
         expect(consoleCas(systemAuditor).map(c => c.id)).toEqual(['a']);
         expect(consoleCas(null)).toEqual([]);
+    });
+});
+
+describe('tenants', () => {
+    it('lists the tenants of administrable CAs once each, and checks a capability within one', () => {
+        const twoTenants: EffectiveCapabilities = { system: [], cas: [caA, { ...caB, capabilities: [Capabilities.CaManage] }, { ...caA, id: 'a2', label: 'ca-a2' }] };
+        expect(tenantsOf(twoTenants)).toEqual([{ id: 't1', name: 'Tenant One', slug: 'one' }, { id: 't2', name: 'Tenant Two', slug: 'two' }]);
+        expect(tenantsOf(operatorOnA)).toEqual([{ id: 't1', name: 'Tenant One', slug: 'one' }]); // ca-b is requester-only there
+        expect(canInTenant(operatorOnA, Capabilities.CertRevoke, 't1')).toBe(true);
+        expect(canInTenant(operatorOnA, Capabilities.CertRevoke, 't2')).toBe(false);
+        expect(canInTenant(null, Capabilities.CertRevoke, 't1')).toBe(false);
     });
 });

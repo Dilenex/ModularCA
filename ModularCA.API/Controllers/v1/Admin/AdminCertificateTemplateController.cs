@@ -26,10 +26,11 @@ public class AdminCertificateTemplateController(
     /// Returns all certificate templates with resolved CA and profile names.
     /// </summary>
     /// <param name="caId">Optional: only templates issued by this CA (the console's scope).</param>
+    /// <param name="tenantId">Optional: only templates issued by CAs of this tenant.</param>
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null)
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
     {
-        var templates = await templateService.GetAllAsync(caId);
+        var templates = await templateService.GetAllAsync(caId, tenantId);
         return Ok(templates);
     }
 

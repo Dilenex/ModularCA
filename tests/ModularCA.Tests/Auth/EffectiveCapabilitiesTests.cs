@@ -56,6 +56,7 @@ public class EffectiveCapabilitiesTests
     public async Task Grants_land_on_the_scope_they_were_made_at()
     {
         var w = new World();
+        w.Db.Tenants.Add(new TenantEntity { Id = TenantA, Name = "Tenant A", Slug = "tenant-a" });
         var a = w.Ca("ca-a", TenantA);
         var b = w.Ca("ca-b", TenantA);
         var c = w.Ca("ca-c", TenantB);
@@ -83,6 +84,10 @@ public class EffectiveCapabilitiesTests
         Assert.Equal(new[] { Capabilities.ProfileView }, result.Cas[1].Capabilities);
         Assert.Equal(Sorted(Capabilities.AuditView, Capabilities.CertView), result.Cas[2].Capabilities);
         Assert.Equal(b.Id, result.Cas[1].Id);
+        Assert.Equal(TenantA, result.Cas[1].TenantId);
+        Assert.Equal("Tenant A", result.Cas[1].TenantName);
+        Assert.Equal("tenant-a", result.Cas[1].TenantSlug);
+        Assert.Equal(TenantB.ToString(), result.Cas[2].TenantSlug); // no tenant row: the id stands in
     }
 
     [Fact]

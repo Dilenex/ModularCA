@@ -38,7 +38,7 @@ namespace ModularCA.Auth.Services
         /// is embedded so the MFA enrollment middleware can restrict access until setup is complete.
         /// Group names are embedded as <c>groups</c> claims.
         /// </summary>
-        public (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false)
+        public (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false, AccessBadgeClaim? badge = null)
         {
             var handler = new JwtSecurityTokenHandler();
             var key = Encoding.UTF8.GetBytes(_config.JWT.Secret);
@@ -76,6 +76,14 @@ namespace ModularCA.Auth.Services
             if (mfaSetupRequired)
             {
                 claims.Add(new Claim("mfa_setup_required", "true"));
+            }
+
+            // The worn access badge. The authorization resolver keeps only the grant sources
+            // the badge names while this token is presented; the name is for audit rows.
+            if (badge != null)
+            {
+                claims.Add(new Claim(Authorization.AccessBadgeContext.BadgeClaim, badge.Id.ToString()));
+                claims.Add(new Claim(Authorization.AccessBadgeContext.BadgeNameClaim, badge.Name));
             }
 
             var descriptor = new SecurityTokenDescriptor

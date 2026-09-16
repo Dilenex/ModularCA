@@ -442,10 +442,14 @@ namespace ModularCA.API.Controllers.v1.Auth
 
             // Reuse userGroups (already queried above) instead of a duplicate DB round-trip
             var groups = userGroups;
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+            // A default access badge starts the session narrowed; badgeless otherwise.
+            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultAsync(user.Id);
+            var badgeClaim = defaultBadge == null ? null : new ModularCA.Auth.Interfaces.AccessBadgeClaim(defaultBadge.Id, defaultBadge.Name);
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: badgeClaim);
             var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+            refreshToken.AccessBadgeId = defaultBadge?.Id;
             var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
             user.FailedLoginAttempts = 0;
@@ -676,13 +680,22 @@ namespace ModularCA.API.Controllers.v1.Auth
                 ? !hasTotp && !hasWebAuthn
                 : !hasTotp && !hasWebAuthn && !hasMtlsCreds;
 
-            var newAccessToken = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupNeeded);
+            // Keep the session's access badge across rotation; a deleted badge was already
+            // cleared from the row, so the session comes back badgeless.
+            ModularCA.Auth.Interfaces.AccessBadgeClaim? carriedBadge = null;
+            if (stored.AccessBadgeId is Guid carriedBadgeId)
+            {
+                var carried = await _db.AccessBadges.AsNoTracking().FirstOrDefaultAsync(b => b.Id == carriedBadgeId && b.UserId == user.Id);
+                carriedBadge = carried == null ? null : new ModularCA.Auth.Interfaces.AccessBadgeClaim(carried.Id, carried.Name);
+            }
+            var newAccessToken = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupNeeded, badge: carriedBadge);
             var currentUaHashForNew = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             // Bind the rotated token to the key the client just proved possession of (or keep the
             // existing binding when this refresh carried no proof). This also upgrades legacy unbound
             // sessions, and — in observe mode — lets the binding settle on the client's actual key.
             var newRefreshToken = _jwt.GenerateRefreshToken(stored.UserId, sourceIp, currentUaHashForNew, proofJkt ?? stored.CnfJkt);
             newRefreshToken.FamilyId = stored.FamilyId;
+            newRefreshToken.AccessBadgeId = carriedBadge?.Id;
             // Propagate the ORIGINAL family creation timestamp so the
             // absolute session cap is measured from the first login, not from each rotation.
             newRefreshToken.FamilyCreatedAt = stored.FamilyCreatedAt ?? stored.CreatedAt;

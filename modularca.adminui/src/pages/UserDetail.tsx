@@ -10,6 +10,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { groupChipClass } from './Users';
 import { StepUpOps } from '@shared/generated';
+import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -177,6 +178,14 @@ const UserDetail: React.FC = () => {
                         <DetailField label="Last Login" value={formatDate(user.lastLogin || user.lastLoginAt)} />
                         <DetailField label="Failed Logins" value={user.failedLoginCount} />
                     </div>
+                </DetailSection>
+
+                <DetailSection title="Badges">
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                        Badges this user can wear. Each keeps a subset of the grant sources they already hold; issuing one hands
+                        them a narrowed way of working without changing their grants.
+                    </p>
+                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded />
                 </DetailSection>
 
                 <DetailSection title={`Groups (${userGroups.length})`}>

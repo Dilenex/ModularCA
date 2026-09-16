@@ -5,131 +5,22 @@ import { apiLogout } from '../api/client';
 import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useScope } from '../context/ScopeContext';
-import { PORTAL, PORTAL_LABEL, OTHER_BASENAME } from '../portal';
-import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, CERT_VIEW, CERT_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from '../gates';
+import { PORTAL, PORTAL_LABEL } from '../portal';
 import LogPanel from './LogPanel';
-import ScopeSwitcher from './ScopeSwitcher';
+import TopBar from './TopBar';
+import { switchBadge } from './BadgeSwitcher';
+import { useStepUp } from './StepUpMfaContext';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
-interface NavItem {
-    name: string;
-    path: string;
-    icon: string;
-    /**
-     * The gate the current user must pass for this entry to render, checked under the
-     * selected scope (see gates.ts and ScopeContext.allows). Omit for entries every
-     * authenticated user can see.
-     */
-    gate?: Gate;
-}
-
-interface NavSection {
-    title: string;
-    items: NavItem[];
-}
-
-// Management console navigation, shown under /admin.
-const adminNavSections: NavSection[] = [
-    {
-        title: 'Overview',
-        items: [
-            { name: 'Dashboard', path: '/dashboard', icon: '\u2302' },
-            { name: 'System Health', path: '/health', icon: '\u2665', gate: SYSTEM_ADMIN },
-        ]
-    },
-    {
-        title: 'Certificates',
-        items: [
-            { name: 'All Certificates', path: '/certificates', icon: '\u2387', gate: CERT_VIEW },
-            { name: 'Request Certificate', path: '/certificates/request', icon: '+', gate: CERT_REQUEST },
-            { name: 'Pending Requests', path: '/certificates/requests', icon: '\u2709', gate: CERT_VIEW },
-            { name: 'Cert Inventory', path: '/intel/inventory', icon: '\u2690', gate: CERT_VIEW },
-            { name: 'Compliance', path: '/intel/compliance', icon: '\u2611', gate: CA_MANAGE },
-            { name: 'Expiry Calendar', path: '/certificates/expiry', icon: '\u2612', gate: CERT_VIEW },
-        ]
-    },
-    {
-        title: 'CA Management',
-        items: [
-            { name: 'Authorities', path: '/authorities/manage', icon: '\u26BF', gate: CA_MANAGE },
-            { name: 'Profiles', path: '/profiles', icon: '\u2630', gate: CA_MANAGE },
-            // Templates are consumed by Windows autoenrollment (MSAE): the policy service offers
-            // them to clients and the enrollment service issues from the one a CSR names.
-            { name: 'Templates', path: '/templates', icon: '\u2702', gate: CA_MANAGE },
-            { name: 'CA Distribution', path: '/distribution', icon: '\u2716', gate: CA_MANAGE },
-            { name: 'Trust Anchors', path: '/trust-anchors', icon: '\u2693', gate: SYSTEM_ADMIN },
-            { name: 'SSH CA', path: '/ssh', icon: '\u2318', gate: CERT_VIEW },
-            { name: 'Protocol Config', path: '/authorities/protocols', icon: '\u21C4', gate: CA_MANAGE },
-        ]
-    },
-    {
-        title: 'Access & Identity',
-        items: [
-            { name: 'Users', path: '/users', icon: '\u263A', gate: USER_MANAGE },
-            { name: 'Groups', path: '/groups', icon: '\u2302', gate: GROUP_MANAGE },
-            { name: 'Roles', path: '/roles', icon: '\u2606', gate: SYSTEM_ADMIN },
-            { name: 'Enrollment', path: '/enrollment', icon: '\u2611', gate: TOKEN_MANAGE },
-            { name: 'ACME', path: '/acme', icon: 'A', gate: CA_MANAGE },
-        ]
-    },
-    {
-        title: 'Administration',
-        items: [
-            // Ceremonies covers both key ceremonies (CA key ops) and controlled-user approvals
-            // (promote/demote/delete of privileged users), so it lives with governance/oversight
-            // here rather than CA Management; its quorum config is in Settings, also Administration.
-            // Placed at the top of this group as it's used more often than the rest.
-            { name: 'Ceremonies', path: '/ceremonies', icon: '\u2638', gate: CA_MANAGE },
-            { name: 'Tenants & Quotas', path: '/tenants', icon: '\u2616', gate: SYSTEM_ADMIN },
-            { name: 'Settings', path: '/settings', icon: '\u2699', gate: SYSTEM_ADMIN },
-            { name: 'Audit Logs', path: '/audit', icon: '\u2709', gate: CA_AUDIT },
-            { name: 'Notifications', path: '/notifications', icon: '\u2709', gate: CA_MANAGE },
-            { name: 'Whitelists', path: '/whitelists', icon: '\u26E8', gate: SYSTEM_ADMIN },
-            { name: 'Backup & Restore', path: '/backup', icon: '\u2B07', gate: SYSTEM_ADMIN },
-            { name: 'Schedules', path: '/schedules', icon: '\u29D6', gate: SYSTEM_ADMIN },
-            { name: 'Web TLS Certificate', path: '/webtls', icon: '\u26BF', gate: SYSTEM_ADMIN },
-        ]
-    }
-];
-
-// Self-service navigation, shown under /user. Every entry is reachable by any authenticated
-// user; the pages behind them call the /api/v1/user/* endpoints, which scope to the caller.
-const userNavSections: NavSection[] = [
-    {
-        title: 'Overview',
-        items: [
-            { name: 'Dashboard', path: '/dashboard', icon: '⌂' },
-        ]
-    },
-    {
-        title: 'Certificates',
-        items: [
-            { name: 'Request Certificate', path: '/request', icon: '+' },
-            { name: 'My Certificates', path: '/certificates', icon: '⎇' },
-            { name: 'Request Status', path: '/requests', icon: '✉' },
-        ]
-    },
-    {
-        title: 'SSH',
-        items: [
-            { name: 'SSH Certificates', path: '/ssh', icon: '⌘' },
-        ]
-    },
-    {
-        title: 'CA Information',
-        items: [
-            { name: 'Trusted CAs', path: '/authorities', icon: '⚿' },
-        ]
-    },
-];
-
-const navSections: NavSection[] = PORTAL === 'admin' ? adminNavSections : userNavSections;
+import { navSections } from '../nav';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const location = useLocation();
     const { theme, toggleTheme } = useTheme();
-    const { loading: authLoading, canUseAdminConsole } = useAuth();
+    const { user, loading: authLoading } = useAuth();
+    const { requireStepUp } = useStepUp();
+    const [badgeBusy, setBadgeBusy] = useState(false);
     const { allows } = useScope();
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -216,8 +107,6 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 </button>
             </div>
 
-            <ScopeSwitcher />
-
             <div className="flex-1 py-2 overflow-y-auto">
                 {visibleSections.map(section => (
                     <div key={section.title} className="mb-1">
@@ -254,22 +143,6 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </div>
                 ))}
             </div>
-
-            {/* Portal switch. A full navigation, not a router Link: the other prefix is the same
-                bundle loaded under a different basename, and the session (tokens in localStorage)
-                carries across. Admins see both directions; a self-service user sees none, since
-                the console would only bounce them back. */}
-            {(PORTAL === 'user' ? canUseAdminConsole : true) && (
-                <div className="px-3 pt-3 border-t border-gray-200 dark:border-gray-800 flex-shrink-0">
-                    <a
-                        href={`${OTHER_BASENAME}/dashboard`}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-                    >
-                        <span aria-hidden="true">{'⇄'}</span>
-                        {PORTAL === 'admin' ? 'Self-service portal' : 'Management console'}
-                    </a>
-                </div>
-            )}
 
             <div className="p-3 border-t border-gray-200 dark:border-gray-800 flex-shrink-0 flex items-center gap-2">
                 <button
@@ -320,6 +193,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             )}
 
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                <TopBar onOpenSidebar={() => setSidebarOpen(true)} />
                 {/* Deploy-drift banner: UI bundle and API report different versions. */}
                 {showDrift && serverVersion && (
                     <div
@@ -350,19 +224,26 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </div>
                 )}
 
-                {/* Mobile header with hamburger menu */}
-                <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800">
-                    <button
-                        onClick={() => setSidebarOpen(true)}
-                        className="p-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                {/* Worn-badge banner. Persistent while a badge is worn, absent when badgeless:
+                    forgetting which hat you wear is the classic failure of these features. */}
+                {user?.badge && (
+                    <div
+                        role="status"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-violet-50 dark:bg-violet-900/30 border-b border-violet-300 dark:border-violet-700 text-[11px] text-violet-900 dark:text-violet-200"
                     >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                        </svg>
-                    </button>
-                    <span className="text-base font-bold text-blue-800 dark:text-blue-400">ModularCA</span>
-                    <span className="text-xs text-gray-600">{PORTAL_LABEL}</span>
-                </header>
+                        <span>
+                            <span className="font-semibold">Wearing badge:</span> {user.badge.name}. This session holds only the rights the badge keeps.
+                        </span>
+                        <button
+                            onClick={async () => { setBadgeBusy(true); try { await switchBadge(null, requireStepUp); } catch { setBadgeBusy(false); } }}
+                            disabled={badgeBusy}
+                            className="font-semibold underline hover:text-violet-950 dark:hover:text-white transition-colors disabled:opacity-60 flex-shrink-0"
+                        >
+                            Take off
+                        </button>
+                    </div>
+                )}
+
 
                 {/* Explicit landmark + id so a future skip-to-content link
                     can target the main region. */}

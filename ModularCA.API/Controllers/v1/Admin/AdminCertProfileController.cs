@@ -46,10 +46,22 @@ public class AdminCertProfileController(
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
     /// <param name="isCaProfile">Optional filter: true returns only CA profiles, false returns only leaf profiles, null returns all.</param>
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] bool? isCaProfile = null)
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] bool? isCaProfile = null, [FromQuery] Guid? tenantId = null)
     {
         await currentUser.EnsureLoadedAsync();
         var profiles = await certProfileService.GetAllAsync();
+
+        // The console's tenant scope: the tenant's own profiles plus the system-wide ones.
+        if (tenantId.HasValue)
+        {
+            var inTenant = await db.CertProfiles
+                .AsNoTracking()
+                .Where(p => p.TenantId == null || p.TenantId == tenantId.Value)
+                .Select(p => p.Id)
+                .ToListAsync();
+            var inTenantSet = new HashSet<Guid>(inTenant);
+            profiles = profiles.Where(p => inTenantSet.Contains(p.Id)).ToList();
+        }
 
         // Filter by CA vs leaf profile type when requested
         if (isCaProfile.HasValue)

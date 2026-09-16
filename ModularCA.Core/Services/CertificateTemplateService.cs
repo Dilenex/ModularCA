@@ -27,11 +27,13 @@ public class CertificateTemplateService
     /// those issued by one CA.
     /// </summary>
     /// <param name="caId">When set, only templates whose issuing CA this is.</param>
-    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null)
+    /// <param name="tenantId">When set, only templates whose issuing CA belongs to this tenant.</param>
+    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null, Guid? tenantId = null)
     {
         var entities = await _db.CertificateTemplates
             .AsNoTracking()
             .Where(t => caId == null || t.CaId == caId)
+            .Where(t => tenantId == null || t.Ca.TenantId == tenantId)
             .Include(t => t.Ca)
             .Include(t => t.CertProfile)
             .Include(t => t.SigningProfile)

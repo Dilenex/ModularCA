@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo } fro
 import { useSearchParams } from 'react-router-dom';
 import type { Capability } from '@shared/generated';
 import { useAuth } from './AuthContext';
-import { can, canAnywhere, consoleCas, type CaCapabilities } from '../authz';
+import { can, canAnywhere, canInTenant, consoleCas, tenantsOf, type CaCapabilities, type TenantOption } from '../authz';
 import {
     ALL_SCOPE, MINE_SCOPE, canScopeToAll, defaultScope, parseScope, sameScope, scopeCaId, withScope, type Scope,
 } from '../scope';
@@ -20,14 +20,18 @@ import { PORTAL } from '../portal';
 export interface ScopeContextValue {
     scope: Scope;
     setScope: (scope: Scope) => void;
-    /** The `caId` to send with scoped list queries, or `null` for no filter. */
+    /** The `caId` to send with scoped list queries, or `null` for no single-CA filter. */
     caId: string | null;
-    /** Whether a row belonging to `rowCaId` is inside the scope (everything is, under "all"). */
+    /** The `tenantId` a tenant or CA scope is confined to, or `null`. */
+    tenantId: string | null;
+    /** Whether a row belonging to `rowCaId` is inside the scope: the CA, any CA of the tenant, or everything under "all". */
     inScope: (rowCaId: string | null | undefined) => boolean;
-    /** `?caId=…` (or `&caId=…` when `hasQuery`) for the scope, or an empty string. */
+    /** `?caId=…` / `?tenantId=…` (with `&` when `hasQuery`) for the scope, or an empty string. */
     caQuery: (hasQuery?: boolean) => string;
     /** The CAs the caller may scope to. */
     cas: CaCapabilities[];
+    /** The tenants the caller may scope to. */
+    tenants: TenantOption[];
     /** Whether "all CAs" is an offered scope. */
     canScopeToAll: boolean;
     /**
@@ -41,9 +45,11 @@ const ScopeContext = createContext<ScopeContextValue>({
     scope: ALL_SCOPE,
     setScope: () => { },
     caId: null,
+    tenantId: null,
     inScope: () => true,
     caQuery: () => '',
     cas: [],
+    tenants: [],
     canScopeToAll: false,
     allows: () => false,
 });
@@ -92,25 +98,40 @@ export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (!gate.scoped) return can(capabilities, capability);
         switch (scope.kind) {
             case 'ca': return can(capabilities, capability, scope.caId);
+            case 'tenant': return canInTenant(capabilities, capability, scope.tenantId);
             case 'all': return canAnywhere(capabilities, capability);
             case 'mine': return false;
         }
     }, [capabilities, scope]);
 
     const caId = scopeCaId(scope);
-    const inScope = useCallback((rowCaId: string | null | undefined) => !caId || rowCaId === caId, [caId]);
-    const caQuery = useCallback((hasQuery = false) => caId ? `${hasQuery ? '&' : '?'}caId=${encodeURIComponent(caId)}` : '', [caId]);
+    const tenantId = scope.kind === 'tenant' ? scope.tenantId : null;
+    // The CAs a tenant scope covers: the ones the caller can administer in that tenant.
+    const tenantCaIds = useMemo(() => new Set(scope.kind === 'tenant' ? consoleCas(capabilities).filter(c => c.tenantId === scope.tenantId).map(c => c.id) : []), [scope, capabilities]);
+    const inScope = useCallback((rowCaId: string | null | undefined) => {
+        if (caId) return rowCaId === caId;
+        if (tenantId) return !!rowCaId && tenantCaIds.has(rowCaId);
+        return true;
+    }, [caId, tenantId, tenantCaIds]);
+    const caQuery = useCallback((hasQuery = false) => {
+        const sep = hasQuery ? '&' : '?';
+        if (caId) return `${sep}caId=${encodeURIComponent(caId)}`;
+        if (tenantId) return `${sep}tenantId=${encodeURIComponent(tenantId)}`;
+        return '';
+    }, [caId, tenantId]);
 
     const value = useMemo<ScopeContextValue>(() => ({
         scope,
         setScope,
         caId,
+        tenantId,
         inScope,
         caQuery,
         cas: consoleCas(capabilities),
+        tenants: tenantsOf(capabilities),
         canScopeToAll: canScopeToAll(capabilities),
         allows,
-    }), [scope, setScope, caId, inScope, caQuery, capabilities, allows]);
+    }), [scope, setScope, caId, tenantId, inScope, caQuery, capabilities, allows]);
 
     return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 };

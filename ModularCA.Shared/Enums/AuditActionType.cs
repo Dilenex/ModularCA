@@ -271,4 +271,11 @@ public static class AuditActionType
     // Compliance
     /// <summary>An operator cleared a compliance finding. Previously unrecorded entirely.</summary>
     public const string ComplianceFindingResolved = "ComplianceFindingResolved";
+
+    // Access badges
+    /// <summary>A session put a badge on, took one off, or switched badges. Details name both sides.</summary>
+    public const string BadgeSwitched = "BadgeSwitched";
+    public const string BadgeCreated = "BadgeCreated";
+    public const string BadgeUpdated = "BadgeUpdated";
+    public const string BadgeDeleted = "BadgeDeleted";
 }

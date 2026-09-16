@@ -53,8 +53,9 @@ public class AdminCertSignRequestController(
     /// callers only receive CSRs belonging to CAs they can access. System admins receive all.
     /// </summary>
     /// <param name="caId">Optional: only requests routed to this CA (the console's scope).</param>
+    /// <param name="tenantId">Optional: only requests routed to CAs of this tenant.</param>
     [HttpGet]
-    public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null)
+    public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -67,7 +68,14 @@ public class AdminCertSignRequestController(
                 _currentUser.User.Id, Capabilities.CertView);
         }
 
-        var requests = await _csrService.GetPendingRequests(ModularCA.Core.Authorization.CaScope.Narrow(accessibleCaIds, caId));
+        var scoped = ModularCA.Core.Authorization.CaScope.Narrow(accessibleCaIds, caId);
+        if (tenantId.HasValue)
+        {
+            var tenantCaIds = await HttpContext.RequestServices.GetRequiredService<ModularCA.Database.ModularCADbContext>()
+                .CertificateAuthorities.AsNoTracking().Where(ca => ca.TenantId == tenantId.Value).Select(ca => ca.Id).ToListAsync();
+            scoped = ModularCA.Core.Authorization.CaScope.NarrowToTenant(scoped, tenantCaIds);
+        }
+        var requests = await _csrService.GetPendingRequests(scoped);
         if (requests == null)
             return NotFound();
 

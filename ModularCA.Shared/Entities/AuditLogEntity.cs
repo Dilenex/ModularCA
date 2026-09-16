@@ -54,6 +54,13 @@ public class AuditLogEntity
     /// <summary>Tenant ID for tenant-scoped audit filtering. Derived from the CA's tenant when available.</summary>
     public Guid? TenantId { get; set; }
 
+    /// <summary>The access badge the actor wore, if any; the audit trail names the badge, not just the user.</summary>
+    public Guid? AccessBadgeId { get; set; }
+
+    /// <summary>The worn badge's name at the time, so the row reads without a lookup.</summary>
+    [MaxLength(100)]
+    public string? AccessBadgeName { get; set; }
+
     /// <summary>SHA-256 hex hash of the canonical form of this audit record.</summary>
     [MaxLength(64)]
     public string? RecordHash { get; set; }

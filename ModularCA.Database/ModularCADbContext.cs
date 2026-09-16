@@ -122,6 +122,10 @@ public class ModularCADbContext : DbContext
 
     public DbSet<RefreshTokenEntity> RefreshTokens { get; set; }
 
+    /// <summary>Access badges: named subsets of a user's own grant sources a session can wear.</summary>
+    public DbSet<AccessBadgeEntity> AccessBadges { get; set; }
+    public DbSet<AccessBadgeSourceEntity> AccessBadgeSources { get; set; }
+
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
 
@@ -765,6 +769,24 @@ public class ModularCADbContext : DbContext
         });
 
         // User capability grants — direct one-off grants on users
+        modelBuilder.Entity<AccessBadgeEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AccessBadgeSourceEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.BadgeId, e.Kind, e.SourceId }).IsUnique();
+            entity.HasOne(e => e.Badge)
+                  .WithMany(b => b.Sources)
+                  .HasForeignKey(e => e.BadgeId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.Capability });

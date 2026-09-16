@@ -25,4 +25,21 @@ public static class CaScope
         if (accessibleCaIds == null) return [wanted];
         return accessibleCaIds.Contains(wanted) ? [wanted] : [];
     }
+
+    /// <summary>
+    /// Narrows an accessible-CA set to the CAs of one tenant (the console's tenant scope).
+    /// </summary>
+    /// <param name="accessibleCaIds">The CAs the caller may see, or <c>null</c> when unrestricted.</param>
+    /// <param name="tenantCaIds">Every CA in the requested tenant, or <c>null</c> when no tenant was requested.</param>
+    /// <returns>
+    /// <c>null</c> for "everything"; otherwise the intersection, which is empty when the caller
+    /// sees nothing in that tenant. The same rule as <see cref="Narrow"/>: a filter narrows, it
+    /// never widens.
+    /// </returns>
+    public static List<Guid>? NarrowToTenant(List<Guid>? accessibleCaIds, List<Guid>? tenantCaIds)
+    {
+        if (tenantCaIds == null) return accessibleCaIds;
+        if (accessibleCaIds == null) return tenantCaIds.ToList();
+        return accessibleCaIds.Where(tenantCaIds.Contains).ToList();
+    }
 }

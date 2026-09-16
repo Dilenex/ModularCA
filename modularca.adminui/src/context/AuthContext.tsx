@@ -31,6 +31,10 @@ export interface AuthMeResponse {
     scopes: string[];
     isSuper?: boolean;
     capabilities: EffectiveCapabilities;
+    /** The access badge this session wears, or null when badgeless. */
+    badge: { id: string; name: string } | null;
+    /** Every badge the user could put on. */
+    badges: Array<{ id: string; name: string; description: string | null; isDefault: boolean }>;
     mfa: {
         configured: boolean;
         totp: boolean;

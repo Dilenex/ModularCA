@@ -36,10 +36,16 @@ public sealed record EffectiveCapabilities(
 /// <param name="Label">The CA's label, which is what a scope in a console URL names.</param>
 /// <param name="Name">The CA's display name.</param>
 /// <param name="IsSshCa">Whether this is an SSH CA rather than an X.509 one.</param>
+/// <param name="TenantId">The tenant the CA belongs to; the console's tenant scope groups CAs by it.</param>
+/// <param name="TenantName">The tenant's display name.</param>
+/// <param name="TenantSlug">The tenant's slug, which is what a tenant scope in a console URL names.</param>
 /// <param name="Capabilities">The capabilities that apply on this CA, sorted.</param>
 public sealed record CaCapabilities(
     Guid Id,
     string Label,
     string Name,
     bool IsSshCa,
+    Guid TenantId,
+    string TenantName,
+    string TenantSlug,
     IReadOnlyList<string> Capabilities);

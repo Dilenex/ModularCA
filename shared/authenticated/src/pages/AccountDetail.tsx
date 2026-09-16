@@ -12,6 +12,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { MySecurity } from './MySecurity';
+import { AccessBadgesPanel } from '../components/AccessBadgesPanel';
 import { StepUpOps } from '@shared/generated';
 
 const inputClass =
@@ -174,9 +175,9 @@ const GeneralTab: React.FC = () => {
 
 /* ─── Account page: General + Security tabs ─── */
 export const AccountDetail: React.FC = () => {
-    const [tab, setTab] = useState<'general' | 'security'>('general');
+    const [tab, setTab] = useState<'general' | 'security' | 'badges'>('general');
 
-    const tabBtn = (key: 'general' | 'security', label: string) => (
+    const tabBtn = (key: 'general' | 'security' | 'badges', label: string) => (
         <button
             onClick={() => setTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
@@ -199,9 +200,12 @@ export const AccountDetail: React.FC = () => {
             <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
                 {tabBtn('general', 'General')}
                 {tabBtn('security', 'Security')}
+                {tabBtn('badges', 'Badges')}
             </div>
 
-            {tab === 'general' ? <GeneralTab /> : <MySecurity embedded />}
+            {tab === 'general' && <GeneralTab />}
+            {tab === 'security' && <MySecurity embedded />}
+            {tab === 'badges' && <AccessBadgesPanel basePath="/api/v1/account/badges" />}
         </div>
     );
 };

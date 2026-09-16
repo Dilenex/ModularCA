@@ -16,6 +16,21 @@
  * default rather than failing, which is why these must not be hand-typed.
  */
 
+/** From `ModularCA.Shared/Enums/AccessBadgeSourceKind.cs`. */
+export const AccessBadgeSourceKind = {
+    Group: 'Group',
+    RoleAssignment: 'RoleAssignment',
+    CapabilityGrant: 'CapabilityGrant',
+} as const;
+export type AccessBadgeSourceKind = (typeof AccessBadgeSourceKind)[keyof typeof AccessBadgeSourceKind];
+
+/** Underlying numeric values of `AccessBadgeSourceKind`, which are protocol-significant. */
+export const AccessBadgeSourceKindCode: Readonly<Record<AccessBadgeSourceKind, number>> = {
+    Group: 1,
+    RoleAssignment: 2,
+    CapabilityGrant: 3,
+};
+
 /** From `ModularCA.Shared/Enums/AcmeAccountStatus.cs`. */
 export const AcmeAccountStatus = {
     Valid: 'Valid',

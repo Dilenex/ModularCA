@@ -15,6 +15,8 @@ namespace ModularCA.Shared.Enums;
 public static class StepUpOps
 {
     // Certificate revocation
+    /// <summary>Broadening a session's access badge: taking one off, or switching to one that keeps more.</summary>
+    public const string SwitchBadge = "switch-badge";
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
@@ -221,6 +223,7 @@ public static class StepUpOps
     /// </summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
+        SwitchBadge,
         RevokeCert, HoldCert, UnholdCert,
         RevokeSelfCert,
         ReissueCert,

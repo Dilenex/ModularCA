@@ -15,7 +15,19 @@ export interface CaCapabilities {
     label: string;
     name: string;
     isSshCa: boolean;
+    /** The tenant the CA belongs to; the console's tenant scope groups CAs by it. */
+    tenantId: string;
+    tenantName: string;
+    /** What a tenant scope in a console URL names. */
+    tenantSlug: string;
     capabilities: Capability[];
+}
+
+/** A tenant the user may scope to: one that holds at least one CA they can administer. */
+export interface TenantOption {
+    id: string;
+    name: string;
+    slug: string;
 }
 
 /** System-scoped capabilities plus every CA the user holds anything on. */
@@ -66,4 +78,19 @@ export function canUseAdminConsole(caps: EffectiveCapabilities | null | undefine
 export function consoleCas(caps: EffectiveCapabilities | null | undefined): CaCapabilities[] {
     if (!caps) return [];
     return caps.cas.filter(ca => ca.capabilities.some(c => !SELF_SERVICE_ONLY.has(c)));
+}
+
+/** The tenants the user may scope to, in first-seen order of their administrable CAs. */
+export function tenantsOf(caps: EffectiveCapabilities | null | undefined): TenantOption[] {
+    const seen = new Map<string, TenantOption>();
+    for (const ca of consoleCas(caps)) {
+        if (!seen.has(ca.tenantId)) seen.set(ca.tenantId, { id: ca.tenantId, name: ca.tenantName || ca.tenantSlug, slug: ca.tenantSlug });
+    }
+    return [...seen.values()];
+}
+
+/** Whether `capability` is held on any CA of the tenant. */
+export function canInTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
+    if (!caps) return false;
+    return caps.cas.some(c => c.tenantId === tenantId && c.capabilities.includes(capability));
 }

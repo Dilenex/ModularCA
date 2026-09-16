@@ -79,6 +79,7 @@ public class AdminCertificateController(
         [FromQuery] string? serial,
         [FromQuery] string? issuer,
         [FromQuery] Guid? caId,
+        [FromQuery] Guid? tenantId,
         [FromQuery] string? status,
         [FromQuery] string? keyAlgorithm,
         [FromQuery] string? san,
@@ -119,6 +120,17 @@ public class AdminCertificateController(
                 || c.SerialNumber.Contains(s)
                 || c.SubjectAlternativeNamesJson.Contains(s)
                 || c.Issuer.Contains(s));
+        }
+
+        // The console's tenant scope: certificates issued by any CA of the tenant.
+        if (tenantId.HasValue)
+        {
+            var tenantCaCertIds = await _dbContext.CertificateAuthorities
+                .Where(ca => ca.TenantId == tenantId.Value && ca.CertificateId != null)
+                .Select(ca => ca.CertificateId!.Value)
+                .ToListAsync();
+            query = query.Where(c => c.SigningProfileId != null
+                && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && tenantCaCertIds.Contains(sp.IssuerId.Value)));
         }
 
         // Issuing-CA filter — certs whose signing profile is issued by this CA's certificate.
@@ -354,7 +366,8 @@ public class AdminCertificateController(
         [FromQuery] Guid? caId,
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
-        [FromQuery] string? granularity)
+        [FromQuery] string? granularity,
+        [FromQuery] Guid? tenantId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -362,6 +375,17 @@ public class AdminCertificateController(
 
         var userId = _currentUser.User.Id;
         var query = await BuildAccessibleCertificatesQueryAsync(userId);
+
+        // The console's tenant scope: certificates issued by any CA of the tenant.
+        if (tenantId.HasValue)
+        {
+            var tenantCaCertIds = await _dbContext.CertificateAuthorities
+                .Where(ca => ca.TenantId == tenantId.Value && ca.CertificateId != null)
+                .Select(ca => ca.CertificateId!.Value)
+                .ToListAsync();
+            query = query.Where(c => c.SigningProfileId != null
+                && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && tenantCaCertIds.Contains(sp.IssuerId.Value)));
+        }
 
         // Issuing-CA filter — same signing-profile join as the list endpoint.
         if (caId.HasValue)

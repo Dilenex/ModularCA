@@ -16,6 +16,7 @@
  * MFA failure; a constant typo does not compile.
  */
 export const StepUpOps = {
+    SwitchBadge: 'switch-badge',
     RevokeCert: 'revoke-cert',
     HoldCert: 'hold-cert',
     UnholdCert: 'unhold-cert',

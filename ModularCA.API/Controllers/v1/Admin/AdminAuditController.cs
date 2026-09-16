@@ -53,12 +53,17 @@ public class AdminAuditController : ControllerBase
         [FromQuery] string? actorUsername,
         [FromQuery] Guid? caId,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50)
+        [FromQuery] int pageSize = 50,
+        [FromQuery] Guid? tenantId = null)
     {
         if (_auditDb == null)
             return StatusCode(503, new { error = "Audit database is not configured" });
 
         var query = _auditDb.AuditLogs.AsQueryable();
+
+        // The console's tenant scope: rows stamped with that tenant.
+        if (tenantId.HasValue)
+            query = query.Where(a => a.TenantId == tenantId.Value);
 
         if (from.HasValue)
             query = query.Where(a => a.Timestamp >= from.Value);

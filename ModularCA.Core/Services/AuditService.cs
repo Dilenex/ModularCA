@@ -36,16 +36,19 @@ public class AuditService : IAuditService
     /// still resolve the service without crashing.
     /// </summary>
     private readonly AuditHashChainService? _hashChain;
+    private readonly IWornBadgeProvider? _wornBadge;
 
     public AuditService(
         ILogger<AuditService> logger,
         AuditDbContext? auditDb = null,
         SystemConfig? config = null,
         ISecurityAlertService? alertService = null,
-        AuditHashChainService? hashChain = null)
+        AuditHashChainService? hashChain = null,
+        IWornBadgeProvider? wornBadge = null)
     {
         _logger = logger;
         _auditDb = auditDb;
+        _wornBadge = wornBadge;
         _config = config;
         _alertService = alertService;
         _hashChain = hashChain;
@@ -101,7 +104,11 @@ public class AuditService : IAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId
+                TenantId = tenantId,
+                // The badge the actor wore. Forgetting which hat you wear is the classic
+                // failure of restricted-rights features; the trail must not share it.
+                AccessBadgeId = _wornBadge?.BadgeId,
+                AccessBadgeName = _wornBadge?.BadgeName,
             };
 
             // Compute hash chain for tamper-evident audit trail

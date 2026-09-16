@@ -127,7 +127,7 @@ const CaManagement: React.FC = () => {
         return result;
     };
 
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, tenantId: scopeTenantId, inScope } = useScope();
 
     /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
     const subtreeOf = (list: any[], id: string): any | null => {
@@ -146,7 +146,9 @@ const CaManagement: React.FC = () => {
             .then((data) => {
                 const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
                 const scoped = scopeCaId ? subtreeOf(all, scopeCaId) : null;
-                const items = scopeCaId ? (scoped ? [scoped] : []) : all;
+                const items = scopeCaId
+                    ? (scoped ? [scoped] : [])
+                    : scopeTenantId ? all.filter((root: any) => inScope(root.id || root.caId)) : all;
                 setAuthorities(items);
                 const flat = flattenCas(items);
                 if (flat.length > 0 && !formParentCa) {
@@ -172,7 +174,7 @@ const CaManagement: React.FC = () => {
                 if (items.length > 0 && !formCertProfile) setFormCertProfile(items[0].id);
             })
             .catch(() => {});
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [scopeCaId, scopeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const allCasFlat = flattenCas(authorities);
 

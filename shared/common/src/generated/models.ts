@@ -18,6 +18,67 @@ import type * as E from './enums';
  * present-but-null in a response, and both need to typecheck.
  */
 
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeDto {
+    id: string;
+    userId: string;
+    name: string;
+    description?: string | null;
+    isDefault: boolean;
+    createdAt: string;
+    updatedAt?: string | null;
+    sources: AccessBadgeSourceDto[];
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceDto {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+    label?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceOptionDto {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+    label: string;
+    scope: string;
+    capabilities: string[];
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSourceRef {
+    kind: E.AccessBadgeSourceKind;
+    sourceId: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSummary {
+    id: string;
+    name: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSwitchRequest {
+    badgeId?: string | null;
+    refreshToken: string;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeSwitchResponse {
+    token: string;
+    expiresAt: string;
+    badge?: AccessBadgeSummary | null;
+}
+
+/** From `ModularCA.Shared/Models/AccessBadges/AccessBadgeDtos.cs`. */
+export interface AccessBadgeWriteRequest {
+    name: string;
+    description?: string | null;
+    isDefault: boolean;
+    sources: AccessBadgeSourceRef[];
+}
+
 /** From `ModularCA.Shared/Models/Acme/AcmeAccountDto.cs`. */
 export interface AcmeAccountDto {
     id: string;
