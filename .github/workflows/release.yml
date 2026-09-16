@@ -1,0 +1,126 @@
+name: Release
+
+# Builds the distribution artifacts on a clean runner and publishes them to a GitHub Release.
+#
+# Two reasons this exists rather than uploading a workstation build: a CA is trust infrastructure,
+# so a release built reproducibly on a clean runner and carrying build provenance is worth more
+# than one built by hand; and the dist scripts already produce the exact artifacts, so CI only has
+# to run them and attach the result.
+#
+# Fires on a version tag (0.1.0, 0.2.0-rc1, and the v-prefixed forms). workflow_dispatch builds the
+# same artifacts on demand and uploads them to the run for inspection, without cutting a release —
+# useful for dry-running the pipeline on a branch before tagging.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the release and upload assets
+  id-token: write        # provenance attestation
+  attestations: write    # provenance attestation
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The dist build runs `dotnet publish`, whose BuildWebUIs target installs and builds the five
+      # SPAs itself, so node has to be present but there is no separate npm ci step here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The VERSION file is the single source of truth for the artifact names; a tag that does not
+      # match it is almost certainly a mistake (tagging the wrong commit, or forgetting to bump).
+      # Refuse rather than publish an artifact whose name disagrees with the tag. Skipped for
+      # workflow_dispatch, which has no tag.
+      - name: Tag matches VERSION
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(tr -d ' \r\n' < VERSION)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::tag '$GITHUB_REF_NAME' does not match VERSION '$version'" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Build linux-x64 distribution
+        run: bash scripts/build-linux-dist.sh
+
+      - name: Build win-x64 distribution
+        run: bash scripts/build-windows-dist.sh
+
+      # One checksum file over both artifacts, in the standard `sha256sum -c` format, so a
+      # downloader can verify everything in one step.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum modularca-*-linux-x64.tar.gz modularca-*-win-x64.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      # Free SLSA build provenance on a public repo: proves these exact bytes came out of this
+      # workflow on this commit. Matters more than usual for software people run as a trust root.
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dist/modularca-*-linux-x64.tar.gz, dist/modularca-*-win-x64.zip'
+
+      # On a tag: pull this version's section out of the CHANGELOG for the release body. Falls back
+      # to GitHub's generated notes when the section is not found.
+      - name: Release notes
+        if: github.ref_type == 'tag'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Fixed-string matching via index() rather than a regex, so bracket metacharacters in
+          # the "## [x.y.z]" headings need no escaping (the escaped-regex form silently matched
+          # nothing, turning [x.y.z] into a character class).
+          awk -v h="## [$version]" -v nx="## [" '
+            index($0, h) == 1 { grab = 1; next }
+            grab && index($0, nx) == 1 { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then echo "See CHANGELOG.md." > RELEASE_NOTES.md; fi
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          # A tag containing a hyphen (0.2.0-rc1) is a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/modularca-*-linux-x64.tar.gz
+            dist/modularca-*-win-x64.zip
+            dist/SHA256SUMS
+
+      # workflow_dispatch has no release to attach to; keep the artifacts on the run so the
+      # pipeline can be dry-run and the output inspected.
+      - name: Upload artifacts (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: modularca-dist
+          path: |
+            dist/modularca-*-linux-x64.tar.gz
+            dist/modularca-*-win-x64.zip
+            dist/SHA256SUMS
+          retention-days: 14
