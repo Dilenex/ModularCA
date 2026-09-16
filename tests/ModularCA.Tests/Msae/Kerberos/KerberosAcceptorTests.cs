@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using Kerberos.NET;
 using Kerberos.NET.Crypto;
+using Kerberos.NET.Entities;
 using ModularCA.Core.Services.Msae.Kerberos;
 using Xunit;
 
@@ -125,5 +128,88 @@ public class KerberosAcceptorTests
     {
         var result = await Acceptor(new Realms()).AcceptAsync(new byte[] { 1, 2, 3, 4 }, TenantA);
         Assert.Equal(KerberosRefusal.Malformed, result.Refusal);
+    }
+
+    [Fact]
+    public async Task The_client_can_verify_our_mutual_authentication_token()
+    {
+        var forest = new InProcessKdc("corp.customer-a.local");
+        forest.AddAccount("WS-042$", "Machine-P@ss-1");
+        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var (token, clientContext) = await forest.ServiceTicketContextAsync("WS-042$", "Machine-P@ss-1");
+
+        var result = await acceptor.AcceptAsync(token, TenantA);
+        Assert.True(result.Accepted, result.Refusal.ToString());
+        var mutual = result.Caller!.MutualAuthToken;
+        Assert.False(mutual.IsEmpty);
+
+        // The raw AP-REP verifies against the client's session key: the server proved it holds the service key.
+        var sessionKey = clientContext.AuthenticateServiceResponse(result.Caller.ApRep);
+        Assert.NotNull(sessionKey);
+
+        // And it went out framed the way the client sent its token: a SPNEGO accept-completed
+        // naming the same mechanism, wrapping a GSS-API context token that carries the AP-REP.
+        var response = NegotiationToken.Decode(mutual);
+        Assert.NotNull(response.ResponseToken);
+        Assert.Equal(NegotiateState.AcceptCompleted, response.ResponseToken!.State);
+        var inner = response.ResponseToken.ResponseToken!.Value;
+        Assert.Equal(0x60, inner.Span[0]); // [APPLICATION 0]
+        Assert.True(inner.Span.IndexOf(new byte[] { 0x02, 0x00 }) > 0); // AP-REP token id after the OID
+        var request = MessageParser.ParseNegotiate(token).Token;
+        Assert.Equal(request.InitialToken!.MechTypes![0].Value, response.ResponseToken.SupportedMech.Value);
+    }
+
+    [Fact]
+    public async Task A_bare_ap_req_from_a_ws_security_header_is_framed_and_accepted()
+    {
+        var forest = new InProcessKdc("corp.customer-a.local");
+        forest.AddAccount("WS-042$", "Machine-P@ss-1");
+        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+
+        // What a #Kerberosv5_AP_REQ token carries: the AP-REQ without GSS-API framing.
+        var gss = await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1");
+        var raw = MessageParser.ParseNegotiate(gss).Token.InitialToken!.MechToken!.Value;
+        var bare = MessageParser.ParseKerberos(raw).KrbApReq.EncodeApplication();
+
+        var framed = await acceptor.AcceptAsync(KerberosAcceptor.FrameApReq(bare), TenantA);
+        Assert.True(framed.Accepted, framed.Refusal.ToString());
+        Assert.Equal("WS-042$", framed.Caller!.Principal);
+
+        // The parser also takes the bare AP-REQ as it is; a fresh acceptor, since the authenticator was just used.
+        var unframed = await Acceptor(new Realms().Bind(forest, TenantA)).AcceptAsync(bare, TenantA);
+        Assert.True(unframed.Accepted, unframed.Refusal.ToString());
+    }
+
+    [Fact]
+    public async Task An_ntlm_fallback_is_named_as_such_and_every_unusable_token_is_described()
+    {
+        var forest = new InProcessKdc("corp.customer-a.local");
+        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+
+        // What a client sends when its SSPI could not get a service ticket: SPNEGO whose
+        // mechanism token is an NTLMSSP negotiate message rather than a Kerberos AP-REQ.
+        var ntlm = GssApiToken.Encode(new Oid("1.3.6.1.5.5.2"), new NegotiationToken
+        {
+            InitialToken = new NegTokenInit
+            {
+                MechTypes = [new Oid("1.3.6.1.4.1.311.2.2.10")],
+                MechToken = "NTLMSSP "u8.ToArray().Concat(new byte[] { 1, 0, 0, 0 }).ToArray(),
+            },
+        });
+
+        var result = await acceptor.AcceptAsync(ntlm, TenantA);
+        Assert.Equal(KerberosRefusal.NtlmOffered, result.Refusal);
+        Assert.Contains("NTLMSSP", result.Detail);
+        Assert.Contains("1.3.6.1.4.1.311.2.2.10", result.Detail);
+
+        // Garbage is still malformed, but now says so with its leading bytes.
+        var garbage = await acceptor.AcceptAsync(new byte[] { 1, 2, 3, 4 }, TenantA);
+        Assert.Equal(KerberosRefusal.Malformed, garbage.Refusal);
+        Assert.Contains("01020304", garbage.Detail);
+
+        // A real ticket is unaffected by any of this.
+        forest.AddAccount("alice", "Alice-P@ss-1");
+        var good = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        Assert.True(good.Accepted, good.Refusal.ToString());
     }
 }

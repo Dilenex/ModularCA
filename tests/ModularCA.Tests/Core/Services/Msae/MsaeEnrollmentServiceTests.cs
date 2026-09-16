@@ -463,7 +463,7 @@ public class MsaeEnrollmentServiceTests
     private static KerberosCaller KerberosCallerFor(string principal) => new(
         principal, "CORP.LAB.TEST", principal.EndsWith('$'),
         new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),
-        ReadOnlyMemory<byte>.Empty);
+        ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty);
 
     [Fact]
     public async Task A_kerberos_callers_identity_names_the_certificate_not_the_csr()

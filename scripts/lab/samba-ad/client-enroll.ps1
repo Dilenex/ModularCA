@@ -16,7 +16,8 @@
 
   The policy server URL is https://<CaHost>/msae/<CaLabel>/cep. No credential is passed: the
   enrollment engine obtains a service ticket for HTTP/<CaHost> from the lab KDC and ModularCA
-  accepts it against the realm binding.
+  accepts it against the realm binding. <CaHost> must resolve, in DNS or hosts, with the FQDN as
+  the canonical (first) name, or the engine asks the KDC for the short name and falls back to NTLM.
 #>
 [CmdletBinding()]
 param(
@@ -68,14 +69,32 @@ if ($Ticket) {
 
 if ($Enroll) {
   $url = "https://$CaHost/msae/$CaLabel/cep"
-  Write-Host "==> Enrolling $Template from $url with Windows integrated authentication (no credential)"
+  # Two things have to be true before the engine will speak Kerberos to this URL, and both were
+  # learned the hard way:
+  #   1. The name the resolver hands back for $CaHost must be the FQDN. WinHTTP canonicalises the
+  #      URL host before it builds the service principal name, so a hosts-file line such as
+  #      "10.0.0.5 ca4 ca4.example.net" (short alias first) makes it ask the KDC for HTTP/ca4,
+  #      the KDC says S_PRINCIPAL_UNKNOWN, and SSPI silently falls back to NTLM. Put the FQDN
+  #      first on the line, or drop the line and let DNS answer.
+  #   2. Get-Certificate must be given -Url. Without it the enrollment object searches the default
+  #      policy source, which is the directory (ldap:), and a non-Microsoft policy server is never
+  #      the default; the result is CERTSRV_E_UNSUPPORTED_CERT_TYPE even though the policy is fine.
+  # With no -Credential the cmdlets use Windows integrated authentication under the account that
+  # runs them; run as SYSTEM (psexec -s) to enroll as the computer.
+  Write-Host "==> Registering the policy server $url (Machine context, Kerberos; autoenrollment on)"
+  Add-CertificateEnrollmentPolicyServer -Url $url -Context Machine -AutoEnrollmentEnabled
+  Get-CertificateEnrollmentPolicyServer -Scope All -Context Machine | Format-List Url, AuthType, AutoEnrollmentEnabled
+
+  Write-Host "==> Enrolling $Template from $url with the machine's ticket (no credential)"
   $result = Get-Certificate -Template $Template -Url $url -CertStoreLocation Cert:\LocalMachine\My
-  $result | Format-List Status, Certificate
+  $result | Format-List Status
   if ($result.Certificate) {
-    $result.Certificate | Format-List Subject, DnsNameList, NotAfter, Thumbprint
+    $result.Certificate | Format-List Subject, DnsNameList, Issuer, NotAfter, Thumbprint
     Write-Host "Subject came from the Kerberos identity, not from this machine: expect CN=<host>.$DnsDomain"
   }
-  Write-Host "Check the MSAE audit tab in ModularCA: caller krb:<machine>$@<REALM>, auth Kerberos, or the refusal reason."
+  Write-Host "Check the MSAE audit tab in ModularCA: caller krb:<machine>`$@<REALM>, auth Kerberos, or the refusal reason."
+  Write-Host "Autoenrollment from the registration: certutil -pulse (only enrolls templates this machine lacks)."
+  Write-Host "To undo the registration: Remove-CertificateEnrollmentPolicyServer -Url $url -Context Machine"
   return
 }
 

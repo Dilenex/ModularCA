@@ -82,14 +82,19 @@ public static class XcepMessages
         string? MessageId,
         DateTime? LastUpdate,
         string? PreferredLanguage,
-        WstepMessages.WstepUsernameToken? UsernameToken);
+        WstepMessages.WstepUsernameToken? UsernameToken,
+        WstepMessages.WstepKerberosToken? KerberosToken = null);
 
     /// <summary>An issuing CA as advertised to the client.</summary>
     /// <param name="ReferenceId">The id templates refer to it by.</param>
     /// <param name="CesUri">The enrollment (CES) URL, absolute.</param>
     /// <param name="CertificateDer">The CA certificate, DER.</param>
     /// <param name="EnrollPermission">Whether the asking caller may enroll at this CA.</param>
-    public sealed record PolicyCa(int ReferenceId, string CesUri, byte[] CertificateDer, bool EnrollPermission);
+    /// <param name="ClientAuthentication">
+    /// How the client must authenticate to CES: <see cref="AuthKerberos"/> for a caller that
+    /// arrived with a ticket, so the enrollment engine keeps using it, else <see cref="AuthUsernamePassword"/>.
+    /// </param>
+    public sealed record PolicyCa(int ReferenceId, string CesUri, byte[] CertificateDer, bool EnrollPermission, int ClientAuthentication = AuthUsernamePassword);
 
     /// <summary>An extension the issued certificate will carry, offered so the client can put it in its CSR.</summary>
     public sealed record PolicyExtension(string Oid, string FriendlyName, bool Critical, byte[] Value);
@@ -152,7 +157,8 @@ public static class XcepMessages
             WstepMessages.ReadMessageId(doc),
             lastUpdate,
             string.IsNullOrEmpty(language) ? null : language,
-            WstepMessages.ReadUsernameToken(doc));
+            WstepMessages.ReadUsernameToken(doc),
+            WstepMessages.ReadKerberosToken(doc));
     }
 
     /// <summary>Builds the SOAP <c>GetPoliciesResponse</c> for <paramref name="policy"/>.</summary>
@@ -184,7 +190,7 @@ public static class XcepMessages
             cas.Add(new XElement(x + "cA",
                 new XElement(x + "uris",
                     new XElement(x + "cAURI",
-                        new XElement(x + "clientAuthentication", AuthUsernamePassword),
+                        new XElement(x + "clientAuthentication", ca.ClientAuthentication),
                         new XElement(x + "uri", ca.CesUri),
                         new XElement(x + "priority", 1),
                         new XElement(x + "renewalOnly", false))),

@@ -49,7 +49,8 @@ SUFFIX=""
 [[ "$CONFIG" != "Release" ]] && SUFFIX="-$(printf '%s' "$CONFIG" | tr '[:upper:]' '[:lower:]')"
 NAME="modularca-${VERSION}-${RID}${SUFFIX}"
 STAGE="$(mktemp -d)/${NAME}"
-OUT="$ROOT/dist"
+OUT="${DIST_OUT:-$ROOT/dist}"   # DIST_OUT overrides, e.g. when the default archive is held open by a transfer tool
+mkdir -p "$OUT"
 TARBALL="$OUT/${NAME}.tar.gz"
 
 note() { printf '\033[36m==>\033[0m %s\n' "$*"; }

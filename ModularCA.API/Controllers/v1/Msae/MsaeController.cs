@@ -86,13 +86,14 @@ public class MsaeController(
             return Fault(ex.Message, null, "parse");
         }
 
-        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.MessageId);
+        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.KerberosToken, request.MessageId);
         if (fault != null) return fault;
 
         try
         {
             var policies = await policy.GetPoliciesAsync(caLabel, caller!);
             RecordSuccess(stopwatch);
+            MutualAuth(caller!);
             return Content(XcepMessages.BuildGetPoliciesResponse(policies, request.MessageId), SoapContentType);
         }
         catch (MsaeEnrollmentException ex)
@@ -126,13 +127,14 @@ public class MsaeController(
             return Fault(ex.Message, null, "parse");
         }
 
-        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.MessageId);
+        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.KerberosToken, request.MessageId);
         if (fault != null) return fault;
 
         try
         {
             var pkcs7 = await enrollment.EnrollAsync(request.Pkcs10Der, caller!, SourceIp, caLabel);
             RecordSuccess(stopwatch);
+            MutualAuth(caller!);
             return Content(WstepMessages.BuildIssueResponse(pkcs7, request.MessageId, request.RequestId), SoapContentType);
         }
         catch (MsaeEnrollmentException ex)
@@ -147,6 +149,63 @@ public class MsaeController(
                 request.MessageId, "internal", senderFault: false);
         }
     }
+
+    /// <summary>
+    /// Diagnostic: who does the Kerberos path think the caller is? Answers the Negotiate handshake
+    /// exactly as <c>/cep</c> and <c>/ces</c> do, without a SOAP body, so an operator can test a
+    /// forest binding with <c>curl.exe --negotiate -u :</c> or <c>Invoke-WebRequest
+    /// -UseDefaultCredentials</c> before involving the enrollment engine. Reports the accepted
+    /// principal or the refusal reason; never anything the caller could not learn by enrolling.
+    /// </summary>
+    [HttpGet("whoami")]
+    public async Task<IActionResult> WhoAmI(string? caLabel = null)
+    {
+        var (allowKerberos, _, tenantId) = await AuthModesAsync(caLabel);
+        if (tenantId == null)
+            return NotFound(new { error = "No such CA, or MSAE is not enabled on it." });
+
+        if (!Request.Headers.TryGetValue("Authorization", out var header)
+            || !header.ToString().StartsWith("Negotiate ", StringComparison.OrdinalIgnoreCase))
+        {
+            Response.Headers.WWWAuthenticate = "Negotiate";
+            return StatusCode(StatusCodes.Status401Unauthorized, new { error = "Send a Kerberos ticket: Authorization: Negotiate <token>.", kerberosEnabledOnCa = allowKerberos });
+        }
+
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(header.ToString()["Negotiate ".Length..].Trim()); }
+        catch (FormatException) { return BadRequest(new { error = "The Negotiate header is not base64." }); }
+
+        var result = await kerberos.AcceptAsync(bytes, tenantId.Value, HttpContext.RequestAborted);
+        if (!result.Accepted)
+            return StatusCode(StatusCodes.Status403Forbidden, new { refusal = result.Refusal.ToString(), result.Realm, servicePrincipal = result.ServicePrincipal, detail = result.Detail, kerberosEnabledOnCa = allowKerberos });
+
+        var c = result.Caller!;
+        Response.Headers.WWWAuthenticate = "Negotiate " + Convert.ToBase64String(c.MutualAuthToken.ToArray());
+        return Ok(new
+        {
+            principal = c.FullName,
+            c.IsMachine,
+            c.DnsHostName,
+            c.Upn,
+            actingAs = c.Binding.EnrollmentUsername,
+            realm = c.Realm,
+            kerberosEnabledOnCa = allowKerberos,
+            tokenBytes = bytes.Length,
+        });
+    }
+
+    /// <summary>
+    /// Completes mutual authentication for a Kerberos caller: the AP-REP, framed like the request
+    /// token, goes back in <c>WWW-Authenticate</c> on the 200. A client that asked for mutual
+    /// authentication (Windows always does) does not trust the reply without it.
+    /// </summary>
+    private void MutualAuth(MsaeCaller caller)
+    {
+        if (caller.Kerberos is { } k && !k.MutualAuthToken.IsEmpty)
+            Response.Headers.WWWAuthenticate = "Negotiate " + Convert.ToBase64String(k.MutualAuthToken.ToArray());
+    }
+
+    private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
 
     private string? SourceIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
@@ -163,17 +222,23 @@ public class MsaeController(
     /// fault, or the 401 challenge that makes a Windows client fetch a ticket.
     /// </summary>
     private async Task<(MsaeCaller? Caller, IActionResult? Fault)> AuthenticateAsync(
-        string? caLabel, WstepMessages.WstepUsernameToken? token, string? messageId)
+        string? caLabel, WstepMessages.WstepUsernameToken? token, WstepMessages.WstepKerberosToken? kerberosToken, string? messageId)
     {
         var (allowKerberos, allowUsername, tenantId) = await AuthModesAsync(caLabel);
 
-        if (Request.Headers.TryGetValue("Authorization", out var header)
+        // The Windows enrollment engine set to Kerberos carries its AP-REQ in the WS-Security
+        // header (Kerberos Token Profile); curl and the like carry it in the HTTP header. Both
+        // land on the same acceptor.
+        byte[]? bytes = null;
+        var where = "header";
+        if (kerberosToken != null)
+        {
+            bytes = kerberosToken.GssFramed ? kerberosToken.Token : KerberosAcceptor.FrameApReq(kerberosToken.Token).ToArray();
+            where = kerberosToken.GssFramed ? "message (GSS)" : "message (bare AP-REQ)";
+        }
+        else if (Request.Headers.TryGetValue("Authorization", out var header)
             && header.ToString().StartsWith("Negotiate ", StringComparison.OrdinalIgnoreCase))
         {
-            if (!allowKerberos || tenantId == null)
-                return (null, Fault("Kerberos authentication is not enabled for this CA.", messageId, "auth_mode"));
-
-            byte[] bytes;
             try
             {
                 bytes = Convert.FromBase64String(header.ToString()["Negotiate ".Length..].Trim());
@@ -182,12 +247,19 @@ public class MsaeController(
             {
                 return (null, Fault("The Negotiate header is not base64.", messageId, "auth_failed"));
             }
+        }
 
+        if (bytes != null)
+        {
+            if (!allowKerberos || tenantId == null)
+                return (null, Fault("Kerberos authentication is not enabled for this CA.", messageId, "auth_mode"));
+
+            Log.Information("MSAE: Kerberos token ({Bytes} bytes, {Where}) from {Ip} for CA {CaLabel}", bytes.Length, where, SourceIp, caLabel);
             var result = await kerberos.AcceptAsync(bytes, tenantId.Value, HttpContext.RequestAborted);
             if (!result.Accepted)
             {
-                Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}",
-                    result.Refusal, result.Realm, result.ServicePrincipal, SourceIp, caLabel);
+                Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}: {Detail}",
+                    result.Refusal, result.Realm, result.ServicePrincipal, SourceIp, caLabel, result.Detail);
                 await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
                     success: false, errorMessage: $"Kerberos token refused: {result.Refusal}", tenantId: tenantId,
                     callerPrincipal: result.Realm != null ? $"krb:?@{result.Realm}" : "krb:?", realm: result.Realm, authMethod: "Kerberos");
@@ -211,8 +283,30 @@ public class MsaeController(
         else if (allowKerberos)
         {
             // HTTP's own handshake: the client obtains a ticket and repeats the request.
+            //
+            // The challenge is deliberately bare: status line, WWW-Authenticate, nothing else.
+            // An ApiController's StatusCodeResult would attach a problem+json body, and the
+            // pipeline would attach a CSRF cookie; a real IIS Negotiate challenge carries
+            // neither, and a strict client (WWSAPI) may not drain them before retrying.
+            //
+            // The attempt is recorded on the MSAE audit tab rather than only in the log, because
+            // a challenge that is never answered is otherwise invisible: the operator sees no
+            // enrollment and no refusal, and cannot tell a silent client from a broken binding.
+            var headers = string.Join(",", Request.Headers.Keys);
+            await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
+                success: false, errorMessage: Truncate($"No credential presented; challenged with Negotiate. Request headers: {headers}", 500),
+                tenantId: tenantId, callerPrincipal: null, realm: null, authMethod: "None");
+
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
             Response.Headers.WWWAuthenticate = "Negotiate";
-            return (null, StatusCode(StatusCodes.Status401Unauthorized));
+            Response.ContentLength = 0;
+            Response.Headers.Remove("Set-Cookie");
+            Response.OnStarting(state =>
+            {
+                ((HttpResponse)state).Headers.Remove("Set-Cookie");
+                return Task.CompletedTask;
+            }, Response);
+            return (null, new EmptyResult());
         }
         else
         {

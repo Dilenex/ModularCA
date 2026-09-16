@@ -103,7 +103,10 @@ public class XcepPolicyService(
         var mayEnroll = await principalAuthorizer.MayEnrollAsync(caller.ActingAsUsername, ca.Id);
         var cesUri = $"{config.Https.GetPublicHttpsBaseUrl()}/msae/{ca.Label}/ces";
         const int caReference = 0;
-        var cas = new[] { new XcepMessages.PolicyCa(caReference, cesUri, caDer, mayEnroll) };
+        // The engine authenticates to CES the way the policy tells it to. A caller that arrived
+        // with a ticket keeps using it; a username caller is told to send its UsernameToken.
+        var cesAuth = caller.Kerberos != null ? XcepMessages.AuthKerberos : XcepMessages.AuthUsernamePassword;
+        var cas = new[] { new XcepMessages.PolicyCa(caReference, cesUri, caDer, mayEnroll, cesAuth) };
 
         var offered = await db.CertificateTemplates.AsNoTracking()
             .Include(t => t.SigningProfile)

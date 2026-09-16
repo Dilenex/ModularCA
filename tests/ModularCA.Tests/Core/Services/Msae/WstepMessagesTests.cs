@@ -378,4 +378,27 @@ public class WstepMessagesTests
         var parsed = WstepMessages.ParseIssueRequest(RstEnvelope(Convert.ToBase64String(SamplePkcs10()), null, null));
         Assert.Null(parsed.UsernameToken);
     }
+
+    [Fact]
+    public void The_kerberos_token_is_read_from_the_security_header_only()
+    {
+        const string wsse = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
+        var bytes = new byte[] { 0x60, 0x05, 1, 2, 3, 4, 5 };
+        var b64 = Convert.ToBase64String(bytes);
+        string Envelope(string valueType, string bodyToken) => $@"<s:Envelope xmlns:s='http://www.w3.org/2003/05/soap-envelope' xmlns:o='{wsse}'>
+  <s:Header><o:Security><o:BinarySecurityToken ValueType='{valueType}' EncodingType='x#Base64Binary'>{b64}</o:BinarySecurityToken></o:Security></s:Header>
+  <s:Body><o:BinarySecurityToken ValueType='http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10'>{bodyToken}</o:BinarySecurityToken></s:Body>
+</s:Envelope>";
+
+        var gss = WstepMessages.ReadKerberosToken(XDocument.Parse(Envelope("http://docs.oasis-open.org/wss/oasis-wss-kerberos-token-profile-1.1#GSS_Kerberosv5_AP_REQ", "QUJD")));
+        Assert.NotNull(gss);
+        Assert.True(gss!.GssFramed);
+        Assert.Equal(bytes, gss.Token);
+
+        var bare = WstepMessages.ReadKerberosToken(XDocument.Parse(Envelope("http://docs.oasis-open.org/wss/oasis-wss-kerberos-token-profile-1.1#Kerberosv5_AP_REQ", "QUJD")));
+        Assert.False(bare!.GssFramed);
+
+        // A PKCS#10 token in the body is never taken for a Kerberos token, and a header without one yields null.
+        Assert.Null(WstepMessages.ReadKerberosToken(XDocument.Parse(Envelope("x#SomethingElse", b64))));
+    }
 }

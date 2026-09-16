@@ -268,7 +268,7 @@ public class XcepPolicyServiceTests
     private static KerberosCaller KerberosCallerFor(string principal) => new(
         principal, "CORP.LAB.TEST", principal.EndsWith('$'),
         new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),
-        ReadOnlyMemory<byte>.Empty);
+        ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty);
 
     [Fact]
     public async Task A_kerberos_caller_is_offered_ca_built_subjects_and_autoenrollment_a_credential_caller_is_not()
@@ -283,6 +283,9 @@ public class XcepPolicyServiceTests
         Assert.Contains("subjectNameFlags>1<", XcepMessages.BuildGetPoliciesResponse(credential, null));
 
         var kerberos = await h.Service.GetPoliciesAsync("lab", MsaeCaller.FromKerberos(KerberosCallerFor("WS-042$")));
+        Assert.Equal(XcepMessages.AuthKerberos, Assert.Single(kerberos.Cas).ClientAuthentication);
+        Assert.Equal(XcepMessages.AuthUsernamePassword, Assert.Single(credential.Cas).ClientAuthentication);
+        Assert.Contains("clientAuthentication>2<", XcepMessages.BuildGetPoliciesResponse(kerberos, null));
         var built = Assert.Single(kerberos.Templates);
         Assert.True(built.AutoEnroll);
         Assert.True(built.CaBuiltSubject);

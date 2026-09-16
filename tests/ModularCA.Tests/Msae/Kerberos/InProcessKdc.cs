@@ -67,6 +67,21 @@ public sealed class InProcessKdc
         return apReq.EncodeGssApi().ToArray();
     }
 
+    /// <summary>
+    /// Like <see cref="ServiceTicketAsync"/>, but keeps the client's session context so a test can
+    /// hand it the server's AP-REP and have the client verify mutual authentication.
+    /// </summary>
+    public async Task<(byte[] Token, ApplicationSessionContext Context)> ServiceTicketContextAsync(string name, string password)
+    {
+        var config = Krb5Config.Default();
+        config.Defaults.DefaultRealm = Realm;
+        config.Defaults.DnsLookupKdc = false;
+        using var client = new KerberosClient(config, null, new IKerberosTransport[] { new InProcessTransport(_kdc) }) { CacheInMemory = true, CacheServiceTickets = false };
+        await client.Authenticate(new KerberosPasswordCredential(name, password, Realm));
+        var context = await client.GetServiceTicket(new RequestServiceTicket { ServicePrincipalName = ServicePrincipal, ApOptions = ApOptions.MutualRequired });
+        return (context.ApReq.EncodeGssApi().ToArray(), context);
+    }
+
     private KerberosKey Key(string account, string password, SaltType saltType)
         => new(password, new PrincipalName(PrincipalNameType.NT_PRINCIPAL, Realm, new[] { account }), etype: EncryptionType.AES256_CTS_HMAC_SHA1_96, saltType: saltType);
 

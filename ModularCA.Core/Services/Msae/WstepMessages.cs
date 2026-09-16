@@ -80,10 +80,21 @@ public static class WstepMessages
         string? MessageId,
         string? RequestId,
         bool FromCmc,
-        WstepUsernameToken? UsernameToken = null);
+        WstepUsernameToken? UsernameToken = null,
+        WstepKerberosToken? KerberosToken = null);
 
     /// <summary>A WS-Security <c>UsernameToken</c> carrying a clear-text password.</summary>
     public sealed record WstepUsernameToken(string Username, string Password);
+
+    /// <summary>
+    /// A WS-Security Kerberos token (Kerberos Token Profile 1.1): the client's AP-REQ as a
+    /// <c>BinarySecurityToken</c> in the <c>Security</c> header. This is how the Windows
+    /// enrollment engine authenticates when its policy server is set to Kerberos: at the message
+    /// level, not with an HTTP Negotiate header.
+    /// </summary>
+    /// <param name="Token">The decoded token bytes.</param>
+    /// <param name="GssFramed">True for <c>#GSS_Kerberosv5_AP_REQ</c> (RFC 1964 context token); false for a bare <c>#Kerberosv5_AP_REQ</c>.</param>
+    public sealed record WstepKerberosToken(byte[] Token, bool GssFramed);
 
     /// <summary>Raised when a SOAP body is not a usable enrollment request.</summary>
     public sealed class WstepParseException(string message) : Exception(message);
@@ -116,7 +127,7 @@ public static class WstepMessages
         var requestId = doc.Descendants(XName.Get("RequestID", Enrollment)).FirstOrDefault()?.Value?.Trim();
 
         return new WstepIssueRequest(pkcs10, ReadMessageId(doc), EmptyToNull(requestId), fromCmc,
-            ReadUsernameToken(doc));
+            ReadUsernameToken(doc), ReadKerberosToken(doc));
     }
 
     /// <summary>
@@ -174,6 +185,37 @@ public static class WstepMessages
             return null;
 
         return new WstepUsernameToken(username, password);
+    }
+
+    /// <summary>
+    /// The Kerberos token in the <c>wsse:Security</c> header, or null. Only tokens inside the
+    /// Security header count, so the PKCS#10 and CMC tokens in the body are never mistaken for
+    /// one. The ValueType decides whether the bytes are GSS-API framed.
+    /// </summary>
+    public static WstepKerberosToken? ReadKerberosToken(XDocument doc)
+    {
+        foreach (var security in doc.Descendants(XName.Get("Security", Wsse)))
+        {
+            foreach (var token in security.Descendants(XName.Get("BinarySecurityToken", Wsse)))
+            {
+                var valueType = (string?)token.Attribute("ValueType") ?? string.Empty;
+                if (valueType.IndexOf("Kerberosv5_AP_REQ", StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+                var text = string.Concat(token.Value.Where(c => !char.IsWhiteSpace(c)));
+                if (text.Length == 0) continue;
+                try
+                {
+                    var bytes = Convert.FromBase64String(text);
+                    var gss = valueType.IndexOf("GSS_", StringComparison.OrdinalIgnoreCase) >= 0;
+                    return new WstepKerberosToken(bytes, gss);
+                }
+                catch (FormatException)
+                {
+                    throw new WstepParseException("The Kerberos BinarySecurityToken is not base64.");
+                }
+            }
+        }
+        return null;
     }
 
     /// <summary>
