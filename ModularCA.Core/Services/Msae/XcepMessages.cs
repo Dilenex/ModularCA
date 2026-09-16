@@ -52,10 +52,26 @@ public static class XcepMessages
 
     // Template flag bits the response carries (MS-CRTD).
     private const int SubjectNameFlagEnrolleeSuppliesSubject = 0x00000001;
+    // CA-built subjects (MS-CRTD msPKI-Certificate-Name-Flag): the CA names the certificate from the
+    // caller's Kerberos identity and the client sends no subject of its own.
+    private const int SubjectNameFlagRequireCommonName = 0x40000000;
+    private const int SubjectNameFlagRequireDnsAsCn = 0x10000000;
+    private const int SubjectNameFlagAltRequireDns = 0x08000000;
+    private const int SubjectNameFlagAltRequireUpn = 0x02000000;
     private const int GeneralFlagMachineType = 0x00000040;
     private const int PrivateKeyFlagExportable = 0x00000010;
     private const int EnrollmentFlagAutoEnrollment = 0x00000020;
     private const int KeySpecKeyExchange = 1;
+
+    /// <summary>
+    /// The subject name flags a template advertises: enrollee-supplied for a credential caller,
+    /// CA-built from the DNS name (machines) or the common name plus UPN (users) for a caller
+    /// whose identity the CA knows. Windows then sends no subject and expects the CA's.
+    /// </summary>
+    internal static int SubjectNameFlags(PolicyTemplate template)
+        => !template.CaBuiltSubject ? SubjectNameFlagEnrolleeSuppliesSubject
+            : template.MachineType ? SubjectNameFlagRequireDnsAsCn | SubjectNameFlagAltRequireDns
+            : SubjectNameFlagRequireCommonName | SubjectNameFlagAltRequireUpn;
 
     /// <summary>A parsed <c>GetPolicies</c> request.</summary>
     /// <param name="MessageId">The client's <c>wsa:MessageID</c>, echoed as <c>RelatesTo</c>, or null.</param>
@@ -88,6 +104,7 @@ public static class XcepMessages
         long RenewalSeconds,
         bool Enroll,
         bool AutoEnroll,
+        bool CaBuiltSubject,
         int MinimalKeyLength,
         bool MachineType,
         bool ExportableKey,
@@ -239,7 +256,7 @@ public static class XcepMessages
                 new XElement(x + "minorRevision", template.MinorVersion)),
             Nil(x + "supersededPolicies"),
             new XElement(x + "privateKeyFlags", privateKeyFlags),
-            new XElement(x + "subjectNameFlags", SubjectNameFlagEnrolleeSuppliesSubject),
+            new XElement(x + "subjectNameFlags", SubjectNameFlags(template)),
             new XElement(x + "enrollmentFlags", enrollmentFlags),
             new XElement(x + "generalFlags", generalFlags),
             // MS-XCEP 3.1.4.1.3.1: a schema-3 template names its hash algorithm here; for schema 1

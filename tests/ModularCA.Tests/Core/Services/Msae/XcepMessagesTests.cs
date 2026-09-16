@@ -47,7 +47,7 @@ public class XcepMessagesTests
             new XcepMessages.PolicyTemplate(
                 Name: "LabDevice", Oid: "2.25.100", MajorVersion: 100, MinorVersion: 3,
                 ValiditySeconds: 31_536_000, RenewalSeconds: 6_307_200,
-                Enroll: enroll, AutoEnroll: false, MinimalKeyLength: 2048, MachineType: true, ExportableKey: false,
+                Enroll: enroll, AutoEnroll: false, CaBuiltSubject: false, MinimalKeyLength: 2048, MachineType: true, ExportableKey: false,
                 HashAlgorithmOid: "2.16.840.1.101.3.4.2.1", HashAlgorithmName: "sha256", PublicKeyAlgorithmOid: "1.2.840.113549.1.1.1", PublicKeyAlgorithmName: "RSA",
                 Extensions:
                 [
@@ -58,7 +58,7 @@ public class XcepMessagesTests
             new XcepMessages.PolicyTemplate(
                 Name: "LabUser", Oid: "2.25.200", MajorVersion: 100, MinorVersion: 0,
                 ValiditySeconds: 7_776_000, RenewalSeconds: 1_555_200,
-                Enroll: enroll, AutoEnroll: false, MinimalKeyLength: 3072, MachineType: false, ExportableKey: false,
+                Enroll: enroll, AutoEnroll: false, CaBuiltSubject: false, MinimalKeyLength: 3072, MachineType: false, ExportableKey: false,
                 HashAlgorithmOid: "2.16.840.1.101.3.4.2.1", HashAlgorithmName: "sha256", PublicKeyAlgorithmOid: "1.2.840.113549.1.1.1", PublicKeyAlgorithmName: "RSA",
                 Extensions: [new XcepMessages.PolicyExtension("2.5.29.37", "Enhanced Key Usage", false, [0x30, 0x00])],
                 CaReferenceIds: [0]),

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -83,6 +83,8 @@ public class AdminProtocolConfigController(
                 c.AcmeAllowPrivateAddressValidation,
                 // OCSP
                 c.OcspSignResponses,
+                c.MsaeAllowUsernameToken,
+                c.MsaeAllowKerberos,
             })
             .ToListAsync();
         return Ok(configs);
@@ -171,6 +173,17 @@ public class AdminProtocolConfigController(
         if (request.AcmeAllowedChallengeTypes != null) config.AcmeAllowedChallengeTypes = request.AcmeAllowedChallengeTypes;
         if (request.AcmeAllowPrivateAddressValidation.HasValue) config.AcmeAllowPrivateAddressValidation = request.AcmeAllowPrivateAddressValidation.Value;
         if (request.OcspSignResponses.HasValue) config.OcspSignResponses = request.OcspSignResponses.Value;
+        if (request.MsaeAllowUsernameToken.HasValue) config.MsaeAllowUsernameToken = request.MsaeAllowUsernameToken.Value;
+        if (request.MsaeAllowKerberos.HasValue)
+        {
+            // Kerberos is only meaningful with a forest to accept tickets from; refusing here keeps
+            // the switch from silently producing 401 challenges no client can answer.
+            if (request.MsaeAllowKerberos.Value && !await _db.KerberosRealms.AnyAsync(r => r.TenantId == ca.TenantId && r.IsEnabled))
+                return BadRequest(new { error = "Kerberos needs an enabled realm binding on this tenant. Add one on the tenant page first." });
+            config.MsaeAllowKerberos = request.MsaeAllowKerberos.Value;
+        }
+        if (string.Equals(normalizedProtocol, "MSAE", StringComparison.OrdinalIgnoreCase) && !config.MsaeAllowUsernameToken && !config.MsaeAllowKerberos)
+            return BadRequest(new { error = "At least one MSAE authentication method must stay enabled." });
 
         await _db.SaveChangesAsync();
 
@@ -215,4 +228,9 @@ public class ProtocolConfigUpdateRequest
     public bool? AcmeAllowPrivateAddressValidation { get; set; }
     // OCSP
     public bool? OcspSignResponses { get; set; }
+
+    /// <summary>MSAE: accept UsernameToken and Basic credentials. Null leaves the setting unchanged.</summary>
+    public bool? MsaeAllowUsernameToken { get; set; }
+    /// <summary>MSAE: accept Kerberos tickets from the tenant's bound forests. Needs an enabled realm binding.</summary>
+    public bool? MsaeAllowKerberos { get; set; }
 }

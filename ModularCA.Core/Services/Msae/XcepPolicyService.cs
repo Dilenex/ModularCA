@@ -19,10 +19,14 @@ public interface IXcepPolicyService
 {
     /// <summary>
     /// Builds the policy set for <paramref name="caLabel"/> (or the default CA) as seen by
-    /// <paramref name="callerUsername"/>, whose enrollment permission is reported in the result.
+    /// <paramref name="caller"/>, whose enrollment permission is reported in the result.
     /// </summary>
     /// <exception cref="MsaeEnrollmentException">MSAE is not enabled on the CA.</exception>
-    Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, string callerUsername);
+    Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller);
+
+    /// <summary>The policy set as seen by a caller that signed in with a username.</summary>
+    Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, string callerUsername)
+        => GetPoliciesAsync(caLabel, MsaeCaller.Credential(callerUsername));
 }
 
 /// <summary>
@@ -71,10 +75,14 @@ public class XcepPolicyService(
     private const string ExtendedKeyUsageOid = "2.5.29.37";
     private const string ApplicationPoliciesOid = "1.3.6.1.4.1.311.21.10";
 
+    /// <summary>The policy set as seen by a caller that signed in with a username.</summary>
+    public Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, string callerUsername)
+        => GetPoliciesAsync(caLabel, MsaeCaller.Credential(callerUsername));
+
     /// <inheritdoc />
-    public async Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, string callerUsername)
+    public async Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(callerUsername);
+        ArgumentNullException.ThrowIfNull(caller);
 
         ResolvedCaContext context;
         try
@@ -92,7 +100,7 @@ public class XcepPolicyService(
             ?? throw new InvalidOperationException($"CA '{ca.Label}' has no certificate row.");
         var caDer = CertificateUtil.ParseFromPem(caCertificate.Pem).GetEncoded();
 
-        var mayEnroll = await principalAuthorizer.MayEnrollAsync(callerUsername, ca.Id);
+        var mayEnroll = await principalAuthorizer.MayEnrollAsync(caller.ActingAsUsername, ca.Id);
         var cesUri = $"{config.Https.GetPublicHttpsBaseUrl()}/msae/{ca.Label}/ces";
         const int caReference = 0;
         var cas = new[] { new XcepMessages.PolicyCa(caReference, cesUri, caDer, mayEnroll) };
@@ -106,14 +114,14 @@ public class XcepPolicyService(
         var templates = new List<XcepMessages.PolicyTemplate>();
         foreach (var template in offered)
         {
-            var policy = await ProjectAsync(template, mayEnroll, caReference);
+            var policy = await ProjectAsync(template, mayEnroll, caReference, identityBuilt: caller.Kerberos != null);
             if (policy != null) templates.Add(policy);
         }
 
         return new XcepMessages.PolicySet(ca.Id, $"{ca.Name} (ModularCA)", NextUpdateHours, cas, templates);
     }
 
-    private async Task<XcepMessages.PolicyTemplate?> ProjectAsync(CertificateTemplateEntity template, bool mayEnroll, int caReference)
+    private async Task<XcepMessages.PolicyTemplate?> ProjectAsync(CertificateTemplateEntity template, bool mayEnroll, int caReference, bool identityBuilt)
     {
         var profile = await profileResolution.ResolveCertProfileAsync(template.CertProfileId);
 
@@ -168,7 +176,10 @@ public class XcepPolicyService(
             ValiditySeconds: validitySeconds,
             RenewalSeconds: renewalSeconds,
             Enroll: mayEnroll,
-            AutoEnroll: false,
+            // Autoenrollment has no subject to give, so it is offered only when the CA builds
+            // the subject from the caller's Kerberos identity.
+            AutoEnroll: identityBuilt,
+            CaBuiltSubject: identityBuilt,
             MinimalKeyLength: MinimalRsaKeyLength(profile.AllowedKeySizes),
             MachineType: template.MsaeMachineType,
             ExportableKey: false,

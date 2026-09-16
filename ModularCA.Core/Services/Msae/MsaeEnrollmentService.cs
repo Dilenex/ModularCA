@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Core.Services.Msae.Kerberos;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.X509;
 
@@ -16,11 +17,11 @@ namespace ModularCA.Core.Services.Msae;
 public interface IMsaeEnrollmentService
 {
     /// <summary>
-    /// Enrolls <paramref name="pkcs10Der"/> on behalf of <paramref name="callerUsername"/> and
+    /// Enrolls <paramref name="pkcs10Der"/> on behalf of <paramref name="caller"/> and
     /// returns the issued certificate and its chain as a certs-only PKCS#7 (DER).
     /// </summary>
     /// <param name="pkcs10Der">The DER-encoded PKCS#10 from the request's BinarySecurityToken.</param>
-    /// <param name="callerUsername">The username the credential service verified. Never null or blank.</param>
+    /// <param name="caller">Who is asking and as whom they act; see <see cref="MsaeCaller"/>.</param>
     /// <param name="sourceIp">Caller address, for the audit record.</param>
     /// <param name="caLabel">CA label from the route, or null for the default CA.</param>
     /// <exception cref="MsaeEnrollmentException">
@@ -28,7 +29,11 @@ public interface IMsaeEnrollmentService
     /// refusal, disabled protocol, malformed CSR. Anything else propagates and is reported to the
     /// client generically.
     /// </exception>
-    Task<byte[]> EnrollAsync(byte[] pkcs10Der, string callerUsername, string? sourceIp, string? caLabel);
+    Task<byte[]> EnrollAsync(byte[] pkcs10Der, MsaeCaller caller, string? sourceIp, string? caLabel);
+
+    /// <summary>Enrolls on behalf of a caller that signed in with a username.</summary>
+    Task<byte[]> EnrollAsync(byte[] pkcs10Der, string callerUsername, string? sourceIp, string? caLabel)
+        => EnrollAsync(pkcs10Der, MsaeCaller.Credential(callerUsername), sourceIp, caLabel);
 }
 
 /// <summary>
@@ -84,13 +89,17 @@ public class MsaeEnrollmentService(
     /// <summary>Audit operation recorded for a refused request.</summary>
     public const string RejectOperation = "EnrollRejected";
 
+    /// <summary>Enrolls on behalf of a caller that signed in with a username.</summary>
+    public Task<byte[]> EnrollAsync(byte[] pkcs10Der, string callerUsername, string? sourceIp, string? caLabel)
+        => EnrollAsync(pkcs10Der, MsaeCaller.Credential(callerUsername), sourceIp, caLabel);
+
     /// <inheritdoc />
-    public async Task<byte[]> EnrollAsync(byte[] pkcs10Der, string callerUsername, string? sourceIp, string? caLabel)
+    public async Task<byte[]> EnrollAsync(byte[] pkcs10Der, MsaeCaller caller, string? sourceIp, string? caLabel)
     {
         ArgumentNullException.ThrowIfNull(pkcs10Der);
         if (pkcs10Der.Length == 0)
             throw new ArgumentException("PKCS#10 is empty.", nameof(pkcs10Der));
-        ArgumentException.ThrowIfNullOrWhiteSpace(callerUsername);
+        ArgumentNullException.ThrowIfNull(caller);
 
         var csrPem = CertificateUtil.ConvertDerToPem(pkcs10Der, "CERTIFICATE REQUEST");
 
@@ -101,16 +110,16 @@ public class MsaeEnrollmentService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "MSAE request from {Username} carried an unreadable PKCS#10.", callerUsername);
+            logger.LogWarning(ex, "MSAE request from {Caller} carried an unreadable PKCS#10.", caller.AuditPrincipal);
             var reason = "The request does not contain a readable PKCS#10.";
             await protocolAudit.LogMsaeAsync(RejectOperation, null, null, null, null, null, caLabel, sourceIp,
-                success: false, errorMessage: reason, callerPrincipal: Principal(callerUsername));
+                success: false, errorMessage: reason, callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
             throw new MsaeEnrollmentException(reason);
         }
 
         // Which CA and profiles: the named template if there is one, else the CA's MSAE defaults.
         var template = MsaeCsrTemplate.TryRead(pkcs10Der);
-        var audit = new AuditContext(callerUsername, sourceIp, parsedCsr, template?.Name ?? template?.Oid);
+        var audit = new AuditContext(caller, sourceIp, parsedCsr, template?.Name ?? template?.Oid);
         var (context, resolvedTemplateName) = await ResolveContextAsync(template, caLabel, audit);
         if (resolvedTemplateName != null)
             audit = audit with { TemplateName = resolvedTemplateName };
@@ -118,7 +127,7 @@ public class MsaeEnrollmentService(
         // The membership check runs against the CA the request actually resolved to, which for a
         // template request may differ from the route label; the two are reconciled above.
         var (allowed, authError) = await enrollmentAuth.ValidateAsync(
-            Protocol, context.Ca.Label, csrPem, clientCert: null, isAuthenticated: true, callerUsername);
+            Protocol, context.Ca.Label, csrPem, clientCert: null, isAuthenticated: true, caller.ActingAsUsername);
         if (!allowed)
             throw await RefuseAsync(audit, context.Ca, authError ?? "Enrollment not authorized.");
 
@@ -134,6 +143,11 @@ public class MsaeEnrollmentService(
 
         var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
         var subject = parsedCsr.SubjectName;
+
+        // A Kerberos caller's identity names the certificate; whatever the CSR carried is replaced.
+        // The request profile's naming rules still run below, so a profile can narrow, never widen.
+        if (caller.Kerberos is { } identity)
+            (subject, sanJson) = IdentitySubject(identity);
 
         if (context.RequestProfileId != null)
         {
@@ -184,14 +198,14 @@ public class MsaeEnrollmentService(
         await protocolAudit.LogMsaeAsync(EnrollOperation, subject, serial,
             parsedCsr.KeyAlgorithm, parsedCsr.KeySize, audit.TemplateName, context.Ca.Label, sourceIp,
             certificateAuthorityId: context.Ca.Id, tenantId: context.Ca.TenantId,
-            callerPrincipal: Principal(callerUsername));
+            callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
 
         return await BuildChainPkcs7Async(issued.Pem, signingProfile);
     }
 
     /// <summary>What every audit row for one request has in common.</summary>
     private sealed record AuditContext(
-        string CallerUsername, string? SourceIp, CertificateUtil.ParsedCsrInfo Csr, string? TemplateName);
+        MsaeCaller Caller, string? SourceIp, CertificateUtil.ParsedCsrInfo Csr, string? TemplateName);
 
     /// <summary>
     /// Chooses the CA and profiles for a request: by the named template when one is named, else
@@ -254,6 +268,18 @@ public class MsaeEnrollmentService(
     }
 
     /// <summary>
+    /// The subject and SAN a Kerberos identity yields: a machine is <c>CN=host.dns.domain</c>
+    /// with a matching dNSName; a user is <c>CN=name</c> with a UPN. The policy service
+    /// advertised exactly these through the template's subject name flags.
+    /// </summary>
+    internal static (string Subject, string SanJson) IdentitySubject(KerberosCaller identity)
+    {
+        if (identity.IsMachine)
+            return ($"CN={identity.DnsHostName}", JsonSerializer.Serialize(new[] { $"DNS:{identity.DnsHostName}" }));
+        return ($"CN={identity.Principal}", JsonSerializer.Serialize(new[] { $"{UpnSanEncoding.UpnPrefix}:{identity.Upn}" }));
+    }
+
+    /// <summary>
     /// Records a refusal on the MSAE audit tab and returns the exception to throw, so every
     /// refusal path reads as one line and none can forget the audit row.
     /// </summary>
@@ -264,11 +290,9 @@ public class MsaeEnrollmentService(
             audit.Csr.KeyAlgorithm, audit.Csr.KeySize, audit.TemplateName, ca?.Label ?? caLabel, audit.SourceIp,
             success: false, errorMessage: reason,
             certificateAuthorityId: ca?.Id, tenantId: ca?.TenantId,
-            callerPrincipal: Principal(audit.CallerUsername));
+            callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod);
         return new MsaeEnrollmentException(reason);
     }
-
-    private static string Principal(string username) => $"user:{username}";
 
     /// <summary>
     /// Wraps the issued leaf and its issuer chain, walked through the signing profile's issuer

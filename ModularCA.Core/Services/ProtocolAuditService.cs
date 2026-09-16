@@ -59,7 +59,7 @@ public class ProtocolAuditService : IProtocolAuditService
         string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
         string? sourceIp, bool success = true, string? errorMessage = null,
         Guid? certificateAuthorityId = null, Guid? tenantId = null,
-        string? callerPrincipal = null)
+        string? callerPrincipal = null, string? realm = null, string? authMethod = null)
     {
         if (!ShouldLog()) return;
         try
@@ -78,7 +78,9 @@ public class ProtocolAuditService : IProtocolAuditService
                 ErrorMessage = Truncate(errorMessage, 500),
                 CertificateAuthorityId = certificateAuthorityId,
                 TenantId = tenantId,
-                CallerPrincipal = Truncate(callerPrincipal, 255)
+                CallerPrincipal = Truncate(callerPrincipal, 255),
+                Realm = Truncate(realm, 255),
+                AuthMethod = Truncate(authMethod, 32),
             });
             await _auditDb.SaveChangesAsync();
         }

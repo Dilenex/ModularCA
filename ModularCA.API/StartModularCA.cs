@@ -1,4 +1,4 @@
-﻿using FluentValidation;
+using FluentValidation;
 using Fido2NetLib;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -898,6 +898,13 @@ builder.Services.AddScoped<ModularCA.Core.Services.Msae.IMsaeEnrollmentService,
                            ModularCA.Core.Services.Msae.MsaeEnrollmentService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.IXcepPolicyService,
                            ModularCA.Core.Services.Msae.XcepPolicyService>();
+// Kerberos for MSAE: realm bindings and keys, a replay cache over the distributed cache, and the
+// managed acceptor (Kerberos.NET) that validates tickets without the OS Kerberos stack.
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.IKerberosRealmKeyProvider>(sp =>
+    sp.GetRequiredService<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>());
+builder.Services.AddSingleton<Kerberos.NET.ITicketReplayValidator, ModularCA.API.Services.DistributedTicketReplayCache>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosAcceptor>();
 
 // Centralized CA Resolver Service
 builder.Services.AddScoped<ICaResolverService, CaResolverService>();

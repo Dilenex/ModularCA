@@ -56,6 +56,7 @@ public class AuditDbContext(DbContextOptions<AuditDbContext> options) : DbContex
         modelBuilder.Entity<AuditMsaeEntity>(entity =>
         {
             entity.HasIndex(a => a.Timestamp);
+            entity.HasIndex(a => a.Realm);
             entity.HasIndex(a => a.CertificateSerial);
             entity.HasIndex(a => a.SourceIp);
             entity.HasIndex(a => a.CaLabel);

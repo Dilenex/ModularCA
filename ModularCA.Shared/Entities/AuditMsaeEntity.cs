@@ -60,4 +60,12 @@ public class AuditMsaeEntity
     /// <summary>The authenticated caller, recorded as <c>user:{username}</c>.</summary>
     [MaxLength(255)]
     public string? CallerPrincipal { get; set; }
+
+    /// <summary>The Kerberos realm the caller's ticket came from; null for credential callers.</summary>
+    [MaxLength(255)]
+    public string? Realm { get; set; }
+
+    /// <summary>How the caller authenticated: <c>UsernameToken</c>, <c>Basic</c> or <c>Kerberos</c>.</summary>
+    [MaxLength(32)]
+    public string? AuthMethod { get; set; }
 }

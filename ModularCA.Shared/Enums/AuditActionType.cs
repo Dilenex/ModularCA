@@ -1,4 +1,4 @@
-﻿namespace ModularCA.Shared.Enums;
+namespace ModularCA.Shared.Enums;
 
 public static class AuditActionType
 {
@@ -278,4 +278,14 @@ public static class AuditActionType
     public const string BadgeCreated = "BadgeCreated";
     public const string BadgeUpdated = "BadgeUpdated";
     public const string BadgeDeleted = "BadgeDeleted";
+
+    // Kerberos realm bindings (Windows autoenrollment)
+    /// <summary>A forest was bound to a tenant. Details name the realm, SPN and enrollment user; never a key.</summary>
+    public const string KerberosRealmCreated = "KerberosRealmCreated";
+    public const string KerberosRealmUpdated = "KerberosRealmUpdated";
+    public const string KerberosRealmDisabled = "KerberosRealmDisabled";
+    public const string KerberosRealmDeleted = "KerberosRealmDeleted";
+    /// <summary>A key version was imported or derived. Details carry the version and types, never the key.</summary>
+    public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
+    public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
 }

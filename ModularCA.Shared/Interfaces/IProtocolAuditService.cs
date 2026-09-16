@@ -44,7 +44,7 @@ public interface IProtocolAuditService
         string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
         string? sourceIp, bool success = true, string? errorMessage = null,
         Guid? certificateAuthorityId = null, Guid? tenantId = null,
-        string? callerPrincipal = null);
+        string? callerPrincipal = null, string? realm = null, string? authMethod = null);
 
     /// <summary>
     /// Logs an ACME protocol event to the audit database.

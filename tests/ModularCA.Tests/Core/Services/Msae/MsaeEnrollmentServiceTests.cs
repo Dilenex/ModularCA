@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
 using ModularCA.Core.Services.Msae;
+using ModularCA.Core.Services.Msae.Kerberos;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
@@ -46,7 +47,8 @@ public class MsaeEnrollmentServiceTests
         public Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
             string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
             string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null,
+            string? realm = null, string? authMethod = null)
         {
             Entries.Add((operation, callerPrincipal, success, errorMessage, certificateAuthorityId, templateName, certSerial));
             return Task.CompletedTask;
@@ -455,5 +457,28 @@ public class MsaeEnrollmentServiceTests
         await Assert.ThrowsAsync<ArgumentException>(() => h.Service.EnrollAsync([], "svc-enroll", null, null));
         await Assert.ThrowsAsync<ArgumentException>(() => h.Service.EnrollAsync(Csr(), " ", null, null));
         Assert.Empty(h.Audit.Entries);
+    }
+
+    /// <summary>A caller from an accepted ticket of a forest bound to the lab tenant, with no keys (none are needed past acceptance).</summary>
+    private static KerberosCaller KerberosCallerFor(string principal) => new(
+        principal, "CORP.LAB.TEST", principal.EndsWith('$'),
+        new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),
+        ReadOnlyMemory<byte>.Empty);
+
+    [Fact]
+    public async Task A_kerberos_callers_identity_names_the_certificate_not_the_csr()
+    {
+        var machine = Build();
+        await machine.Service.EnrollAsync(Csr("CN=whatever-the-client-said"), MsaeCaller.FromKerberos(KerberosCallerFor("WS-042$")), "10.0.0.5", caLabel: null);
+        var request = Assert.Single(await machine.Db.CertificateRequests.ToListAsync());
+        Assert.Equal("CN=ws-042.corp.lab.test", request.Subject);
+        Assert.Contains("DNS:ws-042.corp.lab.test", request.SubjectAlternativeNames);
+        Assert.DoesNotContain("whatever", request.SubjectAlternativeNames);
+
+        var user = Build();
+        await user.Service.EnrollAsync(Csr("CN=whatever-the-client-said"), MsaeCaller.FromKerberos(KerberosCallerFor("alice")), null, caLabel: null);
+        var userRequest = Assert.Single(await user.Db.CertificateRequests.ToListAsync());
+        Assert.Equal("CN=alice", userRequest.Subject);
+        Assert.Contains("UPN:alice@corp.lab.test", userRequest.SubjectAlternativeNames);
     }
 }

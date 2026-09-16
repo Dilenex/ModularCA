@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
@@ -125,6 +125,10 @@ public class ModularCADbContext : DbContext
     /// <summary>Access badges: named subsets of a user's own grant sources a session can wear.</summary>
     public DbSet<AccessBadgeEntity> AccessBadges { get; set; }
     public DbSet<AccessBadgeSourceEntity> AccessBadgeSources { get; set; }
+
+    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
+    public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
+    public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
 
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
@@ -784,6 +788,30 @@ public class ModularCADbContext : DbContext
             entity.HasOne(e => e.Badge)
                   .WithMany(b => b.Sources)
                   .HasForeignKey(e => e.BadgeId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<KerberosRealmEntity>(entity =>
+        {
+            entity.HasIndex(e => e.Realm).IsUnique();
+            entity.HasIndex(e => e.TenantId);
+            entity.HasOne(e => e.Tenant)
+                  .WithMany()
+                  .HasForeignKey(e => e.TenantId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.EnrollmentUser)
+                  .WithMany()
+                  .HasForeignKey(e => e.EnrollmentUserId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<KerberosRealmKeyEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.RealmId, e.Kvno, e.EncryptionType }).IsUnique();
+            entity.Property(e => e.Source).HasConversion<string>().HasMaxLength(16);
+            entity.HasOne(e => e.Realm)
+                  .WithMany(r => r.Keys)
+                  .HasForeignKey(e => e.RealmId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
 

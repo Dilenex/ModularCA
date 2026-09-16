@@ -2,10 +2,14 @@ using System.Diagnostics;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Services;
 using ModularCA.Auth.Utils;
 using ModularCA.Core.Services;
 using ModularCA.Core.Services.Msae;
+using ModularCA.Core.Services.Msae.Kerberos;
+using ModularCA.Database;
+using ModularCA.Shared.Interfaces;
 using Serilog;
 
 namespace ModularCA.API.Controllers.v1.Msae;
@@ -24,17 +28,22 @@ namespace ModularCA.API.Controllers.v1.Msae;
 /// act, answer.
 /// </para>
 /// <para>
-/// Credentials are taken from the WS-Security <c>UsernameToken</c> in the SOAP header, which is
-/// what a Windows client configured for username authentication sends, or from an HTTP Basic
-/// header, which is what a hand-driven test sends. Both go through the same credential service
-/// as EST and the interactive login, so lockout, account state and audit apply.
+/// Three credentials are understood, and the CA's MSAE configuration says which are allowed.
+/// <b>Kerberos</b>: a client configured for Windows integrated authentication sends
+/// <c>Authorization: Negotiate</c>; the token is accepted by <see cref="KerberosAcceptor"/>
+/// against the tenant's realm bindings, without the operating system's Kerberos stack. A client
+/// that sends nothing is challenged with 401 so it obtains a ticket. <b>UsernameToken</b>: the
+/// WS-Security header a client configured for username authentication sends. <b>Basic</b>: what
+/// a hand-driven test sends. The last two go through the same credential service as EST and the
+/// interactive login, so lockout, account state and audit apply.
 /// </para>
 /// <para>
 /// Every refusal is a SOAP fault rather than a bare status code, because a WS-Trust client
 /// surfaces the fault reason to its operator and swallows a plain HTTP error. Client-caused
 /// faults (malformed envelope, bad credentials, refused policy) are coded <c>Sender</c>; server
 /// failures are coded <c>Receiver</c> with a generic reason. All are sent with HTTP 500, the
-/// only status a Windows client reads a fault from.
+/// only status a Windows client reads a fault from. The one exception is the Kerberos
+/// challenge, which is HTTP's own handshake and never reaches the SOAP layer.
 /// </para>
 /// </remarks>
 [ApiController]
@@ -45,7 +54,12 @@ namespace ModularCA.API.Controllers.v1.Msae;
 public class MsaeController(
     IMsaeEnrollmentService enrollment,
     IXcepPolicyService policy,
-    IProtocolCredentialService credentials) : ControllerBase
+    IProtocolCredentialService credentials,
+    ICaResolverService caResolver,
+    KerberosAcceptor kerberos,
+    KerberosRealmService realms,
+    IProtocolAuditService protocolAudit,
+    ModularCADbContext db) : ControllerBase
 {
     /// <summary>SOAP 1.2 media type, as WCF sends and expects it.</summary>
     public const string SoapContentType = "application/soap+xml; charset=utf-8";
@@ -72,12 +86,12 @@ public class MsaeController(
             return Fault(ex.Message, null, "parse");
         }
 
-        var (username, fault) = await AuthenticateAsync(request.UsernameToken, request.MessageId);
+        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.MessageId);
         if (fault != null) return fault;
 
         try
         {
-            var policies = await policy.GetPoliciesAsync(caLabel, username!);
+            var policies = await policy.GetPoliciesAsync(caLabel, caller!);
             RecordSuccess(stopwatch);
             return Content(XcepMessages.BuildGetPoliciesResponse(policies, request.MessageId), SoapContentType);
         }
@@ -87,7 +101,7 @@ public class MsaeController(
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "MSAE policy query failed for {Username}", username);
+            Log.Error(ex, "MSAE policy query failed for {Caller}", caller!.AuditPrincipal);
             return Fault(
                 "Policy query failed. Contact the administrator if the problem persists.",
                 request.MessageId, "internal", senderFault: false);
@@ -112,12 +126,12 @@ public class MsaeController(
             return Fault(ex.Message, null, "parse");
         }
 
-        var (username, fault) = await AuthenticateAsync(request.UsernameToken, request.MessageId);
+        var (caller, fault) = await AuthenticateAsync(caLabel, request.UsernameToken, request.MessageId);
         if (fault != null) return fault;
 
         try
         {
-            var pkcs7 = await enrollment.EnrollAsync(request.Pkcs10Der, username!, SourceIp, caLabel);
+            var pkcs7 = await enrollment.EnrollAsync(request.Pkcs10Der, caller!, SourceIp, caLabel);
             RecordSuccess(stopwatch);
             return Content(WstepMessages.BuildIssueResponse(pkcs7, request.MessageId, request.RequestId), SoapContentType);
         }
@@ -127,7 +141,7 @@ public class MsaeController(
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "MSAE enrollment failed for {Username}", username);
+            Log.Error(ex, "MSAE enrollment failed for {Caller}", caller!.AuditPrincipal);
             return Fault(
                 "Enrollment failed. Contact the administrator if the problem persists.",
                 request.MessageId, "internal", senderFault: false);
@@ -143,22 +157,62 @@ public class MsaeController(
     }
 
     /// <summary>
-    /// Verifies the caller: the envelope's UsernameToken when present, else an HTTP Basic header.
-    /// Returns the verified username, or the fault to send when there is no credential or it
-    /// does not verify.
+    /// Establishes the caller: a Kerberos ticket in the Authorization header, else the
+    /// envelope's UsernameToken, else an HTTP Basic header. Which of these the CA allows comes
+    /// from its MSAE configuration. Returns the caller, or the response to send instead: a SOAP
+    /// fault, or the 401 challenge that makes a Windows client fetch a ticket.
     /// </summary>
-    private async Task<(string? Username, IActionResult? Fault)> AuthenticateAsync(
-        WstepMessages.WstepUsernameToken? token, string? messageId)
+    private async Task<(MsaeCaller? Caller, IActionResult? Fault)> AuthenticateAsync(
+        string? caLabel, WstepMessages.WstepUsernameToken? token, string? messageId)
     {
-        string username, password;
+        var (allowKerberos, allowUsername, tenantId) = await AuthModesAsync(caLabel);
+
+        if (Request.Headers.TryGetValue("Authorization", out var header)
+            && header.ToString().StartsWith("Negotiate ", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!allowKerberos || tenantId == null)
+                return (null, Fault("Kerberos authentication is not enabled for this CA.", messageId, "auth_mode"));
+
+            byte[] bytes;
+            try
+            {
+                bytes = Convert.FromBase64String(header.ToString()["Negotiate ".Length..].Trim());
+            }
+            catch (FormatException)
+            {
+                return (null, Fault("The Negotiate header is not base64.", messageId, "auth_failed"));
+            }
+
+            var result = await kerberos.AcceptAsync(bytes, tenantId.Value, HttpContext.RequestAborted);
+            if (!result.Accepted)
+            {
+                Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}",
+                    result.Refusal, result.Realm, result.ServicePrincipal, SourceIp, caLabel);
+                await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
+                    success: false, errorMessage: $"Kerberos token refused: {result.Refusal}", tenantId: tenantId,
+                    callerPrincipal: result.Realm != null ? $"krb:?@{result.Realm}" : "krb:?", realm: result.Realm, authMethod: "Kerberos");
+                return (null, Fault("Authentication failed.", messageId, "auth_failed"));
+            }
+
+            await realms.TouchAsync(result.Caller!.Realm, HttpContext.RequestAborted);
+            return (MsaeCaller.FromKerberos(result.Caller), null);
+        }
+
+        string username, password, method;
         if (token != null)
         {
-            (username, password) = (token.Username, token.Password);
+            (username, password, method) = (token.Username, token.Password, "UsernameToken");
         }
-        else if (Request.Headers.TryGetValue("Authorization", out var header)
-            && BasicAuthHeader.TryParse(header.ToString(), out var basicUser, out var basicPassword))
+        else if (Request.Headers.TryGetValue("Authorization", out var basic)
+            && BasicAuthHeader.TryParse(basic.ToString(), out var basicUser, out var basicPassword))
         {
-            (username, password) = (basicUser, basicPassword);
+            (username, password, method) = (basicUser, basicPassword, "Basic");
+        }
+        else if (allowKerberos)
+        {
+            // HTTP's own handshake: the client obtains a ticket and repeats the request.
+            Response.Headers.WWWAuthenticate = "Negotiate";
+            return (null, StatusCode(StatusCodes.Status401Unauthorized));
         }
         else
         {
@@ -167,10 +221,37 @@ public class MsaeController(
                 messageId, "unauthenticated"));
         }
 
+        if (!allowUsername)
+            return (null, Fault("Username authentication is not enabled for this CA; use Windows integrated authentication.", messageId, "auth_mode"));
+
         var verified = await credentials.VerifyAsync(username, password, MsaeEnrollmentService.Protocol, SourceIp);
         if (verified == null)
             return (null, Fault("Authentication failed.", messageId, "auth_failed"));
-        return (verified, null);
+        return (MsaeCaller.Credential(verified, method), null);
+    }
+
+    /// <summary>
+    /// The CA's MSAE authentication modes and tenant. A CA that cannot be resolved (no label,
+    /// protocol off) reports username-only, so the request fails later with the resolver's own
+    /// message rather than a Kerberos challenge that could never succeed.
+    /// </summary>
+    private async Task<(bool AllowKerberos, bool AllowUsername, Guid? TenantId)> AuthModesAsync(string? caLabel)
+    {
+        try
+        {
+            var context = await caResolver.ResolveAsync(caLabel, MsaeEnrollmentService.Protocol);
+            var ca = context.Ca;
+            if (ca == null) return (false, true, null);
+            var config = await db.CaProtocolConfigs.AsNoTracking()
+                .Where(p => p.CaId == ca.Id && p.Protocol == MsaeEnrollmentService.Protocol)
+                .Select(p => new { p.MsaeAllowKerberos, p.MsaeAllowUsernameToken })
+                .FirstOrDefaultAsync();
+            return (config?.MsaeAllowKerberos ?? false, config?.MsaeAllowUsernameToken ?? true, ca.TenantId);
+        }
+        catch (InvalidOperationException)
+        {
+            return (false, true, null);
+        }
     }
 
     private static void RecordSuccess(Stopwatch stopwatch)

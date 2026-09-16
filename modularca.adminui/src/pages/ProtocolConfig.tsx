@@ -10,8 +10,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
 
-// MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). It has no protocol-specific fields yet;
-// enabling it and choosing profiles is the whole configuration.
+// MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
+// modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
+// on the tenant page.
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
 
@@ -212,6 +213,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         acmeAllowPrivateAddressValidation: false,
         // OCSP
         ocspSignResponses: true,
+        // MSAE
+        msaeAllowUsernameToken: true,
+        msaeAllowKerberos: false,
     });
 
     useEffect(() => {
@@ -230,6 +234,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 acmeAllowedChallengeTypes: config.acmeAllowedChallengeTypes || '',
                 acmeAllowPrivateAddressValidation: config.acmeAllowPrivateAddressValidation ?? false,
                 ocspSignResponses: config.ocspSignResponses ?? true,
+                msaeAllowUsernameToken: config.msaeAllowUsernameToken ?? true,
+                msaeAllowKerberos: config.msaeAllowKerberos ?? false,
             });
         } else {
             setForm({
@@ -241,6 +247,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 acmeRequireEab: false, acmeAllowedChallengeTypes: '',
                 acmeAllowPrivateAddressValidation: false,
                 ocspSignResponses: true,
+                msaeAllowUsernameToken: true, msaeAllowKerberos: false,
             });
         }
     }, [config]);
@@ -265,6 +272,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
             base.acmeAllowPrivateAddressValidation = form.acmeAllowPrivateAddressValidation;
         } else if (protocol === 'OCSP') {
             base.ocspSignResponses = form.ocspSignResponses;
+        } else if (protocol === 'MSAE') {
+            base.msaeAllowUsernameToken = form.msaeAllowUsernameToken;
+            base.msaeAllowKerberos = form.msaeAllowKerberos;
         }
         onSave(base);
     };
@@ -406,6 +416,16 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'OCSP' && (
                             <div className="space-y-2">
                                 <ToggleField size="md" labelSide="left" label="Sign Responses" description="Sign OCSP responses with the CA's OCSP responder key" checked={form.ocspSignResponses} onChange={(v) => setForm({ ...form, ocspSignResponses: v })} />
+                            </div>
+                        )}
+
+                        {protocol === 'MSAE' && (
+                            <div className="space-y-2">
+                                <ToggleField size="md" labelSide="left" label="Username authentication" description="Accept the WS-Security UsernameToken (and HTTP Basic) a client configured for username authentication sends" checked={form.msaeAllowUsernameToken} onChange={(v) => setForm({ ...form, msaeAllowUsernameToken: v })} />
+                                <ToggleField size="md" labelSide="left" label="Windows integrated authentication (Kerberos)" description="Accept tickets from the Active Directory forests bound to this CA's tenant, and challenge credential-less clients with 401. Needs a realm bound on the tenant page." checked={form.msaeAllowKerberos} onChange={(v) => setForm({ ...form, msaeAllowKerberos: v })} />
+                                {!form.msaeAllowUsernameToken && !form.msaeAllowKerberos && (
+                                    <p className="text-xs text-amber-700 dark:text-amber-400">At least one authentication method must stay enabled.</p>
+                                )}
                             </div>
                         )}
                     </div>

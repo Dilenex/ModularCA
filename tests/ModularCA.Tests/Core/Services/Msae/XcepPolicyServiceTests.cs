@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
 using ModularCA.Core.Services.Msae;
+using ModularCA.Core.Services.Msae.Kerberos;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -261,5 +262,31 @@ public class XcepPolicyServiceTests
     public void The_minimal_key_length_is_the_smallest_permitted_size_of_at_least_1024(string sizes, int expected)
     {
         Assert.Equal(expected, XcepPolicyService.MinimalRsaKeyLength(sizes));
+    }
+
+    /// <summary>A caller from an accepted ticket of a forest bound to the lab tenant, with no keys (none are needed past acceptance).</summary>
+    private static KerberosCaller KerberosCallerFor(string principal) => new(
+        principal, "CORP.LAB.TEST", principal.EndsWith('$'),
+        new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),
+        ReadOnlyMemory<byte>.Empty);
+
+    [Fact]
+    public async Task A_kerberos_caller_is_offered_ca_built_subjects_and_autoenrollment_a_credential_caller_is_not()
+    {
+        var h = Build();
+        h.AddTemplate("Device", h.DeviceProfile, "2.25.70");
+
+        var credential = await h.Service.GetPoliciesAsync("lab", "svc-enroll");
+        var offered = Assert.Single(credential.Templates);
+        Assert.False(offered.AutoEnroll);
+        Assert.False(offered.CaBuiltSubject);
+        Assert.Contains("subjectNameFlags>1<", XcepMessages.BuildGetPoliciesResponse(credential, null));
+
+        var kerberos = await h.Service.GetPoliciesAsync("lab", MsaeCaller.FromKerberos(KerberosCallerFor("WS-042$")));
+        var built = Assert.Single(kerberos.Templates);
+        Assert.True(built.AutoEnroll);
+        Assert.True(built.CaBuiltSubject);
+        // Machine template: DNS as CN plus dNSName SAN (0x10000000 | 0x08000000).
+        Assert.Contains($"subjectNameFlags>{0x18000000}<", XcepMessages.BuildGetPoliciesResponse(kerberos, null));
     }
 }

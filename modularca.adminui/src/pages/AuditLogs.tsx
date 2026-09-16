@@ -83,6 +83,11 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
             subjectOrIdentifiers,
             { key: 'serial', header: 'Serial', defaultWidth: 140, exportValue: (l) => l.certificateSerial || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.certificateSerial || '-'}</span> },
             { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.caLabel || '-'}</span> },
+            ...(tab === 'MSAE' ? [
+                { key: 'callerPrincipal', header: 'Caller', defaultWidth: 220, exportValue: (l: any) => l.callerPrincipal || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.callerPrincipal || '-'}</span> },
+                { key: 'realm', header: 'Realm', defaultWidth: 180, exportValue: (l: any) => l.realm || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.realm || '-'}</span> },
+                { key: 'authMethod', header: 'Auth', defaultWidth: 110, exportValue: (l: any) => l.authMethod || '', render: (l: any) => <span className="text-xs text-gray-600 dark:text-gray-400">{l.authMethod || '-'}</span> },
+            ] as DataTableColumn<any>[] : []),
         ];
     }
 

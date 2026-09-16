@@ -8,6 +8,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/UserQuorumPanel';
+import KerberosRealmsPanel from '../components/KerberosRealmsPanel';
 import { Tenant, CaQuotaRow, formatDate, numInput } from './TenantsAndQuotas';
 import { labelClass as labelCls } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
@@ -307,6 +308,8 @@ const TenantDetail: React.FC = () => {
                         <p className="text-xs text-red-700 dark:text-red-400">A CA quorum can't exceed its tenant's effective quorum ({quorum?.effective}). Fix the highlighted value to enable Save.</p>
                     )}
                 </div>
+
+                <KerberosRealmsPanel tenantId={t.id} tenantName={t.name} caLabels={cas.map((c: any) => c.caLabel || c.label || c.name).filter(Boolean)} />
 
                 <ConfirmModal
                     isOpen={!!confirm}

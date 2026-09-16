@@ -108,6 +108,14 @@ export const JwtIpBindingMode = {
 } as const;
 export type JwtIpBindingMode = (typeof JwtIpBindingMode)[keyof typeof JwtIpBindingMode];
 
+/** From `ModularCA.Shared/Enums/KerberosKeySource.cs`. */
+export const KerberosKeySource = {
+    Keytab: 'Keytab',
+    Password: 'Password',
+    Generated: 'Generated',
+} as const;
+export type KerberosKeySource = (typeof KerberosKeySource)[keyof typeof KerberosKeySource];
+
 /** From `ModularCA.Shared/Enums/RevocationReason.cs`. */
 export const RevocationReason = {
     Unspecified: 'Unspecified',
