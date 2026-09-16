@@ -4,6 +4,24 @@ All notable changes to ModularCA are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow
 semantic versioning: a new capability is a minor release, a fix is a patch.
 
+## [Unreleased]
+
+### Enrollment protocols
+
+- **Windows autoenrollment, first step.** A Certificate Enrollment Web Service endpoint
+  (MS-WSTEP over HTTPS) at `/api/v1/msae/{caLabel}/ces` answers a `RequestSecurityToken` with
+  the issued certificate and chain. Callers authenticate with a WS-Security UsernameToken or HTTP
+  Basic through the same credential service as EST, and must hold the enrollment capability on
+  the CA. The template a client names in its CSR selects a ModularCA certificate template; a
+  request naming none uses the CA's MSAE protocol configuration, which is enabled per CA on the
+  protocol configuration page. The policy service (MS-XCEP), Kerberos authentication, renewal
+  and pending requests are still to come.
+- MSAE is wired through the same surfaces as the other enrollment protocols: an `MSAE.Enabled`
+  feature flag (setup wizard and `bootstrap.yaml`, off by default) gating the paths, per-CA
+  protocol rows seeded at CA creation, its own audit table and tab (`AuditMsae`, with the
+  template the client named), IP whitelisting, rate limiting and the login-attempt budget for
+  HTTP Basic, the public portal's endpoint listing, and the API documentation.
+
 ## [0.1.0] — 2026-09-14
 
 First public release. ModularCA is a modular private certificate authority: a .NET 10 backend

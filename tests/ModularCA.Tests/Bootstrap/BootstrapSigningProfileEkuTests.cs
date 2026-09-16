@@ -81,7 +81,7 @@ public class BootstrapSigningProfileEkuTests
         // profiles seeded RequireApproval = false — that the operator never asked for.
         var text = Read(relativePath.Replace('/', Path.DirectorySeparatorChar));
 
-        foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP" })
+        foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP", "MSAE" })
         {
             var match = Regex.Match(text, $@"^\s*{protocol}:\s*(?<value>\w+)", RegexOptions.Multiline);
             Assert.True(match.Success, $"{protocol} not found in {relativePath}");

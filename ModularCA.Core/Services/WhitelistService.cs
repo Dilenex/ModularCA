@@ -578,7 +578,7 @@ public class WhitelistService : IWhitelistService
     /// </summary>
     private static readonly string[] SigningProtocols =
     {
-        "ACME", "SCEP", "EST", "CMP",
+        "ACME", "SCEP", "EST", "CMP", "MSAE",
     };
 
     /// <summary>

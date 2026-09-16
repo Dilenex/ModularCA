@@ -572,6 +572,7 @@ public class BootstrapModularCA
             new FeatureFlagEntity { Name = "EST.Enabled", Enabled = features.EST, Description = "Enable EST protocol endpoints" },
             new FeatureFlagEntity { Name = "SCEP.Enabled", Enabled = features.SCEP, Description = "Enable SCEP protocol endpoints" },
             new FeatureFlagEntity { Name = "CMP.Enabled", Enabled = features.CMP, Description = "Enable CMP protocol endpoints" },
+            new FeatureFlagEntity { Name = "MSAE.Enabled", Enabled = features.MSAE, Description = "Enable Windows autoenrollment (MSAE) endpoints" },
             new FeatureFlagEntity { Name = "Syslog.Enabled", Enabled = true, Description = "Enable syslog (RFC 5424) log forwarding", RequiresRestart = true },
             new FeatureFlagEntity { Name = "EventLog.Enabled", Enabled = true, Description = "Enable Windows Event Log sink (Windows only)", RequiresRestart = true },
             new FeatureFlagEntity { Name = "Metrics.Enabled", Enabled = true, Description = "Enable Prometheus metrics endpoint at /metrics" },

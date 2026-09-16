@@ -650,7 +650,7 @@ public class CaCreationService(
             var defaultCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => !cp.IsCaProfile);
             if (defaultCertProfile != null)
             {
-                foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP", "OCSP" })
+                foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" })
                 {
                     db.CaProtocolConfigs.Add(new CaProtocolConfigEntity
                     {

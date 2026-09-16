@@ -82,7 +82,7 @@ public class EstService : IEstService
         {
             // No signing profile or issuer configured — fall back to all trusted authorities
             var allCerts = _keystore.GetTrustedAuthorities();
-            return BuildCertsOnlyPkcs7(allCerts);
+            return Pkcs7Util.BuildCertsOnly(allCerts);
         }
 
         // Walk the issuer chain from the signing profile to collect only
@@ -104,7 +104,7 @@ public class EstService : IEstService
             issuerId = issuerEntity.SigningProfile?.IssuerId;
         }
 
-        return BuildCertsOnlyPkcs7(caCerts);
+        return Pkcs7Util.BuildCertsOnly(caCerts);
     }
 
     /// <summary>
@@ -855,36 +855,7 @@ public class EstService : IEstService
             }
         }
 
-        return BuildCertsOnlyPkcs7(certs);
+        return Pkcs7Util.BuildCertsOnly(certs);
     }
 
-    private static byte[] BuildCertsOnlyPkcs7(IList<X509Certificate> certificates)
-    {
-        // Build a degenerate SignedData (certs-only) per RFC 2315 / RFC 5652.
-        // SignedData ::= SEQUENCE {
-        //   version          INTEGER (1),
-        //   digestAlgorithms SET OF (empty),
-        //   contentInfo      ContentInfo { id-data, absent },
-        //   certificates [0] IMPLICIT SET OF Certificate,
-        //   signerInfos      SET OF (empty)
-        // }
-        var certAsn1 = new Asn1EncodableVector();
-        foreach (var cert in certificates)
-            certAsn1.Add(Asn1Object.FromByteArray(cert.GetEncoded()));
-
-        var signedData = new DerSequence(
-            new DerInteger(1),                                       // version
-            new DerSet(),                                            // digestAlgorithms (empty)
-            new DerSequence(new DerObjectIdentifier("1.2.840.113549.1.7.1")), // contentInfo (id-data)
-            new DerTaggedObject(false, 0, new DerSet(certAsn1)),     // certificates [0]
-            new DerSet()                                             // signerInfos (empty)
-        );
-
-        var contentInfo = new DerSequence(
-            new DerObjectIdentifier("1.2.840.113549.1.7.2"),         // id-signedData
-            new DerTaggedObject(true, 0, signedData)
-        );
-
-        return contentInfo.GetDerEncoded();
-    }
 }

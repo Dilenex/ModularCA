@@ -53,6 +53,9 @@ public class ProtocolRateLimitMiddleware
         { "PUBLIC_ENROLL", "/api/v1/public/enroll" },
         { "SCEP_SHORT", "/scep/" },
         { "CMP_SHORT", "/cmp/" },
+        // Windows autoenrollment (MS-WSTEP). Same long/short pairing as the others.
+        { "MSAE", "/api/v1/msae" },
+        { "MSAE_SHORT", "/msae/" },
         { "ACME", "/api/v1/acme" },
         { "OCSP", "/api/v1/public/ocsp" },
         { "OCSP_SHORT", "/ocsp" },
@@ -86,6 +89,8 @@ public class ProtocolRateLimitMiddleware
         { "PUBLIC_ENROLL", (30, 1) },
         { "SCEP_SHORT", (50, 1) },
         { "CMP_SHORT", (100, 1) },
+        { "MSAE", (100, 1) },
+        { "MSAE_SHORT", (100, 1) },
         { "ACME", (200, 1) },
         { "Integration", (60, 1) },
         { "CRL", (60, 1) },

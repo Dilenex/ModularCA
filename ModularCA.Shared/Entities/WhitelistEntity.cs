@@ -61,7 +61,7 @@ public class WhitelistEntity
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
-    /// Protocol identifier (e.g. "ACME", "EST", "SCEP", "CMP", "OCSP", "TSA")
+    /// Protocol identifier (e.g. "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP", "TSA")
     /// when <see cref="Scope"/> is <see cref="WhitelistScope.Protocol"/>.
     /// Null for all other scopes.
     /// </summary>

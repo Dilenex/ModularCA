@@ -209,6 +209,11 @@ public class AdminAuditController : ControllerBase
     public Task<IActionResult> GetAcmeAuditById(Guid id) =>
         GetProtocolAuditByIdAsync(_auditDb?.AuditAcme, id, a => a.CaLabel);
 
+    /// <summary>Returns a single MSAE audit entry by ID, CA-scope filtered like the list endpoint.</summary>
+    [HttpGet("msae/{id:guid}")]
+    public Task<IActionResult> GetMsaeAuditById(Guid id) =>
+        GetProtocolAuditByIdAsync(_auditDb?.AuditMsae, id, a => a.CaLabel);
+
     /// <summary>Returns a single network audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("network/{id:guid}")]
     public Task<IActionResult> GetNetworkAuditById(Guid id) =>
@@ -232,6 +237,36 @@ public class AdminAuditController : ControllerBase
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
         // Resolve caId to caLabel for filtering
+        var filterLabel = await ResolveCaLabelAsync(caId);
+        if (filterLabel != null)
+            query = query.Where(a => a.CaLabel == filterLabel);
+
+        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+
+        var total = await query.CountAsync();
+        var items = await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var totalPages = (int)Math.Ceiling((double)total / pageSize);
+        return Ok(new { total, totalPages, page, pageSize, items });
+    }
+
+    /// <summary>
+    /// Returns paginated MSAE (Windows autoenrollment) audit entries, optionally filtered by date
+    /// range and CA. Non-system users only see logs for CAs they have auditor-level access to.
+    /// </summary>
+    [HttpGet("msae")]
+    public async Task<IActionResult> GetMsaeAudit(
+        [FromQuery] DateTime? from, [FromQuery] DateTime? to,
+        [FromQuery] Guid? caId,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    {
+        if (_auditDb == null)
+            return StatusCode(503, new { error = "Audit database is not configured" });
+
+        var query = _auditDb.AuditMsae.AsQueryable();
+        if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
+        if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
+
         var filterLabel = await ResolveCaLabelAsync(caId);
         if (filterLabel != null)
             query = query.Where(a => a.CaLabel == filterLabel);

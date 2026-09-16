@@ -78,6 +78,8 @@ public class PublicCaCertController(
                         "CMP" => $"/cmp/{label}",
                         "ACME" => $"/acme/{label}/directory",
                         "OCSP" => $"/ocsp/ca/{label}",
+                        // The CES URL a Windows client is pointed at (Group Policy or certreq -config).
+                        "MSAE" => $"/msae/{label}/ces",
                         _ => (string?)null
                     }
                 })

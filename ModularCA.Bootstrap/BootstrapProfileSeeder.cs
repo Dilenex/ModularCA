@@ -490,14 +490,14 @@ public static class BootstrapProfileSeeder
     }
 
     /// <summary>
-    /// Seeds per-CA protocol configuration records (ACME, EST, SCEP, CMP, OCSP)
+    /// Seeds per-CA protocol configuration records (ACME, EST, SCEP, CMP, MSAE, OCSP)
     /// so the multi-CA routing infrastructure works out of the box after bootstrap.
     /// </summary>
     public static void SeedProtocolConfigs(ModularCADbContext db, CertificateAuthorityEntity ca,
         SigningProfileEntity signingProfile, CertProfileEntity certProfile,
         Dictionary<string, RequestProfileEntity>? requestProfiles = null)
     {
-        var protocols = new[] { "ACME", "EST", "SCEP", "CMP", "OCSP" };
+        var protocols = new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" };
         foreach (var protocol in protocols)
         {
             Guid? requestProfileId = null;
@@ -527,7 +527,7 @@ public static class BootstrapProfileSeeder
             db.CaProtocolConfigs.Add(config);
         }
         db.SaveChanges();
-        Console.WriteLine($"✓ Protocol configs seeded for CA '{ca.Name}' (ACME, EST, SCEP, CMP, OCSP).");
+        Console.WriteLine($"✓ Protocol configs seeded for CA '{ca.Name}' (ACME, EST, SCEP, CMP, MSAE, OCSP).");
     }
 
     /// <summary>
@@ -541,7 +541,7 @@ public static class BootstrapProfileSeeder
     /// </summary>
     public static void SeedSystemCaProtocolConfigs(ModularCADbContext db, CertificateAuthorityEntity systemCa)
     {
-        var protocols = new[] { "ACME", "EST", "SCEP", "CMP", "OCSP" };
+        var protocols = new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" };
         foreach (var protocol in protocols)
         {
             db.CaProtocolConfigs.Add(new CaProtocolConfigEntity

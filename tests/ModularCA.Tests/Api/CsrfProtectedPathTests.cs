@@ -69,6 +69,8 @@ public class CsrfProtectedPathTests
     [InlineData("/.well-known/est/my-ca/simpleenroll")]
     [InlineData("/cmp/my-ca")]
     [InlineData("/api/v1/acme/new-order")]
+    [InlineData("/msae/my-ca/ces")]
+    [InlineData("/api/v1/msae/my-ca/ces")]
     public void The_anonymous_protocol_surface_is_not_protected(string path)
     {
         // EST, CMP, SCEP and ACME clients are not browsers and carry no cookies. Requiring a

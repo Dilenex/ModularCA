@@ -7,6 +7,7 @@ export interface FeaturesData {
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;
+    enableMsae: boolean;
     apiCertSans: string;
     apiCertValidityYears: number;
     publicDomain: string;
@@ -19,7 +20,7 @@ interface FeaturesProps {
 }
 
 interface FeatureToggle {
-    key: keyof Pick<FeaturesData, 'enableCrl' | 'enableOcsp' | 'enableAcme' | 'enableEst' | 'enableScep' | 'enableCmp'>;
+    key: keyof Pick<FeaturesData, 'enableCrl' | 'enableOcsp' | 'enableAcme' | 'enableEst' | 'enableScep' | 'enableCmp' | 'enableMsae'>;
     label: string;
     acronym: string;
     description: string;
@@ -32,6 +33,7 @@ const featureToggles: FeatureToggle[] = [
     { key: 'enableEst', label: 'EST', acronym: 'EST', description: 'Enrollment over Secure Transport - Modern certificate enrollment protocol (RFC 7030)' },
     { key: 'enableScep', label: 'SCEP', acronym: 'SCEP', description: 'Simple Certificate Enrollment Protocol - Legacy device enrollment support' },
     { key: 'enableCmp', label: 'CMP', acronym: 'CMP', description: 'Certificate Management Protocol - Full lifecycle certificate management (RFC 4210)' },
+    { key: 'enableMsae', label: 'MSAE', acronym: 'MSAE', description: 'Windows autoenrollment - Certificate Enrollment Web Service (MS-WSTEP) for Group Policy and certreq clients' },
 ];
 
 const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {

@@ -9,7 +9,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
 
-const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP'];
+// MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). It has no protocol-specific fields yet;
+// enabling it and choosing profiles is the whole configuration.
+const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
 
 const ProtocolConfig: React.FC = () => {

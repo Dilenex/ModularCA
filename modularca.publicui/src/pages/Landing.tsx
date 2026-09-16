@@ -39,7 +39,7 @@ const Landing: React.FC = () => {
             <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">ModularCA</h1>
             <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
                 An open-source Certificate Authority providing automated certificate management
-                via ACME, EST, SCEP, and CMP protocols.
+                via ACME, EST, SCEP, CMP, and Windows autoenrollment (MSAE) protocols.
             </p>
         </div>
 

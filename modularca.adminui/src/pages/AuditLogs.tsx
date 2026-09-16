@@ -26,7 +26,7 @@ function formatIdentifiers(raw: any): string {
     return s;
 }
 
-const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'Network'] as const;
+const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'MSAE', 'Network'] as const;
 type Tab = typeof TABS[number];
 
 type Category = 'general' | 'protocol' | 'network';

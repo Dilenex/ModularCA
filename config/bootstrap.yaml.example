@@ -35,6 +35,7 @@ Features:
   EST: false
   SCEP: false
   CMP: false
+  MSAE: false
 
 HttpsApi:
   CN: "ModularCA API"

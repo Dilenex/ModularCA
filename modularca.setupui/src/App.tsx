@@ -129,6 +129,7 @@ const initialData: WizardData = {
         enableEst: false,
         enableScep: false,
         enableCmp: false,
+        enableMsae: false,
         maxFailedLoginAttempts: 5,
         lockoutMinutes: 15,
         jwtExpirationMinutes: 30,

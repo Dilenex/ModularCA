@@ -21,7 +21,7 @@ public class CaProtocolConfigEntity
     public virtual CertificateAuthorityEntity Ca { get; set; } = default!;
 
     /// <summary>
-    /// Protocol identifier: "EST", "SCEP", "CMP", "ACME", "OCSP".
+    /// Protocol identifier: "EST", "SCEP", "CMP", "ACME", "OCSP", "MSAE".
     /// </summary>
     [Required]
     [MaxLength(20)]

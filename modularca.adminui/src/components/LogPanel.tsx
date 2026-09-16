@@ -45,12 +45,13 @@ const LogPanel: React.FC = () => {
         setLoading(true);
         try {
             // Network audit is intentionally NOT fetched — those events are excluded from this panel.
-            const [general, est, scep, cmp, acme] = await Promise.all([
+            const [general, est, scep, cmp, acme, msae] = await Promise.all([
                 apiGet<any>('/api/v1/admin/audit?pageSize=50').catch(() => ({ items: [] })),
                 apiGet<any>('/api/v1/admin/audit/est?pageSize=50').catch(() => ({ items: [] })),
                 apiGet<any>('/api/v1/admin/audit/scep?pageSize=50').catch(() => ({ items: [] })),
                 apiGet<any>('/api/v1/admin/audit/cmp?pageSize=50').catch(() => ({ items: [] })),
                 apiGet<any>('/api/v1/admin/audit/acme?pageSize=50').catch(() => ({ items: [] })),
+                apiGet<any>('/api/v1/admin/audit/msae?pageSize=50').catch(() => ({ items: [] })),
             ]);
 
             const tagged = [
@@ -59,6 +60,7 @@ const LogPanel: React.FC = () => {
                 ...(scep.items || []).map((l: any) => ({ ...l, _source: 'SCEP', _action: l.operation, _actor: l.subjectDN })),
                 ...(cmp.items || []).map((l: any) => ({ ...l, _source: 'CMP', _action: l.messageType || l.operation, _actor: l.subjectDN })),
                 ...(acme.items || []).map((l: any) => ({ ...l, _source: 'ACME', _action: l.operation, _actor: l.subjectDN || (l.accountId ? `acct:${l.accountId.substring(0, 8)}` : '') })),
+                ...(msae.items || []).map((l: any) => ({ ...l, _source: 'MSAE', _action: l.operation, _actor: l.subjectDN || l.callerPrincipal })),
             ];
 
             tagged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());

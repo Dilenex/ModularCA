@@ -69,7 +69,7 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// Retention policy. Controls the scheduled
         /// <c>AuditRetentionJob</c> which batches deletes past-due rows from the
-        /// AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditNetwork tables.
+        /// AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditMsae/AuditNetwork tables.
         /// </summary>
         public AuditRetentionConfig Retention { get; set; } = new();
 
@@ -96,7 +96,7 @@ namespace ModularCA.Shared.Models.Config
     /// <summary>
     /// Audit retention policy. Default cadence is daily at 03:00 UTC.
     /// Separate windows for the "general" tables (AuditLogs, AuditEst, AuditScep,
-    /// AuditCmp, AuditAcme) and the much noisier AuditNetwork table.
+    /// AuditCmp, AuditAcme, AuditMsae) and the much noisier AuditNetwork table.
     /// </summary>
     public class AuditRetentionConfig
     {
@@ -109,7 +109,7 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>
         /// Retention window in days for the "general" audit tables (AuditLogs,
-        /// AuditEst, AuditScep, AuditCmp, AuditAcme). Default 365 days keeps a
+        /// AuditEst, AuditScep, AuditCmp, AuditAcme, AuditMsae). Default 365 days keeps a
         /// full year of forensics online while still bounding disk. Set to 0 to
         /// disable retention for these tables without touching the job itself.
         /// </summary>

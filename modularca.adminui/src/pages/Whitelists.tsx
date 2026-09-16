@@ -28,7 +28,7 @@ interface Whitelist {
 type WhitelistScope = Whitelist['scope'];
 
 const SCOPES: WhitelistScope[] = ['System', 'Setup', 'Admin', 'Auth', 'Api', 'ShortUrl', 'Ca', 'Protocol'];
-const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'OCSP', 'TSA', 'CRL', 'CA'];
+const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'MSAE', 'OCSP', 'TSA', 'CRL', 'CA'];
 
 /// <summary>
 /// Validates a single CIDR string. Accepts IPv4 (optionally with /prefix)

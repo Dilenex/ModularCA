@@ -890,6 +890,10 @@ builder.Services.AddScoped<IScepService, ScepService>();
 // CMP Protocol Service
 builder.Services.AddScoped<ICmpService, CmpService>();
 
+// MSAE (Windows autoenrollment, MS-WSTEP) enrollment pipeline
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.IMsaeEnrollmentService,
+                           ModularCA.Core.Services.Msae.MsaeEnrollmentService>();
+
 // Centralized CA Resolver Service
 builder.Services.AddScoped<ICaResolverService, CaResolverService>();
 
@@ -1336,7 +1340,7 @@ builder.Services.AddScoped<ISchedulerJob, BackupCreationJob>(sp => sp.GetRequire
 builder.Services.AddScoped<BackupVerificationJob>();
 builder.Services.AddScoped<ISchedulerJob, BackupVerificationJob>(sp => sp.GetRequiredService<BackupVerificationJob>());
 // Scheduled audit-retention job (chunked DELETE + optional gzip
-// archive) across AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditNetwork.
+// archive) across AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditMsae/AuditNetwork.
 builder.Services.AddScoped<AuditRetentionJob>();
 builder.Services.AddScoped<ISchedulerJob, AuditRetentionJob>(sp => sp.GetRequiredService<AuditRetentionJob>());
 builder.Services.AddScoped<ICertHealthScoreService, CertHealthScoreService>();

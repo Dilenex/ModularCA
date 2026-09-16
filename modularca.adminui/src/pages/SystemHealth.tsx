@@ -309,7 +309,7 @@ const SchedulerStatusCard: React.FC = () => {
 
 /* ─── Protocol Activity Card ─── */
 const ProtocolActivityCard: React.FC = () => {
-    const [counts, setCounts] = useState<{ est: number; scep: number; cmp: number; acme: number } | null>(null);
+    const [counts, setCounts] = useState<{ est: number; scep: number; cmp: number; acme: number; msae: number } | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -326,8 +326,9 @@ const ProtocolActivityCard: React.FC = () => {
             fetchCount('/api/v1/admin/audit/scep?pageSize=100'),
             fetchCount('/api/v1/admin/audit/cmp?pageSize=100'),
             fetchCount('/api/v1/admin/audit/acme?pageSize=100'),
-        ]).then(([est, scep, cmp, acme]) => {
-            setCounts({ est, scep, cmp, acme });
+            fetchCount('/api/v1/admin/audit/msae?pageSize=100'),
+        ]).then(([est, scep, cmp, acme, msae]) => {
+            setCounts({ est, scep, cmp, acme, msae });
         }).finally(() => setLoading(false));
     }, []);
 
@@ -336,6 +337,7 @@ const ProtocolActivityCard: React.FC = () => {
         { label: 'SCEP', value: counts.scep, color: 'bg-indigo-900/50 text-indigo-300 border-indigo-700' },
         { label: 'CMP', value: counts.cmp, color: 'bg-teal-900/50 text-teal-300 border-teal-700' },
         { label: 'ACME', value: counts.acme, color: 'bg-cyan-900/50 text-cyan-300 border-cyan-700' },
+        { label: 'MSAE', value: counts.msae, color: 'bg-sky-900/50 text-sky-300 border-sky-700' },
     ] : [];
 
     return (
