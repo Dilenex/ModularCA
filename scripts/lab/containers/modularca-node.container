@@ -1,0 +1,18 @@
+# The node itself. Config and data are volumes; the image is the unchanged 0.2.0 dist.
+[Unit]
+Description=ModularCA node
+After=modularca-node-db.service
+Requires=modularca-node-db.service
+
+[Container]
+Image=localhost/modularca-node:0.2.0
+Pod=modularca-node.pod
+Volume=modularca-node-config:/opt/modularca/config:Z
+Volume=modularca-node-data:/var/lib/modularca:Z
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

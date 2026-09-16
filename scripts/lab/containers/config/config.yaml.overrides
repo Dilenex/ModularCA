@@ -1,0 +1,8 @@
+# The node's public identity. Merge into the config.yaml the bootstrap writes, or set before
+# bootstrap in a config.yaml built from config.yaml.example. These are the lines that matter:
+Https:
+  Mode: "SelfIssued"          # the node's TLS certificate comes from its own root and renews itself
+  ListenAddress: "0.0.0.0"    # inside the pod; the host only sees the published loopback ports
+  Port: 8443
+  PublicDomain: "ca.lab.msae.test"
+  PublicPort: 443             # URLs the policy service advertises carry no port

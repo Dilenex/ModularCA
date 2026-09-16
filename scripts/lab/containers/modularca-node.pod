@@ -1,0 +1,13 @@
+# One tenant node: the application container and its own database, sharing a pod so the
+# database is reachable on localhost inside and reachable from nowhere else. nginx on the host
+# reaches the node through the two published loopback ports, which is what the SNI map names.
+#
+#   install to ~/.config/containers/systemd/ (rootless) or /etc/containers/systemd/ (root)
+#   systemctl --user daemon-reload && systemctl --user start modularca-node-pod
+[Pod]
+PodName=modularca-node
+PublishPort=127.0.0.1:18443:8443
+PublishPort=127.0.0.1:18080:8080
+
+[Install]
+WantedBy=default.target

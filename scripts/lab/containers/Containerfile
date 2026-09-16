@@ -1,0 +1,31 @@
+# A ModularCA node from the linux dist, unchanged: the same binary, the same layout under
+# /opt/modularca, the same config directory. Build with the tarball beside this file:
+#
+#   podman build --build-arg DIST=modularca-0.2.0-linux-x64-staging.tar.gz -t modularca-node:0.2.0 .
+#
+# The image carries no configuration and no data. /opt/modularca/config and /var/lib/modularca
+# are volumes; the entrypoint bootstraps the node headlessly the first time it starts with a
+# bootstrap.yaml and a setup-database.yaml in the config volume, and just starts it afterwards.
+FROM docker.io/library/debian:12-slim
+
+ARG DIST
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system modularca && useradd --system --gid modularca --home-dir /opt/modularca --shell /usr/sbin/nologin modularca
+
+COPY ${DIST} /tmp/dist.tar.gz
+RUN mkdir -p /opt/modularca /var/lib/modularca \
+ && tar -xzf /tmp/dist.tar.gz --strip-components=1 -C /opt/modularca \
+ && rm /tmp/dist.tar.gz \
+ && chown -R modularca:modularca /opt/modularca /var/lib/modularca
+
+COPY entrypoint.sh /usr/local/bin/modularca-entrypoint
+RUN chmod +x /usr/local/bin/modularca-entrypoint
+
+USER modularca
+WORKDIR /opt/modularca
+ENV DOTNET_ENVIRONMENT=Production DOTNET_CONSOLE_ANSI_COLOR=false
+VOLUME ["/opt/modularca/config", "/var/lib/modularca"]
+EXPOSE 8443 8080
+ENTRYPOINT ["/usr/local/bin/modularca-entrypoint"]
