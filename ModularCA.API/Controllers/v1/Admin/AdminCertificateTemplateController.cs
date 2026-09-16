@@ -65,7 +65,15 @@ public class AdminCertificateTemplateController(
     [RequireStepUp(StepUpOps.CreateCertificateTemplate)]
     public async Task<IActionResult> Create([FromBody] CreateCertificateTemplateRequest request)
     {
-        var result = await templateService.CreateAsync(request);
+        CertificateTemplateDto result;
+        try
+        {
+            result = await templateService.CreateAsync(request);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync("CertificateTemplateCreated", currentUser.User?.Id, currentUser.User?.Username,
             "CertificateTemplate", result.Id.ToString(), new { request.Name },
@@ -80,7 +88,15 @@ public class AdminCertificateTemplateController(
     [RequireStepUp(StepUpOps.UpdateCertificateTemplate, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCertificateTemplateRequest request)
     {
-        var result = await templateService.UpdateAsync(id, request);
+        CertificateTemplateDto result;
+        try
+        {
+            result = await templateService.UpdateAsync(id, request);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync("CertificateTemplateUpdated", currentUser.User?.Id, currentUser.User?.Username,
             "CertificateTemplate", id.ToString(), request,

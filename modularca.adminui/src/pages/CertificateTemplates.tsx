@@ -26,6 +26,11 @@ interface CertificateTemplate {
     signingProfileName?: string;
     isEnabled: boolean;
     createdAt: string;
+    offeredToWindows?: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion?: number;
+    msaeMinorVersion?: number;
+    msaeMachineType?: boolean;
 }
 
 interface DropdownOption {
@@ -54,15 +59,15 @@ const X509TemplatesTab: React.FC = () => {
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
-    const [form, setForm] = useState({
+    const emptyForm = {
         name: '', description: '', caId: '', requestProfileId: '',
         certProfileId: '', signingProfileId: '', isEnabled: true,
-    });
+        // Windows autoenrollment (MSAE): offer the template through the policy service.
+        offerToWindows: false, msaeTemplateOid: '', msaeMachineType: true,
+    };
+    const [form, setForm] = useState(emptyForm);
 
-    const resetForm = () => setForm({
-        name: '', description: '', caId: '', requestProfileId: '',
-        certProfileId: '', signingProfileId: '', isEnabled: true,
-    });
+    const resetForm = () => setForm(emptyForm);
 
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
@@ -107,8 +112,10 @@ const X509TemplatesTab: React.FC = () => {
                 name: form.name, description: form.description || undefined,
                 caId: form.caId, certProfileId: form.certProfileId,
                 signingProfileId: form.signingProfileId, isEnabled: form.isEnabled,
+                offerToWindows: form.offerToWindows, msaeMachineType: form.msaeMachineType,
             };
             if (form.requestProfileId) body.requestProfileId = form.requestProfileId;
+            if (form.offerToWindows && form.msaeTemplateOid.trim()) body.msaeTemplateOid = form.msaeTemplateOid.trim();
             await apiPostWithMfa('/api/v1/admin/templates', body, requireStepUp, StepUpOps.CreateCertificateTemplate);
             setShowCreate(false);
             resetForm();
@@ -197,7 +204,31 @@ const X509TemplatesTab: React.FC = () => {
                                 className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
                             Enabled
                         </label>
+                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                            <input type="checkbox" checked={form.offerToWindows}
+                                onChange={(e) => setForm({ ...form, offerToWindows: e.target.checked })}
+                                className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                            Offer to Windows clients (MSAE)
+                        </label>
+                        {form.offerToWindows && (
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" checked={form.msaeMachineType}
+                                    onChange={(e) => setForm({ ...form, msaeMachineType: e.target.checked })}
+                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                Computer template (uncheck for a user template)
+                            </label>
+                        )}
                     </div>
+                    {form.offerToWindows && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label className={labelClass}>Template OID (optional)</label>
+                                <input type="text" value={form.msaeTemplateOid}
+                                    onChange={(e) => setForm({ ...form, msaeTemplateOid: e.target.value })}
+                                    className={inputClass} placeholder="Generated if blank; set to keep an AD CS template's OID" />
+                            </div>
+                        </div>
+                    )}
                     <button onClick={handleCreate}
                         disabled={creating || !form.name || !form.caId || !form.certProfileId || !form.signingProfileId}
                         className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
@@ -220,6 +251,7 @@ const X509TemplatesTab: React.FC = () => {
                                 <th className="px-4 py-3 text-left">CA Name</th>
                                 <th className="px-4 py-3 text-left">Cert Profile</th>
                                 <th className="px-4 py-3 text-left">Signing Profile</th>
+                                <th className="px-4 py-3 text-left">Windows</th>
                                 <th className="px-4 py-3 text-left">Enabled</th>
                                 <th className="px-4 py-3 text-right">Actions</th>
                             </tr>
@@ -237,6 +269,11 @@ const X509TemplatesTab: React.FC = () => {
                                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.caName || t.caId}</td>
                                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.certProfileName || t.certProfileId}</td>
                                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{t.signingProfileName || t.signingProfileId}</td>
+                                    <td className="px-4 py-3 text-xs">
+                                        {t.offeredToWindows
+                                            ? <StatusBadge status="active" label={t.msaeMachineType ? 'Computer' : 'User'} />
+                                            : <span className="text-gray-500">-</span>}
+                                    </td>
                                     <td className="px-4 py-3">
                                         <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} />
                                     </td>
@@ -271,6 +308,13 @@ const X509TemplatesTab: React.FC = () => {
                             <DetailField label="Request Profile" value={selectedTemplate.requestProfileName || selectedTemplate.requestProfileId || 'None'} />
                             <DetailField label="Cert Profile" value={selectedTemplate.certProfileName || selectedTemplate.certProfileId} />
                             <DetailField label="Signing Profile" value={selectedTemplate.signingProfileName || selectedTemplate.signingProfileId} />
+                            <DetailField label="Offered to Windows" value={selectedTemplate.offeredToWindows ? (selectedTemplate.msaeMachineType ? 'Yes, computer template' : 'Yes, user template') : 'No'} />
+                            {selectedTemplate.offeredToWindows && (
+                                <>
+                                    <DetailField label="Template OID" value={selectedTemplate.msaeTemplateOid || undefined} mono />
+                                    <DetailField label="Template Version" value={`${selectedTemplate.msaeMajorVersion ?? 100}.${selectedTemplate.msaeMinorVersion ?? 0}`} />
+                                </>
+                            )}
                             <div className="py-1">
                                 <span className="text-xs text-gray-600 dark:text-gray-400">Enabled</span>
                                 <div className="mt-1">
@@ -592,17 +636,10 @@ const SshTemplatesTab: React.FC = () => {
 
 /* ─── Certificate Templates Page ─── */
 //
-// INTERNAL NOTE — NOT WIRED INTO ISSUANCE (hidden from navigation as of 2026-06).
-// Templates are CRUD-only: no enrollment/ACME/SCEP/EST/CMP/SSH issuance path reads a template.
-// The backend resolver CaResolverService.ResolveByTemplateAsync(templateName) exists but has no
-// caller, and no issuance request accepts a templateId. This page is intentionally kept (reachable
-// by direct URL at /templates) but removed from the sidebar so operators aren't misled into
-// thinking a template governs issuance.
-//
-// RE-IMPLEMENT plan: add an optional templateId to the enrollment/issuance request paths (or have
-// CaProtocolConfig reference a template), call ResolveByTemplateAsync to expand it into the
-// CA + cert/signing/request profiles, then restore the nav entry in Layout.tsx. Until then the
-// banner below tells anyone who lands here that changes have no effect.
+// Templates are consumed by Windows autoenrollment (MSAE): a template offered to Windows is
+// advertised by the policy service (/msae/{ca}/cep) and issued from when a client's CSR names
+// it. ACME, EST, SCEP and CMP still issue from their per-CA protocol configuration, not from a
+// template; the note below says so, so nobody expects a template to govern those.
 //
 const CertificateTemplates: React.FC = () => {
     const [activeTab, setActiveTab] = useState<TemplateTab>('X.509 CA');
@@ -614,12 +651,11 @@ const CertificateTemplates: React.FC = () => {
                 Manage certificate templates that combine a CA, profiles, and settings into a reusable configuration.
             </p>
 
-            {/* Hidden-from-nav notice: templates are not yet consumed by any issuance path. */}
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/60 rounded-lg p-4 text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">Not yet active.</span> Certificate templates are not currently
-                consumed by any issuance or enrollment flow — creating or editing one has no effect on how
-                certificates are issued. This page is hidden from the navigation pending re-implementation that
-                wires templates into the issuance pipeline.
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700/60 rounded-lg p-4 text-sm text-blue-800 dark:text-blue-300">
+                <span className="font-semibold">Used by Windows autoenrollment.</span> A template offered to
+                Windows clients is advertised by the MSAE policy service and issued from when a client names it in
+                its request. ACME, EST, SCEP and CMP issue from each CA&apos;s protocol configuration and do not read
+                templates.
             </div>
 
             <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">

@@ -110,8 +110,10 @@ public class MsaeEnrollmentService(
 
         // Which CA and profiles: the named template if there is one, else the CA's MSAE defaults.
         var template = MsaeCsrTemplate.TryRead(pkcs10Der);
-        var audit = new AuditContext(callerUsername, sourceIp, parsedCsr, template?.Name);
-        var context = await ResolveContextAsync(template, caLabel, audit);
+        var audit = new AuditContext(callerUsername, sourceIp, parsedCsr, template?.Name ?? template?.Oid);
+        var (context, resolvedTemplateName) = await ResolveContextAsync(template, caLabel, audit);
+        if (resolvedTemplateName != null)
+            audit = audit with { TemplateName = resolvedTemplateName };
 
         // The membership check runs against the CA the request actually resolved to, which for a
         // template request may differ from the route label; the two are reconciled above.
@@ -180,7 +182,7 @@ public class MsaeEnrollmentService(
             .FirstOrDefaultAsync();
 
         await protocolAudit.LogMsaeAsync(EnrollOperation, subject, serial,
-            parsedCsr.KeyAlgorithm, parsedCsr.KeySize, template?.Name, context.Ca.Label, sourceIp,
+            parsedCsr.KeyAlgorithm, parsedCsr.KeySize, audit.TemplateName, context.Ca.Label, sourceIp,
             certificateAuthorityId: context.Ca.Id, tenantId: context.Ca.TenantId,
             callerPrincipal: Principal(callerUsername));
 
@@ -194,36 +196,54 @@ public class MsaeEnrollmentService(
     /// <summary>
     /// Chooses the CA and profiles for a request: by the named template when one is named, else
     /// by the CA's MSAE protocol configuration. Refuses a named template that does not exist,
-    /// and a template whose CA is not the one the route addressed.
+    /// and a template whose CA is not the one the route addressed. Returns the resolved
+    /// template's name, or null when the CA's defaults were used, so the audit row can carry it.
     /// </summary>
-    private async Task<ResolvedCaContext> ResolveContextAsync(
+    private async Task<(ResolvedCaContext Context, string? TemplateName)> ResolveContextAsync(
         MsaeCsrTemplate.TemplateReference? template, string? caLabel, AuditContext audit)
     {
-        if (template?.Name != null)
+        // A client that fetched policy names the template by the OID the policy service gave
+        // it; a hand-built request names it by name. The OID wins when both are present and it
+        // is known, because it is the identifier the policy service promised. An OID this CA
+        // never issued, with no name to fall back on, is refused.
+        var templateName = template?.Name;
+        if (template?.Oid != null)
+        {
+            var byOid = await db.CertificateTemplates.AsNoTracking()
+                .Where(t => t.MsaeTemplateOid == template.Oid)
+                .Select(t => t.Name)
+                .FirstOrDefaultAsync();
+            if (byOid != null)
+                templateName = byOid;
+            else if (templateName == null)
+                throw await RefuseAsync(audit, null, $"Certificate template OID '{template.Oid}' is not available.", caLabel);
+        }
+
+        if (templateName != null)
         {
             ResolvedCaContext byTemplate;
             try
             {
-                byTemplate = await caResolver.ResolveByTemplateAsync(template.Name);
+                byTemplate = await caResolver.ResolveByTemplateAsync(templateName);
             }
             catch (InvalidOperationException ex)
             {
-                logger.LogInformation("MSAE request named template {Template}, refused: {Reason}", template.Name, ex.Message);
-                throw await RefuseAsync(audit, null, $"Certificate template '{template.Name}' is not available.", caLabel);
+                logger.LogInformation("MSAE request named template {Template}, refused: {Reason}", templateName, ex.Message);
+                throw await RefuseAsync(audit, null, $"Certificate template '{templateName}' is not available.", caLabel);
             }
 
             if (!string.IsNullOrWhiteSpace(caLabel)
                 && !string.Equals(byTemplate.Ca.Label, caLabel, StringComparison.OrdinalIgnoreCase))
             {
                 throw await RefuseAsync(audit, byTemplate.Ca,
-                    $"Certificate template '{template.Name}' does not belong to CA '{caLabel}'.");
+                    $"Certificate template '{templateName}' does not belong to CA '{caLabel}'.");
             }
-            return byTemplate;
+            return (byTemplate, templateName);
         }
 
         try
         {
-            return await caResolver.ResolveAsync(caLabel, Protocol);
+            return (await caResolver.ResolveAsync(caLabel, Protocol), null);
         }
         catch (InvalidOperationException ex)
         {

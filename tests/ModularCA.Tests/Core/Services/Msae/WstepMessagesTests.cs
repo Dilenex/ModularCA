@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Xml.Linq;
 using ModularCA.Core.Services.Msae;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 
 namespace ModularCA.Tests.Core.Services.Msae;
@@ -65,7 +66,7 @@ public class WstepMessagesTests
         Assert.Equal(der, parsed.Pkcs10Der);
         Assert.Equal("urn:uuid:abc-123", parsed.MessageId);
         Assert.Equal("42", parsed.RequestId);
-        Assert.False(parsed.IsRenewal);
+        Assert.False(parsed.FromCmc);
         // The DER round-trips into a real CSR, so what the parser hands the issuer is enrollable.
         var csr = CertificateRequest.LoadSigningRequest(parsed.Pkcs10Der, HashAlgorithmName.SHA256);
         Assert.Equal("CN=device-01.example.test", csr.SubjectName.Name);
@@ -84,15 +85,48 @@ public class WstepMessagesTests
     }
 
     [Fact]
-    public void A_pkcs7_alongside_the_pkcs10_marks_a_renewal()
+    public void A_pkcs10_token_wins_over_a_pkcs7_beside_it()
     {
         var der = SamplePkcs10();
         var soap = RstEnvelope(Convert.ToBase64String(der), null, null,
             extraPkcs7B64: Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }));
 
         var parsed = WstepMessages.ParseIssueRequest(soap);
-        Assert.True(parsed.IsRenewal);
+        Assert.False(parsed.FromCmc);
         Assert.Equal(der, parsed.Pkcs10Der);
+    }
+
+    [Fact]
+    public void A_cmc_request_from_a_windows_client_unwraps_to_its_pkcs10()
+    {
+        // Captured from Get-Certificate on Windows 11 against a stand-in policy server: a
+        // #PKCS7 token holding a CMS SignedData over a PKIData, signed with the new key and
+        // identified by subject key identifier, with no certificate. This is what the
+        // autoenrollment engine sends, and it is not a bare PKCS#10.
+        var soap = RstEnvelope(CmcRequestsTests.WindowsCmcRequestBase64, null, null,
+            pkcs10ValueType: "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#PKCS7");
+
+        var parsed = WstepMessages.ParseIssueRequest(soap);
+
+        Assert.True(parsed.FromCmc);
+        var csr = CertificateRequest.LoadSigningRequest(parsed.Pkcs10Der, HashAlgorithmName.SHA256,
+            CertificateRequestLoadOptions.UnsafeLoadCertificateExtensions);
+        Assert.Equal("", csr.SubjectName.Name);   // the client left the subject for the CA to fill in
+        Assert.Contains(csr.CertificateExtensions, e => e.Oid?.Value == "1.3.6.1.4.1.311.21.7");
+    }
+
+    [Fact]
+    public void A_pkcs7_that_is_not_a_cmc_request_is_refused()
+    {
+        // A certs-only PKCS#7, the shape the server itself returns, carries no request.
+        using var cert = TestCertificates.CreateCa();
+        var certsOnly = ModularCA.Shared.Utils.Pkcs7Util.BuildCertsOnly(
+            [new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(cert.RawData)]);
+        var soap = RstEnvelope(Convert.ToBase64String(certsOnly), null, null,
+            pkcs10ValueType: "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#PKCS7");
+
+        var ex = Assert.Throws<WstepMessages.WstepParseException>(() => WstepMessages.ParseIssueRequest(soap));
+        Assert.Contains("PKIData", ex.Message);
     }
 
     [Fact]
@@ -167,12 +201,25 @@ public class WstepMessagesTests
         Assert.NotNull(doc.Descendants(t + "RequestSecurityTokenResponseCollection").SingleOrDefault());
         var b64 = Convert.ToBase64String(cert);
 
-        // Present in the top-level wst:BinarySecurityToken and inside RequestedSecurityToken.
-        var wstToken = doc.Descendants(t + "BinarySecurityToken").SingleOrDefault();
-        Assert.NotNull(wstToken);
-        Assert.Equal(b64, wstToken!.Value.Trim());
+        // Present as a wsse:BinarySecurityToken directly under the response and again inside
+        // RequestedSecurityToken, both with the EncodingType MS-WSTEP prescribes. certreq
+        // rejected a response whose direct token sat in the WS-Trust namespace with the
+        // WS-Security "#Base64Binary" encoding URI as WS_E_INVALID_FORMAT; this pins the fix.
+        var rstr = doc.Descendants(t + "RequestSecurityTokenResponse").Single();
+        var direct = Assert.Single(rstr.Elements(o + "BinarySecurityToken"));
+        Assert.Equal(b64, direct.Value.Trim());
+        Assert.Equal(WstepMessages.ResponseEncodingBase64, (string?)direct.Attribute("EncodingType"));
+        Assert.Equal(WstepMessages.Pkcs7ValueType, (string?)direct.Attribute("ValueType"));
+        Assert.Empty(doc.Descendants(t + "BinarySecurityToken"));
         var requested = doc.Descendants(t + "RequestedSecurityToken").Single();
-        Assert.Equal(b64, requested.Descendants(o + "BinarySecurityToken").Single().Value.Trim());
+        var inner = requested.Descendants(o + "BinarySecurityToken").Single();
+        Assert.Equal(b64, inner.Value.Trim());
+        Assert.Equal(WstepMessages.ResponseEncodingBase64, (string?)inner.Attribute("EncodingType"));
+
+        // Elements in the order Microsoft's CES emits them; a positional reader depends on it.
+        Assert.Equal(["TokenType", "DispositionMessage", "BinarySecurityToken", "RequestedSecurityToken", "RequestID"],
+            rstr.Elements().Select(el => el.Name.LocalName).ToArray());
+        Assert.Equal("en-US", (string?)doc.Descendants(e + "DispositionMessage").Single().Attribute(XNamespace.Xml + "lang"));
 
         // Correlation echoed, disposition stated, response action set.
         Assert.Equal("urn:uuid:abc-123", doc.Descendants(a + "RelatesTo").Single().Value);

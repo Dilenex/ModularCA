@@ -531,6 +531,9 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertificateTemplateEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
+            // A Windows client names a template by OID, so two templates must never share one.
+            // Nulls (templates not offered to Windows) are exempt from the uniqueness check.
+            entity.HasIndex(e => e.MsaeTemplateOid).IsUnique();
             entity.HasOne(e => e.Ca)
                   .WithMany()
                   .HasForeignKey(e => e.CaId)

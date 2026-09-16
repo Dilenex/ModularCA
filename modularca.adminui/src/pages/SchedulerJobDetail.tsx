@@ -16,7 +16,7 @@ import {
 } from '../api/scheduler';
 import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 
-const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'TlsRenewal']);
+const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
 const CRON_5_FIELD = /^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/;
 
 // Scheduler timestamps arrive as UTC instants without a trailing 'Z' (EF/NCrontab emit

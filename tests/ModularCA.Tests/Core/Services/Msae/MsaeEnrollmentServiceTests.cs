@@ -188,7 +188,7 @@ public class MsaeEnrollmentServiceTests
         };
     }
 
-    private static byte[] Csr(string subject = "CN=device-01.lab.test", string? templateName = null)
+    private static byte[] Csr(string subject = "CN=device-01.lab.test", string? templateName = null, string? templateOid = null)
     {
         using var key = RSA.Create(2048);
         var req = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -197,7 +197,80 @@ public class MsaeEnrollmentServiceTests
             req.CertificateExtensions.Add(new X509Extension(
                 new Oid(MsaeCsrTemplate.TemplateNameOid), new DerBmpString(templateName).GetDerEncoded(), false));
         }
+        if (templateOid != null)
+        {
+            // What a client that fetched policy sends: szOID_CERTIFICATE_TEMPLATE with OID and version.
+            req.CertificateExtensions.Add(new X509Extension(
+                new Oid(MsaeCsrTemplate.TemplateInfoOid),
+                new DerSequence(new DerObjectIdentifier(templateOid), new DerInteger(100), new DerInteger(0)).GetDerEncoded(),
+                false));
+        }
         return req.CreateSigningRequest();
+    }
+
+    private CertificateTemplateEntity AddTemplate(Harness h, string name, CertProfileEntity profile, string? oid = null, bool enabled = true)
+    {
+        var template = new CertificateTemplateEntity
+        {
+            Id = Guid.NewGuid(), Name = name, CaId = h.Ca.Id,
+            CertProfileId = profile.Id, SigningProfileId = h.Signing.Id, IsEnabled = enabled,
+            MsaeTemplateOid = oid,
+        };
+        h.Db.CertificateTemplates.Add(template);
+        h.Db.SaveChanges();
+        return template;
+    }
+
+    [Fact]
+    public async Task A_request_naming_a_template_by_oid_issues_from_that_template()
+    {
+        // The policy service hands a client the template's OID; the client puts it in its CSR.
+        var h = Build();
+        var templateProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Lab Device", ValidityPeriodMax = "P7D" };
+        h.Db.CertProfiles.Add(templateProfile);
+        AddTemplate(h, "LabDevice", templateProfile, oid: "2.25.4242");
+
+        await h.Service.EnrollAsync(Csr(templateOid: "2.25.4242"), "svc-enroll", null, caLabel: "lab");
+
+        var request = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal(templateProfile.Id, request.CertProfileId);
+        // Audited under the name the OID resolved to, not the bare OID.
+        Assert.Equal("LabDevice", Assert.Single(h.Audit.Entries).Template);
+    }
+
+    [Fact]
+    public async Task A_known_oid_wins_over_a_name_that_disagrees_with_it()
+    {
+        // The OID is the identifier the policy service promised; the name is informational.
+        var h = Build();
+        var byOidProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "By OID", ValidityPeriodMax = "P7D" };
+        var byNameProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "By Name", ValidityPeriodMax = "P7D" };
+        h.Db.CertProfiles.AddRange(byOidProfile, byNameProfile);
+        AddTemplate(h, "OidTemplate", byOidProfile, oid: "2.25.1");
+        AddTemplate(h, "NameTemplate", byNameProfile);
+
+        await h.Service.EnrollAsync(Csr(templateName: "NameTemplate", templateOid: "2.25.1"), "svc-enroll", null, null);
+
+        Assert.Equal(byOidProfile.Id, Assert.Single(await h.Db.CertificateRequests.ToListAsync()).CertProfileId);
+    }
+
+    [Fact]
+    public async Task An_unknown_oid_falls_back_to_the_name_and_is_refused_without_one()
+    {
+        var h = Build();
+        var profile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Named", ValidityPeriodMax = "P7D" };
+        h.Db.CertProfiles.Add(profile);
+        AddTemplate(h, "Named", profile);
+
+        // Unknown OID plus a known name: the name carries it.
+        await h.Service.EnrollAsync(Csr(templateName: "Named", templateOid: "2.25.999"), "svc-enroll", null, null);
+        Assert.Equal(profile.Id, Assert.Single(await h.Db.CertificateRequests.ToListAsync()).CertProfileId);
+
+        // Unknown OID alone: nothing to issue from, and a default would be the wrong answer.
+        var h2 = Build();
+        await AssertRefusedCleanly(h2,
+            () => h2.Service.EnrollAsync(Csr(templateOid: "2.25.999"), "svc-enroll", null, null),
+            "2.25.999");
     }
 
     private static X509Certificate2Collection Certificates(byte[] pkcs7)

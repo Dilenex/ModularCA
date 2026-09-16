@@ -93,6 +93,7 @@ public class CertificateTemplateService
             IsEnabled = request.IsEnabled
         };
 
+        ApplyWindowsOffer(entity, request);
         _db.CertificateTemplates.Add(entity);
         await _db.SaveChangesAsync();
 
@@ -115,6 +116,7 @@ public class CertificateTemplateService
         entity.CertProfileId = request.CertProfileId;
         entity.SigningProfileId = request.SigningProfileId;
         entity.IsEnabled = request.IsEnabled;
+        ApplyWindowsOffer(entity, request);
 
         await _db.SaveChangesAsync();
 
@@ -137,11 +139,41 @@ public class CertificateTemplateService
     }
 
     /// <summary>
+    /// Applies the Windows (MSAE) offer settings: an offered template carries an OID, generated
+    /// from its id unless one was supplied; a template not offered carries none. Throws
+    /// <see cref="ArgumentException"/> for an OID that is not dotted-decimal.
+    /// </summary>
+    private static void ApplyWindowsOffer(CertificateTemplateEntity entity, CreateCertificateTemplateRequest request)
+    {
+        entity.MsaeMajorVersion = request.MsaeMajorVersion;
+        entity.MsaeMinorVersion = request.MsaeMinorVersion;
+        entity.MsaeMachineType = request.MsaeMachineType;
+
+        if (!request.OfferToWindows)
+        {
+            entity.MsaeTemplateOid = null;
+            return;
+        }
+
+        var oid = string.IsNullOrWhiteSpace(request.MsaeTemplateOid)
+            ? entity.MsaeTemplateOid ?? Msae.MsaeTemplateOids.FromTemplateId(entity.Id)
+            : request.MsaeTemplateOid.Trim();
+        if (!Msae.MsaeTemplateOids.IsValid(oid))
+            throw new ArgumentException($"'{oid}' is not a valid object identifier (dotted decimal, e.g. 1.3.6.1.4.1.311.21.8.1).");
+        entity.MsaeTemplateOid = oid;
+    }
+
+    /// <summary>
     /// Maps a <see cref="CertificateTemplateEntity"/> to a <see cref="CertificateTemplateDto"/>
     /// with resolved navigation property names.
     /// </summary>
     private static CertificateTemplateDto MapToDto(CertificateTemplateEntity entity) => new()
     {
+        OfferedToWindows = entity.MsaeTemplateOid != null,
+        MsaeTemplateOid = entity.MsaeTemplateOid,
+        MsaeMajorVersion = entity.MsaeMajorVersion,
+        MsaeMinorVersion = entity.MsaeMinorVersion,
+        MsaeMachineType = entity.MsaeMachineType,
         Id = entity.Id,
         Name = entity.Name,
         Description = entity.Description,

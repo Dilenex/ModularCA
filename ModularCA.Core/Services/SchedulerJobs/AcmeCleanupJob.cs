@@ -1,7 +1,5 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
-using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
@@ -13,6 +11,7 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// job cancellation token through every downstream call.
 /// Also reconciles ACME challenges stuck in <c>Processing</c>
 /// past their timeout via <see cref="IAcmeChallengeService.ReconcileStuckChallengesAsync"/>.
+/// SCEP and CMP transaction sweeps live in <see cref="ProtocolCleanupJob"/>.
 ///
 /// Inherits <see cref="SingletonCronJob"/> so the base class owns past-due math against
 /// <c>Acme.CleanupSchedule</c>, missed-run policy, timeout enforcement, metrics, and
@@ -33,14 +32,12 @@ public class AcmeCleanupJob : SingletonCronJob
     private readonly IAcmeNonceService _nonceService;
     private readonly IAcmeChallengeService _challengeService;
     private readonly IAuditService _audit;
-    private readonly ModularCADbContext _db;
     private readonly SystemConfig _config;
 
     /// <summary>
     /// Initializes a new instance of <see cref="AcmeCleanupJob"/>. Takes the standard
     /// <see cref="SingletonCronJob"/> base dependencies plus the ACME-specific services
-    /// and DB context required to expire stale orders, sweep nonces, reconcile stuck
-    /// challenges, and clean up expired SCEP/CMP transaction rows.
+    /// required to expire stale orders, sweep nonces and reconcile stuck challenges.
     /// </summary>
     public AcmeCleanupJob(
         ILogger<AcmeCleanupJob> logger,
@@ -48,7 +45,6 @@ public class AcmeCleanupJob : SingletonCronJob
         IAcmeNonceService nonceService,
         IAcmeChallengeService challengeService,
         IAuditService audit,
-        ModularCADbContext db,
         SystemConfig config,
         IServiceProvider serviceProvider,
         SchedulerJobRunner runner)
@@ -59,7 +55,6 @@ public class AcmeCleanupJob : SingletonCronJob
         _nonceService = nonceService;
         _challengeService = challengeService;
         _audit = audit;
-        _db = db;
         _config = config;
     }
 
@@ -126,24 +121,9 @@ public class AcmeCleanupJob : SingletonCronJob
                 StuckChallenges = reconciledChallenges
             });
 
-        // Sweep stale SCEP transactions (>10 min) + CMP
-        // transactions (>1 hour). Hitchhikes on the ACME cleanup tick so we don't
-        // have to register a second scheduler job. Failures propagate to the runner
-        // so consecutive sweep failures escalate the same as any other tick failure.
-        var scepCutoff = TimeProvider.GetUtcNow().UtcDateTime;
-        var deletedScep = await _db.ScepTransactions
-            .Where(t => t.ExpiresAt < scepCutoff)
-            .ExecuteDeleteAsync(cancellationToken);
-        if (deletedScep > 0)
-            _logger.LogDebug("Swept {Count} expired SCEP transaction rows.", deletedScep);
-
-        var cmpCutoff = TimeProvider.GetUtcNow().UtcDateTime.AddHours(-1);
-        var deletedCmp = await _db.CmpTransactions
-            .Where(t => t.CreatedAt < cmpCutoff)
-            .ExecuteDeleteAsync(cancellationToken);
-        if (deletedCmp > 0)
-            _logger.LogDebug("Swept {Count} expired CMP transaction rows.", deletedCmp);
-
+        // The SCEP and CMP transaction sweeps that used to follow here moved to
+        // ProtocolCleanupJob: sitting after the early return above, they only ran when ACME
+        // itself had work, so a host without ACME traffic never swept them.
         _logger.LogInformation("ACME cleanup job completed.");
     }
 }

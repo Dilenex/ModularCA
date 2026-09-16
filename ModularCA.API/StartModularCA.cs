@@ -857,6 +857,9 @@ builder.Services.AddScoped<ICaaCheckService, CaaCheckService>();
 builder.Services.AddSingleton<IAcmeAccountRateLimiter, AcmeAccountRateLimiter>();
 builder.Services.AddScoped<AcmeCleanupJob>();
 builder.Services.AddScoped<ISchedulerJob, AcmeCleanupJob>(sp => sp.GetRequiredService<AcmeCleanupJob>());
+// Orphaned enrollment requests from every protocol, plus SCEP/CMP transaction sweeps.
+builder.Services.AddScoped<ProtocolCleanupJob>();
+builder.Services.AddScoped<ISchedulerJob, ProtocolCleanupJob>(sp => sp.GetRequiredService<ProtocolCleanupJob>());
 // The ACME http-01 validator must NOT auto-follow
 // redirects to arbitrary hosts. We disable the default auto-redirect behavior
 // here; AcmeChallengeService performs a single-hop, allow-listed redirect
@@ -893,6 +896,8 @@ builder.Services.AddScoped<ICmpService, CmpService>();
 // MSAE (Windows autoenrollment, MS-WSTEP) enrollment pipeline
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.IMsaeEnrollmentService,
                            ModularCA.Core.Services.Msae.MsaeEnrollmentService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Msae.IXcepPolicyService,
+                           ModularCA.Core.Services.Msae.XcepPolicyService>();
 
 // Centralized CA Resolver Service
 builder.Services.AddScoped<ICaResolverService, CaResolverService>();
@@ -2327,6 +2332,27 @@ if (!isSetupMode)
 // The middleware's pre-bootstrap fallback handles /setup/* via WhitelistDefaults
 // while the service stays cold. The post-bootstrap reload in BootstrapService flips
 // IsWarm = true once real credentials exist.
+// Flags introduced after this instance was bootstrapped have no row, so the settings page cannot
+// show them and the path gate treats them as off with no way to turn them on. Add them, disabled.
+if (!isSetupMode)
+{
+    try
+    {
+        using var flagScope = app.Services.CreateScope();
+        var flagDb = flagScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var added = await ModularCA.Core.Services.FeatureFlagBackfill.EnsureAsync(flagDb);
+        if (added.Count > 0)
+        {
+            flagScope.ServiceProvider.GetRequiredService<IFeatureFlagService>().InvalidateCache();
+            Console.WriteLine($"[STARTUP] Added feature flag(s) introduced by this version, disabled: {string.Join(", ", added)}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Feature flag backfill skipped: {ex.Message}");
+    }
+}
+
 if (!isSetupMode)
 {
     try

@@ -55,15 +55,9 @@ const navSections: NavSection[] = [
         items: [
             { name: 'Authorities', path: '/authorities/manage', icon: '\u26BF', requiredRoles: ADMIN_ONLY },
             { name: 'Profiles', path: '/profiles', icon: '\u2630', requiredRoles: ADMIN_OPERATOR },
-            // TEMPLATES HIDDEN \u2014 Certificate templates are CRUD-only and not consumed by any
-            // issuance path (no enrollment/ACME/SCEP/EST/CMP/SSH flow reads a template; the
-            // CaResolverService.ResolveByTemplateAsync resolver exists but has no caller). Removed
-            // from navigation so operators aren't misled into thinking templates govern issuance.
-            // The /templates route is still registered in App.tsx and reachable by direct URL.
-            // RE-IMPLEMENT: wire templates into issuance (add an optional templateId to the
-            // enrollment/issuance request paths and call ResolveByTemplateAsync) before restoring
-            // this nav entry. See also the banner in CertificateTemplates.tsx.
-            // { name: 'Templates', path: '/templates', icon: '\u2702', requiredRoles: ADMIN_OPERATOR },
+            // Templates are consumed by Windows autoenrollment (MSAE): the policy service offers
+            // them to clients and the enrollment service issues from the one a CSR names.
+            { name: 'Templates', path: '/templates', icon: '\u2702', requiredRoles: ADMIN_OPERATOR },
             { name: 'CA Distribution', path: '/distribution', icon: '\u2716', requiredRoles: ADMIN_OPERATOR },
             { name: 'Trust Anchors', path: '/trust-anchors', icon: '\u2693', requiredRoles: ADMIN_ONLY },
             { name: 'SSH CA', path: '/ssh', icon: '\u2318' },

@@ -516,6 +516,7 @@ Scheduler:
     CrlExport: 300
     CertExpire: 120
     AcmeCleanup: 120
+    ProtocolCleanup: 120
     CertExpiryNotification: 120
     TlsRenewal: 300
 
@@ -587,6 +588,11 @@ Backup:
                             <td className="py-2 pr-4 font-mono text-sm">AcmeCleanup</td>
                             <td className="py-2 pr-4">poll-driven</td>
                             <td className="py-2">Removes expired ACME orders, authorizations, and stale nonces</td>
+                        </tr>
+                        <tr className="border-b border-gray-100 dark:border-gray-800">
+                            <td className="py-2 pr-4 font-mono text-sm">ProtocolCleanup</td>
+                            <td className="py-2 pr-4">poll-driven</td>
+                            <td className="py-2">Removes enrollment request rows a failed protocol issuance left behind (EST, MSAE, SCEP, CMP, ACME) after <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ProtocolCleanup.OrphanRequestGraceMinutes</code>, and sweeps expired SCEP and CMP transactions</td>
                         </tr>
                         <tr>
                             <td className="py-2 pr-4 font-mono text-sm">LdapGroupSync / LdapPublisher</td>

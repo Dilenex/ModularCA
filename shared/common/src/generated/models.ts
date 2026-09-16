@@ -317,6 +317,11 @@ export interface CertificateTemplateDto {
     signingProfileId: string;
     signingProfileName?: string | null;
     isEnabled: boolean;
+    offeredToWindows: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion: number;
+    msaeMinorVersion: number;
+    msaeMachineType: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -442,6 +447,11 @@ export interface CreateCertificateTemplateRequest {
     certProfileId: string;
     signingProfileId: string;
     isEnabled: boolean;
+    offerToWindows: boolean;
+    msaeTemplateOid?: string | null;
+    msaeMajorVersion: number;
+    msaeMinorVersion: number;
+    msaeMachineType: boolean;
 }
 
 /** From `ModularCA.Shared/Models/CertProfiles/CreateCertProfileRequest.cs`. */
@@ -883,6 +893,12 @@ export interface PolicySyncConfig {
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface ProtocolCleanupConfig {
+    schedule: string;
+    orphanRequestGraceMinutes: number;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface RedisConfig {
     enabled: boolean;
     connectionString: string;
@@ -1072,6 +1088,7 @@ export interface SetupFeatures {
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;
+    enableMsae: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */
@@ -1256,6 +1273,7 @@ export interface SystemConfig {
     mtls: MtlsConfig;
     acme: AcmeConfig;
     est: EstConfig;
+    protocolCleanup: ProtocolCleanupConfig;
     backup: BackupConfig;
     webAuthn: WebAuthnConfig;
     alert: AlertConfig;

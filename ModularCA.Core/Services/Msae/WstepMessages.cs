@@ -47,6 +47,13 @@ public static class WstepMessages
     public const string X509TokenType = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3";
     public const string EncodingBase64 = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary";
 
+    /// <summary>
+    /// The EncodingType MS-WSTEP prescribes for the tokens in this exchange (section 3.1.4.1.3.4),
+    /// and the one Windows clients expect on the issued certificate. Requests are accepted with
+    /// either spelling; responses always use this one.
+    /// </summary>
+    public const string ResponseEncodingBase64 = Wsse + "#base64binary";
+
     // The ValueType suffixes are matched rather than the full URIs: a client may namespace the
     // PKCS#10 token under the enrollment URI or the older WSS X.509 profile, and only the kind
     // matters here.
@@ -58,10 +65,10 @@ public static class WstepMessages
     /// <param name="Pkcs10Der">The DER-encoded PKCS#10 the client wants signed.</param>
     /// <param name="MessageId">The client's <c>wsa:MessageID</c>, echoed as <c>RelatesTo</c>, or null.</param>
     /// <param name="RequestId">The MS-WSTEP <c>RequestID</c>, echoed in the response, or null.</param>
-    /// <param name="IsRenewal">
-    /// True when the request also carries a previously issued certificate (a renewal, "on behalf
-    /// of" the old certificate). The renewal proof itself is validated elsewhere; this only records
-    /// that the shape is a renewal.
+    /// <param name="FromCmc">
+    /// True when the PKCS#10 was unwrapped from a CMC request (a <c>#PKCS7</c> token), which is
+    /// how the autoenrollment engine and the PowerShell cmdlets submit; false for the bare
+    /// <c>#PKCS10</c> token <c>certreq -submit</c> sends. Both are issued the same way.
     /// </param>
     /// <param name="UsernameToken">
     /// The WS-Security <c>UsernameToken</c> from the SOAP header, when the client authenticated at
@@ -72,7 +79,7 @@ public static class WstepMessages
         byte[] Pkcs10Der,
         string? MessageId,
         string? RequestId,
-        bool IsRenewal,
+        bool FromCmc,
         WstepUsernameToken? UsernameToken = null);
 
     /// <summary>A WS-Security <c>UsernameToken</c> carrying a clear-text password.</summary>
@@ -87,14 +94,44 @@ public static class WstepMessages
     /// </summary>
     public static WstepIssueRequest ParseIssueRequest(string soapXml)
     {
+        var doc = LoadHardened(soapXml);
+
+        // Every BinarySecurityToken in the message, regardless of prefix or the section it sits in.
+        var tokens = doc.Descendants(XName.Get("BinarySecurityToken", Wsse)).ToList();
+
+        // certreq -submit sends the PKCS#10 itself. The autoenrollment engine, Get-Certificate and
+        // the Certificates snap-in send a CMC request instead: the PKCS#10 wrapped in a PKIData
+        // and signed with the new key, as a #PKCS7 token. Both end in the same PKCS#10.
+        var fromCmc = false;
+        var pkcs10 = FirstTokenBytesByValueType(tokens, Pkcs10Suffix);
+        if (pkcs10 == null)
+        {
+            var pkcs7 = FirstTokenBytesByValueType(tokens, Pkcs7Suffix)
+                ?? throw new WstepParseException(
+                    "No certificate request found. Expected a PKCS#10 or CMC (PKCS#7) BinarySecurityToken.");
+            pkcs10 = CmcRequests.UnwrapPkcs10(pkcs7);
+            fromCmc = true;
+        }
+
+        var requestId = doc.Descendants(XName.Get("RequestID", Enrollment)).FirstOrDefault()?.Value?.Trim();
+
+        return new WstepIssueRequest(pkcs10, ReadMessageId(doc), EmptyToNull(requestId), fromCmc,
+            ReadUsernameToken(doc));
+    }
+
+    /// <summary>
+    /// Parses SOAP text with hostile-input hardening: no DTD, no resolver, no entity expansion.
+    /// Shared by every message parser on the MSAE endpoints, all of which run before the caller
+    /// is authenticated. Throws <see cref="WstepParseException"/> for empty or malformed input.
+    /// </summary>
+    internal static XDocument LoadHardened(string soapXml)
+    {
         if (string.IsNullOrWhiteSpace(soapXml))
             throw new WstepParseException("Empty request body.");
 
-        XDocument doc;
         try
         {
-            // Hardened: no DTD, no resolver, no external entities. This runs on unauthenticated
-            // input, so an XML parser that fetches a URL or expands a billion-laughs entity is a
+            // An XML parser that fetches a URL or expands a billion-laughs entity is a
             // denial-of-service and an SSRF surface, not a convenience.
             var settings = new XmlReaderSettings
             {
@@ -104,37 +141,24 @@ public static class WstepMessages
             };
             using var stringReader = new StringReader(soapXml);
             using var xmlReader = XmlReader.Create(stringReader, settings);
-            doc = XDocument.Load(xmlReader);
+            return XDocument.Load(xmlReader);
         }
         catch (XmlException ex)
         {
             throw new WstepParseException($"Request is not well-formed XML: {ex.Message}");
         }
-
-        // Every BinarySecurityToken in the message, regardless of prefix or the section it sits in.
-        var tokens = doc.Descendants(XName.Get("BinarySecurityToken", Wsse)).ToList();
-
-        var pkcs10 = FirstTokenBytesByValueType(tokens, Pkcs10Suffix)
-            ?? throw new WstepParseException(
-                "No PKCS#10 BinarySecurityToken found. Expected a token with a ValueType ending in '#PKCS10'.");
-
-        // A PKCS#7 alongside the PKCS#10 marks a renewal — the client presents the certificate it
-        // is renewing so the CA can process a "renewal on behalf of" request.
-        var isRenewal = tokens.Any(t => ValueTypeEndsWith(t, Pkcs7Suffix));
-
-        var messageId = doc.Descendants(XName.Get("MessageID", Wsa)).FirstOrDefault()?.Value?.Trim();
-        var requestId = doc.Descendants(XName.Get("RequestID", Enrollment)).FirstOrDefault()?.Value?.Trim();
-
-        return new WstepIssueRequest(pkcs10, EmptyToNull(messageId), EmptyToNull(requestId), isRenewal,
-            ReadUsernameToken(doc));
     }
+
+    /// <summary>The <c>wsa:MessageID</c> of a parsed envelope, or null when absent or empty.</summary>
+    internal static string? ReadMessageId(XDocument doc)
+        => EmptyToNull(doc.Descendants(XName.Get("MessageID", Wsa)).FirstOrDefault()?.Value?.Trim());
 
     // WS-Security UsernameToken profile 1.0: a Username and a Password whose Type is absent or
     // #PasswordText. A Windows CES client configured for username authentication sends exactly
     // this over TLS (WCF TransportWithMessageCredential). #PasswordDigest is a hash over a nonce
     // and the clear password, which cannot be checked against a stored password hash, so it is
     // treated as absent rather than silently accepted.
-    private static WstepUsernameToken? ReadUsernameToken(XDocument doc)
+    internal static WstepUsernameToken? ReadUsernameToken(XDocument doc)
     {
         var token = doc.Descendants(XName.Get("UsernameToken", Wsse)).FirstOrDefault();
         if (token == null) return null;
@@ -178,21 +202,21 @@ public static class WstepMessages
         header.Add(SecurityTimestamp(DateTime.UtcNow));
 
         // The issued certificate appears twice, on purpose: MS-WSTEP places it in a
-        // wst:RequestedSecurityToken, and Windows clients also read it from the top-level
-        // wst:BinarySecurityToken. Emitting both is what the various client versions accept.
-        var issuedToken = new XElement(o + "BinarySecurityToken",
+        // wst:RequestedSecurityToken, and Windows clients also read it from a token directly
+        // under the response. Both tokens are wsse:BinarySecurityToken with the EncodingType
+        // MS-WSTEP prescribes for this exchange (the secext "#base64binary" URI, not the
+        // WS-Security "#Base64Binary" one). certreq's reader (WWSAPI) is strict about both: a
+        // token in the WS-Trust namespace, or the other EncodingType, is WS_E_INVALID_FORMAT.
+        XElement IssuedToken() => new(o + "BinarySecurityToken",
             new XAttribute("ValueType", Pkcs7ValueType),
-            new XAttribute("EncodingType", EncodingBase64),
+            new XAttribute("EncodingType", ResponseEncodingBase64),
             certB64);
 
         var rstr = new XElement(t + "RequestSecurityTokenResponse",
             new XElement(t + "TokenType", X509TokenType),
-            new XElement(e + "DispositionMessage", "Issued"),
-            new XElement(t + "BinarySecurityToken",
-                new XAttribute("ValueType", Pkcs7ValueType),
-                new XAttribute("EncodingType", EncodingBase64),
-                certB64),
-            new XElement(t + "RequestedSecurityToken", issuedToken));
+            new XElement(e + "DispositionMessage", new XAttribute(XNamespace.Xml + "lang", "en-US"), "Issued"),
+            IssuedToken(),
+            new XElement(t + "RequestedSecurityToken", IssuedToken()));
         if (!string.IsNullOrEmpty(requestId))
             rstr.Add(new XElement(e + "RequestID", requestId));
 
@@ -292,7 +316,7 @@ public static class WstepMessages
 
     private static string? EmptyToNull(string? value) => string.IsNullOrEmpty(value) ? null : value;
 
-    private static string Serialize(XElement envelope)
+    internal static string Serialize(XElement envelope)
     {
         var settings = new XmlWriterSettings
         {

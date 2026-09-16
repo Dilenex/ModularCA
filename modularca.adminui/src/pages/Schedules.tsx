@@ -125,7 +125,7 @@ const HealthStrip: React.FC<{ health: SchedulerHealth | null; now: number }> = (
 // Continuous-throttle jobs (always-on, internally rate-limited). The backend
 // returns 400 if the operator tries to disable these — guard the Enable/Disable
 // toolbar actions proactively instead of letting the round-trip fail.
-const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'TlsRenewal']);
+const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
 
 function jobResultBadge(result: SchedulerJob['lastResult']): React.ReactElement {
     if (result === 'success') return <StatusBadge status="active" label="success" />;

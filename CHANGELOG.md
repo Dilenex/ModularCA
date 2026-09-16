@@ -16,6 +16,30 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   request naming none uses the CA's MSAE protocol configuration, which is enabled per CA on the
   protocol configuration page. The policy service (MS-XCEP), Kerberos authentication, renewal
   and pending requests are still to come.
+- **Windows autoenrollment, policy service.** A Certificate Enrollment Policy Web Service
+  endpoint (MS-XCEP) at `/api/v1/msae/{caLabel}/cep` answers `GetPolicies` with the templates the
+  CA offers to Windows clients, each with its OID and version, key size, validity, and the key
+  usage, extended key usage and template-information extensions the certificate will carry, plus
+  the CA certificate and the enrollment URL. Certificate templates gain "offer to Windows" with a
+  template OID (generated under the UUID arc, or supplied to keep an AD CS template's OID), a
+  version, and a computer or user flag; the templates page is back in the navigation. A CSR
+  that names a template by OID, as a client that fetched policy does, is issued from that
+  template. Elliptic-curve templates are not offered yet; subjects are enrollee-supplied until
+  Kerberos authentication arrives.
+- The enrollment service accepts the CMC request the Windows autoenrollment engine, the
+  Certificates snap-in and `Get-Certificate` send (a PKCS#10 wrapped in a signed PKIData as a
+  `#PKCS7` token), verifying the wrapper is signed by the key being certified; `certreq -submit`
+  keeps sending a bare PKCS#10 and keeps working. Templates are advertised as schema-3 (CNG)
+  templates naming SHA-256 and RSA, so a Windows client signs its request with SHA-256 rather
+  than the SHA-1 it defaults to for older template schemas, which the certificate profiles refuse.
+- A `ProtocolCleanup` scheduled job removes the enrollment request rows a failed protocol
+  issuance leaves behind, for every protocol, once they are older than a grace window
+  (`ProtocolCleanup.OrphanRequestGraceMinutes`, default 60), leaving operator uploads,
+  approval-gated requests and ACME-referenced rows alone. It also takes over the SCEP and CMP
+  transaction sweeps, which the ACME cleanup job had been skipping whenever ACME itself had
+  nothing to do.
+- An instance bootstrapped by an earlier version gains feature flags this version introduces at
+  startup, disabled, so the settings page can offer them; an upgrade never switches a protocol on.
 - MSAE is wired through the same surfaces as the other enrollment protocols: an `MSAE.Enabled`
   feature flag (setup wizard and `bootstrap.yaml`, off by default) gating the paths, per-CA
   protocol rows seeded at CA creation, its own audit table and tab (`AuditMsae`, with the
