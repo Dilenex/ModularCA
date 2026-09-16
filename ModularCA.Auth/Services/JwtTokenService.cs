@@ -40,6 +40,10 @@ namespace ModularCA.Auth.Services
         /// </summary>
         public (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false, AccessBadgeClaim? badge = null)
         {
+            // The backstop behind every sign-in path: a service identity never becomes a session.
+            if (user.IsServiceIdentity)
+                throw new ModularCA.Auth.Authorization.ServiceIdentityCannotSignInException();
+
             var handler = new JwtSecurityTokenHandler();
             var key = Encoding.UTF8.GetBytes(_config.JWT.Secret);
             var expires = DateTime.UtcNow.AddMinutes(_config.JWT.ExpirationMinutes);

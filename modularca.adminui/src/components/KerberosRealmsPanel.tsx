@@ -21,7 +21,7 @@ interface Realm {
     enrollmentUserId: string; enrollmentUsername?: string | null; allowMachines: boolean; allowUsers: boolean;
     isEnabled: boolean; notes?: string | null; createdAt: string; lastUsedAt?: string | null; keys: RealmKey[];
 }
-interface UserOption { id: string; username: string; isActive?: boolean }
+interface UserOption { id: string; username: string; isActive?: boolean; service?: boolean; scope?: string }
 
 const blankRealm = { realm: '', dnsDomain: '', servicePrincipal: `HTTP/${window.location.hostname}`, enrollmentUserId: '', allowMachines: true, allowUsers: true, notes: '' };
 const blankKey = { source: 'Password', accountName: 'svc-modularca-enroll', accountKind: 'User', password: '', kvno: '1', keytab: '' };
@@ -36,6 +36,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
 
     const [realms, setRealms] = useState<Realm[]>([]);
     const [users, setUsers] = useState<UserOption[]>([]);
+    const [tenantCaLabels, setTenantCaLabels] = useState<string[]>(caLabels);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [adding, setAdding] = useState(false);
@@ -52,9 +53,25 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
 
     useEffect(() => {
         load();
-        apiGet<any>('/api/v1/admin/users')
-            .then((d) => setUsers((Array.isArray(d) ? d : d.items || []).filter((u: UserOption) => u.isActive !== false)))
-            .catch(() => {});
+        // The tenant's own CAs, for the policy URL in the setup script.
+        apiGet<any>('/api/v1/admin/authorities/hierarchy').then((data) => {
+            const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
+            const labels: string[] = [];
+            const walk = (list: any[]) => { for (const ca of list) { if (ca.tenantId === tenantId && ca.label) labels.push(ca.label); if (ca.children?.length) walk(ca.children); } };
+            walk(all);
+            if (labels.length > 0) setTenantCaLabels(labels);
+        }).catch(() => {});
+        // Service identities first: the natural choice for a forest to act as. People after.
+        Promise.all([
+            apiGet<any>('/api/v1/admin/service-identities').catch(() => []),
+            apiGet<any>('/api/v1/admin/users').catch(() => []),
+        ]).then(([svc, people]) => {
+            const s = (Array.isArray(svc) ? svc : svc.items || []).filter((u: any) => u.isActive !== false)
+                .map((u: any) => ({ id: u.id, username: u.username, service: true, scope: u.scope === 'ca' ? `CA ${u.caLabel}` : u.scope === 'tenant' ? `tenant ${u.tenantName}` : 'system' }));
+            const p = (Array.isArray(people) ? people : people.items || []).filter((u: UserOption) => u.isActive !== false)
+                .map((u: any) => ({ id: u.id, username: u.username, service: false }));
+            setUsers([...s, ...p]);
+        });
     }, [load]);
 
     const run = async (label: string, fn: () => Promise<void>) => {
@@ -123,10 +140,17 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
                             <input className={`${inputClass} font-mono`} value={form.servicePrincipal} onChange={(e) => setForm({ ...form, servicePrincipal: e.target.value })} />
                         </div>
                         <div>
-                            <label className={labelClass}>Enrollment identity *</label>
+                            <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(create one under Users, Service identities)</span></label>
                             <select className={inputClass} value={form.enrollmentUserId} onChange={(e) => setForm({ ...form, enrollmentUserId: e.target.value })}>
-                                <option value="">-- ModularCA user the forest's principals act as --</option>
-                                {users.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+                                <option value="">-- identity the forest's principals act as --</option>
+                                {users.some((u) => u.service) && (
+                                    <optgroup label="Service identities (no sign-in)">
+                                        {users.filter((u) => u.service).map((u) => <option key={u.id} value={u.id}>{u.username} · {u.scope}</option>)}
+                                    </optgroup>
+                                )}
+                                <optgroup label="People">
+                                    {users.filter((u) => !u.service).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+                                </optgroup>
                             </select>
                         </div>
                         <ToggleField size="md" labelSide="left" label="Machines may enroll" description="Computer accounts (name$)" checked={form.allowMachines} onChange={(v) => setForm({ ...form, allowMachines: v })} />
@@ -147,7 +171,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
                 empty="No forests bound. Bind one to enable Windows integrated authentication for this tenant's CAs."
                 columns={columns}
                 disableExport
-                renderDrawer={(r) => <RealmDrawer realm={r} base={base} tenantName={tenantName} caLabels={caLabels} users={users} onChanged={load} />}
+                renderDrawer={(r) => <RealmDrawer realm={r} base={base} tenantName={tenantName} caLabels={tenantCaLabels} users={users} onChanged={load} />}
                 drawerTitle={(r) => r.realm}
             />
         </div>
@@ -254,7 +278,8 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                         <div>
                             <label className={labelClass}>Enrollment identity</label>
                             <select className={inputClass} value={realm.enrollmentUserId} disabled={busy} onChange={(e) => save({ enrollmentUserId: e.target.value })}>
-                                {users.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+                                {users.filter((u) => u.service).map((u) => <option key={u.id} value={u.id}>{u.username} · {u.scope}</option>)}
+                                {users.filter((u) => !u.service).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
                                 {!users.some((u) => u.id === realm.enrollmentUserId) && <option value={realm.enrollmentUserId}>{realm.enrollmentUsername || realm.enrollmentUserId}</option>}
                             </select>
                         </div>
@@ -329,7 +354,11 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                             {key.source === 'Password' && (
                                 <div className="sm:col-span-2">
                                     <label className={labelClass}>Password (used once, not stored)</label>
-                                    <input className={inputClass} type="password" autoComplete="off" value={key.password} onChange={(e) => setKey({ ...key, password: e.target.value })} />
+                                    {/* A text field masked by CSS, not a password field: the browser must not offer to save a
+                                        credential that ModularCA itself never stores. */}
+                                    <input className={inputClass} type="text" autoComplete="off" autoCorrect="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true"
+                                        style={{ WebkitTextSecurity: 'disc' } as React.CSSProperties}
+                                        value={key.password} onChange={(e) => setKey({ ...key, password: e.target.value })} />
                                 </div>
                             )}
                             {key.source === 'Keytab' && (

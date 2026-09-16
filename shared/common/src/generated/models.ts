@@ -1458,6 +1458,10 @@ export interface UserEntityDto {
     lastName?: string | null;
     displayName?: string | null;
     isActive: boolean;
+    isServiceIdentity: boolean;
+    serviceScopeTenantId?: string | null;
+    serviceScopeCaId?: string | null;
+    description?: string | null;
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;

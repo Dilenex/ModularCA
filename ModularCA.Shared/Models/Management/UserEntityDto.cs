@@ -1,4 +1,4 @@
-﻿namespace ModularCA.Shared.Models.Management
+namespace ModularCA.Shared.Models.Management
 {
     /// <summary>
     /// Data transfer object for user information in API responses.
@@ -12,6 +12,11 @@
         public string? LastName { get; set; }
         public string? DisplayName { get; set; }
         public bool IsActive { get; set; } = true;
+        /// <summary>True for a permission-only account that can never sign in.</summary>
+        public bool IsServiceIdentity { get; set; }
+        public Guid? ServiceScopeTenantId { get; set; }
+        public Guid? ServiceScopeCaId { get; set; }
+        public string? Description { get; set; }
         public bool IsLocked { get; set; } = false;
         public bool PasswordNeverExpires { get; set; }
         public bool PasswordChangeOnNextLogon { get; set; }

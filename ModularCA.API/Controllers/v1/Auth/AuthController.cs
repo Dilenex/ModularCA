@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using FluentValidation;
@@ -166,7 +166,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Pre-compute account gating flags — do NOT return yet. These are applied
             // AFTER password verification so an attacker who doesn't have the password
             // cannot enumerate disabled/locked/change-required accounts.
-            bool isDisabled = !user.IsActive;
+            bool isDisabled = !user.IsActive || user.IsServiceIdentity;
             bool isHardLocked = user.IsLocked;
             bool isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 
@@ -590,7 +590,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             // Enforce account status on refresh — locked/disabled users can't refresh
-            if (!user.IsActive || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
+            if (!user.IsActive || user.IsServiceIdentity || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
             {
                 stored.IsRevoked = true;
                 stored.RevokedAt = DateTime.UtcNow;
@@ -770,7 +770,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             // Defer account-state gates until AFTER password verification.
-            bool isDisabled = !user.IsActive;
+            bool isDisabled = !user.IsActive || user.IsServiceIdentity;
             bool isHardLocked = user.IsLocked;
             bool isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 

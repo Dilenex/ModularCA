@@ -978,6 +978,7 @@ builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeContext>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.IAccessBadgeContext>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
 builder.Services.AddScoped<ModularCA.Shared.Interfaces.IWornBadgeProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeContext>());
 builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeService>();
+builder.Services.AddScoped<ModularCA.Auth.Authorization.ServiceIdentityService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
 
 builder.Services.AddAuthorization(options =>

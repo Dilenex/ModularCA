@@ -791,6 +791,13 @@ public class ModularCADbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<UserEntity>(entity =>
+        {
+            entity.HasIndex(e => e.IsServiceIdentity);
+            entity.HasIndex(e => e.ServiceScopeTenantId);
+            entity.HasIndex(e => e.ServiceScopeCaId);
+        });
+
         modelBuilder.Entity<KerberosRealmEntity>(entity =>
         {
             entity.HasIndex(e => e.Realm).IsUnique();

@@ -288,4 +288,10 @@ public static class AuditActionType
     /// <summary>A key version was imported or derived. Details carry the version and types, never the key.</summary>
     public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
     public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
+
+    // Service identities (permission-only accounts that cannot sign in)
+    public const string ServiceIdentityCreated = "ServiceIdentityCreated";
+    public const string ServiceIdentityUpdated = "ServiceIdentityUpdated";
+    public const string ServiceIdentityGroupsChanged = "ServiceIdentityGroupsChanged";
+    public const string ServiceIdentityDeleted = "ServiceIdentityDeleted";
 }

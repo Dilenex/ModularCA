@@ -227,7 +227,9 @@ namespace ModularCA.Auth.Services
         /// </summary>
         public async Task<List<UserEntityDto>> GetAllUsers()
         {
+            // People only. Service identities are listed and managed through their own endpoint.
             var users = await _dbContext.Users
+                .Where(u => !u.IsServiceIdentity)
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .ToListAsync();
@@ -295,6 +297,13 @@ namespace ModularCA.Auth.Services
             if (!userExists)
             {
                 _logger.LogWarning("User {UserId} not found for group addition", userId);
+                return false;
+            }
+            // A service identity never holds system-tier rights, whichever endpoint adds it.
+            if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.IsServiceIdentity)
+                && await _dbContext.CaGroups.AnyAsync(g => g.Id == groupId && g.IsSystemGroup))
+            {
+                _logger.LogWarning("Refused to add service identity {UserId} to system group {GroupId}", userId, groupId);
                 return false;
             }
 
@@ -381,6 +390,11 @@ namespace ModularCA.Auth.Services
         /// </summary>
         public async Task<bool> UpdateUserPassword(Guid userId, UpdatePasswordRequest request)
         {
+            if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.IsServiceIdentity))
+            {
+                _logger.LogWarning("Password change refused for service identity {UserId}", userId);
+                return false;
+            }
             if (request.OldPassword == null || request.NewPassword == null || request.ConfirmNewPassword == null)
             {
                 _logger.LogWarning("Incomplete password update request for user {UserId}", userId);
@@ -489,6 +503,8 @@ namespace ModularCA.Auth.Services
                 .FirstOrDefaultAsync();
             if (user == null)
                 throw new Exception("User not found");
+            if (user.IsServiceIdentity)
+                throw new InvalidOperationException("A service identity has no password.");
             var newPassword = PasswordUtil.Generate();
             var newHash = PasswordUtil.HashPassword(newPassword);
             user.PasswordHash = newHash;
@@ -531,6 +547,10 @@ namespace ModularCA.Auth.Services
                 LastName = user.LastName,
                 DisplayName = user.DisplayName,
                 IsActive = user.IsActive,
+                IsServiceIdentity = user.IsServiceIdentity,
+                ServiceScopeTenantId = user.ServiceScopeTenantId,
+                ServiceScopeCaId = user.ServiceScopeCaId,
+                Description = user.Description,
                 IsLocked = user.IsLocked,
                 PasswordNeverExpires = user.PasswordNeverExpires,
                 CreatedAt = user.CreatedAt,

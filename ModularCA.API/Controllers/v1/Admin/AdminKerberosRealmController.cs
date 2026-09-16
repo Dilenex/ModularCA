@@ -73,7 +73,7 @@ public class AdminKerberosRealmController(
 
     /// <summary>Updates a binding's non-key fields, including enabling and disabling it.</summary>
     [HttpPut("{id:guid}")]
-    [RequireStepUp(StepUpOps.ManageKerberosRealm)]
+    [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> Update(Guid tenantId, Guid id, [FromBody] KerberosRealmRequest request)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
@@ -93,7 +93,7 @@ public class AdminKerberosRealmController(
 
     /// <summary>Deletes a binding and its keys.</summary>
     [HttpDelete("{id:guid}")]
-    [RequireStepUp(StepUpOps.ManageKerberosRealm)]
+    [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> Delete(Guid tenantId, Guid id)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
@@ -115,7 +115,7 @@ public class AdminKerberosRealmController(
     /// one. Returns what was accepted, and the generated password once.
     /// </summary>
     [HttpPost("{id:guid}/keys")]
-    [RequireStepUp(StepUpOps.ManageKerberosRealm)]
+    [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> AddKey(Guid tenantId, Guid id, [FromBody] KerberosKeyRequest request)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
@@ -157,7 +157,7 @@ public class AdminKerberosRealmController(
 
     /// <summary>Refuses a key version from now on.</summary>
     [HttpPost("{id:guid}/keys/{kvno:int}/retire")]
-    [RequireStepUp(StepUpOps.ManageKerberosRealm)]
+    [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> RetireKey(Guid tenantId, Guid id, int kvno)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
