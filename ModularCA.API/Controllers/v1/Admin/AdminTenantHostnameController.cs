@@ -51,9 +51,9 @@ public class AdminTenantHostnameController(
         if (await DenyAsync(tenantId) is { } denied) return denied;
         try
         {
-            var created = await hostnames.CreateAsync(tenantId, request.Hostname, request.IssuingCaId, request.Notes, cancellation);
+            var created = await hostnames.CreateAsync(tenantId, request.Hostname, request.IssuingCaId, request.Notes, request.NodeUpstream, cancellation);
             await LogAsync(AuditActionType.TenantHostnameCreated, created,
-                new { created.Hostname, created.IssuingCaId, IssuingCa = created.IssuingCa?.Label, CertificateSerial = created.Certificate?.SerialNumber, created.Certificate?.NotAfter });
+                new { created.Hostname, created.IssuingCaId, IssuingCa = created.IssuingCa?.Label, CertificateSerial = created.Certificate?.SerialNumber, created.Certificate?.NotAfter, created.NodeUpstream });
             return Ok(Project(created));
         }
         catch (InvalidOperationException ex)
@@ -76,6 +76,30 @@ public class AdminTenantHostnameController(
             await LogAsync(AuditActionType.TenantHostnameCertificateIssued, existing,
                 new { existing.Hostname, OldSerial = previous, NewSerial = issued.SerialNumber, issued.NotAfter });
             return Ok(Project((await hostnames.GetAsync(id, cancellation))!));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Sets or clears the node the ingress forwards this name to. Null or blank means the name
+    /// is served by the ingress process itself. No console change is needed to use it.
+    /// </summary>
+    [HttpPut("{id:guid}/upstream")]
+    [RequireStepUp(StepUpOps.ManageTenantHostname, "id")]
+    public async Task<IActionResult> SetUpstream(Guid tenantId, Guid id, [FromBody] TenantHostnameUpstreamRequest request, CancellationToken cancellation)
+    {
+        if (await DenyAsync(tenantId) is { } denied) return denied;
+        if (await OwnedAsync(tenantId, id, cancellation) is not { } existing) return NotFound();
+        try
+        {
+            var previous = await hostnames.SetNodeUpstreamAsync(id, request.NodeUpstream, cancellation);
+            var updated = (await hostnames.GetAsync(id, cancellation))!;
+            await LogAsync(AuditActionType.TenantHostnameUpstreamChanged, existing,
+                new { existing.Hostname, OldUpstream = previous, NewUpstream = updated.NodeUpstream });
+            return Ok(Project(updated));
         }
         catch (InvalidOperationException ex)
         {
@@ -141,6 +165,7 @@ public class AdminTenantHostnameController(
             CertificateState = state,
             h.CreatedAt,
             h.Notes,
+            h.NodeUpstream,
         };
     }
 }
@@ -151,4 +176,14 @@ public class TenantHostnameRequest
     public string Hostname { get; set; } = string.Empty;
     public Guid IssuingCaId { get; set; }
     public string? Notes { get; set; }
+
+    /// <summary>Optional: the node the ingress forwards this name to, <c>https://host:port</c>; omitted means served locally.</summary>
+    public string? NodeUpstream { get; set; }
+}
+
+/// <summary>Body for setting or clearing the node a hostname is routed to.</summary>
+public class TenantHostnameUpstreamRequest
+{
+    /// <summary>The node's address, or null to serve the name locally.</summary>
+    public string? NodeUpstream { get; set; }
 }

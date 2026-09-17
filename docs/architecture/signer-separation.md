@@ -316,9 +316,9 @@ table above, this section records it.
   processes need two installs (they would bind the same ports), so the three-process layout in
   the deploy readme is one node process per host.
 
-Follow-ups: the ingress role (stage 4) is what makes the split reachable under one name; the
-plain-HTTP TSA alias is lost on a validation-only host, since the listener is validation's and
-the TSA is enrollment's.
+Follow-ups: the ingress role (stage 4) is what makes the split reachable under one name
+(done, see "Ingress as built"); the plain-HTTP TSA alias is lost on a validation-only host,
+since the listener is validation's and the TSA is enrollment's.
 
 ## Signer follow-ups done (2026-09-17)
 
@@ -341,3 +341,71 @@ not recorded) each caught.
   verify. `SignerAudit.PeerIdentity` is the SPKI pin of the client certificate on the
   connection, computed by the gRPC host from the certificate Kestrel admitted and stamped on
   the context as a server-set property that the wire has no field for; null in process.
+
+## Ingress as built (2026-09-17)
+
+The ingress role is real on `0.3.0-dev`, in five commits after the signer follow-ups, the
+suite at 1924 tests, and four deliberate breaks (merge precedence inverted, the local
+fallthrough removed, the Kerberos headers stripped in the proxy, the dangerous flag accepted
+off loopback) each caught by a test, the last one twice (at configuration validation and in
+the trust policy). Where the code differs from the roles table above, this section records
+it.
+
+- **A role, not a node role.** `ProcessRole.Ingress = 16`; `All` includes it, `Node` stays
+  the three. The default single process therefore runs the ingress with no route and routes
+  nothing: every name is served by its own roles, which is the behaviour every install had.
+  An ingress-only process holds a locked, empty in-process signer as setup mode does (no
+  keystore, no keystore password, no signer client certificate on that host), the role
+  convention leaves it no controller, the scheduler is not hosted, the console is control's;
+  it serves `/health` and the health probes. The TLS handshake is the node's, unchanged: the
+  same SNI selection over the same tenant hostname certificate cache, so the ingress and a
+  node present exactly the same certificates.
+- **Two sources, one table, pure rules.** `IngressRouteTable.Merge` in Core: `Ingress.Routes`
+  and the tenant hostnames whose new `NodeUpstream` column is set; configuration wins for the
+  same host; no upstream is not a route; a value that does not parse is dropped and logged
+  rather than routed somewhere odd. `IngressRouteTableService` serves a dictionary snapshot,
+  rebuilds on `Ingress.RouteRefreshSeconds` and after every change the hostname service
+  makes, keeps the last database rows when the database is unreachable, and raises a change
+  only when the set differs; `IngressProxyConfigProvider` in the API turns each entry into
+  one YARP route (host match, any path) and one cluster.
+- **A branch, not an endpoint.** The design said YARP before the local endpoints; the proxy
+  is a `MapWhen` branch right after the forwarded-headers step instead. Endpoint routing
+  would have run every local middleware first, and `HttpSchemeEnforcementMiddleware` would
+  have redirected a tenant's plain-HTTP revocation request to HTTPS before YARP saw it. The
+  branch meets no local redirect, security header, rate limit or authentication; the node
+  applies its own. A host with no upstream, the public domain included, never enters the
+  branch and continues down the local pipeline as before.
+- **Two destinations per cluster, chosen by arrival.** The plain-HTTP listener is the
+  ingress's as well as validation's. A cluster holds the HTTPS upstream and, when the route
+  names one, the node's own plain-HTTP listener; the pipeline step picks the destination by
+  which listener the request arrived on, so `http://tenant/crl/...` reaches that node's plain
+  listener and its CRL, with no redirect. When the chosen destination is withheld by the
+  active probe (`/health/live` on every upstream, consecutive failures), the step answers 503
+  with a body naming the host rather than sending the request to a node known to be down.
+  YARP's default answer would have been an empty 503 or a 502 from the failed connection.
+- **Upstream trust, in a fixed order.** Per cluster: a route's SPKI pin; else the shared
+  upstream CA (chain only, the name is not checked, since a node is reached by address and
+  its certificate names its public name); else, for loopback destinations only, anything
+  under `DangerousAcceptAnyUpstreamCertificate`; else the system store. A non-loopback
+  `https://` route under the flag stops startup, and a database route that is not loopback
+  never gets the exception whatever the flag says. The client factory replaces a cluster's
+  client when its metadata changes, so a new pin is not served by the old callback.
+- **Headers.** `X-Forwarded-For`, `-Proto` and `-Host` are set on the way to the node (YARP's
+  default), which the node honours from loopback and `Http.TrustedProxyCidrs`; the Host
+  header sent to the node is the upstream's, as YARP does by default, and the node takes the
+  original from `X-Forwarded-Host`. `Authorization: Negotiate` and `WWW-Authenticate` pass
+  through untouched, held by a test that hosts the real wiring in front of a stub node.
+- **Health.** `/health/ready` gains an `ingress` entry: the table built, the database
+  reachable, the routes by source, and per upstream what the probe last found. A node that is
+  down is reported, not made the whole ingress's failure, since the other hosts are still
+  served; the design's "routes loaded, upstream health summary" is read that way.
+
+Limits, recorded rather than hidden: the ingress terminates TLS, so a client certificate
+presented to it is not forwarded; the mTLS sign-in name and the EST client-certificate name
+must stay on the process that hosts control and enrollment (no upstream for them). The
+public domain is proxied only when a route names it; the design's "served locally when it
+has no route" holds. Kestrel's 10 MB request body limit applies on the ingress as on a node.
+
+Follow-ups: a console field for `NodeUpstream` (the API and the audit row exist); HTTP/2
+and gRPC to upstreams are not needed today and not configured; the pod definition for the
+container tier with the ingress as its own container.

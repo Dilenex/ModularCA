@@ -26,10 +26,17 @@ namespace ModularCA.Shared.Models.Config
         public SignerConfig Signer { get; set; } = new();
 
         /// <summary>
+        /// The ingress role: the routes by hostname to the nodes that serve them, the upstream
+        /// health probe and the upstream TLS trust. Empty routes mean this process serves every
+        /// name itself, which is the default.
+        /// </summary>
+        public IngressConfig Ingress { get; set; } = new();
+
+        /// <summary>
         /// The roles this process runs when the command line names none: a comma-separated list
-        /// of <c>signer</c>, <c>enrollment</c>, <c>validation</c>, <c>control</c>, <c>node</c>
-        /// or <c>all</c>. Empty means every role. <c>--role</c> on the command line wins
-        /// outright.
+        /// of <c>signer</c>, <c>enrollment</c>, <c>validation</c>, <c>control</c>, <c>ingress</c>,
+        /// <c>node</c> or <c>all</c>. Empty means every role. <c>--role</c> on the command line
+        /// wins outright.
         /// </summary>
         public string Roles { get; set; } = string.Empty;
         public IpWhitelistConfig IpWhitelist { get; set; } = new();

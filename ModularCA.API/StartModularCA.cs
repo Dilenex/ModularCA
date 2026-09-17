@@ -713,6 +713,9 @@ builder.Services.AddSingleton(activeRoles);
 // The control role gates the most: the console and wizard surface, every startup write, and
 // the scheduled jobs that mutate. Named once so the gates below read the same.
 var controlActive = activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control);
+// A process with the ingress role and nothing else terminates TLS and forwards; it holds no
+// key, hosts no controller, no scheduler and no console, and needs no signer at all.
+var ingressOnly = !activeRoles.HasAnyNodeRole && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer);
 if (ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args))
 {
     // The identity of the signer channel is the signer role's to create; the node receives
@@ -740,7 +743,9 @@ if (isSetupMode && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control))
     Environment.Exit(1);
 }
 Console.WriteLine($"[ROLES] This process runs: {string.Join(", ", activeRoles.Names)}"
-    + (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer) ? " (signer in process)" : " (signer as Signer.Mode says)"));
+    + (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer) ? " (signer in process)"
+        : ingressOnly ? " (no signer: the ingress holds no key)"
+        : " (signer as Signer.Mode says)"));
 Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 
 // EF Core command interceptor measuring db query duration.
@@ -1208,11 +1213,14 @@ ModularCA.Keystore.Signing.SignerBootstrap signerBootstrap;
 // the keys, the unlock and the audit are the signer role's, reached over mutual TLS. A
 // process that holds the signer role itself keeps the signer in process whatever Signer.Mode
 // says, since the keystore is here and the channel would lead back to this process.
-var signerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote;
+// An ingress-only process signs nothing and opens no channel to a signer: it holds a locked,
+// empty in-process signer, as setup mode does, so no keystore, password or client certificate
+// is needed on the ingress host.
+var signerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote && !ingressOnly;
 if (processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote)
     Log.Warning("Signer.Mode is Remote but this process holds the signer role; the signer stays in process. Run --role node for a node that reaches a separate signer.");
 
-if (isSetupMode || signerIsRemote)
+if (isSetupMode || signerIsRemote || ingressOnly)
 {
     signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
 }
@@ -1283,7 +1291,7 @@ static bool IsKeystoreIntegrityFailure(Exception? ex)
 
 // Load HSM-backed CA signers if PKCS#11 is configured and enabled
 Pkcs11SessionManager? hsmSession = null;
-if (!signerIsRemote && config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
+if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
 {
     try
     {
@@ -1366,7 +1374,7 @@ else
 // Key wrapping passphrase provider for HKDF-based non-RSA private key encryption. A node with
 // a remote signer holds no keystore password, so it gets the provider that refuses.
 var kwYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-if (!isSetupMode && !signerIsRemote && File.Exists(kwYamlPath))
+if (!isSetupMode && !signerIsRemote && !ingressOnly && File.Exists(kwYamlPath))
 {
     builder.Services.AddSingleton<IKeyWrappingPassphraseProvider>(
         new KeystoreKeyWrappingPassphraseProvider(kwYamlPath));
@@ -1491,11 +1499,14 @@ builder.Services.AddSchedulerJob<AuditRetentionJob>(activeRoles);
 builder.Services.AddScoped<ICertHealthScoreService, CertHealthScoreService>();
 builder.Services.AddScoped<IComplianceReportService, ComplianceReportService>();
 
-builder.Services.AddHealthChecks()
+var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ModularCA.API.HealthChecks.ModularCAHealthCheck>("modularca")
     // The active roles and, per role, whether what it needs is there (validation: the signer
     // reachable; enrollment: the signer unlocked; control: the database).
     .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles");
+// The ingress: whether the route table is built, and what the probe of each upstream found.
+if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
+    healthChecks.AddCheck<ModularCA.API.HealthChecks.IngressHealthCheck>("ingress");
 
 builder.Services.AddValidatorsFromAssemblyContaining<CreateSigningProfileValidator>();
 
@@ -1599,6 +1610,49 @@ var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCe
     message => Log.Warning("[TLS] Tenant hostname certificate reload failed: {Message}", message));
 builder.Services.AddSingleton(tenantHostnameCerts);
 builder.Services.AddSchedulerJob<TlsRenewalJob>(activeRoles);
+
+// The ingress route table: Ingress.Routes merged with the tenant hostnames whose NodeUpstream
+// is set, re-read on a short interval and after every change the hostname service makes in
+// this process. A name with no upstream is served here, so a single process with no route
+// configured routes nothing. The section is validated first: a route the ingress could not
+// honour safely (the dangerous flag on a node that is not loopback) stops startup.
+ModularCA.Core.Services.Ingress.IngressRouteTableService? ingressRoutes = null;
+if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
+{
+    var ingressProblems = config.Ingress.Validate(AppContext.BaseDirectory);
+    if (ingressProblems.Count > 0)
+    {
+        Console.Error.WriteLine("[FATAL] The Ingress section of config.yaml is not usable:");
+        foreach (var problem in ingressProblems)
+            Console.Error.WriteLine($"        {problem}");
+        Environment.Exit(1);
+    }
+    ModularCA.API.Ingress.UpstreamTrustPolicy ingressTrust;
+    try
+    {
+        ingressTrust = ModularCA.API.Ingress.UpstreamTrustPolicy.Load(config.Ingress, AppContext.BaseDirectory);
+    }
+    catch (Exception ex) when (ex is FileNotFoundException or System.Security.Cryptography.CryptographicException or IOException)
+    {
+        Console.Error.WriteLine($"[FATAL] Ingress.UpstreamCaCertificatePath cannot be used: {ex.Message}");
+        Environment.Exit(1);
+        throw;
+    }
+    ingressRoutes = new ModularCA.Core.Services.Ingress.IngressRouteTableService(
+        config.Ingress,
+        () =>
+        {
+            if (isSetupMode)
+                return Array.Empty<ModularCA.Core.Services.Ingress.TenantHostnameUpstream>();
+            using var routeDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
+            return routeDb.TenantHostnames.AsNoTracking()
+                .Select(h => new ModularCA.Core.Services.Ingress.TenantHostnameUpstream(h.Hostname, h.NodeUpstream))
+                .ToList();
+        },
+        TimeSpan.FromSeconds(config.Ingress.RouteRefreshSeconds),
+        message => Log.Warning("[INGRESS] {Message}", message));
+    ModularCA.API.Ingress.IngressHosting.AddIngress(builder.Services, config.Ingress, ingressRoutes, ingressTrust);
+}
 
 if (isSetupMode)
 {
@@ -2333,9 +2387,13 @@ else
             // cannot use HTTPS to fetch the CRL/OCSP that validates that same cert). Those are
             // the validation role's endpoints, so the listener is the validation role's: a
             // process without it serves nothing that belongs on plain HTTP.
-            if (config.Http.Port > 0 && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation))
+            // The ingress opens it as well, routing by Host, so a tenant's revocation URLs reach
+            // that tenant's node on plain HTTP without a redirect.
+            if (config.Http.Port > 0
+                && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation)
+                && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
             {
-                Console.WriteLine($"[HTTP] Plain HTTP port {config.Http.Port} not opened: the validation role is not active in this process.");
+                Console.WriteLine($"[HTTP] Plain HTTP port {config.Http.Port} not opened: neither the validation nor the ingress role is active in this process.");
             }
             else if (config.Http.Port > 0)
             {
@@ -2843,6 +2901,22 @@ if (config.Security.BehindReverseProxy && string.IsNullOrWhiteSpace(config.Http.
 }
 
 app.UseForwardedHeaders(forwardedOptions);
+
+// The ingress branch. A request whose host the route table sends elsewhere is proxied here,
+// after the forwarded headers from any proxy in front of this one are honoured and before
+// any local middleware: no scheme redirect, security header, rate limit or authentication of
+// this process touches it, since the node it reaches applies its own. Plain-HTTP arrivals go
+// to the node's plain-HTTP listener when the route names one, so a tenant's CRL and OCSP URLs
+// are answered there. A host with no upstream, the public domain included, continues down
+// the local pipeline exactly as before the role existed.
+if (ingressRoutes != null)
+{
+    var ingressRouteCount = ingressRoutes.LoadNow();
+    Console.WriteLine(ingressRouteCount == 0
+        ? "[INGRESS] No route has an upstream; every name is served by this process."
+        : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));
+    ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
+}
 
 // Standard error response format: { "error": "message" }
 // ACME endpoints use RFC 8555 format: { "type": "urn:...", "detail": "message", "status": 400 }

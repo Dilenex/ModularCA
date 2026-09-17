@@ -6,6 +6,8 @@ namespace ModularCA.API.Startup;
 /// service alone; the three node roles host the controllers and background work that belong to
 /// them (see <see cref="NodeRoleAttribute"/> and <see cref="SchedulerJobRoles"/>) and reach a
 /// signer as <c>Signer.Mode</c> says. <c>--role node</c> is the three node roles together.
+/// <c>--role ingress</c> terminates TLS for every hostname and routes by name to the node that
+/// serves it; alone, it hosts no controller, no scheduler and no console.
 /// </summary>
 [Flags]
 public enum ProcessRole
@@ -25,18 +27,26 @@ public enum ProcessRole
     /// <summary>The keystore, its passwords and the signing service behind mutual TLS.</summary>
     Signer = 8,
 
-    /// <summary>Enrollment, validation and the control plane: everything but the signer.</summary>
+    /// <summary>
+    /// TLS termination for every hostname the system knows (the public domain with the API
+    /// certificate, each tenant hostname with its own, by SNI) and routing by name to the node
+    /// that serves it, on HTTPS and on the plain-HTTP listener. A hostname with no upstream is
+    /// served by this process's own roles.
+    /// </summary>
+    Ingress = 16,
+
+    /// <summary>Enrollment, validation and the control plane: everything but the signer and the ingress.</summary>
     Node = Enrollment | Validation | Control,
 
-    /// <summary>Every role in one process, the signer in process.</summary>
-    All = Node | Signer,
+    /// <summary>Every role in one process: the signer in process, the ingress routing nothing and serving everything.</summary>
+    All = Node | Signer | Ingress,
 }
 
 /// <summary>
 /// Reads the role set from the command line: <c>--role signer</c>, <c>--role node</c>,
-/// <c>--role enrollment,validation</c>, <c>--role all</c>, repeatable or comma-separated. No
-/// <c>--role</c> means the configured <c>Roles</c> value, and no configuration means every
-/// role.
+/// <c>--role enrollment,validation</c>, <c>--role ingress</c>, <c>--role all</c>, repeatable
+/// or comma-separated. No <c>--role</c> means the configured <c>Roles</c> value, and no
+/// configuration means every role.
 /// </summary>
 public static class ProcessRoles
 {
@@ -44,7 +54,7 @@ public static class ProcessRoles
     public const string Flag = "--role";
 
     /// <summary>The names <see cref="Parse"/> accepts, for messages.</summary>
-    public const string Names = "signer, enrollment, validation, control, node or all";
+    public const string Names = "signer, enrollment, validation, control, ingress, node or all";
 
     /// <summary>
     /// Parses the roles named on the command line, falling back to <paramref name="configured"/>
@@ -95,6 +105,7 @@ public static class ProcessRoles
                 "enrollment" => ProcessRole.Enrollment,
                 "validation" => ProcessRole.Validation,
                 "control" => ProcessRole.Control,
+                "ingress" => ProcessRole.Ingress,
                 "node" => ProcessRole.Node,
                 "all" => ProcessRole.All,
                 _ => throw new ArgumentException($"'{name}' is not a role; {source} takes {Names}."),
@@ -114,14 +125,15 @@ public static class ProcessRoles
         ProcessRole.Validation => "validation",
         ProcessRole.Control => "control",
         ProcessRole.Signer => "signer",
+        ProcessRole.Ingress => "ingress",
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Not a single role."),
     };
 
     /// <summary>The single roles present in <paramref name="roles"/>, in a fixed order.</summary>
     public static IReadOnlyList<ProcessRole> Split(ProcessRole roles)
     {
-        var list = new List<ProcessRole>(4);
-        foreach (var role in new[] { ProcessRole.Enrollment, ProcessRole.Validation, ProcessRole.Control, ProcessRole.Signer })
+        var list = new List<ProcessRole>(5);
+        foreach (var role in new[] { ProcessRole.Enrollment, ProcessRole.Validation, ProcessRole.Control, ProcessRole.Signer, ProcessRole.Ingress })
         {
             if (roles.HasFlag(role))
                 list.Add(role);
@@ -149,6 +161,9 @@ public sealed class ActiveRoles
 
     /// <summary>Whether every flag of <paramref name="role"/> is active here.</summary>
     public bool Has(ProcessRole role) => (Roles & role) == role;
+
+    /// <summary>Whether any of the three node roles is active: whether this process hosts controllers at all.</summary>
+    public bool HasAnyNodeRole => (Roles & ProcessRole.Node) != ProcessRole.None;
 
     /// <summary>The lower-case names of the active roles, in a fixed order, for health reports and logs.</summary>
     public IReadOnlyList<string> Names => ProcessRoles.Split(Roles).Select(ProcessRoles.NameOf).ToList();

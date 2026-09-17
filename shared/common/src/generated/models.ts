@@ -789,6 +789,25 @@ export interface ImportTrustAnchorRequest {
     description?: string | null;
 }
 
+/** From `ModularCA.Shared/Models/Config/IngressConfig.cs`. */
+export interface IngressConfig {
+    routes: IngressRouteConfig[];
+    healthCheckIntervalSeconds: number;
+    healthCheckTimeoutSeconds: number;
+    healthCheckPath: string;
+    routeRefreshSeconds: number;
+    upstreamCaCertificatePath: string;
+    dangerousAcceptAnyUpstreamCertificate: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Config/IngressConfig.cs`. */
+export interface IngressRouteConfig {
+    host: string;
+    upstream: string;
+    plainHttpUpstream?: string | null;
+    pinnedSpki?: string | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface IntegrationApiConfig {
     enabled: boolean;
@@ -1402,6 +1421,8 @@ export interface SystemConfig {
     https: HttpsConfig;
     hsm: HsmConfig;
     signer: SignerConfig;
+    ingress: IngressConfig;
+    roles: string;
     ipWhitelist: IpWhitelistConfig;
     networkAudit: NetworkAuditConfig;
     webhook: WebhookConfig;

@@ -219,7 +219,7 @@ hosts (not loopback), and each of them needs its own client certificate from
    `role-enrollment.conf` and `role-validation.conf` are there for a host that runs one of
    the two alone.
 
-3. Route by path in front of them until the ingress role exists: `/admin`, `/user`, `/login`,
+3. Route by path in front of them, or by name with the ingress role (next section): `/admin`, `/user`, `/login`,
    `/setup`, `/docs`, `/public`, `/api/v1/admin`, `/api/v1/auth`, `/api/v1/user`,
    `/api/v1/account`, `/api/v1/me`, `/api/v1/setup`, `/api/v1/version`,
    `/api/v1/public/info`, `/api/v1/public/csp-report` to the control host;
@@ -235,6 +235,93 @@ hosts (not loopback), and each of them needs its own client certificate from
 needs and whether it has it: validation the signer reachable, enrollment the signer unlocked,
 control the database. A process without the control role refuses to start an unconfigured
 install, because the wizard is the control plane's.
+
+## The ingress in front of tenant nodes
+
+The ingress role is what makes a split install reachable under its names: one process
+terminates TLS for every hostname the system knows (the public domain with the web TLS
+certificate, each tenant hostname with its own, chosen by SNI from the same table the node
+uses) and forwards each name to the node that serves it. Plain HTTP on port 80 is routed by
+Host as well, so a tenant's CRL and OCSP URLs reach that tenant's node without a redirect.
+The route table is `Ingress.Routes` in `config.yaml` merged with the tenant hostnames whose
+`NodeUpstream` is set (a configured route wins for the same host); a name with no upstream
+anywhere is served by the ingress process's own roles, which is why a single process with
+every role and no route behaves exactly as before the role existed.
+
+The layout this is for is one node per tenant: the ingress on 443 and 80, each tenant's node
+on a loopback port of its own with `--role node`, the signer as a separate unit, and each
+tenant hostname carrying the address of its node.
+
+    ingress (--role ingress)         443, 80          Ingress.Routes + TenantHostnames.NodeUpstream
+    node A (--role node)             127.0.0.1:8443   Https.Port 8443, Http.Port 8080, Signer: Remote
+    node B (--role node)             127.0.0.1:8453   Https.Port 8453, Http.Port 8090, Signer: Remote
+    signer (--role signer)           127.0.0.1:8446   one client certificate per node
+
+Every node is its own install directory (two node processes cannot share one: they would
+bind the same ports), each with the same database, the same `JWT.Secret`, and a `Signer:`
+section naming the signer with its own client certificate from `--issue-node-identity`. The
+ingress is one more install directory on the same or another host; it needs the database
+(to read the hostnames and their certificates), `Https.CertificatePath` for the public
+domain, and the tenant hostname PKCS#12 files under `Https.CertificatePassword`, but no
+keystore, no keystore password and no signer client certificate.
+
+1. Complete the first install as a single process and split the signer out as above. Give
+   each tenant its hostname in the console (Tenants, Hostnames) so its certificate exists.
+
+2. Install each tenant's node in its own directory with its own ports, `--role node` in the
+   unit drop-in, and `Signer.Mode: Remote`. The node trusts forwarded headers from loopback
+   by default; an ingress on another host must be listed in `Http.TrustedProxyCidrs` on the
+   node, or the node records the ingress as the client.
+
+3. Tell the ingress where each name goes, by either source:
+
+   - in the ingress's `config.yaml`, for a spike or for nodes on other hosts:
+
+         Ingress:
+           Routes:
+             - Host: "ca.customer-a.example"
+               Upstream: "https://127.0.0.1:8443"
+               PlainHttpUpstream: "http://127.0.0.1:8080"
+             - Host: "ca.customer-b.example"
+               Upstream: "https://127.0.0.1:8453"
+               PlainHttpUpstream: "http://127.0.0.1:8090"
+           DangerousAcceptAnyUpstreamCertificate: true   # loopback upstreams only; refused otherwise
+
+   - or on the hostname row, through the tenant hostnames API (no console change is needed):
+
+         PUT /api/v1/admin/tenants/{tenantId}/hostnames/{id}/upstream
+         { "nodeUpstream": "https://127.0.0.1:8443" }
+
+     The ingress re-reads the table every `Ingress.RouteRefreshSeconds` (30 by default).
+
+   Upstream TLS: a node reached by address presents a certificate for its public name, so
+   the ingress cannot validate it as a browser would. Pin it (`PinnedSpki` on the route: the
+   SHA-256 of the node's web TLS certificate SubjectPublicKeyInfo, hex, which changes when
+   that certificate is reissued), or name the CA that issued every node's web TLS certificate
+   in `Ingress.UpstreamCaCertificatePath`, or, for loopback upstreams only, accept any
+   certificate with `DangerousAcceptAnyUpstreamCertificate`. A non-loopback `https://`
+   upstream under that flag stops the ingress at startup. A plain `http://` upstream on
+   loopback needs none of this.
+
+4. Point the ingress unit at the role and start it:
+
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       sudo cp /opt/modularca/deploy/dropins/role-ingress.conf /etc/systemd/system/modularca.service.d/role.conf
+       sudo systemctl daemon-reload && sudo systemctl restart modularca
+
+   The startup log lists every route (`[INGRESS] 2 route(s): ...`). `/health/ready` on the
+   ingress carries an `ingress` entry: whether the table is built, whether the database
+   answered, the routes by source, and per upstream what the active probe (`/health/live`
+   every `HealthCheckIntervalSeconds`) last found. A node that stops answering is marked down
+   and every request for its hostname is answered 503 with a body naming the host until it
+   is back; the other hostnames are unaffected.
+
+What the ingress does not do: it terminates TLS, so a client certificate presented to it is
+not forwarded. The mTLS sign-in name and the EST client-certificate name are answered by
+the process that hosts control and enrollment, so those names must stay on that process (no
+upstream for them, and the ingress running in the same process as control), or that
+process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
+way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
 
 ## Break-glass
 

@@ -42,6 +42,26 @@ public sealed class ProcessRolesParseTests
         => Assert.Equal(Role("Enrollment,Validation,Control"), Parse(new[] { "--role", "node" }, null));
 
     [Fact]
+    public void Ingress_is_a_role_of_its_own_and_not_part_of_node()
+    {
+        Assert.Equal(Role("Ingress"), Parse(new[] { "--role", "ingress" }, null));
+        Assert.Equal(Role("Ingress,Control"), Parse(new[] { "--role", "ingress,control" }, null));
+        var node = Convert.ToInt32(Role("Node"));
+        var ingress = Convert.ToInt32(Role("Ingress"));
+        Assert.Equal(0, node & ingress);
+        Assert.Equal(7, node);
+        Assert.Equal(16, ingress);
+    }
+
+    [Fact]
+    public void Every_role_includes_the_ingress()
+    {
+        var all = Convert.ToInt32(Role("All"));
+        Assert.Equal(all, Convert.ToInt32(Role("Enrollment,Validation,Control,Signer,Ingress")));
+        Assert.Equal(all, Convert.ToInt32(Parse(Array.Empty<string>(), null)));
+    }
+
+    [Fact]
     public void Repeated_flags_accumulate()
         => Assert.Equal(Role("Enrollment,Validation"), Parse(new[] { "--role", "enrollment", "--role", "validation" }, null));
 
@@ -52,9 +72,10 @@ public sealed class ProcessRolesParseTests
     [Fact]
     public void A_name_that_is_not_a_role_is_refused_with_the_names()
     {
-        var ex = Assert.Throws<ArgumentException>(() => Parse(new[] { "--role", "ingress" }, null));
-        Assert.Contains("ingress", ex.Message);
+        var ex = Assert.Throws<ArgumentException>(() => Parse(new[] { "--role", "gateway" }, null));
+        Assert.Contains("gateway", ex.Message);
         Assert.Contains("validation", ex.Message);
+        Assert.Contains("ingress", ex.Message);
     }
 
     [Fact]

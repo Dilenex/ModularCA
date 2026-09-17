@@ -1,12 +1,14 @@
-# The node itself. Config and data are volumes; the image is the unchanged 0.2.0 dist.
+# The node itself, without keys: --role node with the signer remote (see README, "Split the
+# signer"). Config and data are volumes; the keystores volume is the signer container's alone.
 [Unit]
 Description=ModularCA node
-After=modularca-node-db.service
-Requires=modularca-node-db.service
+After=modularca-node-db.service modularca-node-signer.service
+Requires=modularca-node-db.service modularca-node-signer.service
 
 [Container]
-Image=localhost/modularca-node:0.2.0
+Image=localhost/modularca-node:0.3.0-dev
 Pod=modularca-node.pod
+Exec=--role node
 Volume=modularca-node-config:/opt/modularca/config:Z
 Volume=modularca-node-data:/var/lib/modularca:Z
 

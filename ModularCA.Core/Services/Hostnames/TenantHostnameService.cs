@@ -4,19 +4,22 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
+using ModularCA.Core.Services.Ingress;
 
 namespace ModularCA.Core.Services.Hostnames;
 
 /// <summary>
 /// Manages the names a tenant is reached by: validates and records them, has the endpoint
-/// certificate issued from the tenant's chosen CA, and keeps the listener's cache current.
+/// certificate issued from the tenant's chosen CA, keeps the listener's cache current, and
+/// records which node serves each name when an ingress routes it elsewhere.
 /// </summary>
 public sealed class TenantHostnameService(
     ModularCADbContext db,
     SystemConfig config,
     ITenantHostnameCertificateIssuer issuer,
     TenantHostnameCertificateCache cache,
-    TimeProvider? time = null)
+    TimeProvider? time = null,
+    IngressRouteTableService? routes = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
 
@@ -47,6 +50,21 @@ public sealed class TenantHostnameService(
         return host;
     }
 
+    /// <summary>
+    /// The canonical form of a node upstream: an absolute <c>http://</c> or <c>https://</c>
+    /// address without path or query, or null for blank, which means the name is served locally.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The value is not an upstream address.</exception>
+    public static string? NormalizeNodeUpstream(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (!IngressRouteConfig.TryParseUpstream(raw, out var upstream))
+            throw new InvalidOperationException("A node upstream is an absolute http:// or https:// address such as https://10.0.0.5:8443.");
+        if (!string.IsNullOrEmpty(upstream.Query) || upstream.AbsolutePath != "/")
+            throw new InvalidOperationException("A node upstream names a host and port, not a path.");
+        return upstream.GetLeftPart(UriPartial.Authority);
+    }
+
     /// <summary>The tenant's hostnames with their issuing CA and certificate, alphabetically.</summary>
     public Task<List<TenantHostnameEntity>> ListAsync(Guid tenantId, CancellationToken cancellation = default)
         => db.TenantHostnames.AsNoTracking().Include(h => h.IssuingCa).Include(h => h.Certificate)
@@ -65,8 +83,17 @@ public sealed class TenantHostnameService(
     /// </summary>
     /// <exception cref="InvalidOperationException">Validation failed or the certificate could not be issued.</exception>
     public async Task<TenantHostnameEntity> CreateAsync(Guid tenantId, string? hostname, Guid issuingCaId, string? notes, CancellationToken cancellation = default)
+        => await CreateAsync(tenantId, hostname, issuingCaId, notes, nodeUpstream: null, cancellation);
+
+    /// <summary>
+    /// As <see cref="CreateAsync(Guid, string?, Guid, string?, CancellationToken)"/>, with the
+    /// node the ingress forwards the name to; null means the name is served locally.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Validation failed or the certificate could not be issued.</exception>
+    public async Task<TenantHostnameEntity> CreateAsync(Guid tenantId, string? hostname, Guid issuingCaId, string? notes, string? nodeUpstream, CancellationToken cancellation = default)
     {
         var host = NormalizeHostname(hostname);
+        var upstream = NormalizeNodeUpstream(nodeUpstream);
         foreach (var (reserved, what) in ReservedNames())
         {
             if (string.Equals(reserved, host, StringComparison.OrdinalIgnoreCase))
@@ -90,10 +117,12 @@ public sealed class TenantHostnameService(
             Hostname = host,
             IssuingCaId = issuingCaId,
             Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim(),
+            NodeUpstream = upstream,
             CreatedAt = _time.GetUtcNow().UtcDateTime,
         };
         db.TenantHostnames.Add(entity);
         await db.SaveChangesAsync(cancellation);
+        routes?.Reload();
 
         try
         {
@@ -104,6 +133,7 @@ public sealed class TenantHostnameService(
             db.TenantHostnames.Remove(entity);
             await db.SaveChangesAsync(cancellation);
             cache.Reload();
+            routes?.Reload();
             throw new InvalidOperationException($"'{host}' was not added: {ex.Message}", ex);
         }
         return (await GetAsync(entity.Id, cancellation))!;
@@ -119,6 +149,24 @@ public sealed class TenantHostnameService(
         return await issuer.IssueAsync(entity, cancellation);
     }
 
+    /// <summary>
+    /// Sets or clears the node the ingress forwards the name to, and rebuilds the route table
+    /// in this process. Returns the previous value.
+    /// </summary>
+    /// <exception cref="KeyNotFoundException">No such hostname.</exception>
+    /// <exception cref="InvalidOperationException">The value is not an upstream address.</exception>
+    public async Task<string?> SetNodeUpstreamAsync(Guid id, string? nodeUpstream, CancellationToken cancellation = default)
+    {
+        var upstream = NormalizeNodeUpstream(nodeUpstream);
+        var entity = await db.TenantHostnames.FirstOrDefaultAsync(h => h.Id == id, cancellation)
+            ?? throw new KeyNotFoundException("Hostname not found.");
+        var previous = entity.NodeUpstream;
+        entity.NodeUpstream = upstream;
+        await db.SaveChangesAsync(cancellation);
+        routes?.Reload();
+        return previous;
+    }
+
     /// <summary>Removes the hostname: revokes its certificate, deletes its key file and its row, and stops serving it.</summary>
     /// <exception cref="KeyNotFoundException">No such hostname.</exception>
     public async Task DeleteAsync(Guid id, CancellationToken cancellation = default)
@@ -129,6 +177,7 @@ public sealed class TenantHostnameService(
         db.TenantHostnames.Remove(entity);
         await db.SaveChangesAsync(cancellation);
         cache.Reload();
+        routes?.Reload();
     }
 
     /// <summary>Names the listener already answers by a rule of its own, with what each is.</summary>

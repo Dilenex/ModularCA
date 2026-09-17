@@ -42,6 +42,10 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
 
+    <!-- The ingress tests host the real proxy wiring (loaded from the API by reflection) in
+         front of a stub node and assert on the route and cluster shape it produces. -->
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+
     <!-- coverlet.collector is intentionally NOT added yet. Coverage reports become useful once
          we have a meaningful test surface; adding it before that produces noisy 0% reports. -->
   </ItemGroup>

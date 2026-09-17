@@ -29,6 +29,7 @@
 	<PackageReference Include="Serilog.Sinks.Network" Version="3.0.0" />
 	<PackageReference Include="Serilog.Sinks.SyslogMessages" Version="4.1.0" />
 	<PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
+	<PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
 	<ProjectReference Include="..\ModularCA.Auth\ModularCA.Auth.csproj" />
 	<ProjectReference Include="..\ModularCA.Bootstrap\ModularCA.Bootstrap.csproj" />
 	<ProjectReference Include="..\ModularCA.Database\ModularCA.Database.csproj" />

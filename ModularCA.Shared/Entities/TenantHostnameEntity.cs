@@ -34,6 +34,15 @@ public class TenantHostnameEntity
     [MaxLength(1000)]
     public string? Notes { get; set; }
 
+    /// <summary>
+    /// The node that serves this name when it is not the process the ingress runs in:
+    /// <c>https://host:port</c> or <c>http://host:port</c>, the address the ingress forwards
+    /// to. Null means the name is served locally by the ingress process's own roles, which is
+    /// every name on a single-process install.
+    /// </summary>
+    [MaxLength(512)]
+    public string? NodeUpstream { get; set; }
+
     [ForeignKey(nameof(TenantId))]
     public virtual TenantEntity? Tenant { get; set; }
 

@@ -299,6 +299,8 @@ public static class AuditActionType
     public const string TenantHostnameDeleted = "TenantHostnameDeleted";
     /// <summary>An endpoint certificate was issued or renewed for a tenant hostname. Details carry the serials.</summary>
     public const string TenantHostnameCertificateIssued = "TenantHostnameCertificateIssued";
+    /// <summary>The node a tenant hostname is routed to by the ingress was set or cleared. Details carry the old and new upstream.</summary>
+    public const string TenantHostnameUpstreamChanged = "TenantHostnameUpstreamChanged";
 
     // Service identities (permission-only accounts that cannot sign in)
     public const string ServiceIdentityCreated = "ServiceIdentityCreated";

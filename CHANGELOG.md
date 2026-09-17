@@ -6,6 +6,35 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Separation of duties
+
+- **The signer is its own process.** Every stored private key is reached through one signing
+  contract, and nothing outside the keystore project can hold a key handle; an architecture test
+  fails the build if that changes. A key signs only for its own CA and tenant and only for the
+  purposes its kind allows; every decision is recorded in the signer's own audit table with the
+  ceremony it ran under and, over the wire, the peer that asked. `--role signer` runs the keystore
+  behind gRPC with mutual TLS, pinned both ways from a dedicated identity CA the signer creates
+  (`--init-identity`, `--issue-node-identity`), failing closed when it cannot record a decision; a
+  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A tenant
+  that requires ceremonies gets no key without an approved, unexpired one; a CA's OCSP, timestamp
+  and CMP signer keys are reissued under an infrastructure context that can never mint a CA key.
+  The default single process is unchanged.
+- **Roles.** Every controller and scheduled job belongs to one role: enrollment (the protocols),
+  validation (CRL, OCSP, AIA, CA certificates), control (console, admin, users, ceremonies,
+  backups) and ingress. `--role` or `Roles:` in the configuration selects any subset; a process
+  hosts only its roles' endpoints and jobs, and `/health/ready` reports what each active role
+  needs. The deploy readme describes the three-process layout.
+- **Ingress.** `--role ingress` terminates TLS for the public domain and every tenant hostname,
+  selected by SNI, and routes by hostname to tenant nodes with YARP, on plain HTTP as well so a
+  tenant's revocation URLs reach its node. Routes come from `Ingress.Routes` and from the tenant
+  hostnames table (`NodeUpstream`); a name with no upstream is served locally, which is how a
+  single process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that
+  fails its health checks answers 503 for its names.
+- **Tenant hostnames.** A tenant is reachable by its own names from one process: each name gets
+  an endpoint certificate from a CA of the tenant, presented by SNI and renewed with the console's
+  own; enrollment URLs derive from the name a request arrived on; the readiness check accepts any
+  name a tenant is reached by. The console and sign-in stay on the public domain.
+
 ### Server-generated private keys are delivered once, as one PKCS#12
 
 - **Short custody, then one file.** A private key the CA generates for a request is held on the

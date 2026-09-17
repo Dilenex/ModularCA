@@ -267,10 +267,39 @@ Https:
 #               scheduled job and startup write that mutates (CRL publishing, TLS renewal,
 #               backups, migrations)
 #   signer      the keystore and the signing service (see Signer above)
+#   ingress     TLS termination for every hostname and routing by name to the node that serves
+#               it (see Ingress below); alone it hosts no controller, scheduler or console
 # "node" is the three node roles; "all" is every role. An inactive role's paths do not exist
 # (404); /health lists the roles a process runs. --role on the command line wins over this
 # value, so a unit drop-in (deploy/dropins/) can set the role per host while the file is shared.
 # Roles: "all"                                 # e.g. "enrollment,validation" or "control"
+
+# Ingress. The process that terminates TLS for every name (the public domain with the web TLS
+# certificate, each tenant hostname with its own, chosen by SNI) and forwards each name to the
+# node that serves it, on Https.Port and on Http.Port (plain HTTP is routed by Host too, so a
+# tenant's CRL and OCSP URLs reach that tenant's node without a redirect). The route table is
+# the list below merged with the tenant hostnames table: a row whose NodeUpstream is set is
+# routed there; a route listed here wins over the row for the same host. A name with no
+# upstream anywhere is served by this process's own roles, so the default single process
+# routes nothing. A public-domain request with no route is served locally.
+# X-Forwarded-For/Proto/Host are added on the way to the node, which trusts them from loopback
+# and from Http.TrustedProxyCidrs. Authorization: Negotiate and WWW-Authenticate pass through.
+# Ingress:
+#   Routes:
+#     - Host: "ca.customer-a.example"
+#       Upstream: "https://127.0.0.1:8443"     # the node for that name
+#       PlainHttpUpstream: "http://127.0.0.1:8080"   # its plain-HTTP listener (CRL/OCSP); omit to use Upstream
+#       PinnedSpki: ""                         # SHA-256 SPKI pin of the node's TLS certificate, hex; optional
+#   HealthCheckIntervalSeconds: 10             # active probe of HealthCheckPath on every upstream
+#   HealthCheckTimeoutSeconds: 5               # a node failing its probes is answered 503 for its hosts
+#   HealthCheckPath: "/health/live"
+#   RouteRefreshSeconds: 30                    # re-read of the tenant hostnames table
+#   # Upstream TLS trust for https:// upstreams, in order: a route's PinnedSpki; else this CA
+#   # (PEM, relative to the install directory); else the system trust store.
+#   UpstreamCaCertificatePath: ""
+#   # Accept any certificate from an upstream on loopback (127.0.0.1, ::1, localhost) only. A
+#   # non-loopback https:// upstream under this flag is refused at startup: pin it or name a CA.
+#   DangerousAcceptAnyUpstreamCertificate: false
 
 # Webhook Notifications
 # Webhook:
