@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Core.Services.Msae.Kerberos;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
@@ -32,7 +33,8 @@ public class AdminKerberosRealmController(
     ICaGroupAuthorizationService groupAuth,
     ICurrentUserService currentUser,
     IAuditService audit,
-    ModularCADbContext db) : ControllerBase
+    ModularCADbContext db,
+    IPublicNameResolver names) : ControllerBase
 {
     /// <summary>Lists the tenant's bindings with key versions and encryption types. Never key bytes.</summary>
     [HttpGet]
@@ -174,14 +176,18 @@ public class AdminKerberosRealmController(
         }
     }
 
-    /// <summary>The PowerShell and Group Policy text for the forest. Contains no secret.</summary>
+    /// <summary>
+    /// The PowerShell and Group Policy text for the forest. Contains no secret. The policy URL
+    /// names the host in the binding's service principal when that is a name this service is
+    /// known by for the tenant, else the public domain, as the setup kit does.
+    /// </summary>
     [HttpGet("{id:guid}/setup-script")]
     public async Task<IActionResult> SetupScript(Guid tenantId, Guid id, [FromQuery] string? caLabel = null, [FromQuery] string? accountName = null)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } realm) return NotFound();
         var tenantName = await db.Tenants.Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync() ?? tenantId.ToString();
-        var host = $"{Request.Scheme}://{Request.Host}";
+        var host = await names.BaseUrlForServicePrincipalAsync(realm.ServicePrincipal, tenantId);
         var policyUrl = caLabel != null ? $"{host}/msae/{caLabel}/cep" : null;
         return Ok(new { script = KerberosRealmService.SetupScript(realm, tenantName, policyUrl, accountName, null) });
     }

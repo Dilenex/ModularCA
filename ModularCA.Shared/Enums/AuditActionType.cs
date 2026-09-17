@@ -289,6 +289,13 @@ public static class AuditActionType
     public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
     public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
 
+    // Tenant hostnames (names a tenant's enrollment endpoints are reached by, each under its own certificate)
+    /// <summary>A hostname was added to a tenant. Details name the host and the issuing CA.</summary>
+    public const string TenantHostnameCreated = "TenantHostnameCreated";
+    public const string TenantHostnameDeleted = "TenantHostnameDeleted";
+    /// <summary>An endpoint certificate was issued or renewed for a tenant hostname. Details carry the serials.</summary>
+    public const string TenantHostnameCertificateIssued = "TenantHostnameCertificateIssued";
+
     // Service identities (permission-only accounts that cannot sign in)
     public const string ServiceIdentityCreated = "ServiceIdentityCreated";
     public const string ServiceIdentityUpdated = "ServiceIdentityUpdated";

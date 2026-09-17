@@ -1380,6 +1380,11 @@ builder.Services.AddScoped<CertificateTemplateService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
 builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
+// Names this service is known by: the public domain plus each tenant's own hostnames, and the
+// endpoint certificates those names are served under.
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.IPublicNameResolver, ModularCA.Core.Services.Hostnames.PublicNameResolver>();
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.ITenantHostnameCertificateIssuer, ModularCA.Core.Services.Hostnames.TenantHostnameCertificateService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.TenantHostnameService>();
 builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
@@ -1442,6 +1447,28 @@ builder.Services.AddCors(options =>
 // but it now holds the Web TLS certificate used by the management UI / API listener.
 var apiCertProvider = new ApiCertificateProvider();
 builder.Services.AddSingleton(apiCertProvider);
+
+// Tenant hostnames: each name a tenant is reached by carries its own certificate, picked by SNI
+// on the same listener. The cache is filled once the listener is configured (below) and
+// rebuilt by the hostname service after every change; a five-minute TTL catches changes
+// made elsewhere. In setup mode there is no database and no tenant, so it stays empty.
+var tenantHostnameDbOptions = new Lazy<DbContextOptions<ModularCADbContext>>(() =>
+    new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+        .Options);
+var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache(
+    () =>
+    {
+        if (isSetupMode)
+            return new Dictionary<string, System.Security.Cryptography.X509Certificates.X509Certificate2>();
+        using var hostnameDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
+        return ModularCA.Core.Services.Hostnames.TenantHostnamePfxStore.LoadAll(
+            hostnameDb, config.Https.CertificatePassword ?? string.Empty,
+            message => Log.Warning("[TLS] Tenant hostname certificate: {Message}", message));
+    },
+    TimeSpan.FromMinutes(5),
+    message => Log.Warning("[TLS] Tenant hostname certificate reload failed: {Message}", message));
+builder.Services.AddSingleton(tenantHostnameCerts);
 builder.Services.AddScoped<TlsRenewalJob>();
 builder.Services.AddScoped<ISchedulerJob, TlsRenewalJob>(sp => sp.GetRequiredService<TlsRenewalJob>());
 
@@ -1979,6 +2006,12 @@ else
                 Environment.Exit(1);
             }
 
+            // Tenant hostname certificates for SNI selection. Never fatal: a name whose file is
+            // missing is answered with the console's certificate and reported in the log.
+            var tenantHostnameCount = tenantHostnameCerts.LoadNow();
+            if (tenantHostnameCount > 0)
+                Console.WriteLine($"[TLS] {tenantHostnameCount} tenant hostname certificate(s) loaded for SNI selection: {string.Join(", ", tenantHostnameCerts.Hostnames)}");
+
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
@@ -1997,7 +2030,11 @@ else
 
                         var options = new System.Net.Security.SslServerAuthenticationOptions
                         {
-                            ServerCertificate = apiCertProvider.GetCertificate(),
+                            // A tenant hostname gets its own certificate by exact SNI match; the
+                            // public domain, unknown names and clients that send no SNI get the
+                            // console's certificate, whichever mode supplied it.
+                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(
+                                sni, tenantHostnameCerts, apiCertProvider.GetCertificate()),
                             EnabledSslProtocols = sslProtocols,
 
                             // True on the EST subdomain as well, but it means something different

@@ -18,6 +18,7 @@
 export const StepUpOps = {
     SwitchBadge: 'switch-badge',
     ManageKerberosRealm: 'manage-kerberos-realm',
+    ManageTenantHostname: 'manage-tenant-hostname',
     RevokeCert: 'revoke-cert',
     HoldCert: 'hold-cert',
     UnholdCert: 'unhold-cert',

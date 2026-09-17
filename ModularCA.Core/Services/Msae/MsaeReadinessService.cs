@@ -1,5 +1,6 @@
-using System.Net;
+using DnsClient;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
@@ -17,18 +18,41 @@ public interface IHostNameProbe
     Task<string?> CanonicalNameAsync(string host, CancellationToken cancellation = default);
 }
 
-/// <summary>Resolves through the operating system's resolver, which is what the CA host itself uses.</summary>
+/// <summary>
+/// Asks DNS what a Windows client's resolver would be told, rather than what this host's own
+/// resolver says.
+/// </summary>
+/// <remarks>
+/// The CA host resolves its own name through its hosts file and whatever resolver it was given,
+/// which is not what a domain member sees; the first live check failed on a host that enrolled
+/// perfectly because its hosts file spelled its name differently. A client only ever sees DNS,
+/// so this probe queries the name and reads the answer: a CNAME record for the name means the
+/// name is an alias of the record's target, an address record means it is canonical, and no
+/// answer means it does not resolve from here, which is a warning rather than a verdict.
+/// </remarks>
 public sealed class DnsHostNameProbe : IHostNameProbe
 {
+    private readonly DnsClient.LookupClient _lookup = new(new DnsClient.LookupClientOptions { UseCache = false, ThrowDnsErrors = false, Retries = 1, Timeout = TimeSpan.FromSeconds(3) });
+
     /// <inheritdoc />
     public async Task<string?> CanonicalNameAsync(string host, CancellationToken cancellation = default)
     {
+        var name = host.TrimEnd('.');
         try
         {
-            var entry = await Dns.GetHostEntryAsync(host, cancellation);
-            return string.IsNullOrWhiteSpace(entry.HostName) ? host : entry.HostName;
+            var answers = new List<DnsClient.Protocol.DnsResourceRecord>();
+            foreach (var type in new[] { DnsClient.QueryType.A, DnsClient.QueryType.AAAA })
+            {
+                var response = await _lookup.QueryAsync(name, type, cancellationToken: cancellation);
+                if (response.HasError) continue;
+                answers.AddRange(response.Answers);
+            }
+            var cname = answers.CnameRecords().FirstOrDefault(r => string.Equals(r.DomainName.Value.TrimEnd('.'), name, StringComparison.OrdinalIgnoreCase));
+            if (cname != null) return cname.CanonicalName.Value.TrimEnd('.');
+            var hasAddress = answers.ARecords().Any() || answers.AaaaRecords().Any();
+            return hasAddress ? name : null;
         }
-        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException or OperationCanceledException)
+        catch (Exception ex) when (ex is DnsClient.DnsResponseException or System.Net.Sockets.SocketException or ArgumentException or OperationCanceledException or InvalidOperationException)
         {
             return null;
         }
@@ -52,7 +76,8 @@ public sealed class MsaeReadinessService(
     SystemConfig config,
     IEnrollmentPrincipalAuthorizer principals,
     IProfileResolutionService profiles,
-    IHostNameProbe hostNames)
+    IHostNameProbe hostNames,
+    IPublicNameResolver names)
 {
     /// <summary>Evaluates the CA identified by <paramref name="caId"/>, or returns null when there is no such CA.</summary>
     public async Task<MsaeReadiness?> EvaluateAsync(Guid caId, CancellationToken cancellation = default)
@@ -132,6 +157,15 @@ public sealed class MsaeReadinessService(
             : new List<Shared.Entities.KerberosRealmEntity>();
         var enabledRealms = realms.Where(r => r.IsEnabled).ToList();
         result.Realms = enabledRealms.Select(r => new MsaeReadinessRealm { Id = r.Id, Realm = r.Realm, DnsDomain = r.DnsDomain, ServicePrincipal = r.ServicePrincipal }).ToList();
+
+        // The URL a forest's clients are pointed at is built from the name in its binding's service
+        // principal when that is a name this service is known by for the tenant, else the public
+        // domain. The first enabled binding's URL is the headline; others are listed when they differ.
+        var advertised = new Dictionary<Guid, string>();
+        foreach (var realm in enabledRealms)
+            advertised[realm.Id] = $"{await names.BaseUrlForServicePrincipalAsync(realm.ServicePrincipal, ca.TenantId, cancellation)}/msae/{ca.Label}/cep";
+        if (enabledRealms.Count > 0)
+            result.CepUrl = advertised[enabledRealms[0].Id];
         var realmFix = hasTenant
             ? new MsaeReadinessFix { Label = "Open the tenant's Kerberos realms", Path = $"/tenants/{ca.TenantId}?tab=kerberos" }
             : new MsaeReadinessFix { Label = "Open Tenants", Path = "/tenants" };
@@ -258,41 +292,89 @@ public sealed class MsaeReadinessService(
             Fix = tplState == MsaeReadinessState.Pass ? null : new MsaeReadinessFix { Label = "Open Templates", Path = $"/templates{scope}" },
         });
 
-        // 8. The name clients reach the CA by, and the name the forest issues tickets for.
-        var publicHost = config.Https.PublicDomain?.Trim();
+        // 8. The name clients reach the CA by, and the name the forest issues tickets for. The
+        //    service principal may name the public hostname or any hostname of this tenant; a
+        //    tenant hostname must also carry a live endpoint certificate, or clients cannot
+        //    connect to it at all. Whichever name it is must resolve canonically.
+        var publicHost = PublicNameResolver.Normalize(config.Https.PublicDomain);
         var hostItems = new List<string>();
+        var hostnamesFix = hasTenant
+            ? new MsaeReadinessFix { Label = "Open the tenant's Hostnames", Path = $"/tenants/{ca.TenantId}?tab=hostnames" }
+            : realmFix;
         MsaeReadinessState hostState;
-        if (string.IsNullOrWhiteSpace(publicHost))
+        MsaeReadinessFix? hostFix = null;
+        if (publicHost == null)
         {
             hostState = MsaeReadinessState.Fail;
             hostItems.Add("No public hostname is configured, so the policy service cannot advertise a URL clients can reach.");
+            hostFix = new MsaeReadinessFix { Label = "Open Settings", Path = "/settings?tab=General" };
         }
         else
         {
             hostState = MsaeReadinessState.Pass;
+            var toProbe = new List<string>();
+            if (enabledRealms.Count == 0) toProbe.Add(publicHost);
             foreach (var realm in enabledRealms)
             {
-                var spnHost = realm.ServicePrincipal.Contains('/') ? realm.ServicePrincipal[(realm.ServicePrincipal.IndexOf('/') + 1)..] : realm.ServicePrincipal;
-                if (!string.Equals(spnHost, publicHost, StringComparison.OrdinalIgnoreCase))
+                var spnHost = PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal) ?? realm.ServicePrincipal;
+                var known = await names.ResolveAsync(spnHost, ca.TenantId, cancellation);
+                if (known == null)
                 {
                     hostState = MsaeReadinessState.Fail;
-                    hostItems.Add($"{realm.Realm}: the service principal names {spnHost} but clients reach this CA as {publicHost}; the forest issues tickets for a name this service is not called by.");
+                    hostItems.Add($"{realm.Realm}: the service principal names {spnHost}, which is neither the public hostname {publicHost} nor a hostname of this tenant; the forest issues tickets for a name this service is not called by.");
+                    hostFix ??= realmFix;
+                    continue;
                 }
+                if (known.TenantHostname != null)
+                {
+                    var cert = known.TenantHostname.CertificateId == null ? null
+                        : await db.Certificates.AsNoTracking()
+                            .Where(c => c.CertificateId == known.TenantHostname.CertificateId)
+                            .Select(c => new { c.NotAfter, c.Revoked })
+                            .FirstOrDefaultAsync(cancellation);
+                    if (cert == null)
+                    {
+                        hostState = MsaeReadinessState.Fail;
+                        hostItems.Add($"{realm.Realm}: {spnHost} is a hostname of this tenant but has no endpoint certificate, so no client can connect to it over TLS. Reissue it.");
+                        hostFix = hostnamesFix;
+                    }
+                    else if (cert.NotAfter.ToUniversalTime() <= now)
+                    {
+                        hostState = MsaeReadinessState.Fail;
+                        hostItems.Add($"{realm.Realm}: the endpoint certificate for {spnHost} expired on {cert.NotAfter:yyyy-MM-dd}; every connection to it fails. Reissue it.");
+                        hostFix = hostnamesFix;
+                    }
+                    else if (cert.Revoked)
+                    {
+                        hostState = MsaeReadinessState.Fail;
+                        hostItems.Add($"{realm.Realm}: the endpoint certificate for {spnHost} is revoked. Reissue it.");
+                        hostFix = hostnamesFix;
+                    }
+                    else
+                    {
+                        hostItems.Add($"{realm.Realm}: tickets are requested for HTTP/{spnHost}, a hostname of this tenant whose endpoint certificate is valid until {cert.NotAfter:yyyy-MM-dd}.");
+                    }
+                }
+                if (!toProbe.Contains(known.Host)) toProbe.Add(known.Host);
             }
-            var canonical = await hostNames.CanonicalNameAsync(publicHost, cancellation);
-            if (canonical == null)
+            foreach (var name in toProbe)
             {
-                if (hostState == MsaeReadinessState.Pass) hostState = MsaeReadinessState.Warn;
-                hostItems.Add($"{publicHost} does not resolve from this host. Clients in the forest resolve through their own DNS, so this may still work, but it cannot be checked from here.");
-            }
-            else if (!string.Equals(canonical.TrimEnd('.'), publicHost.TrimEnd('.'), StringComparison.OrdinalIgnoreCase))
-            {
-                hostState = MsaeReadinessState.Fail;
-                hostItems.Add($"{publicHost} is an alias of {canonical}. Windows canonicalises the name before asking for a ticket, asks for HTTP/{canonical}, and falls back to NTLM. Publish {publicHost} as an A record, or register HTTP/{canonical} on the service account as well.");
-            }
-            else
-            {
-                hostItems.Add($"{publicHost} resolves as a canonical name; tickets are requested for HTTP/{publicHost}.");
+                var canonical = await hostNames.CanonicalNameAsync(name, cancellation);
+                if (canonical == null)
+                {
+                    if (hostState == MsaeReadinessState.Pass) hostState = MsaeReadinessState.Warn;
+                    hostItems.Add($"{name} does not resolve from this host. Clients in the forest resolve through their own DNS, so this may still work, but it cannot be checked from here.");
+                }
+                else if (!string.Equals(canonical.TrimEnd('.'), name.TrimEnd('.'), StringComparison.OrdinalIgnoreCase))
+                {
+                    hostState = MsaeReadinessState.Fail;
+                    hostItems.Add($"{name} is an alias of {canonical}. Windows canonicalises the name before asking for a ticket, asks for HTTP/{canonical}, and falls back to NTLM. Publish {name} as an A record, or register HTTP/{canonical} on the service account as well.");
+                    hostFix ??= realmFix;
+                }
+                else
+                {
+                    hostItems.Add($"{name} resolves as a canonical name; tickets are requested for HTTP/{name}.");
+                }
             }
         }
         steps.Add(new MsaeReadinessStep
@@ -300,12 +382,10 @@ public sealed class MsaeReadinessService(
             Key = "hostname", Title = "Clients and the forest agree on the CA's name",
             State = hostState,
             Detail = hostState == MsaeReadinessState.Pass
-                ? "The service principal matches the public hostname and the name is canonical."
-                : "Kerberos tickets are issued for a name; when the name clients use differs from the one registered, authentication silently falls back to NTLM and is refused.",
+                ? "The service principal names a hostname this service is called by, and the name is canonical."
+                : "Kerberos tickets are issued for a name; when the name clients use differs from the one registered, or the name has no working certificate, authentication silently falls back to NTLM and is refused.",
             Items = hostItems,
-            Fix = hostState == MsaeReadinessState.Pass ? null : (string.IsNullOrWhiteSpace(publicHost)
-                ? new MsaeReadinessFix { Label = "Open Settings", Path = "/settings?tab=General" }
-                : realmFix),
+            Fix = hostState == MsaeReadinessState.Pass ? null : (hostFix ?? realmFix),
         });
 
         // 9. What the client needs, stated rather than checked.
@@ -317,6 +397,7 @@ public sealed class MsaeReadinessService(
             Items =
             [
                 $"Policy server URL: {result.CepUrl}",
+                .. enabledRealms.Where(r => advertised[r.Id] != result.CepUrl).Select(r => $"Policy server URL for {r.Realm}: {advertised[r.Id]}"),
                 $"Policy id: {result.PolicyId}",
                 "Authentication: Windows integrated (Kerberos)",
                 "Group Policy: Certificate Services Client - Certificate Enrollment Policy, then Auto-Enrollment enabled with renew and update.",

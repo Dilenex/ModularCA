@@ -1,7 +1,10 @@
-# A ModularCA node from the linux dist, unchanged: the same binary, the same layout under
-# /opt/modularca, the same config directory. Build with the tarball beside this file:
+# The ModularCA node as an OCI image: the linux dist, unchanged, with the same binary, the same
+# layout under /opt/modularca and the same config directory. The release workflow builds it from
+# the tarball it has just built and publishes it as ghcr.io/dilenex/modularca:<version>; the
+# same image runs under Podman and Docker. To build by hand, from the repository root with the
+# tarball in dist/:
 #
-#   podman build --build-arg DIST=modularca-0.2.0-linux-x64-staging.tar.gz -t modularca-node:0.2.0 .
+#   podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.3.0-linux-x64.tar.gz -t modularca:0.3.0 .
 #
 # The image carries no configuration and no data. /opt/modularca/config and /var/lib/modularca
 # are volumes; the entrypoint bootstraps the node headlessly the first time it starts with a
@@ -20,7 +23,7 @@ RUN mkdir -p /opt/modularca /var/lib/modularca \
  && rm /tmp/dist.tar.gz \
  && chown -R modularca:modularca /opt/modularca /var/lib/modularca
 
-COPY entrypoint.sh /usr/local/bin/modularca-entrypoint
+COPY deploy/container/entrypoint.sh /usr/local/bin/modularca-entrypoint
 RUN chmod +x /usr/local/bin/modularca-entrypoint
 
 USER modularca

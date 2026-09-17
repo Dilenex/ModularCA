@@ -204,6 +204,9 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
         finally { setBusy(false); }
     };
 
+    const [spn, setSpn] = useState(realm.servicePrincipal);
+    useEffect(() => { setSpn(realm.servicePrincipal); }, [realm.servicePrincipal]);
+
     const save = (patch: Partial<Realm>) => run('Update', async () => {
         const next = { ...realm, ...patch };
         await apiPutWithMfa(path, {
@@ -287,7 +290,6 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
                         <DetailField label="Realm" value={realm.realm} mono />
                         <DetailField label="DNS domain" value={realm.dnsDomain} mono />
-                        <DetailField label="Service principal" value={realm.servicePrincipal} mono />
                         <DetailField label="Acts as" value={realm.enrollmentUsername || realm.enrollmentUserId} />
                         <DetailField label="Machines" value={realm.allowMachines ? 'May enroll' : 'Refused'} />
                         <DetailField label="Users" value={realm.allowUsers ? 'May enroll' : 'Refused'} />
@@ -295,6 +297,15 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                         <DetailField label="Bound" value={fmt(realm.createdAt)} />
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelClass} htmlFor={`spn-${realm.id}`}>Service principal</label>
+                            <div className="flex gap-2">
+                                <input id={`spn-${realm.id}`} className={`${inputClass} font-mono`} value={spn} disabled={busy} onChange={(e) => setSpn(e.target.value)} aria-describedby={`spn-hint-${realm.id}`} />
+                                <button type="button" disabled={busy || spn.trim() === realm.servicePrincipal || !spn.trim()} onClick={() => save({ servicePrincipal: spn.trim() })}
+                                    className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shrink-0">Save</button>
+                            </div>
+                            <FieldHint id={`spn-hint-${realm.id}`}>The name clients reach this CA by, as HTTP/hostname. It must be registered on the forest's service account; the key is the account's, so a new name needs no new key. Windows asks for a ticket by the canonical name, so the hostname must be an A record.</FieldHint>
+                        </div>
                         <div>
                             <label className={labelClass}>Enrollment identity</label>
                             <select className={inputClass} value={realm.enrollmentUserId} disabled={busy} onChange={(e) => save({ enrollmentUserId: e.target.value })}>

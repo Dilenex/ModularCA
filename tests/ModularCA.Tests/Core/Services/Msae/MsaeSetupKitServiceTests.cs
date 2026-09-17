@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Core.Services.Msae;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.Config;
@@ -14,7 +15,7 @@ namespace ModularCA.Tests.Core.Services.Msae;
 /// </summary>
 public class MsaeSetupKitServiceTests
 {
-    private static (MsaeSetupKitService Service, CertificateAuthorityEntity Ca, KerberosRealmEntity Realm, Guid OtherTenantRealm) Build(bool withRoot = true)
+    private static (MsaeSetupKitService Service, CertificateAuthorityEntity Ca, KerberosRealmEntity Realm, Guid OtherTenantRealm) Build(bool withRoot = true, string spn = "HTTP/ca.msp.example", string? tenantHostname = null)
     {
         var db = InMemoryDbContextFactory.Create();
         var tenant = new TenantEntity { Id = Guid.NewGuid(), Name = "Customer A", Slug = "customer-a" };
@@ -29,13 +30,40 @@ public class MsaeSetupKitServiceTests
         db.CertificateAuthorities.Add(ca);
         var user = new UserEntity { Id = Guid.NewGuid(), Username = "svc-enroll", Email = "x@y", PasswordHash = "x" };
         db.Users.Add(user);
-        var realm = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = tenant.Id, Realm = "CORP.CUSTOMER-A.LOCAL", DnsDomain = "corp.customer-a.local", ServicePrincipal = "HTTP/ca.msp.example", EnrollmentUserId = user.Id, IsEnabled = true };
+        var realm = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = tenant.Id, Realm = "CORP.CUSTOMER-A.LOCAL", DnsDomain = "corp.customer-a.local", ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
         db.KerberosRealms.Add(realm);
+        if (tenantHostname != null)
+            db.TenantHostnames.Add(new TenantHostnameEntity { TenantId = tenant.Id, Hostname = tenantHostname, IssuingCaId = ca.Id });
         var other = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = Guid.NewGuid(), Realm = "CORP.CUSTOMER-B.LOCAL", DnsDomain = "corp.customer-b.local", ServicePrincipal = "HTTP/ca.msp.example", EnrollmentUserId = user.Id, IsEnabled = true };
         db.KerberosRealms.Add(other);
         db.SaveChanges();
         var config = new SystemConfig { Https = { PublicDomain = "ca.msp.example", PublicPort = 443 } };
-        return (new MsaeSetupKitService(db, config), ca, realm, other.Id);
+        return (new MsaeSetupKitService(db, config, new PublicNameResolver(db, config)), ca, realm, other.Id);
+    }
+
+    [Fact]
+    public async Task The_kit_names_the_host_in_the_service_principal_when_it_is_a_hostname_of_the_tenant()
+    {
+        var (service, ca, realm, _) = Build(spn: "HTTP/ca.customer-a.example", tenantHostname: "ca.customer-a.example");
+        var files = (await service.FilesAsync(ca.Id, realm.Id))!;
+
+        var gpo = files.Single(f => f.Name == "2-gpo-policy-server.ps1").Content;
+        Assert.Contains("$CepUrl       = 'https://ca.customer-a.example/msae/customer-a-issuing/cep'", gpo);
+        var check = files.Single(f => f.Name == "3-client-check.ps1").Content;
+        Assert.Contains("https://ca.customer-a.example/msae/customer-a-issuing/whoami", check);
+        Assert.Contains("klist get \"HTTP/ca.customer-a.example\"", check);
+        Assert.Contains("resolve `ca.customer-a.example` as a canonical name", files.Single(f => f.Name == "README.md").Content);
+        Assert.DoesNotContain("ca.msp.example", gpo);
+    }
+
+    [Fact]
+    public async Task A_service_principal_naming_an_unknown_host_falls_back_to_the_public_domain()
+    {
+        var (service, ca, realm, _) = Build(spn: "HTTP/ca.customer-a.example");   // no such tenant hostname
+        var files = (await service.FilesAsync(ca.Id, realm.Id))!;
+        var gpo = files.Single(f => f.Name == "2-gpo-policy-server.ps1").Content;
+        Assert.Contains("$CepUrl       = 'https://ca.msp.example/msae/customer-a-issuing/cep'", gpo);
+        Assert.Contains("HTTP/ca.customer-a.example", files.Single(f => f.Name == "1-ad-service-account.ps1").Content);
     }
 
     [Fact]

@@ -63,10 +63,19 @@ namespace ModularCA.API.Middleware
         /// </summary>
         /// <param name="next">The next delegate in the request pipeline.</param>
         /// <param name="config">The system configuration supplying the HTTP and HTTPS listener ports.</param>
-        public HttpSchemeEnforcementMiddleware(RequestDelegate next, SystemConfig config)
+        private readonly ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache? _tenantHostnames;
+
+        /// <param name="tenantHostnames">
+        /// The names this service presents a tenant certificate for. A request that arrived on one
+        /// of them is sent to HTTPS on that same name; every other host is sent to the public
+        /// domain, so the header still cannot steer the redirect anywhere the service is not.
+        /// </param>
+        public HttpSchemeEnforcementMiddleware(RequestDelegate next, SystemConfig config,
+            ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache? tenantHostnames = null)
         {
             _next = next;
             _config = config;
+            _tenantHostnames = tenantHostnames;
         }
 
         /// <summary>
@@ -108,21 +117,8 @@ namespace ModularCA.API.Middleware
             // an attacker-controllable Host header cannot influence the
             // Location. Fall back to request host only if PublicDomain is
             // unset (operators are warned at startup).
-            string target;
-            var publicDomain = _config.Https.PublicDomain?.Trim();
-            if (!string.IsNullOrWhiteSpace(publicDomain))
-            {
-                var port = _config.Https.PublicPort ?? 443;
-                var authority = port == 443 ? publicDomain : $"{publicDomain}:{port}";
-                target = $"https://{authority}{context.Request.Path}{context.Request.QueryString}";
-            }
-            else
-            {
-                var httpsPort = _config.Https.Port > 0 ? _config.Https.Port : 8443;
-                var host = context.Request.Host.Host;
-                var hostHeader = httpsPort == 443 ? host : $"{host}:{httpsPort}";
-                target = $"https://{hostHeader}{context.Request.Path}{context.Request.QueryString}";
-            }
+            var target = ModularCA.Core.Services.Hostnames.HttpsRedirectTarget.Build(
+                context.Request.Host.Host, $"{context.Request.Path}{context.Request.QueryString}", _config, _tenantHostnames);
 
             context.Response.StatusCode = 308;
             context.Response.Headers.Location = target;

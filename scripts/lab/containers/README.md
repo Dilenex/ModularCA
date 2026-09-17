@@ -29,10 +29,15 @@ Both resolve to the ca4 address; nginx tells them apart.
 
 On ca4, with the dist tarball and this directory:
 
+The Containerfile is the product's, at `deploy/container/`; the release workflow publishes the
+same image as `ghcr.io/dilenex/modularca:<version>`. To build it here from a staging tarball, from
+the repository root:
+
 ```sh
-cd scripts/lab/containers
-podman build --build-arg DIST=modularca-0.2.0-linux-x64-staging.tar.gz -t modularca-node:0.2.0 .
+podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.2.0-linux-x64-staging.tar.gz -t modularca-node:0.2.0 .
 ```
+
+Or pull the published image and use its tag in `modularca-node.container` instead.
 
 ## 2. Configuration volume
 

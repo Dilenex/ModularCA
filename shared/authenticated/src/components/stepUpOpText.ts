@@ -8,6 +8,7 @@
 const TEXT: Record<string, string> = {
     'switch-badge': 'Switch the badge this session wears',
     'manage-kerberos-realm': 'Change a Kerberos realm binding or its keys',
+    'manage-tenant-hostname': 'Add, remove or reissue a hostname a tenant is reached by',
     'revoke-cert': 'Revoke a certificate',
     'hold-cert': 'Place a certificate on hold',
     'unhold-cert': 'Lift the hold on a certificate',

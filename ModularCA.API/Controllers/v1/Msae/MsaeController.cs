@@ -91,7 +91,7 @@ public class MsaeController(
 
         try
         {
-            var policies = await policy.GetPoliciesAsync(caLabel, caller!);
+            var policies = await policy.GetPoliciesAsync(caLabel, caller!, Request.Host.Host);
             RecordSuccess(stopwatch);
             MutualAuth(caller!);
             return Content(XcepMessages.BuildGetPoliciesResponse(policies, request.MessageId), SoapContentType);

@@ -688,7 +688,14 @@ namespace ModularCA.Shared.Models.Config
         /// Returns <c>https://PublicDomain</c> when <see cref="PublicPort"/> is null or 443,
         /// otherwise <c>https://PublicDomain:PublicPort</c>.
         /// </summary>
-        public string GetPublicHttpsBaseUrl()
+        public string GetPublicHttpsBaseUrl() => GetHttpsBaseUrlFor(PublicDomain);
+
+        /// <summary>
+        /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
+        /// process serves on the same listener as <see cref="PublicDomain"/>: a tenant hostname,
+        /// for instance. The port rule is the public one, since every name shares the listener.
+        /// </summary>
+        public string GetHttpsBaseUrlFor(string host)
         {
             // PublicPort is the operator-facing port (may differ from Kestrel's bind port
             // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
@@ -696,8 +703,8 @@ namespace ModularCA.Shared.Models.Config
             var port = PublicPort ?? Port;
             if (port <= 0) port = 443;
             return port == 443
-                ? $"https://{PublicDomain}"
-                : $"https://{PublicDomain}:{port}";
+                ? $"https://{host}"
+                : $"https://{host}:{port}";
         }
 
         /// <summary>
