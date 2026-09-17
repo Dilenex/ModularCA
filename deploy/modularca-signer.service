@@ -1,0 +1,89 @@
+# ModularCA — the signer as its own systemd unit
+#
+# The second unit of the hardened single-server shape: this process holds the keystore, the
+# keystore passwords and the PKCS#11 session, and answers the node over gRPC with mutual TLS on
+# loopback. It hosts no controller, console, scheduler or enrollment protocol. The node runs
+# modularca.service with --role node and Signer.Mode: Remote, and holds no key.
+#
+# Install (after the node is set up as a single process and its wizard has completed):
+#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
+#   sudo cp deploy/modularca-signer.service /etc/systemd/system/
+#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --init-identity
+#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --issue-node-identity /tmp/node-identity
+#   # set Signer.PinnedClientSpki (printed) and the node's Signer section (from /tmp/node-identity)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca-signer
+#   sudo systemctl restart modularca
+# See README-DEPLOY.md, "Two units: the signer apart from the node", for the ownership changes.
+#
+# Logs:  journalctl -u modularca-signer -f
+
+[Unit]
+Description=ModularCA Signer (keystore and signing service)
+Documentation=https://github.com/edphemeral/modularCA
+# The signer classifies keys, verifies ceremonies and writes its audit through the database.
+After=network-online.target mysql.service mariadb.service
+Wants=network-online.target
+# The node refuses enrollment while the signer is unreachable and reconnects on its own, so
+# this is ordering only: start the signer first, and let the node find it.
+Before=modularca.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# notify: builder.Host.UseSystemd() signals READY=1 once the listener is up.
+Type=notify
+NotifyAccess=main
+
+User=modularca-signer
+Group=modularca-signer
+WorkingDirectory=/opt/modularca
+ExecStart=/opt/modularca/ModularCA.API --role signer
+
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=DOTNET_CONSOLE_ANSI_COLOR=false
+
+Restart=always
+RestartSec=5s
+
+# The signer listens on loopback 8446 by default (Signer.Listen); no privileged port.
+CapabilityBoundingSet=
+
+# --- Hardening -------------------------------------------------------------------
+# This is the process that holds the CA private keys. Everything the node's unit locks down
+# is locked down here, and the writable surface is smaller still: the keystores (a committed
+# key appends to them) and the logs, nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Only what the signer writes. config/ is read-only here: the identity commands run as this
+# user before the unit starts, and the unit itself changes no configuration.
+ReadWritePaths=/opt/modularca/keystores /opt/modularca/logs
+# A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
+
+# Core dumps of this process would contain unwrapped key material.
+LimitCORE=0
+
+LimitNOFILE=8192
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

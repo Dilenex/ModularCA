@@ -232,3 +232,45 @@ and this section records why.
 
 Follow-ups found on the way, not part of stage 1: the automatic renewal job's rekey path
 generates a key it then discards; bootstrap still writes CA-key wraps onto certificate rows.
+
+## Stage 2 as built (2026-09-17)
+
+Stage 2 is complete on `0.3.0-dev`: commits `e088697` to `2049172`, the suite at 1783 tests,
+the contract suite run a second time over the wire against a real signer host on loopback, and
+five deliberate breaks (either pin removed, fail-closed made fail-open, the ceremony check
+removed, the refusal reason dropped from the wire) each caught by a test.
+
+- **One project, `ModularCA.Signer`**, holding the proto, the client and the host, referencing
+  only `ModularCA.Shared`; the seam test seals it with the other four assemblies. Refusals cross
+  the wire as a permission-denied status with the reason name in a trailer, so the node rethrows
+  the same `SigningRefusedException`; transport failures become `SignerUnavailable`, which the
+  unlocked-signer filter and the readiness page report as "the signer is unreachable".
+- **Roles.** `--role signer` hosts only the gRPC service and a health route on the same
+  mutual-TLS listener; `--role node` with `Signer.Mode: Remote` loads no keystore and needs no
+  keystore password; the default, all roles in one process, is stage 1 unchanged. A node in
+  remote mode reads the CA certificates it used to get from the keystore from the database
+  instead (`DatabaseKeystoreCertificates`), which the design had not covered.
+- **Identity.** `--init-identity` creates the identity CA (ECDSA P-256, ten years) and the
+  signer's server certificate; `--issue-node-identity` issues the node's client certificate (one
+  year) and writes the server pin. Both sides check the SPKI pin and nothing else: no trust
+  store, no chain, no dates. Rotation is reissue and re-pin.
+- **Fail closed in the signer role**: an audit row that cannot be written refuses the operation
+  before any result leaves; key generation records before the pending key becomes reachable. In
+  process the stage 1 behaviour stays.
+- **Ceremony at the signer.** When a context names a ceremony, the signer verifies the row
+  exists, is approved and names the same CA and tenant before generating, committing or
+  importing a key. Contexts without a ceremony id are still allowed, because tenants that do not
+  require ceremonies create CAs directly; the follow-up is for the signer to read the tenant's
+  requirement and refuse id-less key management where a ceremony is required. Ceremony expiry
+  is not checked, matching the controller.
+- **Operations.** The gRPC channel's reconnect backoff is bounded to five seconds, found by the
+  reconnect test; the default would have left a node refusing enrollment two minutes after its
+  signer returned. The command-line backup and restore read keystore files locally, so on a
+  split install they run on the signer's host; the scheduled backup goes through the signer. The
+  first install completes as a single process before splitting, because bootstrap writes the
+  keystore locally.
+- **Deployment.** `deploy/modularca-signer.service` runs the signer under its own user with the
+  node unit's sandboxing; the deploy readme carries the two-unit steps.
+
+Follow-ups: the signer audit row does not carry the ceremony id or the client certificate's
+identity; the pod definition for the container tier needs the signer as a sidecar.

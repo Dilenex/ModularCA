@@ -63,6 +63,7 @@
     <ProjectReference Include="..\..\ModularCA.Core\ModularCA.Core.csproj" />
     <ProjectReference Include="..\..\ModularCA.Auth\ModularCA.Auth.csproj" />
     <ProjectReference Include="..\..\ModularCA.Bootstrap\ModularCA.Bootstrap.csproj" />
+    <ProjectReference Include="..\..\ModularCA.Signer\ModularCA.Signer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

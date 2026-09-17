@@ -19,6 +19,11 @@ namespace ModularCA.Shared.Models.Config
         public EmailConfig Email { get; set; } = new();
         public HttpsConfig Https { get; set; } = new();
         public HsmConfig Hsm { get; set; } = new();
+
+        /// <summary>
+        /// Where the node finds its signer and how the signer role listens; in process by default.
+        /// </summary>
+        public SignerConfig Signer { get; set; } = new();
         public IpWhitelistConfig IpWhitelist { get; set; } = new();
         public NetworkAuditConfig NetworkAudit { get; set; } = new();
         public WebhookConfig Webhook { get; set; } = new();

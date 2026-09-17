@@ -34,6 +34,7 @@
 	<ProjectReference Include="..\ModularCA.Database\ModularCA.Database.csproj" />
 	<ProjectReference Include="..\ModularCA.Core\ModularCA.Core.csproj" />
 	<ProjectReference Include="..\ModularCA.Keystore\ModularCA.Keystore.csproj" />
+	<ProjectReference Include="..\ModularCA.Signer\ModularCA.Signer.csproj" />
 
   </ItemGroup>
 

@@ -104,6 +104,12 @@ contents:
     dst: /lib/systemd/system/modularca.service
     file_info:
       mode: 0644
+  # The signer as its own unit, for the split install README-DEPLOY.md describes. Installed but
+  # not enabled: a single-process install never starts it.
+  - src: deploy/modularca-signer.service
+    dst: /lib/systemd/system/modularca-signer.service
+    file_info:
+      mode: 0644
 
   # Familiar paths for operators. The application resolves config, keystores and logs relative to
   # its own base directory (AppContext.BaseDirectory, in 84 places), so these are links to the real

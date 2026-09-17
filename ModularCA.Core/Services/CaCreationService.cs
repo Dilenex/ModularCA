@@ -182,6 +182,8 @@ public class CaCreationService(
     /// <paramref name="nameConstraintsExcludedJson"/> are baked into the cert via the
     /// NameConstraints extension AND copied onto the per-CA signing profile so the same
     /// constraints flow through to every leaf the CA later issues.
+    /// <paramref name="ceremonyId"/> is the approved key ceremony this creation executes, when
+    /// the tenant required one; the signer verifies it before it generates or commits a key.
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateRootAsync(
         string subjectCN, string? subjectO, string? subjectOU,
@@ -190,14 +192,16 @@ public class CaCreationService(
         Guid tenantId,
         string? publicBaseUrl = null,
         string? nameConstraintsPermittedJson = null,
-        string? nameConstraintsExcludedJson = null)
+        string? nameConstraintsExcludedJson = null,
+        Guid? ceremonyId = null)
     {
         await EnforceTenantCaQuotaAsync(tenantId);
 
         // The key is generated inside the signer and held pending under this ceremony context:
         // it signs only under it until it is committed to the certificate row, and is retired
-        // if anything fails before then.
-        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null);
+        // if anything fails before then. The ceremony's id rides the context so the signer can
+        // verify the approval itself.
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null, ceremonyId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
         X509Certificate newCaCert;
@@ -311,7 +315,9 @@ public class CaCreationService(
     /// Optional <paramref name="nameConstraintsPermittedJson"/> /
     /// <paramref name="nameConstraintsExcludedJson"/> are baked into the cert's NameConstraints
     /// extension AND copied onto the per-CA signing profile so downstream issuance honours
-    /// the same constraints.
+    /// the same constraints. <paramref name="ceremonyId"/> is the approved key ceremony this
+    /// creation executes, when the tenant required one; the signer verifies it before it
+    /// generates or commits a key.
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateIntermediateAsync(
         CertificateAuthorityEntity parentCa, CertificateEntity parentCert,
@@ -322,7 +328,8 @@ public class CaCreationService(
         string? publicBaseUrl = null,
         Guid? certProfileId = null,
         string? nameConstraintsPermittedJson = null,
-        string? nameConstraintsExcludedJson = null)
+        string? nameConstraintsExcludedJson = null,
+        Guid? ceremonyId = null)
     {
         await EnforceTenantCaQuotaAsync(tenantId);
 
@@ -378,8 +385,9 @@ public class CaCreationService(
 
         // The intermediate's key is generated inside the signer and held pending under this
         // ceremony context; it signs the CSR under it, and is retired if anything fails before
-        // it is committed to the issued certificate.
-        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null);
+        // it is committed to the issued certificate. The ceremony's id rides the context so the
+        // signer can verify the approval itself.
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null, ceremonyId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
 
@@ -1496,8 +1504,9 @@ public class CaCreationService(
             ?? throw new InvalidOperationException($"Infrastructure cert profile '{certProfileName}' not found. Run bootstrap to seed it.");
 
         // The subject key is the signer's: generated there, pending under a ceremony context
-        // naming this CA, and signing the CSR through the signer.
-        var keyContext = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id);
+        // naming this CA, and signing the CSR through the signer. At CA creation the CA's own
+        // context is the ceremony's, and its ceremony id carries over; a reissue has none.
+        var keyContext = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id, caSigningContext.CeremonyId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
         try

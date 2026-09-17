@@ -691,6 +691,39 @@ var appConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
 };
 var appConnStr = appConnBuilder.ConnectionString;
 
+// === Process roles ===
+// Every role by default: one process, the signer in it, as every install before stage 2.
+// --role signer runs the keystore and the signing service alone and returns here when it
+// stops; --role node runs everything else and reaches its signer as Signer.Mode says.
+ModularCA.API.Startup.ProcessRole processRoles;
+try
+{
+    processRoles = ModularCA.API.Startup.ProcessRoles.Parse(args);
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"[FATAL] {ex.Message}");
+    Environment.Exit(1);
+    throw;
+}
+if (ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args))
+{
+    // The identity of the signer channel is the signer role's to create; the node receives
+    // its half from the operator. These need the Signer section and nothing else.
+    if (processRoles != ModularCA.API.Startup.ProcessRole.Signer)
+    {
+        Console.Error.WriteLine("[FATAL] --init-identity and --issue-node-identity run on the signer role: add --role signer.");
+        Environment.Exit(1);
+    }
+    Log.Information("Operator triggered a signer identity command ({Args})", string.Join(' ', args));
+    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, AppContext.BaseDirectory));
+}
+if (processRoles == ModularCA.API.Startup.ProcessRole.Signer)
+{
+    Log.Information("Starting in the signer role");
+    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode));
+}
+
 // EF Core command interceptor measuring db query duration.
 // Shared singleton instance — interceptor itself is stateless and thread-safe.
 var dbDurationInterceptor = new ModularCA.Core.Services.DbCommandDurationInterceptor();
@@ -1139,7 +1172,15 @@ builder.Services.AddScoped<IPasswordPolicyService, PasswordPolicyService>();
 // and the MSAE checklist show it, and enrollment answers 503 until it changes.
 ModularCA.Keystore.Signing.SignerBootstrap signerBootstrap;
 
-if (isSetupMode)
+// A node whose signer is another process holds no keystore and needs none of its passwords:
+// the keys, the unlock and the audit are the signer role's, reached over mutual TLS. A
+// process that holds the signer role itself keeps the signer in process whatever Signer.Mode
+// says, since the keystore is here and the channel would lead back to this process.
+var signerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote;
+if (processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote)
+    Log.Warning("Signer.Mode is Remote but this process holds the signer role; the signer stays in process. Run --role node for a node that reaches a separate signer.");
+
+if (isSetupMode || signerIsRemote)
 {
     signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
 }
@@ -1210,7 +1251,7 @@ static bool IsKeystoreIntegrityFailure(Exception? ex)
 
 // Load HSM-backed CA signers if PKCS#11 is configured and enabled
 Pkcs11SessionManager? hsmSession = null;
-if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
+if (!signerIsRemote && config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
 {
     try
     {
@@ -1229,27 +1270,71 @@ if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
     }
 }
 
-builder.Services.AddSingleton<IKeystoreCertificates>(signerBootstrap.Certificates);
+if (signerIsRemote)
+{
+    // The certificates the keystore used to supply come from the database: every CA row's
+    // certificate as a signer, every CA certificate and enabled trust anchor as trusted.
+    builder.Services.AddSingleton<IKeystoreCertificates>(sp =>
+        new ModularCA.Core.Services.DatabaseKeystoreCertificates(
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Core.Services.DatabaseKeystoreCertificates>>()));
+}
+else
+{
+    builder.Services.AddSingleton<IKeystoreCertificates>(signerBootstrap.Certificates);
+}
 
-// The signer: the one door to a stored private key. In process for now, over the keys the
-// bootstrap unlocked, judging every request against its policy and writing its own audit row;
-// the same contract goes behind a separate process in the next stage without the callers
-// changing. A key it commits is appended to the keystore files under the passphrases the
-// keystore configuration already holds, re-signed by the pinned system signer.
-builder.Services.AddSingleton<ModularCA.Keystore.Signing.ISignerAuditSink>(sp =>
-    new ModularCA.Keystore.Signing.DatabaseSignerAuditSink(sp.GetRequiredService<IServiceScopeFactory>()));
-builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
-    signerBootstrap.CreateSigner(
-        Path.Combine(AppContext.BaseDirectory, "keystores"),
-        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
-        sp.GetRequiredService<IServiceScopeFactory>(),
-        sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
-        sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
-        sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
+// The signer: the one door to a stored private key. In process by default, over the keys the
+// bootstrap unlocked, judging every request against its policy and writing its own audit row.
+// A key it commits is appended to the keystore files under the passphrases the keystore
+// configuration already holds, re-signed by the pinned system signer. With Signer.Mode Remote
+// the same contract is a channel to the signer role: the node presents the client certificate
+// the signer's identity CA issued it and accepts only the server key it was given the pin of.
+if (signerIsRemote)
+{
+    ModularCA.Signer.Client.RemoteSignerOptions remoteSigner;
+    try
+    {
+        remoteSigner = new ModularCA.Signer.Client.RemoteSignerOptions(
+            new Uri(config.Signer.Endpoint, UriKind.Absolute),
+            ModularCA.Signer.Identity.Pkcs12Files.Load(
+                ModularCA.Shared.Models.Config.SignerConfig.ResolvePath(config.Signer.ClientCertificate, AppContext.BaseDirectory),
+                config.Signer.ClientCertificatePassword),
+            config.Signer.PinnedServerSpki);
+        if (ModularCA.Signer.Identity.SpkiPin.Normalize(remoteSigner.PinnedServerSpki) == null)
+            throw new ArgumentException("Signer.PinnedServerSpki is not a SHA-256 SPKI pin; copy it from the signer-pin.txt that --issue-node-identity wrote.");
+    }
+    catch (Exception ex) when (ex is ArgumentException or UriFormatException or FileNotFoundException or System.Security.Cryptography.CryptographicException)
+    {
+        Console.Error.WriteLine($"[FATAL] Signer.Mode is Remote but the node cannot reach a signer: {ex.Message}");
+        Console.Error.WriteLine("        Set Signer.Endpoint, Signer.ClientCertificate (from --issue-node-identity on the signer) and Signer.PinnedServerSpki.");
+        Environment.Exit(1);
+        throw;
+    }
+    Console.WriteLine($"[SIGNER] Remote signer at {remoteSigner.Endpoint}; the keystore and its passwords are not held by this process.");
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
+        new ModularCA.Signer.Client.RemoteSigningService(
+            remoteSigner,
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Signer.Client.RemoteSigningService>>()));
+}
+else
+{
+    builder.Services.AddSingleton<ModularCA.Keystore.Signing.ISignerAuditSink>(sp =>
+        new ModularCA.Keystore.Signing.DatabaseSignerAuditSink(sp.GetRequiredService<IServiceScopeFactory>()));
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
+        signerBootstrap.CreateSigner(
+            Path.Combine(AppContext.BaseDirectory, "keystores"),
+            Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
+            sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
+}
 
-// Key wrapping passphrase provider for HKDF-based non-RSA private key encryption
+// Key wrapping passphrase provider for HKDF-based non-RSA private key encryption. A node with
+// a remote signer holds no keystore password, so it gets the provider that refuses.
 var kwYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-if (!isSetupMode && File.Exists(kwYamlPath))
+if (!isSetupMode && !signerIsRemote && File.Exists(kwYamlPath))
 {
     builder.Services.AddSingleton<IKeyWrappingPassphraseProvider>(
         new KeystoreKeyWrappingPassphraseProvider(kwYamlPath));

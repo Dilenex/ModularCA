@@ -87,13 +87,15 @@ public sealed class SignerBootstrap
     /// <param name="audit">Where the signer records its decisions.</param>
     /// <param name="logger">Logger.</param>
     /// <param name="keyWrapping">The passphrase non-RSA key wraps are derived from, for unwrapping a stored end-entity key.</param>
+    /// <param name="failClosedOnAuditFailure">Whether a decision the audit cannot record is refused; the signer role's setting, false in process.</param>
     public ISigningService CreateSigner(
         string keystoresDirectory,
         string yamlPath,
         IServiceScopeFactory scopes,
         ISignerAuditSink audit,
         ILogger<InProcessSigningService> logger,
-        IKeyWrappingPassphraseProvider? keyWrapping)
+        IKeyWrappingPassphraseProvider? keyWrapping,
+        bool failClosedOnAuditFailure = false)
     {
         return new InProcessSigningService(
             _registry,
@@ -103,6 +105,7 @@ public sealed class SignerBootstrap
             logger,
             unlocked: Unlocked,
             backend: _backend,
-            keyWrapping: keyWrapping);
+            keyWrapping: keyWrapping,
+            failClosedOnAuditFailure: failClosedOnAuditFailure);
     }
 }

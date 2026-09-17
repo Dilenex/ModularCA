@@ -93,6 +93,81 @@ generated rather than chosen, it is printed once to the service log and the acco
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
 upgrades in ways the unit does not.
 
+## Two units: the signer apart from the node
+
+By default one process holds everything, keys included. The hardened shape runs the keys in a
+second unit, `modularca-signer.service`, under its own user: it holds `keystores/`, the keystore
+passwords and any PKCS#11 session, and answers the node over gRPC with mutual TLS on loopback.
+The node (`modularca.service` with `--role node`) then holds no key and no keystore password;
+each side pins the other's public key, and there is no trust-store lookup.
+
+Do this after the first install has completed its wizard as a single process, so the keystores
+and `config/keystore.yaml` exist.
+
+1. Create the signer's user and give it the keys. The node keeps everything else.
+
+       sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
+       sudo systemctl stop modularca
+       sudo chown -R modularca-signer:modularca-signer /opt/modularca/keystores
+       sudo chown modularca-signer:modularca-signer /opt/modularca/config/keystore.yaml
+       sudo chmod 0700 /opt/modularca/keystores
+       sudo chmod 0640 /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
+       sudo chgrp modularca-signer /opt/modularca/config /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
+       sudo chmod 0750 /opt/modularca/config
+
+   Both units read `config/config.yaml` and `config/db.yaml`; only the signer reads
+   `keystore.yaml`. The node no longer needs `keystore.yaml` or `keystores/` at all, and on two
+   hosts they are simply not copied to the node.
+
+2. On the signer, create the identity CA and the signer's server certificate, then issue the
+   node its client certificate:
+
+       cd /opt/modularca
+       sudo -u modularca-signer ./ModularCA.API --role signer --init-identity
+       sudo -u modularca-signer ./ModularCA.API --role signer --issue-node-identity /tmp/node-identity
+
+   The first writes `config/signer-identity-ca.pfx` and `config/signer-server.pfx`
+   (owner-only). The second writes `/tmp/node-identity/signer-client.pfx` and
+   `signer-pin.txt` and prints two things: the `PinnedClientSpki` for the signer, and the
+   `Signer:` section for the node.
+
+3. Configure both sides in `config/config.yaml`. The signer side:
+
+       Signer:
+         Listen: "127.0.0.1:8446"
+         ServerCertificate: "config/signer-server.pfx"
+         PinnedClientSpki: "<printed by --issue-node-identity>"
+
+   The node side, after moving `/tmp/node-identity/signer-client.pfx` to
+   `/opt/modularca/config/` (owned by `modularca`, mode 0600):
+
+       Signer:
+         Mode: "Remote"
+         Endpoint: "https://127.0.0.1:8446"
+         ClientCertificate: "config/signer-client.pfx"
+         PinnedServerSpki: "<the contents of signer-pin.txt>"
+
+   On one host both sections live in the same file; each process reads the keys for its role.
+
+4. Point the node's unit at the node role and start the signer first, then the node:
+
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role node\n' \
+           | sudo tee /etc/systemd/system/modularca.service.d/role.conf
+       sudo cp /opt/modularca/deploy/modularca-signer.service /etc/systemd/system/
+       sudo systemctl daemon-reload
+       sudo systemctl enable --now modularca-signer
+       sudo systemctl start modularca
+
+   `journalctl -u modularca-signer` shows the listener and the pins it holds; `/health/ready`
+   on the node shows the signer as a step. While the signer is down the node answers 503 on
+   every enrollment endpoint with "The signer is unreachable" and reconnects on its own.
+
+Backups taken by the node's scheduled job go through the signer and keep working. The
+command-line `--backup` and `--restore` read the keystore files directly, so on a split
+install run them on the signer host as the signer's user. The node's client certificate lives
+one year; reissue it with `--issue-node-identity` and replace the file and the pin.
+
 ## Break-glass
 
     cd /opt/modularca

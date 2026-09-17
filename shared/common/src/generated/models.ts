@@ -1291,6 +1291,21 @@ export interface SetupWebTlsCertificate {
     validityDays: number;
 }
 
+/** From `ModularCA.Shared/Models/Config/SignerConfig.cs`. */
+export interface SignerConfig {
+    mode: string;
+    endpoint: string;
+    clientCertificate: string;
+    clientCertificatePassword: string;
+    pinnedServerSpki: string;
+    listen: string;
+    serverCertificate: string;
+    serverCertificatePassword: string;
+    pinnedClientSpki: string;
+    identityCa: string;
+    identityCaPassword: string;
+}
+
 /** From `ModularCA.Shared/Models/SigningProfile.cs`. */
 export interface SigningProfile {
     name: string;
@@ -1386,6 +1401,7 @@ export interface SystemConfig {
     email: EmailConfig;
     https: HttpsConfig;
     hsm: HsmConfig;
+    signer: SignerConfig;
     ipWhitelist: IpWhitelistConfig;
     networkAudit: NetworkAuditConfig;
     webhook: WebhookConfig;

@@ -529,7 +529,8 @@ public class AdminKeyCeremonyController : ControllerBase
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
                         ? JsonSerializer.Serialize(parameters.NameConstraintsPermitted) : null,
                     nameConstraintsExcludedJson: parameters.NameConstraintsExcluded is { Count: > 0 }
-                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null);
+                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null,
+                    ceremonyId: ceremony.Id);
             }
             else if (ceremony.OperationType == "CreateIntermediateCA")
             {
@@ -555,7 +556,8 @@ public class AdminKeyCeremonyController : ControllerBase
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
                         ? JsonSerializer.Serialize(parameters.NameConstraintsPermitted) : null,
                     nameConstraintsExcludedJson: parameters.NameConstraintsExcluded is { Count: > 0 }
-                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null);
+                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null,
+                    ceremonyId: ceremony.Id);
             }
             else if (ceremony.OperationType == "CreateSshCa")
             {

@@ -5,6 +5,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Models.Msae;
+using ModularCA.Shared.Signing;
 
 namespace ModularCA.Core.Services.Msae;
 
@@ -105,15 +106,19 @@ public sealed class MsaeReadinessService(
         var steps = result.Steps;
 
         // 0. The signer. Every step below assumes a CA that can sign; a locked signer holds no
-        // usable key, and the enrollment endpoints refuse until it is unlocked.
+        // usable key, an unreachable one cannot be asked, and the enrollment endpoints refuse
+        // until it is unlocked and answering.
         var signerHealth = await signer.HealthAsync(cancellation);
+        var signerUnreachable = signerHealth.Backend == SignerHealth.UnreachableBackend;
         steps.Add(new MsaeReadinessStep
         {
-            Key = "signer", Title = "The signer is unlocked",
+            Key = "signer", Title = signerUnreachable ? "The signer is reachable" : "The signer is unlocked",
             State = signerHealth.Unlocked ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
             Detail = signerHealth.Unlocked
                 ? $"The signer holds {signerHealth.KeyCount} key(s) on the {signerHealth.Backend} backend."
-                : "The signer has not unlocked its keystore; nothing can be issued and the enrollment endpoints answer 503 until it does. Check the node's startup log for the keystore load.",
+                : signerUnreachable
+                    ? "The signer is unreachable; nothing can be issued and the enrollment endpoints answer 503 until the node reconnects to it. Check that the signer unit is running and that Signer.Endpoint, the client certificate and the pins match on both sides."
+                    : "The signer has not unlocked its keystore; nothing can be issued and the enrollment endpoints answer 503 until it does. Check the node's startup log for the keystore load.",
         });
 
         // 1. The protocol card.

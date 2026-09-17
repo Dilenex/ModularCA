@@ -235,6 +235,29 @@ Https:
   Port: 8443
   RenewalWindow: "P30D"      # ISO 8601 duration — renew 30 days before expiry
 
+# Signer separation. By default the signer runs inside this process and nothing here is read.
+# To hold the keys in a separate process (the "modularca-signer" systemd unit, or a sidecar):
+#   1. on the signer host:  ModularCA.API --role signer --init-identity
+#   2. on the signer host:  ModularCA.API --role signer --issue-node-identity <dir>
+#      (prints PinnedClientSpki for the signer and writes signer-client.pfx + signer-pin.txt for the node)
+#   3. set the node side below, run the node with --role node, and the signer with --role signer.
+# Each side pins the other's public key (SHA-256 over the SubjectPublicKeyInfo, hex); there is
+# no trust-store lookup. The node with Mode Remote holds no keystore and no keystore password.
+# Signer:
+#   # --- node side (--role node) ---
+#   Mode: "InProcess"                          # InProcess (default) | Remote
+#   Endpoint: "https://127.0.0.1:8446"         # the signer role's address
+#   ClientCertificate: "config/signer-client.pfx"
+#   ClientCertificatePassword: ""              # empty when the file has none
+#   PinnedServerSpki: ""                       # from signer-pin.txt
+#   # --- signer side (--role signer) ---
+#   Listen: "127.0.0.1:8446"                   # gRPC over mutual TLS, HTTP/2 only
+#   ServerCertificate: "config/signer-server.pfx"
+#   ServerCertificatePassword: ""
+#   PinnedClientSpki: ""                       # printed by --issue-node-identity
+#   IdentityCa: "config/signer-identity-ca.pfx"   # written by --init-identity; never read at runtime
+#   IdentityCaPassword: ""
+
 # Webhook Notifications
 # Webhook:
 #   Enabled: false

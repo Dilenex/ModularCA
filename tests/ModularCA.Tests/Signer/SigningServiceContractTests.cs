@@ -1047,6 +1047,105 @@ public abstract class SigningServiceContractTests
             Assert.Equal(source.Persistence.KeystoreFiles[name], target.Persistence.KeystoreFiles[name]);
     }
 
+    // ---- Ceremonies: the signer verifies the approval it is told about ----------------------
+
+    /// <summary>Seeds a ceremony row as the control plane writes one, and returns its id.</summary>
+    private static Guid SeedCeremony(SignerTestWorld world, string status, Guid? tenantId, string targetEntityId = "")
+    {
+        var id = Guid.NewGuid();
+        using var db = world.OpenDb();
+        db.KeyCeremonies.Add(new KeyCeremonyEntity
+        {
+            Id = id,
+            OperationType = "CreateRootCA",
+            Description = "signer contract",
+            Status = status,
+            TenantId = tenantId,
+            TargetEntityId = targetEntityId,
+            RequiredApprovals = 1,
+            CurrentApprovals = status == "Approved" ? 1 : 0,
+            ExpiresAt = DateTime.UtcNow.AddHours(1),
+        });
+        db.SaveChanges();
+        return id;
+    }
+
+    [Fact]
+    public async Task Keys_are_generated_committed_and_imported_under_a_ceremony_the_signer_verified()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var approved = SeedCeremony(world, "Approved", world.TenantA);
+        var ceremony = Context(SigningPurpose.Ceremony, null, world.TenantA) with { CeremonyId = approved };
+
+        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), ceremony);
+        var (_, certificateId, caId) = await SeedGeneratedCaAsync(world, signer, generated, ceremony);
+        await signer.CommitKeyAsync(generated.Key, certificateId, ceremony);
+        Assert.Contains(await signer.ListKeysAsync(Context(SigningPurpose.Ceremony, caId, world.TenantA)), k => k.Key.CertificateId == certificateId);
+
+        var keyless = world["keyless"];
+        var imported = await signer.ImportKeyAsync(
+            new KeyMaterial((byte[])keyless.PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, keyless.Ref.CertificateId),
+            Context(SigningPurpose.Ceremony, world.KeylessCaId, world.TenantA) with { CeremonyId = approved });
+        Assert.Equal(keyless.Ref, imported);
+    }
+
+    /// <summary>
+    /// The ceremonies the signer cannot verify: none by that id, one not approved in any of its
+    /// other states, one approved for another tenant, one targeting another CA.
+    /// </summary>
+    public static IEnumerable<object[]> UnverifiableCeremonyRows()
+    {
+        yield return new object[] { "missing" };
+        yield return new object[] { "Pending" };
+        yield return new object[] { "Rejected" };
+        yield return new object[] { "Executed" };
+        yield return new object[] { "Expired" };
+        yield return new object[] { "Cancelled" };
+        yield return new object[] { "other-tenant" };
+        yield return new object[] { "other-ca" };
+    }
+
+    [Theory]
+    [MemberData(nameof(UnverifiableCeremonyRows))]
+    public async Task Key_management_under_a_ceremony_the_signer_cannot_verify_is_refused(string kind)
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var ceremonyId = kind switch
+        {
+            "missing" => Guid.NewGuid(),
+            "other-tenant" => SeedCeremony(world, "Approved", world.TenantB),
+            "other-ca" => SeedCeremony(world, "Approved", world.TenantA, world.CaEcId.ToString()),
+            _ => SeedCeremony(world, kind, world.TenantA),
+        };
+        var caId = kind == "other-ca" ? world.CaRsaId : (Guid?)null;
+        var context = Context(SigningPurpose.Ceremony, caId, world.TenantA) with { CeremonyId = ceremonyId };
+
+        async Task Refused(Func<Task> operation)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(operation);
+            Assert.Equal(SigningRefusalReason.CeremonyNotApproved, ex.Reason);
+        }
+        await Refused(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context));
+        await Refused(() => signer.ImportKeyAsync(
+            new KeyMaterial((byte[])world["keyless"].PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, world["keyless"].Ref.CertificateId), context));
+
+        // A key generated under a verified ceremony is not committed under an unverifiable one,
+        // but it is still retired under it: retiring is the undo of a ceremony that failed.
+        var approved = Context(SigningPurpose.Ceremony, caId, world.TenantA) with { CeremonyId = SeedCeremony(world, "Approved", world.TenantA) };
+        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), approved);
+        var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, generated, approved);
+        await Refused(() => signer.CommitKeyAsync(generated.Key, certificateId, context));
+        await signer.RetireKeyAsync(generated.Key, context);
+
+        var rows = (await ReadAuditAsync(world)).Where(r => r.Outcome == SignerAuditEntity.RefusedOutcome).ToList();
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(new[] { "GenerateKey", "ImportKey", "CommitKey" }, rows.Select(r => r.Operation));
+        Assert.All(rows, r => Assert.Contains("eremony", r.Reason));
+        Assert.Empty(world.Persistence.Appended);
+    }
+
     private static bool VerifyWith(Org.BouncyCastle.Crypto.AsymmetricKeyParameter publicKey, string algorithm, byte[] signature)
     {
         var verifier = SignerUtilities.GetSigner(algorithm);

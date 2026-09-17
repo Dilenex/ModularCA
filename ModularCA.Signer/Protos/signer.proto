@@ -1,0 +1,153 @@
+// The signing contract over the wire, operation for operation as ISigningService defines it in
+// ModularCA.Shared. The node calls this through RemoteSigningService; the signer role serves it
+// through SignerGrpcService over InProcessSigningService. Identifiers cross as their string
+// forms: GUIDs in their canonical "D" form, an empty string for none; enums as their member
+// names, which is also how the signer's audit records them.
+//
+// A refusal is a gRPC status of PermissionDenied whose detail is the refusal message and whose
+// trailer "modularca-refusal-reason" carries the SigningRefusalReason member name, so the
+// client rethrows the same SigningRefusedException the in-process signer would have thrown.
+syntax = "proto3";
+
+package modularca.signer.v1;
+
+option csharp_namespace = "ModularCA.Signer.Wire";
+
+service Signer {
+  rpc Sign (SignRequest) returns (SignResponse);
+  rpc Decrypt (DecryptRequest) returns (DecryptResponse);
+  rpc GenerateKey (GenerateKeyRequest) returns (GenerateKeyResponse);
+  rpc CommitKey (CommitKeyRequest) returns (CommitKeyResponse);
+  rpc ImportKey (ImportKeyRequest) returns (ImportKeyResponse);
+  rpc ExportKey (ExportKeyRequest) returns (ExportKeyResponse);
+  rpc ListKeys (ListKeysRequest) returns (ListKeysResponse);
+  rpc RetireKey (RetireKeyRequest) returns (RetireKeyResponse);
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+// A reference to a stored key: the certificate id and the keystore name.
+message KeyRef {
+  string certificate_id = 1;
+  string keystore = 2;
+}
+
+// Who is asking, what for, and on whose behalf; the ceremony the operation executes, if any.
+message SigningContext {
+  string caller = 1;
+  string purpose = 2;
+  string tenant_id = 3;
+  string ca_id = 4;
+  string ceremony_id = 5;
+}
+
+message SignRequest {
+  KeyRef key = 1;
+  string algorithm = 2;
+  bytes data = 3;
+  SigningContext context = 4;
+}
+
+message SignResponse {
+  bytes signature = 1;
+}
+
+message DecryptRequest {
+  KeyRef key = 1;
+  bytes enveloped = 2;
+  SigningContext context = 3;
+}
+
+message DecryptResponse {
+  bytes content = 1;
+}
+
+message KeySpec {
+  string algorithm = 1;
+  string size_or_curve = 2;
+  optional string label = 3;
+}
+
+message GenerateKeyRequest {
+  KeySpec spec = 1;
+  SigningContext context = 2;
+}
+
+message GenerateKeyResponse {
+  KeyRef key = 1;
+  bytes public_key_der = 2;
+}
+
+message CommitKeyRequest {
+  KeyRef key = 1;
+  string certificate_id = 2;
+  SigningContext context = 3;
+}
+
+message CommitKeyResponse {
+}
+
+message KeyMaterial {
+  bytes wrapped = 1;
+  string format = 2;
+  string certificate_id = 3;
+  string keystore = 4;
+}
+
+message ImportKeyRequest {
+  KeyMaterial material = 1;
+  SigningContext context = 2;
+}
+
+message ImportKeyResponse {
+  KeyRef key = 1;
+}
+
+message ExportWrap {
+  string format = 1;
+  string password = 2;
+  repeated bytes chain = 3;
+}
+
+message ExportKeyRequest {
+  KeyRef key = 1;
+  ExportWrap wrap = 2;
+  SigningContext context = 3;
+}
+
+message ExportKeyResponse {
+  bytes wrapped = 1;
+}
+
+message ListKeysRequest {
+  SigningContext context = 1;
+}
+
+message KeyInfo {
+  KeyRef key = 1;
+  bytes public_key_der = 2;
+  string kind = 3;
+  string ca_id = 4;
+  string tenant_id = 5;
+  string backend = 6;
+}
+
+message ListKeysResponse {
+  repeated KeyInfo keys = 1;
+}
+
+message RetireKeyRequest {
+  KeyRef key = 1;
+  SigningContext context = 2;
+}
+
+message RetireKeyResponse {
+}
+
+message HealthRequest {
+}
+
+message HealthResponse {
+  bool unlocked = 1;
+  int32 key_count = 2;
+  string backend = 3;
+}

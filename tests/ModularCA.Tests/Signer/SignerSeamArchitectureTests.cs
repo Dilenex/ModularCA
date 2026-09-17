@@ -7,8 +7,9 @@ namespace ModularCA.Tests.Signer;
 
 /// <summary>
 /// Seals the signer seam: nothing in <c>ModularCA.Core</c>, <c>ModularCA.API</c>,
-/// <c>ModularCA.Auth</c> or <c>ModularCA.Bootstrap</c> may reach a stored private key except
-/// through <see cref="ModularCA.Shared.Signing.ISigningService"/>. The test loads the four
+/// <c>ModularCA.Auth</c>, <c>ModularCA.Bootstrap</c> or <c>ModularCA.Signer</c> (the wire, the
+/// remote client and the signer role's host) may reach a stored private key except through
+/// <see cref="ModularCA.Shared.Signing.ISigningService"/>. The test loads the five
 /// assemblies and walks every type they define: base types, interfaces, fields, properties,
 /// events, constructor and method signatures, and the IL of every method body, resolving each
 /// call, field access and type token. A reference to a handle type, to the keystore project's
@@ -58,10 +59,10 @@ public sealed class SignerSeamArchitectureTests
     private const string KeystoreAssemblyName = "ModularCA.Keystore";
 
     /// <summary>
-    /// The assemblies the seam is enforced on. Core, Auth and Bootstrap are referenced by the
-    /// test project and named by a type each defines; the API is not referenced (its package
-    /// graph is not the test project's) and is loaded by reflection from its build output for
-    /// the same configuration the tests were built in.
+    /// The assemblies the seam is enforced on. Core, Auth, Bootstrap and Signer are referenced
+    /// by the test project and named by a type each defines; the API is not referenced (its
+    /// package graph is not the test project's) and is loaded by reflection from its build
+    /// output for the same configuration the tests were built in.
     /// </summary>
     public static IEnumerable<object[]> SealedAssemblies()
     {
@@ -69,6 +70,7 @@ public sealed class SignerSeamArchitectureTests
         yield return new object[] { LoadApiAssembly() };
         yield return new object[] { typeof(ModularCA.Auth.Services.DpopProofService).Assembly };
         yield return new object[] { typeof(ModularCA.Bootstrap.BackupRestore).Assembly };
+        yield return new object[] { typeof(ModularCA.Signer.Wire.WireMapping).Assembly };
     }
 
     /// <summary>
@@ -114,10 +116,10 @@ public sealed class SignerSeamArchitectureTests
     }
 
     [Fact]
-    public void The_seal_covers_the_four_assemblies_the_design_names()
+    public void The_seal_covers_the_five_assemblies_the_design_names()
     {
         var names = SealedAssemblies().Select(a => ((Assembly)a[0]).GetName().Name!).ToHashSet();
-        Assert.Equal(new HashSet<string> { "ModularCA.Core", "ModularCA.API", "ModularCA.Auth", "ModularCA.Bootstrap" }, names);
+        Assert.Equal(new HashSet<string> { "ModularCA.Core", "ModularCA.API", "ModularCA.Auth", "ModularCA.Bootstrap", "ModularCA.Signer" }, names);
     }
 
     [Fact]

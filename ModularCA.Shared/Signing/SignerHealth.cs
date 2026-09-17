@@ -14,4 +14,13 @@ public sealed record SignerHealth(bool Unlocked, int KeyCount, string Backend)
 
     /// <summary>A PKCS#11 token holds the keys and performs every signature on-device.</summary>
     public const string Pkcs11Backend = "pkcs11";
+
+    /// <summary>
+    /// The signer is remote and did not answer: the report is the node's own, not the
+    /// signer's, and says only that nothing can be signed until the channel is back.
+    /// </summary>
+    public const string UnreachableBackend = "unreachable";
+
+    /// <summary>The report the node gives for a remote signer it cannot reach.</summary>
+    public static SignerHealth Unreachable() => new(false, 0, UnreachableBackend);
 }

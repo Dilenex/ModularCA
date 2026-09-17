@@ -47,6 +47,26 @@ public enum SigningRefusalReason
     /// signer's, or whose pin the signer could not authenticate. Nothing was written.
     /// </summary>
     IntegrityFailure,
+
+    /// <summary>
+    /// The signer could not write its audit row, and it does not act unrecorded: the operation
+    /// was refused before any result left it. Raised only by a signer that runs fail-closed,
+    /// which the signer role does; in process the node's own audit still sees the operation.
+    /// </summary>
+    AuditUnavailable,
+
+    /// <summary>
+    /// The signer could not be reached at all: the channel to the signer role is down, the
+    /// handshake was refused, or the call timed out. No decision was taken and nothing was
+    /// audited at the signer. The node answers service-unavailable until it reconnects.
+    /// </summary>
+    SignerUnavailable,
+
+    /// <summary>
+    /// The context named a ceremony the signer could not verify: no such ceremony, one that is
+    /// not approved, or one that names a different tenant or CA than the operation.
+    /// </summary>
+    CeremonyNotApproved,
 }
 
 /// <summary>

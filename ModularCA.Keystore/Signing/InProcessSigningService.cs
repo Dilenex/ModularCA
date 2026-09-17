@@ -67,6 +67,7 @@ public sealed class InProcessSigningService : ISigningService
     private readonly IKeyWrappingPassphraseProvider? _keyWrapping;
     private readonly bool _unlocked;
     private readonly string _backend;
+    private readonly bool _failClosedOnAuditFailure;
     private readonly ConcurrentDictionary<Guid, CachedOwner> _owners = new();
     private readonly ConcurrentDictionary<Guid, PendingKey> _pending = new();
 
@@ -81,6 +82,12 @@ public sealed class InProcessSigningService : ISigningService
     /// <param name="unlocked">Whether the keystore was decrypted; false in setup mode or after a failed load, when nothing can sign.</param>
     /// <param name="backend"><see cref="SignerHealth.Pkcs11Backend"/> when a PKCS#11 session is open, otherwise <see cref="SignerHealth.SoftwareBackend"/>.</param>
     /// <param name="keyWrapping">The passphrase the node derives non-RSA key wraps from, for unwrapping a stored end-entity key; null when only RSA-wrapped keys can be exported.</param>
+    /// <param name="failClosedOnAuditFailure">
+    /// Whether an audit row that cannot be written refuses the operation as
+    /// <see cref="SigningRefusalReason.AuditUnavailable"/> instead of logging and proceeding.
+    /// The signer role runs fail-closed: its audit is the only record of what was signed. In
+    /// process the node's own audit still sees the operation, and the stage-1 behaviour stays.
+    /// </param>
     public InProcessSigningService(
         ISignerKeyRegistry keystore,
         IServiceScopeFactory scopes,
@@ -89,7 +96,8 @@ public sealed class InProcessSigningService : ISigningService
         ILogger<InProcessSigningService> logger,
         bool unlocked = true,
         string backend = SignerHealth.SoftwareBackend,
-        IKeyWrappingPassphraseProvider? keyWrapping = null)
+        IKeyWrappingPassphraseProvider? keyWrapping = null,
+        bool failClosedOnAuditFailure = false)
     {
         _keystore = keystore ?? throw new ArgumentNullException(nameof(keystore));
         _scopes = scopes ?? throw new ArgumentNullException(nameof(scopes));
@@ -99,6 +107,7 @@ public sealed class InProcessSigningService : ISigningService
         _unlocked = unlocked;
         _backend = backend;
         _keyWrapping = keyWrapping;
+        _failClosedOnAuditFailure = failClosedOnAuditFailure;
     }
 
     /// <inheritdoc />
@@ -168,6 +177,7 @@ public sealed class InProcessSigningService : ISigningService
         if (refusal == null && spec.Label != null)
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 "The signer generates software keys only; a labelled key would be an on-device (PKCS#11) key, which nothing generates yet.");
+        refusal ??= await JudgeCeremonyAsync(context, cancellationToken);
         if (refusal != null)
         {
             await RecordAsync("GenerateKey", context, null, null, allowed: false, refusal.Message, null, cancellationToken);
@@ -186,9 +196,11 @@ public sealed class InProcessSigningService : ISigningService
             throw notAllowed;
         }
 
+        // Recorded before the key becomes reachable: a signer that fails closed on its audit
+        // then holds nothing a caller could name.
         var pending = PendingKey.From(keyPair, context);
-        _pending[pending.Ref.CertificateId] = pending;
         await RecordAsync("GenerateKey", context, pending.Ref, null, allowed: true, reason: null, SHA256.HashData(pending.PublicKeyDer), cancellationToken);
+        _pending[pending.Ref.CertificateId] = pending;
         return new GeneratedKey(pending.Ref, pending.PublicKeyDer);
     }
 
@@ -212,6 +224,7 @@ public sealed class InProcessSigningService : ISigningService
         if (refusal == null && !string.Equals(material.Format, KeyMaterial.Pkcs8, StringComparison.OrdinalIgnoreCase))
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"Key material in format '{material.Format}' cannot be imported; the signer accepts '{KeyMaterial.Pkcs8}'.");
+        refusal ??= await JudgeCeremonyAsync(context, cancellationToken);
 
         AsymmetricKeyParameter? privateKey = null;
         if (refusal == null)
@@ -260,7 +273,7 @@ public sealed class InProcessSigningService : ISigningService
         ArgumentNullException.ThrowIfNull(context);
 
         var committed = new KeyRef(certificateId, key.Keystore);
-        var refusal = JudgeKeyManagement(context);
+        var refusal = JudgeKeyManagement(context) ?? await JudgeCeremonyAsync(context, cancellationToken);
         PendingKey? pending = null;
         if (refusal == null && !_pending.TryGetValue(key.CertificateId, out pending))
             refusal = new SigningRefusedException(SigningRefusalReason.UnknownKey, $"No generated key awaits commit under {key}.");
@@ -548,6 +561,43 @@ public sealed class InProcessSigningService : ISigningService
         if (context.Purpose is not (SigningPurpose.Ceremony or SigningPurpose.Bootstrap))
             return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
                 $"Keys are generated, imported, committed and retired only under a ceremony or bootstrap context, not {context.Purpose}.");
+        return null;
+    }
+
+    /// <summary>
+    /// Verifies the ceremony a <see cref="SigningPurpose.Ceremony"/> context names, against the
+    /// database and read-only: the ceremony exists, is approved, names the tenant the context
+    /// names, and names no other CA than the one the context names. Anything else is
+    /// <see cref="SigningRefusalReason.CeremonyNotApproved"/>. A ceremony context that names
+    /// no ceremony is not held to one here: whether an operation needs a ceremony at all is the
+    /// node's tenant policy, and a tenant that does not require one creates its CAs directly.
+    /// Generation, import and commit are held to this; retiring a pending key is the undo of
+    /// a failed ceremony and is not.
+    /// </summary>
+    private async Task<SigningRefusedException?> JudgeCeremonyAsync(SigningContext context, CancellationToken cancellationToken)
+    {
+        if (context.Purpose != SigningPurpose.Ceremony || context.CeremonyId is not Guid ceremonyId)
+            return null;
+
+        KeyCeremonyEntity? ceremony;
+        using (var scope = _scopes.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+            ceremony = await db.KeyCeremonies.AsNoTracking().FirstOrDefaultAsync(c => c.Id == ceremonyId, cancellationToken);
+        }
+
+        if (ceremony == null)
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"No ceremony {ceremonyId} exists; the signer manages keys under a ceremony it can verify.");
+        if (!string.Equals(ceremony.Status, "Approved", StringComparison.Ordinal))
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"Ceremony {ceremonyId} is {ceremony.Status}, not Approved.");
+        if (context.TenantId != null && ceremony.TenantId != context.TenantId)
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"Ceremony {ceremonyId} was approved for tenant {ceremony.TenantId?.ToString() ?? "none"}, not tenant {context.TenantId}.");
+        if (context.CaId != null && Guid.TryParse(ceremony.TargetEntityId, out var target) && target != Guid.Empty && target != context.CaId)
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"Ceremony {ceremonyId} targets CA {target}, not CA {context.CaId}.");
         return null;
     }
 
@@ -914,9 +964,12 @@ public sealed class InProcessSigningService : ISigningService
 
     /// <summary>
     /// Writes the decision. The signer's record is the point of the signer, so a sink that
-    /// fails is an error, but it does not withhold a signature the policy allowed: the node's
-    /// own audit still sees the issuance, and a database that cannot take one insert has
-    /// already stopped the caller before it got here.
+    /// fails is an error. In process it does not withhold a signature the policy allowed: the
+    /// node's own audit still sees the issuance, and a database that cannot take one insert has
+    /// already stopped the caller before it got here. The signer role runs fail-closed instead:
+    /// its record is the only one, so a decision it cannot write is refused as
+    /// <see cref="SigningRefusalReason.AuditUnavailable"/> before any result leaves it, and the
+    /// signature, key or file the operation produced is dropped with it.
     /// </summary>
     private async Task RecordAsync(string operation, SigningContext context, KeyRef? key, SignatureAlgorithm? algorithm,
         bool allowed, string? reason, byte[]? dataHash, CancellationToken cancellationToken)
@@ -934,6 +987,9 @@ public sealed class InProcessSigningService : ISigningService
         {
             _logger.LogError(ex, "Signer: audit record could not be written for {Operation} on {Key} by {Caller} ({Purpose}, allowed={Allowed}).",
                 operation, key, context.Caller, context.Purpose, allowed);
+            if (_failClosedOnAuditFailure)
+                throw new SigningRefusedException(SigningRefusalReason.AuditUnavailable,
+                    $"The signer could not record its decision on {operation} and does not act unrecorded: {ex.Message}");
         }
     }
 
