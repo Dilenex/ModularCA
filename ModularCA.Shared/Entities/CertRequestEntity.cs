@@ -127,4 +127,24 @@ public class CertRequestEntity
 
     /// <inheritdoc cref="RequestedNotBefore"/>
     public DateTime? RequestedNotAfter { get; set; }
+
+    /// <summary>
+    /// The private key the CA generated for this request, in short custody: the PKCS#8 encoding
+    /// wrapped with ASP.NET Core Data Protection under the purpose
+    /// <c>ModularCA.CertificateRequests.HeldPrivateKey</c> plus this row's id, so the ciphertext
+    /// cannot be moved to another row. Null when the requester supplied the CSR, and again the
+    /// moment the key is delivered as PKCS#12 or discarded. The key never enters the keystore or
+    /// the signer; it exists only to be handed over together with the certificate.
+    /// </summary>
+    public byte[]? HeldPrivateKey { get; set; }
+
+    /// <summary>The algorithm of the held key (RSA, ECDSA, Ed25519, ...), kept for display after delivery.</summary>
+    [MaxLength(64)]
+    public string? HeldPrivateKeyAlgorithm { get; set; }
+
+    /// <summary>
+    /// When the held key left the CA as PKCS#12. Set in the same save that clears
+    /// <see cref="HeldPrivateKey"/>; null while the key is held or when it was discarded unissued.
+    /// </summary>
+    public DateTime? HeldKeyDeliveredAt { get; set; }
 }

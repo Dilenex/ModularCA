@@ -186,10 +186,12 @@ twice.
 ## Decisions on the open questions (2026-09-17)
 
 - The timestamp key stays a signer key.
-- Re-download of server-generated private keys ends. A key the CA generates is delivered once,
-  in the response that carries the certificate, and never stored; the console's key-generation
-  form says so. Keys already stored expire in place behind the signer's export policy and are
-  not migrated.
+- Re-download of server-generated private keys ends. A key the CA generates is held on its
+  request row under Data Protection, never in the keystore or the signer, until the certificate
+  is issued and the holder downloads certificate, chain and key as one PKCS#12; it is deleted
+  on delivery, and undelivered when the request is rejected or cancelled or its certificate is
+  revoked or expires. The console's key-generation form says so. Keys already stored expire in
+  place behind the signer's export policy and are not migrated.
 - The signer's audit is its own table in the shared database.
 
 ## Stage 1 as built (2026-09-17)
@@ -207,11 +209,15 @@ and this section records why.
   failed creation leaves nothing usable on disk. The keystore format has no entry removal, which
   is why the write waits for the commit. Each commit rewrites the keystore file, so creating a CA
   costs three rewrites today; a batched commit is a later convenience.
-- **Server-generated keys travel with the request, not the certificate.** Every server-side
+- **Server-generated keys are held briefly, then delivered once as PKCS#12.** Every server-side
   key-generation flow is approval-gated, so the certificate does not exist when the key is made.
-  The key is returned once, as PEM beside the CSR, and never stored. Keys stored before this
-  change are carried on their rows as ciphertext and exportable until they expire; renewals no
-  longer carry them forward. The clear-text PEM export is withdrawn; export is PKCS#12 only.
+  The node keeps the key wrapped under data protection on the request row, bound to that row,
+  never in the keystore or the signer; when the certificate issues, one download returns a
+  PKCS#12 with certificate, chain and key under the requester's password, and the key is deleted
+  in the same transaction. A rejected or cancelled request, a permanently revoked certificate, or
+  an expired one drops its key on the next cleanup sweep. Keys stored before this change are
+  carried on their rows as ciphertext and exportable until they expire; renewals never carry a
+  key forward. The clear-text PEM export is withdrawn.
 - **Backups carry whole keystore files.** The signer exports and imports keystore files as units
   (`SigningPurpose.Backup` and `Restore`), verified on import against the pinned signer. Per-key
   restore was rejected because the key that signs the keystore file is one of the keys being

@@ -5,6 +5,7 @@ using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using ModularCA.Tests.Signer;
 using ModularCA.Tests.TestUtils;
+using Microsoft.AspNetCore.DataProtection;
 using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
@@ -38,7 +39,7 @@ public sealed class CsrServiceSignerCsrTests
         db.SigningProfiles.Add(signingProfile);
         db.CertProfiles.Add(certProfile);
         await db.SaveChangesAsync();
-        var service = new CsrService(db);
+        var service = new CsrService(db, new HeldKeyService(db, new EphemeralDataProtectionProvider(), new RecordingAuditService()));
 
         var ceremony = new SigningContext("csr-test", SigningPurpose.Ceremony, world.TenantA, world.CaRsaId);
         var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), ceremony);

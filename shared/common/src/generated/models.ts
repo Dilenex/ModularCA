@@ -445,6 +445,8 @@ export interface CertRequestDto {
     issuedCertificateId?: string | null;
     requestedNotBefore?: string | null;
     requestedNotAfter?: string | null;
+    keyHeld: boolean;
+    heldKeyDeliveredAt?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -695,6 +697,13 @@ export interface FinalizeAcmeOrderRequest {
     csr: string;
 }
 
+/** From `ModularCA.Shared/Models/Csr/GeneratedCsr.cs`. */
+export interface GeneratedCsr {
+    csrPem: string;
+    requestId: string;
+    keyHeld: boolean;
+}
+
 /** From `ModularCA.Shared/Models/Management/UserEntityDto.cs`. */
 export interface GroupMembershipDto {
     groupId: string;
@@ -703,6 +712,11 @@ export interface GroupMembershipDto {
     templateName: string;
     certificateAuthorityId?: string | null;
     isSystemGroup: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Csr/HeldKeyPkcs12Request.cs`. */
+export interface HeldKeyPkcs12Request {
+    password: string;
 }
 
 /** From `ModularCA.Shared/Models/Revocation/RevokeCertificateRequest.cs`. */

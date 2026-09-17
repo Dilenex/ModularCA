@@ -34,6 +34,11 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// never ran. They live here now and run every tick. There is no master <c>Enabled</c> gate:
 /// each step is idempotent and cheap when there is nothing to do.
 /// </para>
+/// <para>
+/// The same tick discards held request keys that can no longer be delivered (see
+/// <see cref="IHeldKeyService.SweepAsync"/>): a rejected, cancelled or failed request, a
+/// requested validity that passed unissued, an issued certificate that is revoked or expired.
+/// </para>
 /// </remarks>
 public class ProtocolCleanupJob : SingletonCronJob
 {
@@ -41,6 +46,7 @@ public class ProtocolCleanupJob : SingletonCronJob
     private readonly ModularCADbContext _db;
     private readonly IAuditService _audit;
     private readonly SystemConfig _config;
+    private readonly IHeldKeyService _heldKeys;
 
     /// <summary>Status of a request written for immediate issuance that has not been issued.</summary>
     public const string PendingStatus = "Pending";
@@ -50,13 +56,15 @@ public class ProtocolCleanupJob : SingletonCronJob
 
     /// <summary>
     /// Initializes a new instance of <see cref="ProtocolCleanupJob"/> with the standard
-    /// <see cref="SingletonCronJob"/> dependencies plus the database and audit service.
+    /// <see cref="SingletonCronJob"/> dependencies plus the database, the audit service and
+    /// the held-key service whose sweep runs on the same tick.
     /// </summary>
     public ProtocolCleanupJob(
         ILogger<ProtocolCleanupJob> logger,
         ModularCADbContext db,
         IAuditService audit,
         SystemConfig config,
+        IHeldKeyService heldKeys,
         IServiceProvider serviceProvider,
         SchedulerJobRunner runner,
         TimeProvider? timeProvider = null)
@@ -66,6 +74,7 @@ public class ProtocolCleanupJob : SingletonCronJob
         _db = db;
         _audit = audit;
         _config = config;
+        _heldKeys = heldKeys;
     }
 
     /// <inheritdoc />
@@ -126,11 +135,15 @@ public class ProtocolCleanupJob : SingletonCronJob
             _logger.LogDebug("Swept {Count} expired CMP transaction row(s).", cmpExpired.Count);
         }
 
-        var result = new CleanupResult(orphans.Count, scepExpired.Count, cmpExpired.Count);
+        var heldKeysDiscarded = await _heldKeys.SweepAsync(now, cancellationToken);
+        if (heldKeysDiscarded > 0)
+            _logger.LogInformation("Discarded {Count} held request key(s) that can no longer be delivered.", heldKeysDiscarded);
+
+        var result = new CleanupResult(orphans.Count, scepExpired.Count, cmpExpired.Count, heldKeysDiscarded);
         if (result.Total > 0)
         {
             await _audit.LogAsync(AuditActionType.ProtocolCleanupCompleted, null, "Scheduler",
-                details: new { result.OrphanedRequests, result.ScepTransactions, result.CmpTransactions, GraceMinutes = graceMinutes });
+                details: new { result.OrphanedRequests, result.ScepTransactions, result.CmpTransactions, result.HeldKeysDiscarded, GraceMinutes = graceMinutes });
         }
         return result;
     }
@@ -139,8 +152,9 @@ public class ProtocolCleanupJob : SingletonCronJob
     protected override Task ExecuteAsync(CancellationToken cancellationToken) => RunOnceAsync(cancellationToken);
 
     /// <summary>What one pass removed.</summary>
-    public sealed record CleanupResult(int OrphanedRequests, int ScepTransactions, int CmpTransactions)
+    public sealed record CleanupResult(int OrphanedRequests, int ScepTransactions, int CmpTransactions, int HeldKeysDiscarded = 0)
     {
-        public int Total => OrphanedRequests + ScepTransactions + CmpTransactions;
+        /// <summary>Everything the pass removed, across the four sweeps.</summary>
+        public int Total => OrphanedRequests + ScepTransactions + CmpTransactions + HeldKeysDiscarded;
     }
 }

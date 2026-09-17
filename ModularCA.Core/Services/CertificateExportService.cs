@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Signing;
@@ -19,8 +19,9 @@ public enum CertificateExportOutcome
     NotFound,
 
     /// <summary>
-    /// The certificate exists but the CA holds no key for it. Since re-download ended, a key the
-    /// CA generates is delivered once, with the request that carries it, and is not kept.
+    /// The certificate exists but the CA holds no stored key for it. A key the CA generates is
+    /// held on its request only until the PKCS#12 is downloaded from the request, and the
+    /// request endpoints deliver it; this export serves the keys stored before that.
     /// </summary>
     KeyNotHeld,
 
@@ -40,7 +41,7 @@ public sealed record CertificateExport(CertificateExportOutcome Outcome, byte[]?
 {
     /// <summary>The sentence a holder sees when the CA never kept their key.</summary>
     public const string KeyNotHeldDetail =
-        "The private key for this certificate was delivered once, in the download that carried the request, and is not kept by the CA.";
+        "The CA holds no stored private key for this certificate. A key the CA generated is delivered once, as the PKCS#12 downloaded from the request, and is not kept.";
 }
 
 /// <summary>
@@ -91,13 +92,13 @@ public class CertificateExportService : ICertificateExportService
         if (!certEntity.HasExportablePrivateKey())
             return new CertificateExport(CertificateExportOutcome.KeyNotHeld, Detail: CertificateExport.KeyNotHeldDetail);
 
-        var (chain, caId, tenantId) = await ResolveChainAsync(certEntity, includeChain);
-        var context = new SigningContext(caller, SigningPurpose.Export, tenantId, caId);
+        var issuers = await IssuerChainResolver.ResolveAsync(_db, certEntity, includeChain);
+        var context = new SigningContext(caller, SigningPurpose.Export, issuers.TenantId, issuers.CaId);
         try
         {
             var pkcs12 = await _signer.ExportKeyAsync(
                 new KeyRef(certEntity.CertificateId),
-                new ExportWrap(ExportWrap.Pkcs12, password, chain),
+                new ExportWrap(ExportWrap.Pkcs12, password, issuers.Chain),
                 context);
             return new CertificateExport(CertificateExportOutcome.Exported, pkcs12);
         }
@@ -109,56 +110,5 @@ public class CertificateExportService : ICertificateExportService
         {
             return new CertificateExport(CertificateExportOutcome.Refused, Detail: ex.Message);
         }
-    }
-
-    /// <summary>
-    /// Walks the issuer chain from the certificate's signing profile: the direct issuer is
-    /// always included, and the root only when it is the direct issuer, so a PKCS#12 carries
-    /// what a client needs to present and not the trust anchor it should already hold. Also
-    /// returns the issuing CA and its tenant for the export context.
-    /// </summary>
-    private async Task<(List<byte[]> Chain, Guid? CaId, Guid? TenantId)> ResolveChainAsync(CertificateEntity certEntity, bool includeChain)
-    {
-        var chain = new List<byte[]>();
-        Guid? caId = null;
-        Guid? tenantId = null;
-        var issuerId = certEntity.SigningProfile?.IssuerId;
-        if (issuerId == null)
-            return (chain, caId, tenantId);
-
-        var directIssuerCa = await _db.CertificateAuthorities
-            .AsNoTracking()
-            .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId);
-        caId = directIssuerCa?.Id;
-        tenantId = directIssuerCa?.TenantId;
-        if (!includeChain)
-            return (chain, caId, tenantId);
-
-        var directIssuerIsRoot = directIssuerCa?.ParentCaId == null;
-        var visited = new HashSet<Guid>();
-        while (issuerId.HasValue && visited.Add(issuerId.Value))
-        {
-            var issuerEntity = await _db.Certificates
-                .Include(c => c.SigningProfile)
-                .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.CertificateId == issuerId.Value);
-            if (issuerEntity == null) break;
-
-            var issuerCa = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId.Value);
-
-            // Skip the root when intermediates exist; include it when it is the direct issuer.
-            if (issuerCa?.ParentCaId == null && !directIssuerIsRoot)
-                break;
-
-            chain.Add(CertificateUtil.ParseFromPem(issuerEntity.Pem).GetEncoded());
-
-            if (issuerCa?.ParentCaId == null)
-                break;
-
-            issuerId = issuerEntity.SigningProfile?.IssuerId;
-        }
-        return (chain, caId, tenantId);
     }
 }

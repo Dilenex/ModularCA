@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
@@ -46,7 +47,8 @@ public class ProtocolCleanupJobTests
         var sp = new ServiceCollection().BuildServiceProvider();
         var time = new FixedTimeProvider(new DateTimeOffset(Now));
         var audit = new RecordingAudit();
-        var job = new ProtocolCleanupJob(NullLogger<ProtocolCleanupJob>.Instance, db, audit, config, sp,
+        var heldKeys = new HeldKeyService(db, new EphemeralDataProtectionProvider(), audit, time);
+        var job = new ProtocolCleanupJob(NullLogger<ProtocolCleanupJob>.Instance, db, audit, config, heldKeys, sp,
             new SchedulerJobRunner(sp, NullLogger<SchedulerJobRunner>.Instance, config, "test", time), time);
         return (job, db, audit);
     }
@@ -128,6 +130,30 @@ public class ProtocolCleanupJobTests
         Assert.Equal("live", Assert.Single(db.ScepTransactions).TransactionId);
         Assert.Equal("recent", Assert.Single(db.CmpTransactions).TransactionId);
         Assert.Single(audit.Entries);
+    }
+
+    [Fact]
+    public async Task A_held_request_key_whose_certificate_was_revoked_is_discarded_on_the_same_tick()
+    {
+        // The held-key sweep rides on this job rather than a scheduler of its own; the tick
+        // must reach it and count what it discarded.
+        var (job, db, audit) = Build();
+        var heldKeys = new HeldKeyService(db, new EphemeralDataProtectionProvider(), audit);
+        var cert = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "AA", SubjectDN = "CN=revoked", Issuer = "CN=ca", Pem = "x",
+            NotAfter = Now.AddYears(1), Revoked = true, RevocationReason = "KeyCompromise" };
+        var request = Request(status: "Issued", requestor: Guid.NewGuid(), issued: cert.CertificateId);
+        heldKeys.Hold(request, ModularCA.Shared.Utils.KeyGenerationUtil.GenerateKeyPair("ECDSA", "P-256").Private, "ECDSA");
+        db.Certificates.Add(cert);
+        db.CertificateRequests.Add(request);
+        await db.SaveChangesAsync();
+
+        var result = await job.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.HeldKeysDiscarded);
+        Assert.Equal(1, result.Total);
+        Assert.Null(Assert.Single(db.CertificateRequests).HeldPrivateKey);
+        Assert.Contains(audit.Entries, e => e.Action == "HeldKeyDiscarded");
+        Assert.Contains(audit.Entries, e => e.Action == "ProtocolCleanupCompleted");
     }
 
     [Fact]

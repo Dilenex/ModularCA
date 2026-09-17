@@ -1341,6 +1341,7 @@ builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAutho
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
 builder.Services.AddScoped<ICertificateExportService, CertificateExportService>();
+builder.Services.AddScoped<IHeldKeyService, HeldKeyService>();
 builder.Services.AddScoped<ITimestampService, TimestampService>();
 builder.Services.AddScoped<ISshCaService, SshCaService>();
 builder.Services.AddScoped<ILdapGroupProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Services.ILdapAuthService>() as ILdapGroupProvider

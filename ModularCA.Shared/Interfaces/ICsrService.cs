@@ -1,4 +1,4 @@
-﻿using ModularCA.Shared.Models.Csr;
+using ModularCA.Shared.Models.Csr;
 using Org.BouncyCastle.Crypto;
 
 namespace ModularCA.Shared.Interfaces
@@ -39,9 +39,10 @@ namespace ModularCA.Shared.Interfaces
             Guid? requestorUserId = null);
 
         /// <summary>
-        /// Generates a fresh key pair and a CSR signed by it, stores the CSR as a pending request,
-        /// and returns the CSR together with the private key. The key is delivered in this
-        /// result only and is not stored anywhere by the CA.
+        /// Generates a fresh key pair and a CSR signed by it, stores the CSR as a pending request
+        /// with the private key held on the row under Data Protection, and returns the CSR. The
+        /// key is delivered as PKCS#12 with the certificate once the request is issued, and
+        /// deleted then; it never enters the keystore.
         /// </summary>
         Task<GeneratedCsr> GenerateCsrAsync(CreateCsrRequest request, Guid userId);
 

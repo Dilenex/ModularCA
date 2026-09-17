@@ -43,7 +43,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         ICsrService csrService,
         IDistributedCache cache,
         ICaGroupAuthorizationService authService,
-        IValidityCeilingService validityCeiling) : ControllerBase
+        IValidityCeilingService validityCeiling,
+        IHeldKeyService heldKeys) : ControllerBase
     {
         private readonly ModularCADbContext _dbContext = dbContext;
         private readonly ICertificateIssuanceService _certificateIssuanceService = certificateIssuanceService;
@@ -55,6 +56,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly IDistributedCache _cache = cache;
         private readonly ICaGroupAuthorizationService _authService = authService;
         private readonly IValidityCeilingService _validityCeiling = validityCeiling;
+        private readonly IHeldKeyService _heldKeys = heldKeys;
 
         /// <summary>
         /// Resolve the CA via CSR → SigningProfile → IssuerId → CA, then
@@ -272,13 +274,14 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Issues a certificate with a server-generated key pair. Generates the keypair based on the
-        /// requested algorithm and size, builds a PKCS#10 CSR server-side, uploads it through the
-        /// standard CSR pipeline, and immediately issues the certificate. The private key is stored
-        /// encrypted on the certificate entity and can be exported via the PFX export endpoint.
+        /// Submits a certificate request with a server-generated key pair. Generates the key pair,
+        /// builds a PKCS#10 CSR server-side, uploads it through the standard CSR pipeline and holds
+        /// the private key on the request under Data Protection. The request is approved and
+        /// issued from the Requests page; the certificate and key are then downloaded together as
+        /// PKCS#12 from <c>POST /api/v1/admin/requests/{id}/pkcs12</c>, which deletes the held key.
         /// </summary>
         /// <param name="req">The request body containing subject, SANs, key algorithm, profiles, and validity dates.</param>
-        /// <returns>Certificate serial, subject DN, validity dates, and a message directing to the export endpoint.</returns>
+        /// <returns>The request id, the CSR, and whether the key is held.</returns>
         [HttpPost("issue-with-key")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "req.SigningProfileId")]
@@ -392,20 +395,23 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (csrEntity == null)
                 return StatusCode(500, new { error = "Failed to locate the uploaded CSR entity." });
 
+            // The key is held on the request, wrapped, until the certificate is issued and the
+            // PKCS#12 is downloaded. It is not in this response.
+            await _heldKeys.HoldAsync(csrEntity.Id, keyPair.Private, req.KeyAlgorithm);
+
             // Do NOT issue immediately — the request stays pending for approval/issuance
             await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
                 "CertificateRequest", csrEntity.Id.ToString(),
-                new { Source = "ServerKeyGen", KeyAlgorithm = req.KeyAlgorithm, KeySize = req.KeySize },
+                new { Source = "ServerKeyGen", KeyAlgorithm = req.KeyAlgorithm, KeySize = req.KeySize, KeyHeld = true },
                 HttpContext.Connection.RemoteIpAddress?.ToString());
 
-            // The key is in this response and nowhere else: the CA does not keep it.
             return Ok(new
             {
                 requestId = csrEntity.Id,
-                hasPrivateKey = true,
+                keyHeld = true,
+                certificateIssued = false,
                 csr = csrPem,
-                privateKey = CertificateUtil.ExportPrivateKeyToPem(keyPair.Private),
-                message = "Certificate request submitted with a server-generated key pair. The private key is delivered once, in this response, and is not kept; hand it to the certificate holder now. Approve and issue from the Requests page."
+                message = "Certificate request submitted with a server-generated key pair. The CA holds the private key until the certificate is issued; approve and issue from the Requests page, then download the certificate and key as one .pfx from the request."
             });
         }
 

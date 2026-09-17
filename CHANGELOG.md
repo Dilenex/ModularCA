@@ -6,17 +6,24 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-### Server-generated private keys are delivered once
+### Server-generated private keys are delivered once, as one PKCS#12
 
-- **Re-download ends.** A private key the CA generates for a request is returned in the response
-  that carries the request, as PEM beside the CSR, and is not stored: the request row, the
-  certificate row and the keystore never see it. The admin console's Issue Certificate page and
-  the user portal's Request Certificate page say so on the key-generation choice and offer the
-  key as a download the moment it arrives. Keys the CA stored before this change stay exportable
-  as PKCS#12 from the user portal until their certificates expire; they are not copied to a
-  renewal request any more, and the admin API's clear-text `pem-key` export is withdrawn. A
-  certificate whose key was never stored reports that the key was delivered once, rather than
-  that the certificate is missing.
+- **Short custody, then one file.** A private key the CA generates for a request is held on the
+  request row, wrapped with ASP.NET Core Data Protection under a purpose bound to that row, until
+  the certificate is issued; it never enters the keystore or the signer, and it is not in the
+  response that carries the request. Once the certificate exists, the holder downloads
+  certificate, chain and key together as a `.pfx` under a password of their choosing, from
+  `POST /api/v1/user/requests/{id}/pkcs12` (the request must be their own) or
+  `POST /api/v1/admin/requests/{id}/pkcs12` (gated as certificate export is: operator rights on
+  the CA, manage rights on the certificate, step-up MFA). The held key is deleted in the same
+  save that records the delivery and the delivery is audited; a second download reports the
+  date the key left. A request that is rejected or cancelled loses its held key at once, and the
+  protocol cleanup tick discards keys whose certificate is revoked or expired, or whose requested
+  validity passed unissued. The admin console's Issue Certificate page, the user portal's
+  Request Certificate page, My Requests and the admin request detail page carry the download
+  and say when the key was delivered. Keys the CA stored before this change stay exportable as
+  PKCS#12 from the user portal until their certificates expire; they are not copied to a
+  renewal request any more, and the admin API's clear-text `pem-key` export is withdrawn.
 - **Stored keys leave through the signer.** PKCS#12 export of a stored end-entity key is a
   signer operation, allowed for end-entity keys only, to a named caller, and written to the
   signer's audit like every other decision; the node no longer unwraps a key itself.

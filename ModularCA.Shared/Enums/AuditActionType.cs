@@ -51,6 +51,10 @@ public static class AuditActionType
     public const string CsrSubmitted = "CsrSubmitted";
     public const string CsrApproved = "CsrApproved";
     public const string CsrRejected = "CsrRejected";
+    /// <summary>A private key the CA held for a request left as PKCS#12 with its certificate, and was deleted.</summary>
+    public const string HeldKeyDelivered = "HeldKeyDelivered";
+    /// <summary>A held private key was deleted undelivered: the request ended or its certificate is no longer usable.</summary>
+    public const string HeldKeyDiscarded = "HeldKeyDiscarded";
 
     // CRL operations
     public const string CrlGenerated = "CrlGenerated";

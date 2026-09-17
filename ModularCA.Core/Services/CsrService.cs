@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -24,19 +24,22 @@ namespace ModularCA.Core.Services;
 public class CsrService : ICsrService
 {
     private readonly ModularCADbContext _dbContext;
+    private readonly IHeldKeyService _heldKeys;
 
     /// <summary>
     /// Initializes a new instance of <see cref="CsrService"/>.
     /// </summary>
-    public CsrService(ModularCADbContext dbContext)
+    public CsrService(ModularCADbContext dbContext, IHeldKeyService heldKeys)
     {
         _dbContext = dbContext;
+        _heldKeys = heldKeys;
     }
 
     /// <summary>
     /// Generates a new CSR with a fresh key pair based on the requested parameters, validates the key
     /// parameters against the signing and certificate profiles, and stores the CSR entity in the
-    /// database. The private key is returned with the CSR and is not stored: it is delivered once.
+    /// database with the private key held on it under Data Protection, for delivery as PKCS#12
+    /// once the certificate is issued.
     /// </summary>
     public async Task<GeneratedCsr> GenerateCsrAsync(CreateCsrRequest request, Guid userId)
     {
@@ -125,11 +128,6 @@ public class CsrService : ICsrService
             csrPem = sw.ToString();
         }
 
-        // The key goes back to the requester with the CSR and is not stored: re-download ended,
-        // so the CA keeps no copy to hand out later. The PEM is made before the key pair goes
-        // out of scope and is the only place the key exists once this method returns.
-        var privateKeyPem = CertificateUtil.ExportPrivateKeyToPem(keyPair.Private);
-
         // Convert SAN dictionary to JSON
         var sanJson = JsonSerializer.Serialize(request.SubjectAlternativeNames);
 
@@ -152,6 +150,11 @@ public class CsrService : ICsrService
             RequestorUser = user
         };
 
+        // The key is held on the row, wrapped, until the certificate is issued and the holder
+        // downloads the PKCS#12; it is deleted then. It is never returned in clear and never
+        // stored anywhere else.
+        _heldKeys.Hold(entity, keyPair.Private, request.KeyAlgorithm);
+
         _dbContext.CertificateRequests.Add(entity);
         await _dbContext.SaveChangesAsync();
 
@@ -163,7 +166,7 @@ public class CsrService : ICsrService
         // .Result — which stalled a thread-pool thread inside an async method, evaluated the task
         // twice, and, because the same PEM can legitimately appear on more than one row, could
         // return the id of a different request than the one just written.
-        return new GeneratedCsr(csrPem, entity.Id, privateKeyPem);
+        return new GeneratedCsr(csrPem, entity.Id, KeyHeld: true);
     }
 
     /// <summary>
@@ -590,6 +593,8 @@ public class CsrService : ICsrService
                 RequestorUsername = pendingRequest.RequestorUser?.Username,
                 RejectionReason = pendingRequest.RejectionReason,
                 IssuedCertificateId = pendingRequest.IssuedCertificateId,
+                KeyHeld = pendingRequest.HeldPrivateKey != null,
+                HeldKeyDeliveredAt = pendingRequest.HeldKeyDeliveredAt,
             };
 
             results.Add(request);

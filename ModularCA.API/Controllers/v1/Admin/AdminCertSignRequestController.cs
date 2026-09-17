@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -36,7 +37,10 @@ public class AdminCertSignRequestController(
     ModularCADbContext db,
     SystemConfig systemConfig,
     ICaGroupAuthorizationService authService,
-    ISecurityPolicyService securityPolicy
+    ISecurityPolicyService securityPolicy,
+    IProfileResolutionService profiles,
+    IHeldKeyService heldKeys,
+    ICertificateAccessEvaluator certificateAccessEvaluator
 ) : ControllerBase
 {
     private readonly ICsrService _csrService = csrService;
@@ -47,6 +51,8 @@ public class AdminCertSignRequestController(
     private readonly SystemConfig _systemConfig = systemConfig;
     private readonly ICaGroupAuthorizationService _authService = authService;
     private readonly ISecurityPolicyService _securityPolicy = securityPolicy;
+    private readonly IHeldKeyService _heldKeys = heldKeys;
+    private readonly ICertificateAccessEvaluator _certificateAccessEvaluator = certificateAccessEvaluator;
 
     /// <summary>
     /// Retrieves all pending certificate signing requests. CLM-022: the service-layer
@@ -86,9 +92,10 @@ public class AdminCertSignRequestController(
 
     /// <summary>
     /// Generates a new certificate signing request from the provided parameters, with a key
-    /// pair the server generates. The private key is returned in this response, once, and is
-    /// not stored by the CA. Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
-    /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
+    /// pair the server generates. The private key is held on the request until the certificate
+    /// is issued and downloaded as PKCS#12 from <c>{id}/pkcs12</c>. Requires CaOperator
+    /// (state-changing: persists a CsrSubmitted record) — overrides the read-only CaAuditor
+    /// class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -102,8 +109,40 @@ public class AdminCertSignRequestController(
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
             "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName },
             HttpContext.Connection.RemoteIpAddress?.ToString());
-        // The private key is in this response and nowhere else; the CA does not keep it.
-        return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, privateKey = generated.PrivateKeyPem });
+        return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, keyHeld = generated.KeyHeld });
+    }
+
+    /// <summary>
+    /// Downloads an issued request's certificate, its chain and the private key the CA held for
+    /// it as one PKCS#12 under the caller's password, and deletes the held key. Gated as
+    /// certificate export is: CaOperator on the request's CA, manage rights on the certificate,
+    /// and step-up MFA. Answers 409 with the reason when the certificate is not issued yet, the
+    /// key was already delivered, or no key was ever held.
+    /// </summary>
+    [HttpPost("{id:guid}/pkcs12")]
+    [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ExportCert, "id")]
+    public async Task<IActionResult> DownloadPkcs12(Guid id, [FromBody] HeldKeyPkcs12Request request)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+
+        var csr = await _db.CertificateRequests.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id);
+        if (csr == null)
+            return NotFound(new { error = "Certificate request not found" });
+
+        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        if (fence != null) return fence;
+
+        // Step-up re-authenticates the caller; it does not authorize the object. The same
+        // per-certificate check certificate export applies.
+        if (csr.IssuedCertificateId is { } certId && !_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, certId))
+            return NotFound(new { error = "Certificate request not found" });
+
+        var delivery = await _heldKeys.DeliverAsync(id, request.Password,
+            new HeldKeyRequester(_currentUser.User.Id, _currentUser.User.Username, HttpContext.Connection.RemoteIpAddress?.ToString(), MustOwnRequest: false));
+        return HeldKeyDeliveryResults.ToResult(this, delivery);
     }
 
     /// <summary>
@@ -147,9 +186,12 @@ public class AdminCertSignRequestController(
     [RequireCaCapability(Capabilities.CertView, CaTarget.AnyCa)]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
     {
-        var profile = await _db.RequestProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == request.RequestProfileId);
-        if (profile == null)
-            return NotFound(new { error = "Request profile not found." });
+        // The rules issuance applies are the effective profile's, after inheritance; validating
+        // against the profile's own rows let the form and the CA disagree for every profile
+        // that inherits from a system profile.
+        Core.Models.EffectiveRequestProfile profile;
+        try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
+        catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
 
         var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
         var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules) ?? new();
@@ -588,12 +630,14 @@ public class AdminCertSignRequestController(
 
         csr.Status = "Rejected";
         csr.RejectionReason = request.Reason;
+        // A key held for a request that will never be issued has nothing to wait for.
+        var heldKeyDiscarded = _heldKeys.Discard(csr);
         await _db.SaveChangesAsync();
 
         var caInfoReject = await ResolveCaFromSigningProfileAsync(csr.SigningProfileId);
         await _audit.LogAsync(AuditActionType.CsrRejected, _currentUser.User.Id, _currentUser.User.Username,
             "CertificateRequest", id.ToString(),
-            new { request.Reason, csr.Subject },
+            new { request.Reason, csr.Subject, HeldKeyDiscarded = heldKeyDiscarded },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoReject?.CaId, tenantId: caInfoReject?.TenantId);
 
@@ -628,12 +672,13 @@ public class AdminCertSignRequestController(
 
         csr.Status = "Cancelled";
         csr.RejectionReason = request.Reason;
+        var heldKeyDiscarded = _heldKeys.Discard(csr);
         await _db.SaveChangesAsync();
 
         var caInfoCancel = await ResolveCaFromSigningProfileAsync(csr.SigningProfileId);
         await _audit.LogAsync(AuditActionType.CsrRejected, _currentUser.User.Id, _currentUser.User.Username,
             "CertificateRequest", id.ToString(),
-            new { request.Reason, csr.Subject, Action = "Cancelled" },
+            new { request.Reason, csr.Subject, Action = "Cancelled", HeldKeyDiscarded = heldKeyDiscarded },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoCancel?.CaId, tenantId: caInfoCancel?.TenantId);
 

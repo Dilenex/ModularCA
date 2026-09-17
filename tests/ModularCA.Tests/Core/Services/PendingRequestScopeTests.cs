@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -28,7 +29,7 @@ public class PendingRequestScopeTests
             new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=one", CSR = "-", SigningProfileId = spA.Id },
             new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=two", CSR = "-", SigningProfileId = spB.Id });
         db.SaveChanges();
-        return (new CsrService(db), caA.Id, caB.Id);
+        return (new CsrService(db, new HeldKeyService(db, new EphemeralDataProtectionProvider(), new RecordingAuditService())), caA.Id, caB.Id);
     }
 
     [Fact]

@@ -67,3 +67,20 @@ internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
     public Task<EnrollmentTokenEntity?> ValidateAndConsumeCmpSecretAsync(string referenceValue, byte[] sharedSecret)
         => Task.FromResult<EnrollmentTokenEntity?>(null);
 }
+
+/// <summary>
+/// Records every audit row a service under test writes, as (action, target id, details), so a
+/// test can assert what was audited without the real audit chain.
+/// </summary>
+internal sealed class RecordingAuditService : ModularCA.Shared.Interfaces.IAuditService
+{
+    public List<(string Action, string? TargetId, object? Details)> Entries { get; } = new();
+
+    public Task LogAsync(string actionType, Guid? actorUserId, string? actorUsername, string? targetEntityType = null,
+        string? targetEntityId = null, object? details = null, string? sourceIp = null, bool success = true,
+        string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null)
+    {
+        Entries.Add((actionType, targetEntityId, details));
+        return Task.CompletedTask;
+    }
+}
