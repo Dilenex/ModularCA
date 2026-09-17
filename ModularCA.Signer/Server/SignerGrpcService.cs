@@ -1,7 +1,9 @@
 using Google.Protobuf;
+using Grpc.AspNetCore.Server;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Signing;
+using ModularCA.Signer.Identity;
 using ModularCA.Signer.Wire;
 
 namespace ModularCA.Signer.Server;
@@ -36,7 +38,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
                 WireMapping.FromWire(request.Key),
                 SignatureAlgorithm.FromName(request.Algorithm),
                 request.Data.ToByteArray(),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new SignResponse { Signature = ByteString.CopyFrom(signature) };
         }, "Sign");
@@ -48,7 +50,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
             var content = await _signer.DecryptAsync(
                 WireMapping.FromWire(request.Key),
                 request.Enveloped.ToByteArray(),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new DecryptResponse { Content = ByteString.CopyFrom(content) };
         }, "Decrypt");
@@ -59,7 +61,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
         {
             var generated = await _signer.GenerateKeyAsync(
                 WireMapping.FromWire(request.Spec),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new GenerateKeyResponse
             {
@@ -75,7 +77,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
             await _signer.CommitKeyAsync(
                 WireMapping.FromWire(request.Key),
                 WireMapping.ToGuid(request.CertificateId, "certificate_id"),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new CommitKeyResponse();
         }, "CommitKey");
@@ -86,7 +88,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
         {
             var key = await _signer.ImportKeyAsync(
                 WireMapping.FromWire(request.Material),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new ImportKeyResponse { Key = WireMapping.ToWire(key) };
         }, "ImportKey");
@@ -98,7 +100,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
             var wrapped = await _signer.ExportKeyAsync(
                 WireMapping.FromWire(request.Key),
                 WireMapping.FromWire(request.Wrap),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new ExportKeyResponse { Wrapped = ByteString.CopyFrom(wrapped) };
         }, "ExportKey");
@@ -107,7 +109,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     public override Task<ListKeysResponse> ListKeys(ListKeysRequest request, ServerCallContext context)
         => GuardAsync(async () =>
         {
-            var keys = await _signer.ListKeysAsync(WireMapping.FromWire(request.Context), context.CancellationToken);
+            var keys = await _signer.ListKeysAsync(ContextFrom(request.Context, context), context.CancellationToken);
             var response = new ListKeysResponse();
             foreach (var key in keys)
                 response.Keys.Add(WireMapping.ToWire(key));
@@ -120,7 +122,7 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
         {
             await _signer.RetireKeyAsync(
                 WireMapping.FromWire(request.Key),
-                WireMapping.FromWire(request.Context),
+                ContextFrom(request.Context, context),
                 context.CancellationToken);
             return new RetireKeyResponse();
         }, "RetireKey");
@@ -128,6 +130,22 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     /// <inheritdoc />
     public override Task<HealthResponse> Health(HealthRequest request, ServerCallContext context)
         => GuardAsync(async () => WireMapping.ToWire(await _signer.HealthAsync(context.CancellationToken)), "Health");
+
+    /// <summary>
+    /// Reads the context off the wire and stamps it with the peer's identity: the SPKI pin of
+    /// the client certificate on this call's connection, computed here from the certificate
+    /// Kestrel admitted, never taken from the request. The wire has no field for it, so a node
+    /// cannot name a peer it is not; the signer's audit then records who was on the connection
+    /// for every decision. A call with no client certificate (which the listener does not
+    /// admit) is stamped with nothing rather than refused here, since admission is the
+    /// handshake's decision and the policy does not depend on the peer.
+    /// </summary>
+    private static Shared.Signing.SigningContext ContextFrom(Wire.SigningContext? wire, ServerCallContext call)
+    {
+        var context = WireMapping.FromWire(wire);
+        var certificate = call.GetHttpContext().Connection.ClientCertificate;
+        return certificate == null ? context : context with { PeerIdentity = SpkiPin.Compute(certificate) };
+    }
 
     /// <summary>
     /// Runs one operation and maps what it throws to a status: a refusal to the refusal status,

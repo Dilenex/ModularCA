@@ -35,7 +35,10 @@ namespace ModularCA.Core.Services
         /// <summary>Unique ID for this scheduler instance (one GUID per process).</summary>
         public static readonly string InstanceId = Guid.NewGuid().ToString("N");
 
-        private const string LeaseName = "scheduler";
+        /// <summary>The lease name every install has used; a process passes another when its job set is not the control plane's.</summary>
+        public const string DefaultLeaseName = "scheduler";
+
+        private readonly string _leaseName;
 
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<SchedulerService> _logger;
@@ -57,18 +60,23 @@ namespace ModularCA.Core.Services
         /// scheduling deterministic across the fleet. <paramref name="timeProvider"/>
         /// is optional and defaults to <see cref="TimeProvider.System"/> so production
         /// code does not need to wire an explicit registration; tests may inject a fake.
+        /// <paramref name="leaseName"/> names the lease this instance contends for; the default
+        /// is the one every install has used, and a process whose job set is not the control
+        /// plane's passes its own so the two sets do not starve each other.
         /// </summary>
         public SchedulerService(
             IServiceProvider serviceProvider,
             ILogger<SchedulerService> logger,
             ModularCA.Shared.Models.Config.SystemConfig config,
-            TimeProvider? timeProvider = null)
+            TimeProvider? timeProvider = null,
+            string? leaseName = null)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
             _config = config;
             _timeProvider = timeProvider ?? TimeProvider.System;
             _pollInterval = TimeSpan.FromSeconds(30);
+            _leaseName = string.IsNullOrWhiteSpace(leaseName) ? DefaultLeaseName : leaseName;
         }
 
         /// <summary>
@@ -239,14 +247,14 @@ namespace ModularCA.Core.Services
             {
                 // Ensure the lease row exists. INSERT IGNORE on the PK — if two instances
                 // race, one succeeds, the other is ignored.
-                var seed = await db.SchedulerLeases.FirstOrDefaultAsync(l => l.Name == LeaseName, cancellationToken);
+                var seed = await db.SchedulerLeases.FirstOrDefaultAsync(l => l.Name == _leaseName, cancellationToken);
                 if (seed == null)
                 {
                     try
                     {
                         db.SchedulerLeases.Add(new SchedulerLeaseEntity
                         {
-                            Name = LeaseName,
+                            Name = _leaseName,
                             OwnerInstanceId = InstanceId,
                             AcquiredAtUtc = now,
                             ExpiresAtUtc = expires
@@ -254,7 +262,7 @@ namespace ModularCA.Core.Services
                         await db.SaveChangesAsync(cancellationToken);
                         _logger.LogInformation(
                             "SchedulerService: created and acquired lease {Lease} for instance {InstanceId}",
-                            LeaseName, InstanceId);
+                            _leaseName, InstanceId);
                         return true;
                     }
                     catch (DbUpdateException)
@@ -267,7 +275,7 @@ namespace ModularCA.Core.Services
                 // Atomic "take or refresh": rows-affected = 1 only when we already hold
                 // the lease or it's expired. Uses ExecuteUpdateAsync so no row loading.
                 var rows = await db.SchedulerLeases
-                    .Where(l => l.Name == LeaseName
+                    .Where(l => l.Name == _leaseName
                                 && (l.ExpiresAtUtc < now || l.OwnerInstanceId == InstanceId))
                     .ExecuteUpdateAsync(
                         setters => setters
@@ -285,7 +293,7 @@ namespace ModularCA.Core.Services
                 // last writer wins at the row level; this read confirms WE are that winner
                 // before we proceed to dispatch jobs as the leader.
                 var owner = await db.SchedulerLeases.AsNoTracking()
-                    .Where(l => l.Name == LeaseName)
+                    .Where(l => l.Name == _leaseName)
                     .Select(l => l.OwnerInstanceId)
                     .FirstOrDefaultAsync(cancellationToken);
                 return owner == InstanceId;

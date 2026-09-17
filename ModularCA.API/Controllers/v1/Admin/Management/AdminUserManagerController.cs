@@ -15,6 +15,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Management;
+using ModularCA.API.Startup;
 
 
 namespace ModularCA.API.Controllers.v1.Admin.Management
@@ -25,6 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
     [ApiController]
     [Route("api/v1/admin/users")]
     [Authorize]
+    [NodeRole(ProcessRole.Control)]
     public class AdminUserManagerController(
         ModularCADbContext dbContext,
         IUserManagementService userService,

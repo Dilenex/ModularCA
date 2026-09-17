@@ -21,6 +21,7 @@ using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -31,6 +32,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/requests")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class UserCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,

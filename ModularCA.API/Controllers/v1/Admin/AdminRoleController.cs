@@ -8,6 +8,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -17,6 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/roles")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminRoleController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

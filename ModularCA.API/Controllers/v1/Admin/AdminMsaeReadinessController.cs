@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services.Msae;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/msae/{caId:guid}")]
 [Authorize(Policy = "CaAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminMsaeReadinessController(MsaeReadinessService readiness, MsaeSetupKitService kits) : ControllerBase
 {
     /// <summary>Every precondition of Windows autoenrollment for this CA, in dependency order, with a fix pointer per failing step.</summary>

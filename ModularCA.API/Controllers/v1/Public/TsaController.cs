@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -13,6 +14,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [Route("api/v1/public/tsa")]
 [Route("api/v1/public/tsa/{caLabel}")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Enrollment)]
 public class TsaController(ITimestampService timestampService) : ControllerBase
 {
     [HttpPost]
@@ -34,5 +36,22 @@ public class TsaController(ITimestampService timestampService) : ControllerBase
         stopwatch.Stop();
         MetricsService.ProtocolRequestDuration.WithLabels("TSA").Observe(stopwatch.Elapsed.TotalSeconds);
         return File(tsrBytes, "application/timestamp-reply");
+    }
+
+    /// <summary>
+    /// POST /tsa and /tsa/{caLabel}: the root-level alias, moved here from the distribution
+    /// short-URL controller because timestamping is a signing protocol of the enrollment role.
+    /// Accepts any content type, as the alias always has. The 16 KB cap protects the
+    /// unauthenticated endpoint from memory-pressure DoS via oversized requests.
+    /// </summary>
+    [HttpPost("/tsa")]
+    [HttpPost("/tsa/{caLabel}")]
+    [RequestSizeLimit(16 * 1024)]
+    public async Task<IActionResult> TimestampShortUrl(string? caLabel = null)
+    {
+        using var ms = new MemoryStream();
+        await Request.Body.CopyToAsync(ms);
+        var response = await timestampService.ProcessTimestampRequestAsync(ms.ToArray(), caLabel);
+        return File(response, "application/timestamp-reply");
     }
 }

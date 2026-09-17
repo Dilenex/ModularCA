@@ -8,6 +8,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
 using System.Text.Json;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -17,6 +18,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/ssh")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class UserSshController(
     ModularCADbContext db,
     ISshCaService sshCaService,

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
@@ -11,6 +11,7 @@ using ModularCA.Shared.Utils;
 using Serilog;
 using ModularCA.Core.Helpers;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Integration;
 
@@ -26,6 +27,7 @@ namespace ModularCA.API.Controllers.v1.Integration;
 [Route("api/v1/integration/infra")]
 [AllowAnonymous]
 [ApiKeyAuth]
+[NodeRole(ProcessRole.Enrollment)]
 public class InfraController(
     ICsrService csrService,
     ICertificateIssuanceService issuanceService,

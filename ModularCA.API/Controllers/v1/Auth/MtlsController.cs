@@ -29,6 +29,7 @@ using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.X509;
 using Org.BouncyCastle.X509.Extension;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -40,6 +41,7 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [ApiController]
 [Route("api/v1/auth/mtls")]
 [Route("auth/mtls")]
+[NodeRole(ProcessRole.Control)]
 public class MtlsController : ControllerBase
 {
     /// <summary>The caller identity mTLS enrollment signs under at the signer.</summary>

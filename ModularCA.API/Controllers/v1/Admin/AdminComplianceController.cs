@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
@@ -6,6 +6,7 @@ using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -17,6 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/compliance")]
 [Authorize(Policy = "SystemAuditor")]
+[NodeRole(ProcessRole.Control)]
 public class AdminComplianceController : ControllerBase
 {
     private readonly IComplianceReportService _reportService;

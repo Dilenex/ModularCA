@@ -274,3 +274,70 @@ removed, the refusal reason dropped from the wire) each caught by a test.
 
 Follow-ups: the signer audit row does not carry the ceremony id or the client certificate's
 identity; the pod definition for the container tier needs the signer as a sidecar.
+
+## Roles as built (2026-09-17)
+
+Enrollment, validation and control plane are real roles on `0.3.0-dev`, in any combination,
+the default still every role in one process. A process hosts only its own controllers and
+background work; an inactive role's paths do not exist. Where the code differs from the roles
+table above, this section records it.
+
+- **One declaration per controller.** `[NodeRole(ProcessRole.X)]` on every controller; an
+  application-model convention removes the controllers of the roles the process does not run
+  before routing exists, so their paths answer 404 with no authentication challenge. A
+  controller with no role, or with more than one, stops startup; the architecture test over the
+  API assembly fails first. Validation: OCSP, the CRL and CA certificate controllers, the SSH
+  CA keys, the short URLs (`/ca`, `/crl`, `/ocsp`), and the plain-HTTP listener, which only
+  validation opens. Enrollment: ACME, EST, SCEP, CMP, MSAE, token enrollment, the public
+  template list, the integration API (cert-manager, infrastructure), and the TSA, whose `/tsa`
+  alias moved off the short-URL controller for that reason. Control: everything admin, auth,
+  user, account, the setup wizard, version, the portal's info endpoint and the CSP report,
+  with the SPAs and static files, the setup redirect, the CSRF cookie, the docs gate and the
+  console CSP applied only there.
+- **One declaration per job.** `SchedulerJobRoles` names the owner of every scheduled job.
+  Enrollment owns the two protocol sweeps (ACME cleanup, protocol cleanup). Control owns
+  CRL export, LDAP publishing and group sync, expiry notification, compliance, auto-renewal,
+  certificate expiry, backup creation and verification, audit retention and TLS renewal. A
+  validation-only process hosts no scheduler. Migrations, the startup repairs, the policy
+  sync, the bootstrap audit replay and the pending web TLS provisioning run where control
+  runs; the OCSP responder warning runs where validation runs.
+- **Two leases, not one.** The lease logic is unchanged, but a process without the control
+  role contends for `scheduler:enrollment` rather than `scheduler`; two processes with
+  different job sets on one lease would leave the loser's jobs unrun for as long as the winner
+  refreshed it. A single process, and any process with control, keeps the name every install
+  has used.
+- **Health.** `/health` lists the roles a process runs; `/health/ready` carries a `roles`
+  entry with what each active role needs and whether it has it: validation the signer
+  reachable, enrollment the signer unlocked, control the database.
+- **Configuration.** `--role enrollment,validation` and the like on the command line, or
+  `Roles` in `config.yaml` when the command line names none; the command line wins, so the
+  drop-ins under `deploy/dropins/` select the role per host over a shared file. A process
+  without control refuses an unconfigured install, since the wizard is control's. Two node
+  processes need two installs (they would bind the same ports), so the three-process layout in
+  the deploy readme is one node process per host.
+
+Follow-ups: the ingress role (stage 4) is what makes the split reachable under one name; the
+plain-HTTP TSA alias is lost on a validation-only host, since the listener is validation's and
+the TSA is enrollment's.
+
+## Signer follow-ups done (2026-09-17)
+
+The two follow-ups stage 2 left on the signer are closed, in three commits after `2049172`,
+with the contract suite at 440 tests over both bindings and four deliberate breaks (the
+requirement check removed, the expiry check removed, the ceremony id not recorded, the peer
+not recorded) each caught.
+
+- **The tenant's ceremony requirement is enforced at the signer.** A ceremony context that
+  names no ceremony is held to the tenant's own row: the tenant it names, or the tenant of the
+  CA it names. `RequireKeyCeremony` set, or a tenant the signer cannot find, refuses generate,
+  commit and import as `CeremonyRequired`; a context naming neither tenant nor CA is
+  `ContextRequired`. Bootstrap and retire are exempt as before, and a tenant that waives
+  ceremonies is unchanged. A ceremony that is named is also held to its `ExpiresAt`. One
+  consequence to weigh: infrastructure reissue (`ReissueInfrastructureCertsAsync`) sends a
+  ceremony context with no ceremony id, so for a tenant that requires ceremonies the signer now
+  refuses it until the node either gates reissue behind a ceremony or carries one.
+- **The audit row names the ceremony and the peer.** `SignerAudit.CeremonyId` is the ceremony
+  the context named, on every decision including refusals of ceremonies the signer could not
+  verify. `SignerAudit.PeerIdentity` is the SPKI pin of the client certificate on the
+  connection, computed by the gRPC host from the certificate Kestrel admitted and stamped on
+  the context as a server-set property that the wire has no field for; null in process.

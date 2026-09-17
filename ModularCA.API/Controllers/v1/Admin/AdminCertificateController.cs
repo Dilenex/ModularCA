@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -18,6 +18,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
@@ -26,6 +27,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/certificates")]
 [Authorize(Policy = "CaAuditor")]
+[NodeRole(ProcessRole.Control)]
 public class AdminCertificateController(
     ICertificateStore certStore,
     ICurrentUserService currentUser,

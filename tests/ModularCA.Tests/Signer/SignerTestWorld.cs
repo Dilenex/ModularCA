@@ -104,6 +104,13 @@ internal sealed class SignerTestWorld
 
         using (var db = InMemoryDbContextFactory.Create(databaseName))
         {
+            // Both tenants waive ceremonies, as a tenant that creates its CAs directly does:
+            // the signer reads the waiver from the row, and the suite's id-less ceremony
+            // contexts are the direct-creation path. A tenant that requires them is seeded by
+            // the tests that need one.
+            db.Tenants.Add(new TenantEntity { Id = ids.TenantA, Name = "signer-test-a", Slug = "signer-test-a", RequireKeyCeremony = false });
+            db.Tenants.Add(new TenantEntity { Id = ids.TenantB, Name = "signer-test-b", Slug = "signer-test-b", RequireKeyCeremony = false });
+
             foreach (var m in world.Materials)
                 db.Certificates.Add(CertificateRow(m));
 

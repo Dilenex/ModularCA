@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using ModularCA.API.Services;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,6 +16,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using Serilog;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -37,6 +38,7 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [Route("api/v1/auth/mfa")]
 [Route("auth/mfa")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class MfaStepUpController : ControllerBase
 {
     private readonly ModularCADbContext _db;

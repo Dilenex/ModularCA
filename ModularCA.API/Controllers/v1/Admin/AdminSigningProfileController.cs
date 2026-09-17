@@ -10,6 +10,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.SigningProfiles;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -20,6 +21,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/signing-profiles")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminSigningProfileController(
     ISigningProfileService service,
     IAuditService audit,

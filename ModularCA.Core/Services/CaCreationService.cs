@@ -1,4 +1,4 @@
-﻿using ModularCA.Shared.Errors;
+using ModularCA.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
@@ -991,7 +991,9 @@ public class CaCreationService(
                 "No private key is available for this CA, so it cannot sign a new responder certificate.", ErrorCodes.IssuingCaKeyUnavailable);
         var caKey = new KeyRef(caCertEntity.CertificateId);
         var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
-        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id);
+        // Reissuing a CA's delegated signers is an operator's action on an existing CA, not a
+        // ceremony: the keys are generated under the infrastructure context and can never become CA keys.
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Infrastructure, caEntity.TenantId, caEntity.Id);
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.

@@ -22,6 +22,7 @@ using Org.BouncyCastle.Pkcs;
 using System.Text;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -33,6 +34,8 @@ namespace ModularCA.API.Controllers.v1.Admin
     [Authorize]
 
     [RequireUnlockedSigner]
+
+    [NodeRole(ProcessRole.Control)]
 
     public class AdminIssuanceController(ModularCADbContext dbContext,
         ICertificateIssuanceService certificateIssuanceService,

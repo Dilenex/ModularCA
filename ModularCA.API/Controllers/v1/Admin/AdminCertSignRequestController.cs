@@ -16,6 +16,7 @@ using ModularCA.Shared.Models.Csr;
 using ModularCA.Shared.Models.RequestProfiles;
 using ModularCA.Shared.Utils;
 using System.Text.Json;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -29,6 +30,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/requests")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,

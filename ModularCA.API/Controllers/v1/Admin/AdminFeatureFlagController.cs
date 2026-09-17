@@ -6,6 +6,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/features")]
 [Authorize(Policy = "SystemOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminFeatureFlagController(
     ModularCADbContext db,
     IAuditService audit,

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -13,6 +14,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/request-profiles")]
 [Authorize(Policy = "CaUser")]
+[NodeRole(ProcessRole.Control)]
 public class UserRequestProfileController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

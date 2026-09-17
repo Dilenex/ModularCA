@@ -11,6 +11,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -28,6 +29,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/tenants/{tenantId:guid}/kerberos-realms")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminKerberosRealmController(
     KerberosRealmService realms,
     ICaGroupAuthorizationService groupAuth,

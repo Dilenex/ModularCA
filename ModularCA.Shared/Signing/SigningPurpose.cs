@@ -41,4 +41,11 @@ public enum SigningPurpose
 
     /// <summary>Restore of a backup: keystore files imported through the signer as the archive carries them.</summary>
     Restore,
+
+    /// <summary>
+    /// A delegated key of an existing CA: its OCSP responder, timestamp or CMP signer. Generated
+    /// and committed without a ceremony, held to the CA and tenant named, and never committed to
+    /// a CA certificate; reissuing a responder is an operator's action, not a ceremony.
+    /// </summary>
+    Infrastructure,
 }

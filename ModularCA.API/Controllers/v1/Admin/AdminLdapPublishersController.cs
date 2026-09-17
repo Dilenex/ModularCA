@@ -12,6 +12,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Scheduler;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -24,6 +25,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/authorities/{caId:guid}/ldap-publishers")]
 [Authorize(Policy = "CaAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminLdapPublishersController(
     ModularCADbContext dbContext,
     ICurrentUserService currentUser,

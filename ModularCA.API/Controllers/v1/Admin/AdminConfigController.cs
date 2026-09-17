@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +12,7 @@ using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -23,6 +24,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/config")]
 [Authorize(Policy = "SystemOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminConfigController(
     SystemConfig config,
     IHostApplicationLifetime appLifetime,

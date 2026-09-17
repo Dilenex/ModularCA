@@ -13,6 +13,7 @@ using ModularCA.Shared.Interfaces;
 using Serilog;
 
 using ModularCA.API.Filters;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Msae;
 
@@ -54,6 +55,7 @@ namespace ModularCA.API.Controllers.v1.Msae;
 [Route("msae/{caLabel}")]
 [AllowAnonymous]
 [RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class MsaeController(
     IMsaeEnrollmentService enrollment,
     IXcepPolicyService policy,

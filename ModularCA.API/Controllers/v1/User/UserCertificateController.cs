@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -14,6 +14,7 @@ using ModularCA.Shared.Utils;
 using System.Text;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -24,6 +25,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/certificates")]
 [Authorize(Policy = "CaUser")]
+[NodeRole(ProcessRole.Control)]
 public class UserCertificateController(
     ICertificateStore certStore,
     ICurrentUserService currentUser,

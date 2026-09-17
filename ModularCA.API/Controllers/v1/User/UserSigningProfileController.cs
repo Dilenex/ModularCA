@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/signing-profiles")]
 [Authorize(Policy = "CaUser")]
+[NodeRole(ProcessRole.Control)]
 public class UserSigningProfileController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

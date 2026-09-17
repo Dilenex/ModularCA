@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +10,7 @@ using Serilog;
 using ModularCA.Shared.Errors;
 
 using ModularCA.API.Filters;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Est;
 
@@ -37,6 +38,7 @@ namespace ModularCA.API.Controllers.v1.Est;
 [Route(".well-known/est/{caLabel}")]
 [AllowAnonymous]
 [RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class EstController(IEstService estService, ModularCADbContext db) : ControllerBase
 {
     private const string Pkcs7MimeType = "application/pkcs7-mime";

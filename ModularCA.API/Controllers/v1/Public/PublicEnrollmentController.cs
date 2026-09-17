@@ -11,6 +11,7 @@ using Serilog;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [ApiController]
 [Route("api/v1/public/enroll")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Enrollment)]
 public class PublicEnrollmentController(
     IEnrollmentTokenService tokenService,
     ICertificateIssuanceService issuanceService,

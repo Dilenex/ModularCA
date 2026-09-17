@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -12,6 +13,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [Route("api/v1/public/ssh")]
 [Route("ssh")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Validation)]
 public class PublicSshController(ISshCaService sshCaService, ModularCA.Shared.Models.Config.SystemConfig config) : ControllerBase
 {
     /// <summary>

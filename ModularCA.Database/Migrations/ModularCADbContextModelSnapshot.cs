@@ -2623,6 +2623,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
+                    b.Property<Guid?>("CeremonyId")
+                        .HasColumnType("char(36)");
+
                     b.Property<string>("DataHash")
                         .HasMaxLength(64)
                         .HasColumnType("varchar(64)");
@@ -2643,6 +2646,10 @@ namespace ModularCA.Database.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("varchar(16)");
+
+                    b.Property<string>("PeerIdentity")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
 
                     b.Property<string>("Purpose")
                         .IsRequired()

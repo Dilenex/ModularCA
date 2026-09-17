@@ -1,8 +1,9 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
 using System.Text;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -12,6 +13,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     [ApiController]
     [Route("api/v1/admin/crl")]
     [Authorize(Policy = "CaAuditor")]
+    [NodeRole(ProcessRole.Control)]
     public class AdminCrlController(ICrlService crlService, ICertificateStore certStore) : ControllerBase
     {
         private readonly ICrlService _crlService = crlService;

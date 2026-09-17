@@ -5,16 +5,19 @@ using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
 /// <summary>
-/// Clean root-level URL aliases for public PKI endpoints.
-/// These short paths are embedded in certificate AIA/CDP extensions
-/// so they're permanent and human-readable.
+/// Clean root-level URL aliases for the distribution endpoints: <c>/ca</c>, <c>/crl</c> and
+/// <c>/ocsp</c>. These short paths are embedded in certificate AIA/CDP extensions so they're
+/// permanent and human-readable. The <c>/tsa</c> alias lives on <see cref="TsaController"/>,
+/// because timestamping is a signing protocol of the enrollment role, not distribution.
 /// </summary>
 [ApiController]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Validation)]
 public class PublicShortUrlController(
     ICertificateStore certStore,
     ICrlService crlService,
@@ -190,20 +193,4 @@ public class PublicShortUrlController(
             throw;
         }
     }
-
-    /// <summary>POST /tsa — RFC 3161 timestamping.
-    /// 16 KB cap protects the unauthenticated timestamp endpoint from
-    /// memory-pressure DoS via oversized TSA requests.</summary>
-    [HttpPost("/tsa")]
-    [HttpPost("/tsa/{caLabel}")]
-    [RequestSizeLimit(16 * 1024)]
-    public async Task<IActionResult> Tsa(string? caLabel = null)
-    {
-        var tsaService = HttpContext.RequestServices.GetRequiredService<ITimestampService>();
-        using var ms = new MemoryStream();
-        await Request.Body.CopyToAsync(ms);
-        var response = await tsaService.ProcessTimestampRequestAsync(ms.ToArray(), caLabel);
-        return File(response, "application/timestamp-reply");
-    }
-
 }

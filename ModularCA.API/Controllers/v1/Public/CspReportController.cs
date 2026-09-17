@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [ApiController]
 [AllowAnonymous]
 [Route("api/v1/public/csp-report")]
+[NodeRole(ProcessRole.Control)]
 public class CspReportController : ControllerBase
 {
     private const int MaxBodyBytes = 8 * 1024; // 8 KB — plenty for a report-uri payload

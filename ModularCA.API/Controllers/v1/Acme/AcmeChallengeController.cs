@@ -8,6 +8,7 @@ using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [AllowAnonymous]
 [AcmeJws]
 [RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class AcmeChallengeController(
     IAcmeAuthorizationService authzService,
     IAcmeChallengeService challengeService,

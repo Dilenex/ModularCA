@@ -15,6 +15,9 @@ public sealed class RemoteSigningServiceTests : SigningServiceContractTests
 
     protected override string ExpectedBackend => SignerHealth.SoftwareBackend;
 
+    /// <summary>Over the wire the signer records the node's client certificate pin, computed from the connection it admitted.</summary>
+    protected override string? ExpectedPeerIdentity => RemoteSignerIdentity.Instance.ClientPin;
+
     internal override void AssertPersisted(SignerTestWorld world, byte[] certificateDer)
         => Assert.Contains(world.Persistence.Appended, p => p.CertificateDer.AsSpan().SequenceEqual(certificateDer));
 }

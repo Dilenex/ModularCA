@@ -14,6 +14,7 @@ using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Revocation;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -25,6 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/certificates")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminRevocationController(
     ICertificateRevocationService revocationService,
     ICurrentUserService currentUser,

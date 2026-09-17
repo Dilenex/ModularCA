@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,6 +11,7 @@ using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -20,6 +21,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
 [RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class AcmeAccountController(
     IAcmeAccountService accountService,
     IAcmeJwsService jwsService,

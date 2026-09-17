@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
@@ -9,6 +9,7 @@ using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 
 using ModularCA.API.Filters;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -18,6 +19,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
 [RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class AcmeDirectoryController(IAcmeNonceService nonceService, SystemConfig config, ModularCADbContext db) : ControllerBase
 {
     private readonly IAcmeNonceService _nonceService = nonceService;

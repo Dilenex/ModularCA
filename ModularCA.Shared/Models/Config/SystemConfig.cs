@@ -24,6 +24,14 @@ namespace ModularCA.Shared.Models.Config
         /// Where the node finds its signer and how the signer role listens; in process by default.
         /// </summary>
         public SignerConfig Signer { get; set; } = new();
+
+        /// <summary>
+        /// The roles this process runs when the command line names none: a comma-separated list
+        /// of <c>signer</c>, <c>enrollment</c>, <c>validation</c>, <c>control</c>, <c>node</c>
+        /// or <c>all</c>. Empty means every role. <c>--role</c> on the command line wins
+        /// outright.
+        /// </summary>
+        public string Roles { get; set; } = string.Empty;
         public IpWhitelistConfig IpWhitelist { get; set; } = new();
         public NetworkAuditConfig NetworkAudit { get; set; } = new();
         public WebhookConfig Webhook { get; set; } = new();

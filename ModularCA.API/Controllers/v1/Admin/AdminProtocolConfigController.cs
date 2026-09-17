@@ -7,6 +7,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -16,6 +17,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/protocol-configs")]
 [Authorize(Policy = "CaOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminProtocolConfigController(
     ModularCADbContext db,
     IAuditService audit,

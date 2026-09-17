@@ -5,12 +5,14 @@ using Microsoft.Net.Http.Headers;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
 [ApiController]
 [Route("api/v1/public/crl")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Validation)]
 public class PublicCrlController(ICrlService crlService, ICertificateStore certStore, ModularCADbContext db) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;

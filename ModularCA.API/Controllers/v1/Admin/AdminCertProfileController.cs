@@ -12,6 +12,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.CertProfiles;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -24,6 +25,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/cert-profiles")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminCertProfileController(
     ICertProfileService certProfileService,
     IAuditService audit,

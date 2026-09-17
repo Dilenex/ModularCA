@@ -6,6 +6,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using System.Text.Json;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Account
 {
@@ -19,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Account
     [ApiController]
     [Route("api/v1/me")]
     [Authorize]
+    [NodeRole(ProcessRole.Control)]
     public class MeController(
         ICurrentUserService currentUser,
         ModularCADbContext db,

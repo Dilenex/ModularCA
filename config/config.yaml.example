@@ -258,6 +258,20 @@ Https:
 #   IdentityCa: "config/signer-identity-ca.pfx"   # written by --init-identity; never read at runtime
 #   IdentityCaPassword: ""
 
+# Process roles. By default one process runs every role. A process may run any subset:
+#   enrollment  the protocols (ACME, EST, SCEP, CMP, MSAE), token and integration enrollment,
+#               the TSA, and the protocol cleanup jobs
+#   validation  distribution: CRL, OCSP, AIA and CA certificates, on HTTPS and on the plain-HTTP
+#               listener (Http.Port), which only this role opens; no scheduler
+#   control     the console, the setup wizard, the admin/auth/user/account API, and every
+#               scheduled job and startup write that mutates (CRL publishing, TLS renewal,
+#               backups, migrations)
+#   signer      the keystore and the signing service (see Signer above)
+# "node" is the three node roles; "all" is every role. An inactive role's paths do not exist
+# (404); /health lists the roles a process runs. --role on the command line wins over this
+# value, so a unit drop-in (deploy/dropins/) can set the role per host while the file is shared.
+# Roles: "all"                                 # e.g. "enrollment,validation" or "control"
+
 # Webhook Notifications
 # Webhook:
 #   Enabled: false

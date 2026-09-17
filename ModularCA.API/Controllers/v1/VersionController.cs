@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Mvc;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1;
 
@@ -14,6 +15,7 @@ namespace ModularCA.API.Controllers.v1;
 /// </summary>
 [ApiController]
 [Route("api/v1/version")]
+[NodeRole(ProcessRole.Control)]
 public class VersionController : ControllerBase
 {
     // Resolved once — assembly metadata cannot change at runtime.

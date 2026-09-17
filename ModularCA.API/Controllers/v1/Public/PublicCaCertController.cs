@@ -4,12 +4,14 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
 [ApiController]
 [Route("api/v1/public/ca")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Validation)]
 public class PublicCaCertController(
     ICertificateStore certStore,
     ModularCADbContext db,

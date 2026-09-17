@@ -16,6 +16,7 @@ using ModularCA.Shared.Utils;
 using NCrontab;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -30,6 +31,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/scheduler")]
 [Authorize(Policy = "SystemOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminSchedulerController(
     SystemConfig config,
     ISchedulerJobRegistry registry,

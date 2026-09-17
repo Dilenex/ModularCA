@@ -15,6 +15,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using ModularCA.Shared.Models.Revocation;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -27,6 +28,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/ceremonies")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminKeyCeremonyController : ControllerBase
 {
     private readonly IKeyCeremonyService _ceremonySvc;

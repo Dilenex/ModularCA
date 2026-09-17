@@ -45,6 +45,21 @@ public class SignerAuditEntity
     /// <summary>The tenant the context said the operation was for.</summary>
     public Guid? TenantId { get; set; }
 
+    /// <summary>
+    /// The <c>KeyCeremonies</c> row the context named, when it named one, whether or not the
+    /// signer could verify it: a refusal of an unverifiable ceremony records the id it was told.
+    /// </summary>
+    public Guid? CeremonyId { get; set; }
+
+    /// <summary>
+    /// Who was on the other end of the wire when the signer runs as a role: the SPKI pin of the
+    /// client certificate the connection presented, as the signer computed it, so the row names
+    /// the peer the signer admitted and not what the peer said about itself. Null when the
+    /// signer runs in process, where there is no peer.
+    /// </summary>
+    [MaxLength(256)]
+    public string? PeerIdentity { get; set; }
+
     /// <summary>The signature algorithm, for a signature.</summary>
     [MaxLength(64)]
     public string? Algorithm { get; set; }

@@ -15,6 +15,7 @@ using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.ComponentModel.DataAnnotations;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -29,6 +30,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     [ApiController]
     [Route("api/v1/admin/authorities")]
     [Authorize]
+    [NodeRole(ProcessRole.Control)]
     public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc) : ControllerBase
     {
         private readonly ICertificateStore _certService = certService;

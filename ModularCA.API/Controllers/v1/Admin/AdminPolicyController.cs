@@ -4,6 +4,7 @@ using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -14,6 +15,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     [ApiController]
     [Route("api/v1/admin/policy")]
     [Authorize]
+    [NodeRole(ProcessRole.Control)]
     public class AdminPolicyController : ControllerBase
     {
         private readonly ICertPolicyService _certPolicy;

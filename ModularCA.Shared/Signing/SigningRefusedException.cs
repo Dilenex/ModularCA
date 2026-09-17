@@ -67,6 +67,14 @@ public enum SigningRefusalReason
     /// not approved, or one that names a different tenant or CA than the operation.
     /// </summary>
     CeremonyNotApproved,
+
+    /// <summary>
+    /// The context named no ceremony, and the tenant the operation is for requires one: the
+    /// tenant's <c>RequireKeyCeremony</c> is set, or the tenant is not known to the signer at
+    /// all, so no waiver of the requirement can be verified. Key generation, commit and import
+    /// for such a tenant happen only under an approved ceremony the signer can verify.
+    /// </summary>
+    CeremonyRequired,
 }
 
 /// <summary>
