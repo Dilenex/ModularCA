@@ -1,171 +1,164 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
-using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
-using Org.BouncyCastle.Crypto;
-using Org.BouncyCastle.Pkcs;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.X509;
 using ModularCA.Core.Helpers;
 
 namespace ModularCA.Core.Services;
 
 /// <summary>
-/// Exports certificates in various formats (PFX, PEM) with optional private key and chain inclusion.
+/// How an export request ended: with a PKCS#12, or with one of the reasons it could not.
+/// </summary>
+public enum CertificateExportOutcome
+{
+    /// <summary>The PKCS#12 was produced.</summary>
+    Exported,
+
+    /// <summary>No certificate has that serial.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The certificate exists but the CA holds no key for it. Since re-download ended, a key the
+    /// CA generates is delivered once, with the request that carries it, and is not kept.
+    /// </summary>
+    KeyNotHeld,
+
+    /// <summary>The signer refused the export; the detail carries its reason.</summary>
+    Refused,
+}
+
+/// <summary>
+/// The result of <see cref="ICertificateExportService.ExportPfxAsync"/>: the PKCS#12 when
+/// <see cref="Outcome"/> is <see cref="CertificateExportOutcome.Exported"/>, otherwise a
+/// sentence the caller can show for why not.
+/// </summary>
+/// <param name="Outcome">How the export ended.</param>
+/// <param name="Pkcs12">The PKCS#12 bytes, when exported.</param>
+/// <param name="Detail">Why the export did not happen, for the caller to relay.</param>
+public sealed record CertificateExport(CertificateExportOutcome Outcome, byte[]? Pkcs12 = null, string? Detail = null)
+{
+    /// <summary>The sentence a holder sees when the CA never kept their key.</summary>
+    public const string KeyNotHeldDetail =
+        "The private key for this certificate was delivered once, in the download that carried the request, and is not kept by the CA.";
+}
+
+/// <summary>
+/// Exports a certificate together with a private key the CA still holds for it, as PKCS#12.
 /// </summary>
 public interface ICertificateExportService
 {
-    Task<byte[]?> ExportPfxAsync(string serial, string password, bool includeChain = true);
-    Task<string?> ExportPemWithKeyAsync(string serial);
+    /// <summary>
+    /// Exports the certificate with serial <paramref name="serial"/> and its stored private
+    /// key as PKCS#12 under <paramref name="password"/>, through the signer, on behalf of
+    /// <paramref name="caller"/>. With <paramref name="includeChain"/> the issuing chain rides
+    /// beside the certificate: the direct issuer always, the root only when it is the direct issuer.
+    /// </summary>
+    Task<CertificateExport> ExportPfxAsync(string serial, string password, string caller, bool includeChain = true);
 }
 
+/// <summary>
+/// The export path for the keys the CA stored before re-download ended. The service resolves
+/// the certificate, decides the chain, and asks the signer for the PKCS#12 under an
+/// <see cref="SigningPurpose.Export"/> context naming the caller; it never sees the key. A
+/// certificate issued since carries no stored key, and the service says so rather than
+/// reporting the certificate missing.
+/// </summary>
 public class CertificateExportService : ICertificateExportService
 {
     private readonly ModularCADbContext _db;
-    private readonly IKeystoreCertificates _keystore;
-    private readonly IKeyWrappingPassphraseProvider _passphraseProvider;
+    private readonly ISigningService _signer;
 
     /// <summary>
     /// Initializes a new instance of <see cref="CertificateExportService"/>.
     /// </summary>
-    public CertificateExportService(ModularCADbContext db, IKeystoreCertificates keystore, IKeyWrappingPassphraseProvider passphraseProvider)
+    public CertificateExportService(ModularCADbContext db, ISigningService signer)
     {
         _db = db;
-        _keystore = keystore;
-        _passphraseProvider = passphraseProvider;
+        _signer = signer;
     }
 
-    public async Task<byte[]?> ExportPfxAsync(string serial, string password, bool includeChain = true)
+    /// <inheritdoc />
+    public async Task<CertificateExport> ExportPfxAsync(string serial, string password, string caller, bool includeChain = true)
     {
         var certEntity = await _db.Certificates
             .Include(c => c.SigningProfile)
             .ResolveBySerialOrNullAsync(serial);
 
-        if (certEntity == null) return null;
+        if (certEntity == null)
+            return new CertificateExport(CertificateExportOutcome.NotFound, Detail: "Certificate not found.");
 
-        var cert = CertificateUtil.ParseFromPem(certEntity.Pem);
+        if (!certEntity.HasExportablePrivateKey())
+            return new CertificateExport(CertificateExportOutcome.KeyNotHeld, Detail: CertificateExport.KeyNotHeldDetail);
 
-        // Decrypt private key if available
-        AsymmetricKeyParameter? privKey = null;
-        if (certEntity.HasExportablePrivateKey())
+        var (chain, caId, tenantId) = await ResolveChainAsync(certEntity, includeChain);
+        var context = new SigningContext(caller, SigningPurpose.Export, tenantId, caId);
+        try
         {
-            privKey = DecryptPrivateKey(certEntity);
+            var pkcs12 = await _signer.ExportKeyAsync(
+                new KeyRef(certEntity.CertificateId),
+                new ExportWrap(ExportWrap.Pkcs12, password, chain),
+                context);
+            return new CertificateExport(CertificateExportOutcome.Exported, pkcs12);
         }
-
-        if (privKey == null) return null;
-
-        // Build cert chain — include direct issuer always, exclude root only when intermediates exist
-        var certEntries = new List<X509CertificateEntry> { new(cert) };
-        if (includeChain && certEntity.SigningProfile?.IssuerId != null)
+        catch (SigningRefusedException ex) when (ex.Reason == SigningRefusalReason.UnknownKey)
         {
-            var visited = new HashSet<Guid>();
-            var issuerId = certEntity.SigningProfile.IssuerId;
-
-            // Determine if the direct issuer is root
-            var directIssuerCa = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId);
-            var directIssuerIsRoot = directIssuerCa?.ParentCaId == null;
-
-            while (issuerId.HasValue && visited.Add(issuerId.Value))
-            {
-                var issuerEntity = await _db.Certificates
-                    .Include(c => c.SigningProfile)
-                    .FirstOrDefaultAsync(c => c.CertificateId == issuerId.Value);
-                if (issuerEntity == null) break;
-
-                var issuerCa = await _db.CertificateAuthorities
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId.Value);
-
-                // Skip root when intermediates exist; include when it's the direct issuer
-                if (issuerCa?.ParentCaId == null && !directIssuerIsRoot)
-                    break;
-
-                certEntries.Add(new X509CertificateEntry(CertificateUtil.ParseFromPem(issuerEntity.Pem)));
-
-                if (issuerCa?.ParentCaId == null)
-                    break; // Root was direct issuer and was included; stop
-
-                issuerId = issuerEntity.SigningProfile?.IssuerId;
-            }
+            return new CertificateExport(CertificateExportOutcome.KeyNotHeld, Detail: CertificateExport.KeyNotHeldDetail);
         }
-
-        var pfxStore = new Pkcs12StoreBuilder().Build();
-        pfxStore.SetKeyEntry("certificate",
-            new AsymmetricKeyEntry(privKey),
-            certEntries.ToArray());
-
-        using var ms = new MemoryStream();
-        pfxStore.Save(ms, password.ToCharArray(), new SecureRandom());
-        return ms.ToArray();
-    }
-
-    public async Task<string?> ExportPemWithKeyAsync(string serial)
-    {
-        var certEntity = await _db.Certificates
-            .ResolveBySerialOrNullAsync(serial);
-
-        if (certEntity?.EncryptedPrivateKey == null || certEntity.AesKeyEncryptionIv == null || certEntity.EncryptedAesForPrivateKey == null)
-            return null;
-
-        var privKey = DecryptPrivateKey(certEntity);
-        if (privKey == null) return null;
-
-        var keyPem = CertificateUtil.ExportPrivateKeyToPem(privKey);
-        return certEntity.Pem + "\n" + keyPem;
+        catch (SigningRefusedException ex)
+        {
+            return new CertificateExport(CertificateExportOutcome.Refused, Detail: ex.Message);
+        }
     }
 
     /// <summary>
-    /// Decrypts a certificate's private key using the CA certificate that originally encrypted it.
-    /// Uses <see cref="CertificateEntity.EncryptionCertSerialNumber"/> for precise lookup;
-    /// falls back to a name-based "System" search for certificates issued before this field existed.
+    /// Walks the issuer chain from the certificate's signing profile: the direct issuer is
+    /// always included, and the root only when it is the direct issuer, so a PKCS#12 carries
+    /// what a client needs to present and not the trust anchor it should already hold. Also
+    /// returns the issuing CA and its tenant for the export context.
     /// </summary>
-    private AsymmetricKeyParameter? DecryptPrivateKey(ModularCA.Shared.Entities.CertificateEntity certEntity)
+    private async Task<(List<byte[]> Chain, Guid? CaId, Guid? TenantId)> ResolveChainAsync(CertificateEntity certEntity, bool includeChain)
     {
-        if (certEntity.EncryptedPrivateKey == null || certEntity.AesKeyEncryptionIv == null || certEntity.EncryptedAesForPrivateKey == null)
-            return null;
+        var chain = new List<byte[]>();
+        Guid? caId = null;
+        Guid? tenantId = null;
+        var issuerId = certEntity.SigningProfile?.IssuerId;
+        if (issuerId == null)
+            return (chain, caId, tenantId);
 
-        X509Certificate? encryptionCa = null;
+        var directIssuerCa = await _db.CertificateAuthorities
+            .AsNoTracking()
+            .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId);
+        caId = directIssuerCa?.Id;
+        tenantId = directIssuerCa?.TenantId;
+        if (!includeChain)
+            return (chain, caId, tenantId);
 
-        // Prefer serial-based lookup when the encryption cert serial is recorded
-        if (!string.IsNullOrEmpty(certEntity.EncryptionCertSerialNumber))
+        var directIssuerIsRoot = directIssuerCa?.ParentCaId == null;
+        var visited = new HashSet<Guid>();
+        while (issuerId.HasValue && visited.Add(issuerId.Value))
         {
-            encryptionCa = _keystore.GetTrustedAuthorities()
-                .FirstOrDefault(ca => CertificateUtil.FormatSerialNumber(ca.SerialNumber) == certEntity.EncryptionCertSerialNumber);
+            var issuerEntity = await _db.Certificates
+                .Include(c => c.SigningProfile)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.CertificateId == issuerId.Value);
+            if (issuerEntity == null) break;
+
+            var issuerCa = await _db.CertificateAuthorities
+                .AsNoTracking()
+                .FirstOrDefaultAsync(ca => ca.CertificateId == issuerId.Value);
+
+            // Skip the root when intermediates exist; include it when it is the direct issuer.
+            if (issuerCa?.ParentCaId == null && !directIssuerIsRoot)
+                break;
+
+            chain.Add(CertificateUtil.ParseFromPem(issuerEntity.Pem).GetEncoded());
+
+            if (issuerCa?.ParentCaId == null)
+                break;
+
+            issuerId = issuerEntity.SigningProfile?.IssuerId;
         }
-
-        // Backward compatibility: fall back to name-based lookup for older certificates
-        encryptionCa ??= _keystore.GetTrustedAuthorities()
-            .FirstOrDefault(ca => ca.SubjectDN.ToString().Contains("System", StringComparison.OrdinalIgnoreCase));
-
-        if (encryptionCa == null) return null;
-
-        var keyHandle = _keystore.GetPrivateKeyFor(encryptionCa);
-        if (keyHandle == null || !keyHandle.CanExport) return null;
-
-        // Zero the DER buffer immediately after PrivateKeyFactory.CreateKey has
-        // consumed it. The AsymmetricKeyParameter still holds the scalar via BC internals,
-        // but at least the raw DER copy we materialised for the constructor call is gone.
-        var encryptorDer = keyHandle.ExportPrivateKeyDer();
-        AsymmetricKeyParameter encryptorPrivKey;
-        try
-        {
-            encryptorPrivKey = PrivateKeyFactory.CreateKey(encryptorDer);
-        }
-        finally
-        {
-            if (encryptorDer != null)
-                System.Security.Cryptography.CryptographicOperations.ZeroMemory(encryptorDer);
-        }
-
-        return KeyEncryptionUtil.DecryptPrivateKey(
-            certEntity.EncryptedAesForPrivateKey,
-            certEntity.AesKeyEncryptionIv,
-            certEntity.EncryptedPrivateKey,
-            encryptorPrivKey,
-            encryptionCa.GetPublicKey(),
-            _passphraseProvider.GetPassphrase());
+        return (chain, caId, tenantId);
     }
 }

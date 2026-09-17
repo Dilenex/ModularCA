@@ -77,7 +77,8 @@ public sealed class MsaeReadinessService(
     IEnrollmentPrincipalAuthorizer principals,
     IProfileResolutionService profiles,
     IHostNameProbe hostNames,
-    IPublicNameResolver names)
+    IPublicNameResolver names,
+    ModularCA.Shared.Signing.ISigningService signer)
 {
     /// <summary>Evaluates the CA identified by <paramref name="caId"/>, or returns null when there is no such CA.</summary>
     public async Task<MsaeReadiness?> EvaluateAsync(Guid caId, CancellationToken cancellation = default)
@@ -102,6 +103,18 @@ public sealed class MsaeReadinessService(
             EvaluatedAt = DateTime.UtcNow,
         };
         var steps = result.Steps;
+
+        // 0. The signer. Every step below assumes a CA that can sign; a locked signer holds no
+        // usable key, and the enrollment endpoints refuse until it is unlocked.
+        var signerHealth = await signer.HealthAsync(cancellation);
+        steps.Add(new MsaeReadinessStep
+        {
+            Key = "signer", Title = "The signer is unlocked",
+            State = signerHealth.Unlocked ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
+            Detail = signerHealth.Unlocked
+                ? $"The signer holds {signerHealth.KeyCount} key(s) on the {signerHealth.Backend} backend."
+                : "The signer has not unlocked its keystore; nothing can be issued and the enrollment endpoints answer 503 until it does. Check the node's startup log for the keystore load.",
+        });
 
         // 1. The protocol card.
         var msae = await db.CaProtocolConfigs.AsNoTracking()

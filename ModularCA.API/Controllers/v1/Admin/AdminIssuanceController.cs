@@ -32,6 +32,8 @@ namespace ModularCA.API.Controllers.v1.Admin
     [Route("api/v1/admin/certificates")]
     [Authorize]
 
+    [RequireUnlockedSigner]
+
     public class AdminIssuanceController(ModularCADbContext dbContext,
         ICertificateIssuanceService certificateIssuanceService,
         ICurrentUserService currentUser,
@@ -39,7 +41,6 @@ namespace ModularCA.API.Controllers.v1.Admin
         ICertificateAccessService certificateAccessService,
         IAuditService auditService,
         ICsrService csrService,
-        IKeyWrappingPassphraseProvider passphraseProvider,
         IDistributedCache cache,
         ICaGroupAuthorizationService authService,
         IValidityCeilingService validityCeiling) : ControllerBase
@@ -51,7 +52,6 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly ICertificateAccessService _certificateAccessService = certificateAccessService;
         private readonly IAuditService _audit = auditService;
         private readonly ICsrService _csrService = csrService;
-        private readonly IKeyWrappingPassphraseProvider _passphraseProvider = passphraseProvider;
         private readonly IDistributedCache _cache = cache;
         private readonly ICaGroupAuthorizationService _authService = authService;
         private readonly IValidityCeilingService _validityCeiling = validityCeiling;
@@ -392,34 +392,20 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (csrEntity == null)
                 return StatusCode(500, new { error = "Failed to locate the uploaded CSR entity." });
 
-            // Store the encrypted private key on the CSR entity (UploadCsr doesn't have the private key)
-            var encryptionCert = _dbContext.Certificates
-                .AsNoTracking()
-                .Where(c => c.SubjectDN.Contains("ModularCA System Signing CA") && c.IsCA)
-                .FirstOrDefault();
-
-            if (encryptionCert != null)
-            {
-                var bcCert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(encryptionCert.RawCertificate);
-                var encrypted = KeyEncryptionUtil.EncryptPrivateKey(bcCert.GetPublicKey(), keyPair.Private, _passphraseProvider.GetPassphrase());
-                csrEntity.EncryptedPrivateKey = encrypted.encryptedPrivateKey;
-                csrEntity.EncryptedAesForPrivateKey = encrypted.aesKeyEncrypted;
-                csrEntity.AesKeyEncryptionIv = encrypted.iv;
-                csrEntity.EncryptionCertSerialNumber = encryptionCert.SerialNumber;
-                await _dbContext.SaveChangesAsync();
-            }
-
             // Do NOT issue immediately — the request stays pending for approval/issuance
             await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
                 "CertificateRequest", csrEntity.Id.ToString(),
                 new { Source = "ServerKeyGen", KeyAlgorithm = req.KeyAlgorithm, KeySize = req.KeySize },
                 HttpContext.Connection.RemoteIpAddress?.ToString());
 
+            // The key is in this response and nowhere else: the CA does not keep it.
             return Ok(new
             {
                 requestId = csrEntity.Id,
                 hasPrivateKey = true,
-                message = "Certificate request submitted with server-generated key pair. Approve and issue from the Requests page. PFX export will be available after issuance."
+                csr = csrPem,
+                privateKey = CertificateUtil.ExportPrivateKeyToPem(keyPair.Private),
+                message = "Certificate request submitted with a server-generated key pair. The private key is delivered once, in this response, and is not kept; hand it to the certificate holder now. Approve and issue from the Requests page."
             });
         }
 

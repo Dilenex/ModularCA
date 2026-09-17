@@ -31,9 +31,12 @@ public class AdminBackupController(
     IAuditService audit,
     ICurrentUserService currentUser,
     IDistributedCache cache,
-    ISecurityAlertService alertService) : ControllerBase
+    ISecurityAlertService alertService,
+    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
 {
     private readonly SystemConfig _config = config;
+    /// <summary>The node's signer, which exports and imports the keystore files a backup carries.</summary>
+    private readonly ModularCA.Shared.Signing.ISigningService _signer = signer;
     private readonly IAuditService _audit = audit;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IDistributedCache _cache = cache;
@@ -62,7 +65,7 @@ public class AdminBackupController(
         var fileName = $"modularca-backup-{timestamp}-{suffix}.zip";
         var outputPath = Path.Combine(backupDir, fileName);
 
-        var exitCode = await BackupRestore.Backup(outputPath);
+        var exitCode = await BackupRestore.Backup(outputPath, _ => _signer);
 
         if (exitCode != 0)
         {
@@ -254,6 +257,7 @@ public class AdminBackupController(
         // and the on-disk password file can't decrypt it.
         var exitCode = await BackupRestore.Restore(
             archivePath,
+            _ => _signer,
             skipSchemaCheck: false,
             providedPassword: string.IsNullOrEmpty(request.Password) ? null : request.Password,
             interactive: false);

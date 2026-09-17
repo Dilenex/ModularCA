@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Signing;
 using ModularCA.Tests.TestUtils;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Math;
@@ -63,6 +63,7 @@ public class RuntimeCaExtensionTests
     }
 
     private static readonly TestCaMaterial Issuer = TestCaMaterial.CreateCa("CN=Runtime Test CA, O=ModularCA");
+    private static readonly (ISigningService Signer, KeyRef Key, SigningContext Context) Signer = TestSigner.ForCa(Issuer);
 
     private static Task<X509Certificate> BuildAsync(
         List<string> standardOids,
@@ -72,12 +73,14 @@ public class RuntimeCaExtensionTests
     {
         var builder = new CertificateBuilderService(
             urls ?? new NoServiceUrls(),
+            Signer.Signer,
             NullLogger<CertificateBuilderService>.Instance);
 
         return builder.BuildCertificateAsync(
             serialNumber: BigInteger.ValueOf(42),
             issuerCert: Issuer.Certificate,
-            caKeyHandle: new SoftwarePrivateKeyHandle(Issuer.KeyPair.Private),
+            caKey: Signer.Key,
+            signingContext: Signer.Context,
             subjectDn: new X509Name("CN=Subject, O=ModularCA"),
             subjectPublicKey: Issuer.KeyPair.Public,
             validFrom: new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),

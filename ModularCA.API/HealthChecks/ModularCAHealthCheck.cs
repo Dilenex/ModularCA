@@ -18,6 +18,7 @@ public class ModularCAHealthCheck : IHealthCheck
     private readonly ModularCADbContext _db;
     private readonly AuditDbContext? _auditDb;
     private readonly IKeystoreCertificates _keystore;
+    private readonly ModularCA.Shared.Signing.ISigningService _signer;
     private readonly ApiCertificateProvider _apiCertProvider;
     private readonly SystemConfig _config;
 
@@ -26,12 +27,14 @@ public class ModularCAHealthCheck : IHealthCheck
     /// </summary>
     /// <param name="db">The application database context.</param>
     /// <param name="keystore">The keystore providing CA certificates and signers.</param>
+    /// <param name="signer">The signer, whose own account of its state (unlocked, key count, backend) is reported.</param>
     /// <param name="apiCertProvider">Provider for the current Web TLS certificate.</param>
     /// <param name="config">The system configuration.</param>
     /// <param name="auditDb">The optional audit database context.</param>
     public ModularCAHealthCheck(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
+        ModularCA.Shared.Signing.ISigningService signer,
         ApiCertificateProvider apiCertProvider,
         SystemConfig config,
         AuditDbContext? auditDb = null)
@@ -39,6 +42,7 @@ public class ModularCAHealthCheck : IHealthCheck
         _db = db;
         _auditDb = auditDb;
         _keystore = keystore;
+        _signer = signer;
         _apiCertProvider = apiCertProvider;
         _config = config;
     }
@@ -72,6 +76,11 @@ public class ModularCAHealthCheck : IHealthCheck
         data["keystore"] = keystoreCheck.Result;
         if (keystoreCheck.Status == "unhealthy") overallHealthy = false;
         else if (keystoreCheck.Status == "degraded") degraded = true;
+
+        // --- The signer ---
+        var signerCheck = await CheckSignerAsync(ct);
+        data["signer"] = signerCheck.Result;
+        if (signerCheck.Status == "unhealthy") overallHealthy = false;
 
         // --- Web TLS certificate expiry ---
         var tlsCheck = CheckTlsCertificate();
@@ -145,6 +154,26 @@ public class ModularCAHealthCheck : IHealthCheck
             sw.Stop();
             Serilog.Log.Error(ex, "Health check: audit DB connectivity failed — audit trail at risk");
             return ("unhealthy", new { status = "unhealthy", responseTimeMs = sw.ElapsedMilliseconds });
+        }
+    }
+
+    /// <summary>
+    /// Asks the signer for its own state. A signer that has not unlocked its keystore holds no
+    /// usable key, so nothing can be issued: the node is not ready, and the readiness endpoint
+    /// says so with the signer's report rather than an inference from the registry.
+    /// </summary>
+    private async Task<(string Status, object Result)> CheckSignerAsync(CancellationToken ct)
+    {
+        try
+        {
+            var health = await _signer.HealthAsync(ct);
+            var status = health.Unlocked ? "healthy" : "unhealthy";
+            return (status, new { status, unlocked = health.Unlocked, keyCount = health.KeyCount, backend = health.Backend });
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Health check: the signer did not answer");
+            return ("unhealthy", new { status = "unhealthy", unlocked = false });
         }
     }
 

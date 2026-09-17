@@ -1,4 +1,3 @@
-using ModularCA.Shared.Interfaces;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
@@ -7,22 +6,13 @@ namespace ModularCA.Keystore.Adapters
 {
     /// <summary>
     /// Software-backed implementation of <see cref="IPrivateKeyHandle"/> that holds the private
-    /// key in managed memory.
-    ///
-    /// The recommended signing path for software-backed keys is
-    /// <see cref="Sign(byte[], string)"/> via the
-    /// <c>PrivateKeyHandleSignatureFactory</c> BouncyCastle adapter rather than
-    /// <see cref="ExportPrivateKeyDer"/>. Exporting is still supported by default
-    /// (<c>CanExport = true</c>) for callers that need raw key material (CMS decryption in
-    /// SCEP / cert export / issuance, TimeStampTokenGenerator in TimestampService,
-    /// system-signer hand-off in KeystoreService.AppendEntries). The constructor
-    /// now takes an optional <paramref name="canExport"/> flag so callers who know the key
-    /// should never be exported (e.g. a TSA or future HSM-protected keystore signer) can opt
-    /// out at construction time — calls to <see cref="ExportPrivateKeyDer"/> on a non-exportable
-    /// software handle throw <see cref="NotSupportedException"/> to match the Pkcs11 behaviour.
-    /// Once every export site is either migrated to <see cref="Sign(byte[], string)"/> or
-    /// explicitly flagged as "must export," the default can flip to <c>false</c> in a future
-    /// pass.
+    /// key in managed memory. The signer signs through <see cref="Sign(byte[], string)"/>;
+    /// <see cref="ExportPrivateKeyDer"/> exists for the operations that need the key itself
+    /// (opening a SCEP envelope, unwrapping a stored end-entity key, re-signing the keystore
+    /// file), all of which live inside the keystore project. The optional
+    /// <c>canExport</c> flag lets a handle refuse export at construction time, in which case
+    /// <see cref="ExportPrivateKeyDer"/> throws <see cref="NotSupportedException"/> to match
+    /// the PKCS#11 behaviour.
     /// </summary>
     public class SoftwarePrivateKeyHandle : IPrivateKeyHandle
     {
@@ -42,6 +32,13 @@ namespace ModularCA.Keystore.Adapters
 
         /// <inheritdoc />
         public bool CanExport { get; }
+
+        /// <summary>
+        /// The key itself, for the signer in this assembly: CMS decryption and public-key
+        /// derivation need the parameters, not a DER copy that then has to be zeroed. Never
+        /// leaves the keystore project.
+        /// </summary>
+        internal AsymmetricKeyParameter PrivateKey => _privateKey;
 
         /// <summary>
         /// Exports the private key in DER-encoded PKCS#8 format when <see cref="CanExport"/>

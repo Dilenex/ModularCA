@@ -9,6 +9,8 @@ using ModularCA.Shared.Interfaces;
 using Serilog;
 using ModularCA.Shared.Errors;
 
+using ModularCA.API.Filters;
+
 namespace ModularCA.API.Controllers.v1.Est;
 
 /// <summary>
@@ -34,6 +36,7 @@ namespace ModularCA.API.Controllers.v1.Est;
 [Route(".well-known/est")]
 [Route(".well-known/est/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
 public class EstController(IEstService estService, ModularCADbContext db) : ControllerBase
 {
     private const string Pkcs7MimeType = "application/pkcs7-mime";

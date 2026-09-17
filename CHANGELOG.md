@@ -6,6 +6,28 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Server-generated private keys are delivered once
+
+- **Re-download ends.** A private key the CA generates for a request is returned in the response
+  that carries the request, as PEM beside the CSR, and is not stored: the request row, the
+  certificate row and the keystore never see it. The admin console's Issue Certificate page and
+  the user portal's Request Certificate page say so on the key-generation choice and offer the
+  key as a download the moment it arrives. Keys the CA stored before this change stay exportable
+  as PKCS#12 from the user portal until their certificates expire; they are not copied to a
+  renewal request any more, and the admin API's clear-text `pem-key` export is withdrawn. A
+  certificate whose key was never stored reports that the key was delivered once, rather than
+  that the certificate is missing.
+- **Stored keys leave through the signer.** PKCS#12 export of a stored end-entity key is a
+  signer operation, allowed for end-entity keys only, to a named caller, and written to the
+  signer's audit like every other decision; the node no longer unwraps a key itself.
+- **The signer is a readiness step.** The node unlocks its keystore behind the signer and asks
+  it whether it is unlocked: `/health/ready` reports the signer (unlocked, key count, backend),
+  the Windows autoenrollment checklist has a "signer" step, and the ACME, EST, SCEP, CMP, MSAE
+  and admin issuance endpoints answer 503 with a clear message while the signer is locked.
+  Backups take the keystore files from the signer and restores return them through it, which
+  verifies each file against the pinned signer before it replaces the one in place; the archive
+  layout is unchanged.
+
 ## [0.2.0] — 2026-09-16
 
 ### Windows autoenrollment (MSAE), complete

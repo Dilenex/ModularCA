@@ -78,7 +78,6 @@ public class CaProfileIssuanceGuardTests
             ctSubmission: null!,
             certPolicy: null!,
             quotaService: null!,
-            passphraseProvider: null!,
             audit: null!,
             certificateAccessService: null!,
             revocation: null!,
@@ -180,16 +179,20 @@ public class CaProfileIssuanceGuardTests
 
     /// <summary>
     /// The pre-resolved-CA overload is a separate public entry point — used for infrastructure
-    /// certificates — and must be gated too, or the escalation just moves one method over.
+    /// certificates — and must be gated too, or the escalation just moves one method over. The
+    /// CA it names is never reached: the profile is refused first.
     /// </summary>
     [Fact]
     public async Task Issuance_with_a_preresolved_ca_refuses_a_ca_flagged_profile()
     {
         using var db = BuildContext(nameof(Issuance_with_a_preresolved_ca_refuses_a_ca_flagged_profile));
         var csrId = Seed(db, isCaProfile: true);
+        var ca = TestUtils.TestCaMaterial.CreateCa("CN=Guard Test CA");
 
         var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => BuildService(db).IssueCertificateAsync(csrId, null, null, caCert: null!, caKeyHandle: null!));
+            () => BuildService(db).IssueCertificateAsync(csrId, null, null, ca.Certificate,
+                new ModularCA.Shared.Signing.KeyRef(Guid.NewGuid()),
+                new ModularCA.Shared.Signing.SigningContext("guard-test", ModularCA.Shared.Signing.SigningPurpose.Ceremony, null, null)));
 
         Assert.Contains("CA profile", ex.Message, StringComparison.OrdinalIgnoreCase);
         // Pinned as a 4xx, not merely as "some exception": this refusal is caused by the request

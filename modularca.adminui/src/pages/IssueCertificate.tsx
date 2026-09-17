@@ -130,7 +130,19 @@ const IssueCertificate: React.FC = () => {
     // Submit state
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<NoticeInput | null>(null);
-    const [success, setSuccess] = useState<{ serial: string; hasPrivateKey?: boolean } | null>(null);
+    const [success, setSuccess] = useState<{ serial: string; hasPrivateKey?: boolean; privateKeyPem?: string; csrPem?: string; requestId?: string } | null>(null);
+
+    // A generated private key exists only in the response that carried it; these hand it to the
+    // browser as a file the moment it arrives, since nothing on the server can hand it out later.
+    const downloadText = (text: string, filename: string, mimeType: string) => {
+        const url = URL.createObjectURL(new Blob([text], { type: mimeType }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
 
     // --- Initial data load ---
     useEffect(() => {
@@ -387,7 +399,7 @@ const IssueCertificate: React.FC = () => {
                     .filter(s => s.value.trim())
                     .map(s => ({ type: s.type, value: s.value.trim() }));
 
-                await apiPost<any>('/api/v1/admin/certificates/issue-with-key', {
+                const created = await apiPost<any>('/api/v1/admin/certificates/issue-with-key', {
                     subject,
                     sans,
                     keyAlgorithm,
@@ -399,8 +411,11 @@ const IssueCertificate: React.FC = () => {
                 });
 
                 setSuccess({
-                    serial: 'Request submitted with server-generated key pair. Approve and issue from the Requests page.',
+                    serial: 'Request submitted with a server-generated key pair. Approve and issue from the Requests page.',
                     hasPrivateKey: true,
+                    privateKeyPem: created?.privateKey,
+                    csrPem: created?.csr,
+                    requestId: created?.requestId,
                 });
                 setSubjectFields({});
                 setSanList([]);
@@ -649,10 +664,10 @@ const IssueCertificate: React.FC = () => {
                                     </div>
                                 )}
                             </div>
-                            <p className="text-xs text-gray-600">
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
                                 The server will generate a key pair and build a CSR automatically.
-                                The private key will be stored encrypted and can be exported as PFX after issuance.
                             </p>
+                            <FieldHint tone="warn">The private key is delivered once, in the download that carries the certificate, and is not kept. Store it when you receive it.</FieldHint>
                         </div>
                     )}
 
@@ -985,14 +1000,29 @@ const IssueCertificate: React.FC = () => {
                 <div className="bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded-lg p-4 space-y-3">
                     {success.hasPrivateKey ? (
                         <>
-                            <p className="text-sm font-semibold text-green-800 dark:text-green-300">Request submitted with server-generated key pair.</p>
+                            <p className="text-sm font-semibold text-green-800 dark:text-green-300">Request submitted with a server-generated key pair.</p>
                             <DetailField label="Result" value={success.serial} />
-                            <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded p-3 mt-2">
+                            <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded p-3 mt-2 space-y-2">
                                 <p className="text-xs text-yellow-800 dark:text-yellow-300">
-                                    The private key is stored encrypted on the server. After the request is approved and issued,
-                                    the certificate owner can download the PFX file from the <strong>User Portal</strong> at <code className="bg-gray-900 px-1 rounded">/user/certificates</code>.
-                                    PFX export is not available from the admin interface.
+                                    The private key is in this response only. It is not kept by the CA and cannot be downloaded
+                                    again: save it now and hand it to the certificate holder with the certificate once the request is issued.
                                 </p>
+                                {success.privateKeyPem && (
+                                    <div className="flex flex-wrap gap-2">
+                                        <button type="button"
+                                            onClick={() => downloadText(success.privateKeyPem!, `request-${success.requestId || 'key'}.key`, 'application/x-pem-file')}
+                                            className="px-3 py-1.5 text-xs font-medium rounded bg-yellow-600 text-white hover:bg-yellow-700 dark:bg-yellow-700 dark:hover:bg-yellow-600 transition-colors">
+                                            Download private key
+                                        </button>
+                                        {success.csrPem && (
+                                            <button type="button"
+                                                onClick={() => downloadText(success.csrPem!, `request-${success.requestId || 'csr'}.csr`, 'application/pkcs10')}
+                                                className="px-3 py-1.5 text-xs font-medium rounded border border-yellow-400 dark:border-yellow-600 text-yellow-900 dark:text-yellow-200 hover:bg-yellow-100 dark:hover:bg-yellow-900/50 transition-colors">
+                                                Download CSR
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         </>
                     ) : (

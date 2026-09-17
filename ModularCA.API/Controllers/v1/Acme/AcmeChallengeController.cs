@@ -20,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
 [AcmeJws]
+[RequireUnlockedSigner]
 public class AcmeChallengeController(
     IAcmeAuthorizationService authzService,
     IAcmeChallengeService challengeService,

@@ -10,6 +10,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Models.Msae;
 using ModularCA.Tests.TestUtils;
+using ModularCA.Shared.Signing;
 using Xunit;
 
 namespace ModularCA.Tests.Core.Services.Msae;
@@ -43,6 +44,22 @@ public class MsaeReadinessServiceTests
             => Task.FromResult(Canonical.TryGetValue(host, out var c) ? c : null);
     }
 
+    /// <summary>A signer that answers only for its health: unlocked with two keys unless a test locks it.</summary>
+    private sealed class StubSigner : ISigningService
+    {
+        public bool Unlocked { get; set; } = true;
+        public Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new SignerHealth(Unlocked, Unlocked ? 2 : 0, SignerHealth.SoftwareBackend));
+        public Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task RetireKeyAsync(KeyRef key, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
     private sealed class Harness
     {
         public ModularCADbContext Db { get; } = InMemoryDbContextFactory.Create();
@@ -62,7 +79,9 @@ public class MsaeReadinessServiceTests
             Names.Canonical["ca4.example.test"] = "ca4.example.test";
         }
 
-        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names, new PublicNameResolver(Db, Config));
+        public StubSigner Signer { get; } = new();
+
+        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names, new PublicNameResolver(Db, Config), Signer);
 
         public TenantHostnameEntity AddHostname(string host, DateTime? notAfter = null, bool withCert = true, Guid? tenantId = null, bool revoked = false)
         {
@@ -115,6 +134,20 @@ public class MsaeReadinessServiceTests
     }
 
     private static MsaeReadinessStep Step(MsaeReadiness r, string key) => Assert.Single(r.Steps, s => s.Key == key);
+
+    [Fact]
+    public async Task A_locked_signer_fails_the_signer_step_and_an_unlocked_one_passes_it()
+    {
+        var h = new Harness();
+        Assert.Equal(MsaeReadinessState.Pass, Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "signer").State);
+
+        h.Signer.Unlocked = false;
+        var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+        var s = Step(r, "signer");
+        Assert.Equal(MsaeReadinessState.Fail, s.State);
+        Assert.Contains("503", s.Detail);
+        Assert.False(r.Ready);
+    }
 
     [Fact]
     public async Task A_bare_ca_fails_every_precondition_and_each_failure_points_somewhere()

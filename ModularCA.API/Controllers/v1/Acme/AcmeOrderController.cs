@@ -20,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("api/v1/acme/{caLabel}")]
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
 public class AcmeOrderController(
     IAcmeOrderService orderService,
     IAcmeAuthorizationService authzService,

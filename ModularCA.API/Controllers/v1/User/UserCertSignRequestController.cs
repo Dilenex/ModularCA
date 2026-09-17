@@ -33,15 +33,13 @@ public class UserCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,
     ICurrentUserService currentUser,
-    ModularCADbContext db,
-    IKeyWrappingPassphraseProvider passphraseProvider
+    ModularCADbContext db
 ) : ControllerBase
 {
     private readonly ICsrService _csrService = csrService;
     private readonly ICertificateStore _certService = certService;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly ModularCADbContext _db = db;
-    private readonly IKeyWrappingPassphraseProvider _passphraseProvider = passphraseProvider;
 
     /// <summary>
     /// Lists all certificate signing requests submitted by the authenticated user, ordered by most recent first.
@@ -72,6 +70,10 @@ public class UserCertSignRequestController(
         return Ok(requests);
     }
 
+    /// <summary>
+    /// Generates a certificate signing request with a key pair the server generates. The
+    /// private key is returned in this response, once, and is not stored by the CA.
+    /// </summary>
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -80,8 +82,8 @@ public class UserCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
-        var pem = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
-        return Ok(new { csr = pem });
+        var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
+        return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, privateKey = generated.PrivateKeyPem });
     }
 
     [HttpPost("upload")]
@@ -101,9 +103,10 @@ public class UserCertSignRequestController(
 
     /// <summary>
     /// Requests a certificate with a server-generated key pair. The server generates the key,
-    /// builds a PKCS#10 CSR, stores the encrypted private key on the request entity, and submits
-    /// it for approval. The certificate is NOT issued immediately — an admin must approve and issue it.
-    /// Once issued, the user can download the PFX via the certificate export endpoint.
+    /// builds a PKCS#10 CSR and submits it for approval; the certificate is NOT issued
+    /// immediately, an admin must approve and issue it. The private key is returned in this
+    /// response, once, and is not stored by the CA: the requester keeps it and pairs it with the
+    /// certificate when the request is issued.
     /// </summary>
     [HttpPost("request-with-key")]
     [Authorize]
@@ -204,33 +207,19 @@ public class UserCertSignRequestController(
         await _csrService.UploadCsrAsync(csrPem, req.CertProfileId, req.SigningProfileId,
             _currentUser.User.Id, req.Subject, sanOverrides);
 
-        // Store the encrypted private key on the CSR entity
         var csrEntity = await _db.CertificateRequests
             .Where(c => c.CSR == csrPem && c.RequestorUserId == _currentUser.User.Id)
             .OrderByDescending(c => c.SubmittedAt)
             .FirstOrDefaultAsync();
 
-        if (csrEntity != null)
-        {
-            var encryptionCert = _db.Certificates.AsNoTracking()
-                .Where(c => c.SubjectDN.Contains("ModularCA System Signing CA") && c.IsCA).FirstOrDefault();
-            if (encryptionCert != null)
-            {
-                var bcCert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(encryptionCert.RawCertificate);
-                var encrypted = KeyEncryptionUtil.EncryptPrivateKey(bcCert.GetPublicKey(), keyPair.Private, _passphraseProvider.GetPassphrase());
-                csrEntity.EncryptedPrivateKey = encrypted.encryptedPrivateKey;
-                csrEntity.EncryptedAesForPrivateKey = encrypted.aesKeyEncrypted;
-                csrEntity.AesKeyEncryptionIv = encrypted.iv;
-                csrEntity.EncryptionCertSerialNumber = encryptionCert.SerialNumber;
-                await _db.SaveChangesAsync();
-            }
-        }
-
+        // The key is in this response and nowhere else: the CA does not keep it.
         return Ok(new
         {
-            message = "Certificate request submitted with server-generated key pair. The private key is stored encrypted and will be available for PFX export after the certificate is issued.",
+            message = "Certificate request submitted with a server-generated key pair. The private key is delivered once, in this response, and is not kept; store it now and pair it with the certificate once the request is issued.",
             requestId = csrEntity?.Id,
             hasPrivateKey = true,
+            csr = csrPem,
+            privateKey = CertificateUtil.ExportPrivateKeyToPem(keyPair.Private),
         });
     }
 

@@ -104,8 +104,8 @@ internal sealed class TestCaMaterial
     }
 
     /// <summary>Wraps this CA as the signer the responder will find in the keystore.</summary>
-    public CertificateAuthorityIdentity AsSigner() =>
-        new(Certificate, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(KeyPair.Private));
+    public (Org.BouncyCastle.X509.X509Certificate Certificate, ModularCA.Keystore.IPrivateKeyHandle Handle) AsSigner() =>
+        (Certificate, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(KeyPair.Private));
 
     /// <summary>
     /// Builds a DER-encoded OCSPRequest asking this CA about <paramref name="serial"/>.

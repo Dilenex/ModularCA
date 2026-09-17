@@ -85,8 +85,9 @@ public class AdminCertSignRequestController(
     }
 
     /// <summary>
-    /// Generates a new certificate signing request from the provided parameters.
-    /// Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
+    /// Generates a new certificate signing request from the provided parameters, with a key
+    /// pair the server generates. The private key is returned in this response, once, and is
+    /// not stored by the CA. Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
     /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
     [HttpPost]
@@ -97,11 +98,12 @@ public class AdminCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
-        var pem = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
+        var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
-            "CertificateRequest", pem[1], new { request.SubjectName },
+            "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName },
             HttpContext.Connection.RemoteIpAddress?.ToString());
-        return Ok(new { csrId = pem[1], csr = pem[0] });
+        // The private key is in this response and nowhere else; the CA does not keep it.
+        return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, privateKey = generated.PrivateKeyPem });
     }
 
     /// <summary>

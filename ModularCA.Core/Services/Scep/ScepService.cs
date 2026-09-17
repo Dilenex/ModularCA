@@ -4,6 +4,7 @@ using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Cms;
@@ -64,6 +65,25 @@ public class ScepService : IScepService
     private readonly RequestProfileValidationService _requestProfileValidation;
     private readonly ILogger<ScepService> _logger;
 
+    /// <summary>
+    /// Signs every response and opens every envelope. The service holds a <see cref="KeyRef"/>
+    /// to the CA certificate and a context naming the CA; the key stays with the signer.
+    /// </summary>
+    private readonly ISigningService _signer;
+
+    /// <summary>The caller identity SCEP signs under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(ScepService);
+
+    /// <summary>
+    /// The CA key a SCEP exchange signs and decrypts with, as the signer knows it: the reference
+    /// to the CA certificate and the context holding the key to the CA the exchange is for.
+    /// </summary>
+    private sealed record ScepSignerKey(KeyRef Key, SigningContext Context);
+
+    /// <summary>
+    /// Constructs the responder over the database, the runtime registry (for the trusted
+    /// certificates it publishes), the issuance pipeline and the signer that holds the CA key.
+    /// </summary>
     public ScepService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
@@ -72,7 +92,8 @@ public class ScepService : IScepService
         IProtocolAuditService protocolAudit,
         IEnrollmentAuthorizationService enrollmentAuth,
         RequestProfileValidationService requestProfileValidation,
-        ILogger<ScepService> logger)
+        ILogger<ScepService> logger,
+        ISigningService signer)
     {
         _db = db;
         _keystore = keystore;
@@ -82,6 +103,7 @@ public class ScepService : IScepService
         _enrollmentAuth = enrollmentAuth;
         _requestProfileValidation = requestProfileValidation;
         _logger = logger;
+        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
 
     public async Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null)
@@ -160,7 +182,7 @@ public class ScepService : IScepService
         var context = await _caResolver.ResolveAsync(caLabel, "SCEP");
 
         // Resolve the CA signer that will sign SCEP responses
-        var (caCert, caKeyHandle) = await ResolveSignerForCaAsync(context)
+        var (caCert, caKey) = await ResolveSignerForCaAsync(context)
             ?? throw new InvalidOperationException("No CA signer available for SCEP.");
 
         try
@@ -173,13 +195,13 @@ public class ScepService : IScepService
             }
             catch (Exception)
             {
-                return BuildFailureResponse(caCert, caKeyHandle, null, null, FailInfoBadMessageCheck);
+                return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadMessageCheck);
             }
 
             var signerInfos = signedData.GetSignerInfos();
             var signerEnum = signerInfos.GetSigners().GetEnumerator();
             if (!signerEnum.MoveNext())
-                return BuildFailureResponse(caCert, caKeyHandle, null, null, FailInfoBadMessageCheck);
+                return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadMessageCheck);
 
             var signerInfo = (SignerInformation)signerEnum.Current;
             var signedAttrs = signerInfo.SignedAttributes;
@@ -190,7 +212,7 @@ public class ScepService : IScepService
 
             // Validate senderNonce length is within RFC 8894 §3.2.1.5 bounds.
             if (senderNonce != null && (senderNonce.Length < 16 || senderNonce.Length > 32))
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadMessageCheck);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
 
             // Verify the CMS signature on the request and capture the signer cert for
             // trust-chain analysis (High #5 renewal binding).
@@ -210,30 +232,30 @@ public class ScepService : IScepService
                     }
                 }
                 if (!verified)
-                    return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadMessageCheck);
+                    return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
             }
             catch (Exception)
             {
                 // Signature verification failure — badMessageCheck
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadMessageCheck);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
             }
 
             if (messageType == MessageTypePkcsReq)
             {
-                return await HandlePkcsReqAsync(signedData, caCert, caKeyHandle, transactionId, senderNonce, context, sourceIp, cmsSignerCert);
+                return await HandlePkcsReqAsync(signedData, caCert, caKey, transactionId, senderNonce, context, sourceIp, cmsSignerCert);
             }
 
             if (messageType == MessageTypeGetCertInitial)
             {
-                return await HandleGetCertInitialAsync(caCert, caKeyHandle, transactionId, senderNonce, context, cmsSignerCert);
+                return await HandleGetCertInitialAsync(caCert, caKey, transactionId, senderNonce, context, cmsSignerCert);
             }
 
             // Unsupported message type — return failure
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
         }
         catch (Exception)
         {
-            return BuildFailureResponse(caCert, caKeyHandle, null, null, FailInfoBadRequest);
+            return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadRequest);
         }
     }
 
@@ -244,7 +266,7 @@ public class ScepService : IScepService
     private async Task<byte[]> HandlePkcsReqAsync(
         CmsSignedData signedData,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        ScepSignerKey caKey,
         string? transactionId,
         byte[]? senderNonce,
         ResolvedCaContext context,
@@ -260,42 +282,23 @@ public class ScepService : IScepService
             envelopedBytes = ms.ToArray();
         }
 
-        // Decrypt the EnvelopedData using the CA's private key
-        var envelopedData = new CmsEnvelopedData(envelopedBytes);
-        var recipients = envelopedData.GetRecipientInfos();
-        byte[]? csrDer = null;
-
-        foreach (RecipientInformation recipient in recipients.GetRecipients())
+        // Open the EnvelopedData with the CA key, which the signer holds. The signer tries every
+        // recipient the envelope names; an envelope none of them opens, a key the signer refuses
+        // for this CA, or a backend that cannot decrypt all end the same way they did when the
+        // key was opened here: badRequest.
+        byte[]? csrDer;
+        try
         {
-            try
-            {
-                // CMS decryption requires raw key — export from handle
-                // TODO: PKCS#11 Phase 3 — add decrypt support to IPrivateKeyHandle
-                if (!caKeyHandle.CanExport)
-                    throw new NotSupportedException("SCEP CMS decryption requires exportable keys (HSM decrypt not yet supported)");
-                // Zero the DER transport buffer once BC has finished with it.
-                var derBytes = caKeyHandle.ExportPrivateKeyDer();
-                AsymmetricKeyParameter decryptKey;
-                try
-                {
-                    decryptKey = PrivateKeyFactory.CreateKey(derBytes);
-                }
-                finally
-                {
-                    if (derBytes != null)
-                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(derBytes);
-                }
-                csrDer = recipient.GetContent(decryptKey);
-                if (csrDer != null) break;
-            }
-            catch
-            {
-                // Try next recipient
-            }
+            csrDer = await _signer.DecryptAsync(caKey.Key, envelopedBytes, caKey.Context);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "SCEP PKCSReq envelope could not be opened with the CA key.");
+            csrDer = null;
         }
 
         if (csrDer == null)
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
 
         // Convert DER CSR to PEM and parse
         var csrPem = CertificateUtil.ConvertDerToPem(csrDer, "CERTIFICATE REQUEST");
@@ -307,7 +310,7 @@ public class ScepService : IScepService
         }
         catch (Exception)
         {
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
         }
 
         // Split initial vs renewal (RFC 8894 §3.2.2). A renewal is authenticated by the CMS
@@ -361,7 +364,7 @@ public class ScepService : IScepService
                             "SCEP renewal rejected — signer certificate {Serial} is revoked.", signerSerial);
                         await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                             "Renewal signer certificate is revoked.");
-                        return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                        return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
                     }
 
                     var signerSubject = cmsSignerCert.SubjectDN.ToString();
@@ -371,7 +374,7 @@ public class ScepService : IScepService
                             signerSubject, parsedCsr.SubjectName);
                         await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                             "Renewal signer subject does not match CSR subject.");
-                        return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                        return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
                     }
 
                     // The subject match alone does not bound a renewal — SANs are where a TLS
@@ -401,7 +404,7 @@ public class ScepService : IScepService
                             unheldSan, signerSubject);
                         await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                             "Renewal CSR requests a SAN the signer certificate does not hold.");
-                        return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                        return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
                     }
                 }
                 else
@@ -430,7 +433,7 @@ public class ScepService : IScepService
             {
                 await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                     authError ?? "Enrollment not authorized (challenge password or policy).");
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
             }
         }
 
@@ -463,7 +466,7 @@ public class ScepService : IScepService
                 // Duplicate transaction id → replay.
                 await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                     "Duplicate SCEP transaction id (replay).");
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
             }
         }
 
@@ -492,7 +495,7 @@ public class ScepService : IScepService
             {
                 await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
                     $"CSR key algorithm '{parsedCsr.KeyAlgorithm}' not permitted by certificate profile.");
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadAlg);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadAlg);
             }
         }
 
@@ -508,7 +511,7 @@ public class ScepService : IScepService
             {
                 await LogPkcsReqRejectedAsync(subject, context, transactionId, sourceIp,
                     error ?? "Request profile validation failed.");
-                return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadRequest);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
             }
             if (modifiedSubject != null)
                 subject = modifiedSubject;
@@ -588,7 +591,7 @@ public class ScepService : IScepService
 
         var certsPkcs7 = BuildCertsOnlyPkcs7(certChain);
 
-        return BuildSuccessResponse(caCert, caKeyHandle, transactionId, senderNonce, certsPkcs7);
+        return await BuildSuccessResponse(caCert, caKey, transactionId, senderNonce, certsPkcs7);
     }
 
     /// <summary>
@@ -599,23 +602,23 @@ public class ScepService : IScepService
     /// </summary>
     private async Task<byte[]> HandleGetCertInitialAsync(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        ScepSignerKey caKey,
         string? transactionId,
         byte[]? senderNonce,
         ResolvedCaContext context,
         X509Certificate? cmsSignerCert)
     {
         if (string.IsNullOrEmpty(transactionId))
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadCertId);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
         var tx = await _db.ScepTransactions
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.CaId == context.Ca!.Id && t.TransactionId == transactionId);
         if (tx == null || tx.IssuedCertificateId == null)
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadCertId);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
         if (tx.ExpiresAt < DateTime.UtcNow)
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadCertId);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
         // Verify the polling client's CMS signer public key matches
         // the one recorded at PKCSReq time. Prevents a random caller with a captured
@@ -632,7 +635,7 @@ public class ScepService : IScepService
                     _logger.LogWarning(
                         "SCEP GetCertInitial rejected — CMS signer key hash does not match stored requester hash (txId={TxId}).",
                         transactionId);
-                    return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadCertId);
+                    return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
                 }
             }
         }
@@ -641,7 +644,7 @@ public class ScepService : IScepService
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == tx.IssuedCertificateId.Value);
         if (recentCertEntity == null)
-            return BuildFailureResponse(caCert, caKeyHandle, transactionId, senderNonce, FailInfoBadCertId);
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
         var signingProfileId = context.SigningProfileId;
 
@@ -667,10 +670,16 @@ public class ScepService : IScepService
         }
 
         var pkcs7Bytes = BuildCertsOnlyPkcs7(certChain);
-        return BuildSuccessResponse(caCert, caKeyHandle, transactionId, senderNonce, pkcs7Bytes);
+        return await BuildSuccessResponse(caCert, caKey, transactionId, senderNonce, pkcs7Bytes);
     }
 
-    private async Task<(X509Certificate cert, IPrivateKeyHandle keyHandle)?> ResolveSignerForCaAsync(ResolvedCaContext context)
+    /// <summary>
+    /// Chooses the CA that signs this exchange: the resolved CA when it has one and the signer
+    /// holds its key, else the first registered signer the signer holds a CA key for. Whether
+    /// the key is present is asked of the signer while choosing, so a CA without its key is
+    /// passed over exactly as when the keystore was consulted directly.
+    /// </summary>
+    private async Task<(X509Certificate cert, ScepSignerKey key)?> ResolveSignerForCaAsync(ResolvedCaContext context)
     {
         if (context.Ca != null)
         {
@@ -678,19 +687,23 @@ public class ScepService : IScepService
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
-                var keyHandle = _keystore.GetPrivateKeyFor(caCert);
-                if (keyHandle != null)
-                    return (caCert, keyHandle);
+                var key = new ScepSignerKey(
+                    new KeyRef(certEntity.CertificateId),
+                    SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, context.Ca.Id, context.Ca.TenantId));
+                var held = await _signer.ListKeysAsync(key.Context);
+                if (held.Any(k => k.Key.CertificateId == key.Key.CertificateId))
+                    return (caCert, key);
             }
         }
 
-        // Fallback: pick first available signer
+        // Fallback: the first registered signer that is a CA key the signer holds
+        var caKeys = await _signer.ListKeysAsync(new SigningContext(SignerCaller, SigningPurpose.Scep, null, null));
         foreach (var signer in _keystore.GetSigners())
         {
-            var cert = signer.PublicCertificate;
-            var keyHandle = _keystore.GetPrivateKeyFor(cert);
-            if (keyHandle != null)
-                return (cert, keyHandle);
+            var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
+            var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
+            if (info != null)
+                return (signer.PublicCertificate, new ScepSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Scep, info.TenantId, info.CaId)));
         }
         return null;
     }
@@ -707,31 +720,37 @@ public class ScepService : IScepService
             transactionId: transactionId, sourceIp: sourceIp,
             success: false, errorMessage: reason);
 
-    private static byte[] BuildSuccessResponse(
+    /// <summary>Builds a signed CertRep carrying SUCCESS and the certs-only PKCS#7.</summary>
+    private Task<byte[]> BuildSuccessResponse(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        ScepSignerKey caKey,
         string? transactionId,
         byte[]? senderNonce,
         byte[] certsPkcs7Content)
     {
-        return BuildScepResponse(caCert, caKeyHandle, transactionId, senderNonce,
+        return BuildScepResponse(caCert, caKey, transactionId, senderNonce,
             PkiStatusSuccess, null, certsPkcs7Content);
     }
 
-    private static byte[] BuildFailureResponse(
+    /// <summary>Builds a signed CertRep carrying FAILURE and the given failInfo.</summary>
+    private Task<byte[]> BuildFailureResponse(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        ScepSignerKey caKey,
         string? transactionId,
         byte[]? senderNonce,
         string failInfo)
     {
-        return BuildScepResponse(caCert, caKeyHandle, transactionId, senderNonce,
+        return BuildScepResponse(caCert, caKey, transactionId, senderNonce,
             PkiStatusFailure, failInfo, null);
     }
 
-    private static byte[] BuildScepResponse(
+    /// <summary>
+    /// Builds the CMS SignedData of a CertRep: the SCEP attributes, the content digest, and a
+    /// signature over the signed attributes made by the signer with the CA key.
+    /// </summary>
+    private async Task<byte[]> BuildScepResponse(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        ScepSignerKey caKey,
         string? transactionId,
         byte[]? senderNonce,
         string pkiStatus,
@@ -799,10 +818,10 @@ public class ScepService : IScepService
 
         var signedAttrSet = new DerSet(signedAttrs);
 
-        // Sign the signed attributes (via key handle — supports HSM)
+        // Sign the signed attributes through the signer, which holds the CA key
         var sigAlgName = resolvedSigAlg;
         var encodedSignedAttrs = signedAttrSet.GetDerEncoded();
-        var signature = caKeyHandle.Sign(encodedSignedAttrs, sigAlgName);
+        var signature = await _signer.SignAsync(caKey.Key, SignatureAlgorithm.FromName(sigAlgName), encodedSignedAttrs, caKey.Context);
 
         // Build IssuerAndSerialNumber for the SignerInfo
         var issuerAndSerial = new Org.BouncyCastle.Asn1.Cms.IssuerAndSerialNumber(

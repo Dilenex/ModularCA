@@ -1,10 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Errors;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Signing;
 using ModularCA.Tests.TestUtils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
@@ -31,15 +31,17 @@ public class RequestedExtensionTests
     }
 
     private static readonly TestCaMaterial Issuer = TestCaMaterial.CreateCa("CN=Requested Extension Test CA, O=ModularCA");
+    private static readonly (ISigningService Signer, KeyRef Key, SigningContext Context) Signer = TestSigner.ForCa(Issuer);
     private const string TemplateInfoOid = "1.3.6.1.4.1.311.21.7";
 
     private static Task<X509Certificate> BuildAsync(params RequestedExtension[] requested)
     {
-        var builder = new CertificateBuilderService(new NoServiceUrls(), NullLogger<CertificateBuilderService>.Instance);
+        var builder = new CertificateBuilderService(new NoServiceUrls(), Signer.Signer, NullLogger<CertificateBuilderService>.Instance);
         return builder.BuildCertificateAsync(
             serialNumber: BigInteger.ValueOf(7),
             issuerCert: Issuer.Certificate,
-            caKeyHandle: new SoftwarePrivateKeyHandle(Issuer.KeyPair.Private),
+            caKey: Signer.Key,
+            signingContext: Signer.Context,
             subjectDn: new X509Name("CN=ws-042.lab.test"),
             subjectPublicKey: Issuer.KeyPair.Public,
             validFrom: new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc),

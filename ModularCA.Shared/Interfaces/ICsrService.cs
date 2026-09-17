@@ -22,9 +22,28 @@ namespace ModularCA.Shared.Interfaces
             Guid? requestorUserId = null);
 
         /// <summary>
-        /// Generates a new CSR with a fresh key pair and stores it, returning the PEM-encoded CSR.
+        /// Generates an infrastructure CSR for a key the caller does not hold: the signer's key
+        /// for a new CA or one of its infrastructure certificates. The request carries
+        /// <paramref name="publicKey"/> and is signed by <paramref name="csrSigner"/>, which the
+        /// caller builds over the signer, so proof of possession is made where the key is.
+        /// Everything else is as the key-generating overload: profile validation, extensions,
+        /// Status="Approved", IsInfrastructureCert.
         /// </summary>
-        Task<List<string>> GenerateCsrAsync(CreateCsrRequest request, Guid userId);
+        /// <returns>The CSR entity ID.</returns>
+        Task<Guid> GenerateInfrastructureCsrAsync(
+            string subjectDn, string keyAlgorithm, int keySizeOrCurve,
+            Guid certProfileId, Guid signingProfileId,
+            AsymmetricKeyParameter publicKey, ISignatureFactory csrSigner,
+            List<string>? sans = null,
+            bool isInfrastructure = true,
+            Guid? requestorUserId = null);
+
+        /// <summary>
+        /// Generates a fresh key pair and a CSR signed by it, stores the CSR as a pending request,
+        /// and returns the CSR together with the private key. The key is delivered in this
+        /// result only and is not stored anywhere by the CA.
+        /// </summary>
+        Task<GeneratedCsr> GenerateCsrAsync(CreateCsrRequest request, Guid userId);
 
         /// <summary>
         /// Returns all pending (unapproved) certificate signing requests.

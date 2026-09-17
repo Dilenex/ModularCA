@@ -5,6 +5,8 @@ using ModularCA.Shared.Interfaces;
 using Serilog;
 using ModularCA.Shared.Errors;
 
+using ModularCA.API.Filters;
+
 namespace ModularCA.API.Controllers.v1.Scep;
 
 /// <summary>
@@ -17,6 +19,7 @@ namespace ModularCA.API.Controllers.v1.Scep;
 [Route("api/v1/scep/{caLabel}")]
 [Route("scep/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
 public class ScepController(IScepService scepService) : ControllerBase
 {
     /// <summary>

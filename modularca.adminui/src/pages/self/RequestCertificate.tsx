@@ -7,7 +7,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
 import { Link } from 'react-router-dom';
-import { inputClass, labelClass } from '@shared/components/forms';
+import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 
 // --- Types ---
 
@@ -124,7 +124,19 @@ const RequestCertificate: React.FC = () => {
     // Submit state
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<NoticeInput | null>(null);
-    const [success, setSuccess] = useState<{ message: string; requiresApproval: boolean; hasPrivateKey?: boolean } | null>(null);
+    const [success, setSuccess] = useState<{ message: string; requiresApproval: boolean; hasPrivateKey?: boolean; privateKeyPem?: string; csrPem?: string; requestId?: string } | null>(null);
+
+    // A generated private key exists only in the response that carried it; these hand it to the
+    // browser as a file the moment it arrives, since nothing on the server can hand it out later.
+    const downloadText = (text: string, filename: string, mimeType: string) => {
+        const url = URL.createObjectURL(new Blob([text], { type: mimeType }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
 
     // --- Initial data load ---
     useEffect(() => {
@@ -322,7 +334,7 @@ const RequestCertificate: React.FC = () => {
                     return;
                 }
 
-                await apiPost<any>('/api/v1/user/requests/request-with-key', {
+                const created = await apiPost<any>('/api/v1/user/requests/request-with-key', {
                     subject: subjectOverrides,
                     sans: sanOverrides,
                     keyAlgorithm,
@@ -332,9 +344,12 @@ const RequestCertificate: React.FC = () => {
                 });
 
                 setSuccess({
-                    message: 'Your certificate request has been submitted with a server-generated key pair. Once approved and issued, you can download the PFX from your certificates page.',
+                    message: 'Your certificate request has been submitted with a server-generated key pair. Download the private key now: it is not kept and cannot be downloaded again. Once the request is approved and issued, download the certificate from your certificates page and pair it with this key.',
                     requiresApproval: true,
                     hasPrivateKey: true,
+                    privateKeyPem: created?.privateKey,
+                    csrPem: created?.csr,
+                    requestId: created?.requestId,
                 });
             } else {
                 await apiPost<any>('/api/v1/user/requests/upload', {
@@ -461,10 +476,10 @@ const RequestCertificate: React.FC = () => {
                                     </div>
                                 )}
                             </div>
-                            <p className="text-xs text-gray-600">
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
                                 The server will generate a key pair and build a CSR automatically.
-                                The private key is stored encrypted and can be exported as PFX after the certificate is issued.
                             </p>
+                            <FieldHint tone="warn">The private key is delivered once, in the download that carries the certificate, and is not kept. Store it when you receive it.</FieldHint>
                         </div>
                     )}
 
@@ -646,6 +661,22 @@ const RequestCertificate: React.FC = () => {
                 <div className={`${success.requiresApproval ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700' : 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700'} border rounded-lg p-4 space-y-3`}>
                     <p className={`text-sm font-semibold ${success.requiresApproval ? 'text-yellow-800 dark:text-yellow-300' : 'text-green-800 dark:text-green-300'}`}>{success.message}</p>
                     {success.requiresApproval && <DetailField label="Approvals Required" value={String(selectedProfileObj?.requiredApprovalCount || 1)} />}
+                    {success.privateKeyPem && (
+                        <div className="flex flex-wrap gap-2">
+                            <button type="button"
+                                onClick={() => downloadText(success.privateKeyPem!, `request-${success.requestId || 'key'}.key`, 'application/x-pem-file')}
+                                className="px-3 py-1.5 text-xs font-medium rounded bg-yellow-600 text-white hover:bg-yellow-700 dark:bg-yellow-700 dark:hover:bg-yellow-600 transition-colors">
+                                Download private key
+                            </button>
+                            {success.csrPem && (
+                                <button type="button"
+                                    onClick={() => downloadText(success.csrPem!, `request-${success.requestId || 'csr'}.csr`, 'application/pkcs10')}
+                                    className="px-3 py-1.5 text-xs font-medium rounded border border-yellow-400 dark:border-yellow-600 text-yellow-900 dark:text-yellow-200 hover:bg-yellow-100 dark:hover:bg-yellow-900/50 transition-colors">
+                                    Download CSR
+                                </button>
+                            )}
+                        </div>
+                    )}
                     <div className="flex gap-3 pt-2">
                         <Link to="/requests" className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">View My Requests</Link>
                         <button onClick={() => { setSuccess(null); setSelectedRequestProfile(''); }}

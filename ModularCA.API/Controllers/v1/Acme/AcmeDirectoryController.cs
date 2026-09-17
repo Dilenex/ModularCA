@@ -8,6 +8,8 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 
+using ModularCA.API.Filters;
+
 namespace ModularCA.API.Controllers.v1.Acme;
 
 [ApiController]
@@ -15,6 +17,7 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("api/v1/acme/{caLabel}")]
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
 public class AcmeDirectoryController(IAcmeNonceService nonceService, SystemConfig config, ModularCADbContext db) : ControllerBase
 {
     private readonly IAcmeNonceService _nonceService = nonceService;

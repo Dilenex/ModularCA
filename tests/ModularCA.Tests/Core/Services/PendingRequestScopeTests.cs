@@ -12,10 +12,6 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class PendingRequestScopeTests
 {
-    private sealed class NoPassphrase : IKeyWrappingPassphraseProvider
-    {
-        public byte[] GetPassphrase() => [];
-    }
 
     private static (CsrService Service, Guid CaId, Guid OtherCaId) Seed(ModularCA.Database.ModularCADbContext db)
     {
@@ -32,7 +28,7 @@ public class PendingRequestScopeTests
             new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=one", CSR = "-", SigningProfileId = spA.Id },
             new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=two", CSR = "-", SigningProfileId = spB.Id });
         db.SaveChanges();
-        return (new CsrService(db, new TestKeystore(), new NoPassphrase()), caA.Id, caB.Id);
+        return (new CsrService(db), caA.Id, caB.Id);
     }
 
     [Fact]

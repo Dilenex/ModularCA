@@ -170,11 +170,20 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
     var exitCode = BootstrapModularCA.Run(wipeAudit);
     Environment.Exit(exitCode);
 }
+// The command-line backup and restore run before the node's container exists, so the keystore
+// files go through a maintenance signer: locked, holding no key, auditing to the application
+// database the operation names. The node's own paths use its signer instead.
+static ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
+    => ModularCA.Keystore.Signing.MaintenanceSigner.Create(
+        Path.Combine(AppContext.BaseDirectory, "keystores"),
+        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+        appConnectionString);
+
 if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath);
+    var exitCode = await BackupRestore.Backup(outputPath, MaintenanceSignerFor);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -265,7 +274,7 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
     }
 
     Log.Warning("Operator triggered restore (--restore) archive={ArchivePath}", archivePath);
-    var exitCode = await BackupRestore.Restore(archivePath, skipSchemaCheck: false, providedPassword: providedPassword);
+    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
@@ -1124,28 +1133,24 @@ builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<ModularCA.Auth.Services.IDpopProofService, ModularCA.Auth.Services.DpopProofService>();
 builder.Services.AddScoped<IPasswordPolicyService, PasswordPolicyService>();
 
-// Configure dependency injection — skip keystore loading in setup mode (files don't exist yet)
-List<Org.BouncyCastle.X509.X509Certificate> trustedCAs;
-List<CertificateAuthorityIdentity> fullCAs;
+// The startup unlock, behind the signer. The node never receives a key: SignerBootstrap
+// decrypts the keystores and keeps the handles where only the signer reads them. Setup mode
+// and a failed load leave it locked; the signer's health reports that, the readiness endpoint
+// and the MSAE checklist show it, and enrollment answers 503 until it changes.
+ModularCA.Keystore.Signing.SignerBootstrap signerBootstrap;
 
 if (isSetupMode)
 {
-    trustedCAs = new();
-    fullCAs = new();
+    signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
 }
 else
 {
     try
     {
-        var loaded = StartupKeystoreLoader.LoadAll(
+        signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Unlock(
             yamlPath: Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
             keystorePath: Path.Combine(AppContext.BaseDirectory, "keystores"),
-            dbConnStr: appConnStr
-        );
-        trustedCAs = loaded.TrustedCAs;
-        fullCAs = loaded.FullCAs
-            .Select(x => new CertificateAuthorityIdentity(x.Cert, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(x.PrivateKey)))
-            .ToList();
+            dbConnectionString: appConnStr);
     }
     catch (Exception ex) when (IsKeystoreIntegrityFailure(ex))
     {
@@ -1182,8 +1187,7 @@ else
         Console.WriteLine($"[WARNING] Could not load keystores: {ex.GetType().Name}: {ex.Message}");
         Console.WriteLine("          Starting with an empty CA registry. No certificate can be issued");
         Console.WriteLine("          until this is resolved.");
-        trustedCAs = new();
-        fullCAs = new();
+        signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
     }
 }
 
@@ -1211,15 +1215,8 @@ if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
     try
     {
         hsmSession = new Pkcs11SessionManager(config.Hsm.ModulePath, config.Hsm.SlotId, config.Hsm.Pin);
-        var hsmSigners = StartupKeystoreLoader.LoadHsmSigners(hsmSession, appConnStr);
-
-        foreach (var (cert, keyHandle) in hsmSigners)
-        {
-            var identity = new CertificateAuthorityIdentity(cert, keyHandle);
-            fullCAs.Add(identity);
-            trustedCAs.Add(cert);
+        foreach (var cert in signerBootstrap.AddHsmSigners(hsmSession, appConnStr))
             Console.WriteLine($"[HSM] CA loaded: {cert.SubjectDN}");
-        }
 
         // Register the session manager as a singleton so runtime services can access the HSM
         builder.Services.AddSingleton(hsmSession);
@@ -1232,10 +1229,23 @@ if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
     }
 }
 
-var registry = new MultiCARegistry(fullCAs, trustedCAs);
+builder.Services.AddSingleton<IKeystoreCertificates>(signerBootstrap.Certificates);
 
-builder.Services.AddSingleton<MultiCARegistry>(registry);
-builder.Services.AddSingleton<IKeystoreCertificates>(registry);
+// The signer: the one door to a stored private key. In process for now, over the keys the
+// bootstrap unlocked, judging every request against its policy and writing its own audit row;
+// the same contract goes behind a separate process in the next stage without the callers
+// changing. A key it commits is appended to the keystore files under the passphrases the
+// keystore configuration already holds, re-signed by the pinned system signer.
+builder.Services.AddSingleton<ModularCA.Keystore.Signing.ISignerAuditSink>(sp =>
+    new ModularCA.Keystore.Signing.DatabaseSignerAuditSink(sp.GetRequiredService<IServiceScopeFactory>()));
+builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
+    signerBootstrap.CreateSigner(
+        Path.Combine(AppContext.BaseDirectory, "keystores"),
+        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
+        sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
+        sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
 
 // Key wrapping passphrase provider for HKDF-based non-RSA private key encryption
 var kwYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
@@ -2563,7 +2573,7 @@ if (!needsSetup)
         foreach (var ta in trustAnchors)
         {
             var cert = new Org.BouncyCastle.X509.X509Certificate(ta.RawCertificate);
-            registry.RegisterTrustedCert(cert);
+            signerBootstrap.Certificates.RegisterTrustedCert(cert);
         }
         if (trustAnchors.Count > 0)
             Console.WriteLine($"[TrustAnchors] Loaded {trustAnchors.Count} trust anchor(s) into runtime registry.");

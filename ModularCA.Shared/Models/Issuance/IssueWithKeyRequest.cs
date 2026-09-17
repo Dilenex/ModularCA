@@ -4,9 +4,9 @@ using ModularCA.Shared.Models.Csr;
 namespace ModularCA.Shared.Models.Issuance
 {
     /// <summary>
-    /// Request body for issuing a certificate with a server-generated key pair.
-    /// The server generates the keypair, builds a PKCS#10 CSR, and issues the certificate
-    /// in a single operation. The private key is stored encrypted on the certificate entity.
+    /// Request body for requesting a certificate with a server-generated key pair. The server
+    /// generates the key pair, builds a PKCS#10 CSR and submits it as a pending request; the
+    /// private key is returned in the response, once, and is not stored by the CA.
     /// </summary>
     public class IssueWithKeyRequest
     {

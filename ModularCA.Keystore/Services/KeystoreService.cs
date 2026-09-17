@@ -224,7 +224,7 @@ public class KeystoreService : IDisposable
     /// zeroed in the outer finally so the raw key material does not linger on the managed
     /// heap past this call.
     /// </summary>
-    public static List<CertKey> LoadCertKeys(string keystorePath, string yamlPath, ModularCADbContext db)
+    internal static List<CertKey> LoadCertKeys(string keystorePath, string yamlPath, ModularCADbContext db)
     {
         const string keystoreName = "ca-certs.keystore";
         try
@@ -752,7 +752,7 @@ public class KeystoreService : IDisposable
     /// <summary>
     /// Matches private keys with their corresponding public certificates by comparing public key material.
     /// </summary>
-    public static List<CertWithKey> MatchCertsWithKeys(List<CertKey> privateKeys, List<X509Certificate> publicCerts)
+    internal static List<CertWithKey> MatchCertsWithKeys(List<CertKey> privateKeys, List<X509Certificate> publicCerts)
     {
         var matches = new List<CertWithKey>();
 
@@ -780,9 +780,11 @@ public class KeystoreService : IDisposable
     }
 
     /// <summary>
-    /// Derives the public key from a private key for supported algorithm types.
+    /// Derives the public key from a private key for supported algorithm types. Internal so the
+    /// signer can pair imported key material with its certificate the same way the loader pairs
+    /// keystore entries.
     /// </summary>
-    private static AsymmetricKeyParameter GetPublicFromPrivate(AsymmetricKeyParameter privateKey)
+    internal static AsymmetricKeyParameter GetPublicFromPrivate(AsymmetricKeyParameter privateKey)
     {
         if (!privateKey.IsPrivate)
             throw new ArgumentException("Key is not a private key");
@@ -1263,10 +1265,10 @@ public class KeystoreService : IDisposable
     /// <summary>
     /// Wraps a decrypted private key loaded from the keystore.
     /// </summary>
-    public record CertKey(AsymmetricKeyParameter PrivateKey);
+    internal record CertKey(AsymmetricKeyParameter PrivateKey);
 
     /// <summary>
     /// Pairs an X.509 certificate with its corresponding private key.
     /// </summary>
-    public record CertWithKey(X509Certificate Cert, AsymmetricKeyParameter PrivateKey);
+    internal record CertWithKey(X509Certificate Cert, AsymmetricKeyParameter PrivateKey);
 }

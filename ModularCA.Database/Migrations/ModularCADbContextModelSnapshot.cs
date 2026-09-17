@@ -2592,6 +2592,71 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("SecurityPolicy");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.SignerAuditEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Algorithm")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime>("At")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("CaId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Caller")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<string>("DataHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<Guid?>("KeyCertificateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Keystore")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)");
+
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("At");
+
+                    b.HasIndex("CaId");
+
+                    b.HasIndex("KeyCertificateId");
+
+                    b.ToTable("SignerAudit");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.SigningProfileEntity", b =>
                 {
                     b.Property<Guid>("Id")

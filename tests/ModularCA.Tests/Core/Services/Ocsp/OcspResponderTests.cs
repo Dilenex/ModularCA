@@ -44,7 +44,8 @@ public class OcspResponderTests
         Action<ModularCA.Database.ModularCADbContext, Guid> seedCertificates,
         SecurityPolicyEntity? policy = null)
     {
-        var db = InMemoryDbContextFactory.Create();
+        var databaseName = $"ocsp-{Guid.NewGuid():N}";
+        var db = InMemoryDbContextFactory.Create(databaseName);
 
         var caCertId = Guid.NewGuid();
         db.Certificates.Add(new CertificateEntity
@@ -72,11 +73,13 @@ public class OcspResponderTests
         seedCertificates(db, caCertId);
         db.SaveChanges();
 
+        var keystore = new TestKeystore(ca.AsSigner());
         var service = new OcspResponderService(
             db,
-            new TestKeystore(ca.AsSigner()),
+            keystore,
             NullLogger<OcspResponderService>.Instance,
-            new StubSecurityPolicyService(policy ?? DefaultPolicy()));
+            new StubSecurityPolicyService(policy ?? DefaultPolicy()),
+            TestSigner.Over(keystore, databaseName));
 
         return (db, service);
     }
@@ -240,7 +243,8 @@ public class OcspResponderTests
     public async Task Disabled_CA_does_not_answer()
     {
         var ca = TestCaMaterial.CreateCa();
-        var db = InMemoryDbContextFactory.Create();
+        var databaseName = $"ocsp-{Guid.NewGuid():N}";
+        var db = InMemoryDbContextFactory.Create(databaseName);
 
         var caCertId = Guid.NewGuid();
         db.Certificates.Add(new CertificateEntity
@@ -265,10 +269,12 @@ public class OcspResponderTests
         });
         db.SaveChanges();
 
+        var keystore = new TestKeystore(ca.AsSigner());
         var service = new OcspResponderService(
-            db, new TestKeystore(ca.AsSigner()),
+            db, keystore,
             NullLogger<OcspResponderService>.Instance,
-            new StubSecurityPolicyService(DefaultPolicy()));
+            new StubSecurityPolicyService(DefaultPolicy()),
+            TestSigner.Over(keystore, databaseName));
 
         using (db)
         {

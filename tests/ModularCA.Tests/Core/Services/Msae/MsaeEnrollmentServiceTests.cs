@@ -115,11 +115,12 @@ public class MsaeEnrollmentServiceTests
         }
 
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            Org.BouncyCastle.X509.X509Certificate caCertificate, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
+            Org.BouncyCastle.X509.X509Certificate caCertificate, ModularCA.Shared.Signing.KeyRef caKey,
+            ModularCA.Shared.Signing.SigningContext caSigningContext, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
         public Task<IssuanceResult> IssueCaCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            Org.BouncyCastle.X509.X509Certificate caCertificate, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
         public Task<IssuanceResult> ReissueCertificateAsync(Guid? certId, string? certSN, Guid? csrId, DateTime? notBefore, DateTime? notAfter,

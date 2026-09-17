@@ -2,9 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Cmp;
@@ -70,6 +70,22 @@ public class CmpService : ICmpService
     private readonly Microsoft.Extensions.Logging.ILogger<CmpService> _logger;
 
     /// <summary>
+    /// Signs every signature-protected response. The service holds a <see cref="KeyRef"/> to
+    /// the CMP signer certificate, or to the CA certificate when the CA has no dedicated
+    /// signer, and a context naming the CA; the key stays with the signer.
+    /// </summary>
+    private readonly ISigningService _signer;
+
+    /// <summary>The caller identity CMP signs under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(CmpService);
+
+    /// <summary>
+    /// The key a CMP exchange signs its responses with, as the signer knows it: the reference
+    /// to the signing certificate and the context holding the key to the CA the exchange is for.
+    /// </summary>
+    private sealed record CmpSignerKey(KeyRef Key, SigningContext Context);
+
+    /// <summary>
     /// Initializes a new instance. Per-request state (source IP, CA label, protection mode,
     /// PBMAC artifacts) flows through <see cref="CmpRequestContext"/> rather than instance
     /// fields so the per-request data lives on the call stack and cannot cross-contaminate
@@ -85,7 +101,8 @@ public class CmpService : ICmpService
         IEnrollmentAuthorizationService enrollmentAuth,
         RequestProfileValidationService requestProfileValidation,
         IEnrollmentTokenService enrollmentTokens,
-        Microsoft.Extensions.Logging.ILogger<CmpService> logger)
+        Microsoft.Extensions.Logging.ILogger<CmpService> logger,
+        ISigningService signer)
     {
         _db = db;
         _keystore = keystore;
@@ -97,6 +114,7 @@ public class CmpService : ICmpService
         _requestProfileValidation = requestProfileValidation;
         _enrollmentTokens = enrollmentTokens;
         _logger = logger;
+        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
 
     /// <summary>
@@ -193,7 +211,7 @@ public class CmpService : ICmpService
     {
         var reqCtx = new CmpRequestContext { SourceIp = sourceIp, CaLabel = caLabel };
         var context = await _caResolver.ResolveAsync(caLabel, "CMP");
-        var (caCert, caKeyHandle, signerIssuer) = await ResolveSignerForCaAsync(context)
+        var (caCert, caKey, signerIssuer) = await ResolveSignerForCaAsync(context)
             ?? throw new InvalidOperationException("No CA signer available for CMP.");
         reqCtx.SignerIssuerCert = signerIssuer;
 
@@ -204,7 +222,7 @@ public class CmpService : ICmpService
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, null, reqCtx, StatusRejection, FailBadDataFormat,
+            return BuildErrorResponse(caCert, caKey, null, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid CMP PKIMessage encoding.");
         }
 
@@ -222,13 +240,13 @@ public class CmpService : ICmpService
                 var skew = Math.Abs((DateTime.UtcNow - clientTime).TotalSeconds);
                 if (skew > 300)
                 {
-                    return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                    return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                         "messageTime outside the acceptable freshness window.");
                 }
             }
             catch
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                     "messageTime could not be parsed.");
             }
         }
@@ -240,12 +258,12 @@ public class CmpService : ICmpService
         // both out replayed indefinitely. They are required here for every request.
         if (header.MessageTime == null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                 "messageTime is required (RFC 9483 section 3.1).");
         }
         if (header.TransactionID == null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 "transactionID is required (RFC 9483 section 3.1).");
         }
 
@@ -254,7 +272,7 @@ public class CmpService : ICmpService
         // nonces outright.
         if (header.SenderNonce != null && header.SenderNonce.GetOctets().Length < 16)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "senderNonce must be at least 16 octets.");
         }
 
@@ -269,7 +287,7 @@ public class CmpService : ICmpService
             var pbmVerified = await TryVerifyPbmAsync(header, request, body, context.Ca?.Id, caLabel, reqCtx);
             if (!pbmVerified)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     "PBMAC verification failed — unknown reference value or invalid shared secret.");
             }
         }
@@ -285,13 +303,13 @@ public class CmpService : ICmpService
             var sigError = await VerifySignatureProtectionAsync(request, header, body, verificationCaCert, reqCtx);
             if (sigError != null)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                     sigError);
             }
         }
         else if (header.ProtectionAlg != null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "Message protection is required but verification failed.");
         }
         else
@@ -304,7 +322,7 @@ public class CmpService : ICmpService
             // remaining gate, which an attacker satisfies by signing the CertRequest with their own
             // key. The result was that an unauthenticated remote could POST an unprotected `ir` and
             // receive a certificate. RFC 4210 §5.1.3 requires protection; reject outright.
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "CMP messages must carry signature-based or password-based MAC protection (RFC 4210 5.1.3).");
         }
 
@@ -322,7 +340,7 @@ public class CmpService : ICmpService
 
             if (sigRequired)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                     "This CA requires signature-based CMP protection; PBMAC is not accepted.");
             }
         }
@@ -332,7 +350,7 @@ public class CmpService : ICmpService
         var replayCheck = await PersistOrCheckTransactionAsync(header, body.Type, context.Ca?.Id, reqCtx);
         if (replayCheck != null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 replayCheck);
         }
 
@@ -340,13 +358,13 @@ public class CmpService : ICmpService
         {
             return body.Type switch
             {
-                TypeIr => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeIp, context, reqCtx),
-                TypeCr => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeCp, context, reqCtx),
-                TypeKur => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeKup, context, reqCtx),
-                TypeRr => await HandleRevocationRequestAsync(body, header, caCert, caKeyHandle, reqCtx),
-                TypeCertConf => HandleCertConfirm(body, header, caCert, caKeyHandle, reqCtx),
-                TypeGenm => HandleGeneralMessage(header, caCert, caKeyHandle, reqCtx),
-                _ => BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+                TypeIr => await HandleCertRequestAsync(body, header, caCert, caKey, TypeIp, context, reqCtx),
+                TypeCr => await HandleCertRequestAsync(body, header, caCert, caKey, TypeCp, context, reqCtx),
+                TypeKur => await HandleCertRequestAsync(body, header, caCert, caKey, TypeKup, context, reqCtx),
+                TypeRr => await HandleRevocationRequestAsync(body, header, caCert, caKey, reqCtx),
+                TypeCertConf => HandleCertConfirm(body, header, caCert, caKey, reqCtx),
+                TypeGenm => HandleGeneralMessage(header, caCert, caKey, reqCtx),
+                _ => BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     $"Unsupported PKIBody type: {body.Type}.")
             };
         }
@@ -355,7 +373,7 @@ public class CmpService : ICmpService
             // Never leak exception text to unauthenticated remotes.
             var correlationId = Guid.NewGuid().ToString("N")[..12];
             _logger.LogError(ex, "CMP processing failure [{CorrelationId}] caLabel={CaLabel}", correlationId, caLabel);
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailSystemFailure,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailSystemFailure,
                 $"Certificate issuance failed; contact administrator (ref {correlationId})");
         }
         finally
@@ -915,7 +933,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         int responseType,
         ResolvedCaContext context,
         CmpRequestContext reqCtx)
@@ -926,7 +944,7 @@ public class CmpService : ICmpService
 
         if (reqMsgs.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "No certificate request messages in PKIBody.");
         }
 
@@ -981,7 +999,7 @@ public class CmpService : ICmpService
             responses.ToArray());
 
         var responseBody = new PkiBody(responseType, certRepMessage);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
@@ -1155,7 +1173,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         RevReqContent revReqContent;
@@ -1165,7 +1183,7 @@ public class CmpService : ICmpService
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid revocation request content.");
         }
 
@@ -1173,7 +1191,7 @@ public class CmpService : ICmpService
 
         if (revDetails.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "Empty revocation request — no RevDetails provided.");
         }
 
@@ -1318,7 +1336,7 @@ public class CmpService : ICmpService
         var statusSeq = new DerSequence(statusList.ToArray());
         var revRepContent = RevRepContent.GetInstance(new DerSequence((Asn1Encodable)statusSeq));
         var responseBody = new PkiBody(TypeRp, revRepContent);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
@@ -1331,7 +1349,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         // CertConfirm is an acknowledgement from the client that it received
@@ -1378,13 +1396,13 @@ public class CmpService : ICmpService
         }
 
         var responseBody = new PkiBody(TypePkiConf, DerNull.Instance);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     private byte[] HandleGeneralMessage(
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         // General Message — respond with the CA certificates (GenRepContent).
@@ -1406,7 +1424,7 @@ public class CmpService : ICmpService
 
         var genRepContent = new GenRepContent(infoTypeAndValue);
         var responseBody = new PkiBody(TypeGenp, genRepContent);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
@@ -1418,7 +1436,7 @@ public class CmpService : ICmpService
         PkiHeader requestHeader,
         PkiBody responseBody,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         var sender = new GeneralName(caCert.SubjectDN);
@@ -1458,9 +1476,9 @@ public class CmpService : ICmpService
         if (reqCtx.SignerIssuerCert != null)
             builder.AddCmpCertificate(reqCtx.SignerIssuerCert);
 
-        // Sign with the CA private key using the same algorithm as the CA cert
+        // Sign through the signer with the algorithm the signing key's type calls for
         var sigAlg = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caCert.GetPublicKey()));
-        var sigFactory = new PrivateKeyHandleSignatureFactory(sigAlg, caKeyHandle);
+        var sigFactory = new SigningServiceSignatureFactory(_signer, caKey.Key, SignatureAlgorithm.FromName(sigAlg), caKey.Context);
         var protectedMsg = builder.Build(sigFactory);
 
         return protectedMsg.ToAsn1Message().GetDerEncoded();
@@ -1570,7 +1588,7 @@ public class CmpService : ICmpService
 
     private byte[] BuildErrorResponse(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         PkiHeader? requestHeader,
         CmpRequestContext reqCtx,
         int pkiStatus,
@@ -1587,7 +1605,7 @@ public class CmpService : ICmpService
 
         if (requestHeader != null)
         {
-            return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+            return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
         }
 
         // No request header available — build a minimal header
@@ -1610,9 +1628,11 @@ public class CmpService : ICmpService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> DirectSignerWarned = new();
 
     /// <summary>
-    /// Resolves the certificate and private key that sign CMP responses for the addressed CA:
-    /// the dedicated CMP signer when one is configured and usable, otherwise the CA itself.
-    /// Returns the key handle directly (supports HSM-backed keys).
+    /// Resolves the certificate and the signer key reference that sign CMP responses for the
+    /// addressed CA: the dedicated CMP signer when one is configured and usable, otherwise the
+    /// CA itself. Whether a key is present is asked of the signer while choosing, so an
+    /// unregistered signer key falls back to the CA and a CA without its key is passed over,
+    /// exactly as when the keystore was consulted directly.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -1630,7 +1650,7 @@ public class CmpService : ICmpService
     /// to build the chain.
     /// </para>
     /// </remarks>
-    private async Task<(X509Certificate cert, IPrivateKeyHandle keyHandle, X509Certificate? signerIssuer)?> ResolveSignerForCaAsync(ResolvedCaContext context)
+    private async Task<(X509Certificate cert, CmpSignerKey key, X509Certificate? signerIssuer)?> ResolveSignerForCaAsync(ResolvedCaContext context)
     {
         if (context.Ca != null)
         {
@@ -1638,6 +1658,8 @@ public class CmpService : ICmpService
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
+                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.TenantId);
+                var held = await _signer.ListKeysAsync(caContext);
 
                 if (context.Ca.CmpSigningCertificateId != null)
                 {
@@ -1647,11 +1669,10 @@ public class CmpService : ICmpService
                     {
                         var signerCert = CertificateUtil.ParseFromPem(signerEntity.Pem);
                         var now = DateTime.UtcNow;
-                        var signerKey = now >= signerCert.NotBefore && now <= signerCert.NotAfter
-                            ? _keystore.GetPrivateKeyFor(signerCert)
-                            : null;
-                        if (signerKey != null)
-                            return (signerCert, signerKey, caCert);
+                        var signerKeyHeld = now >= signerCert.NotBefore && now <= signerCert.NotAfter
+                            && held.Any(k => k.Key.CertificateId == signerEntity.CertificateId);
+                        if (signerKeyHeld)
+                            return (signerCert, new CmpSignerKey(new KeyRef(signerEntity.CertificateId), caContext), caCert);
 
                         _logger.LogWarning(
                             "CMP signer {SignerId} for CA {CaLabel} is expired or its key is not registered; signing responses with the CA certificate instead.",
@@ -1672,19 +1693,19 @@ public class CmpService : ICmpService
                         context.Ca.Label);
                 }
 
-                var keyHandle = _keystore.GetPrivateKeyFor(caCert);
-                if (keyHandle != null)
-                    return (caCert, keyHandle, null);
+                if (held.Any(k => k.Key.CertificateId == certEntity.CertificateId))
+                    return (caCert, new CmpSignerKey(new KeyRef(certEntity.CertificateId), caContext), null);
             }
         }
 
-        // Fallback: pick first available signer
+        // Fallback: the first registered signer that is a CA key the signer holds
+        var caKeys = await _signer.ListKeysAsync(new SigningContext(SignerCaller, SigningPurpose.Cmp, null, null));
         foreach (var signer in _keystore.GetSigners())
         {
-            var cert = signer.PublicCertificate;
-            var keyHandle = _keystore.GetPrivateKeyFor(cert);
-            if (keyHandle != null)
-                return (cert, keyHandle, null);
+            var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
+            var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
+            if (info != null)
+                return (signer.PublicCertificate, new CmpSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Cmp, info.TenantId, info.CaId)), null);
         }
         return null;
     }

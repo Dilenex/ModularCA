@@ -199,8 +199,10 @@ public class AutoRenewalJob : SingletonCronJob
             // CLM-001: key-rotation policy. When RequireKeyRotation is true (default),
             // generate a fresh CSR with a new key pair via the CSR service instead of
             // setting CSR to empty string (which the issuance pipeline rejects). When
-            // false, the prior behaviour of carrying forward encrypted key blobs is
-            // preserved for devices that cannot rotate keys.
+            // false, the original CSR is re-submitted so the device keeps its key. A key
+            // the CA stored for the original certificate is not carried to the renewal:
+            // re-download ended, and a stored key expires with the certificate it was
+            // stored for.
             var rekey = _config.AutoRenewal.RequireKeyRotation;
 
             CertRequestEntity renewalRequest;
@@ -240,11 +242,7 @@ public class AutoRenewalJob : SingletonCronJob
                     Status = "Pending",
                     CertProfileId = certProfileId.Value,
                     SigningProfileId = signingProfileId.Value,
-                    RenewalOfCertificateId = cert.CertificateId,
-                    EncryptedPrivateKey = originalRequest?.EncryptedPrivateKey,
-                    EncryptedAesForPrivateKey = originalRequest?.EncryptedAesForPrivateKey,
-                    AesKeyEncryptionIv = originalRequest?.AesKeyEncryptionIv,
-                    EncryptionCertSerialNumber = originalRequest?.EncryptionCertSerialNumber
+                    RenewalOfCertificateId = cert.CertificateId
                 };
 
                 _db.CertificateRequests.Add(renewalRequest);

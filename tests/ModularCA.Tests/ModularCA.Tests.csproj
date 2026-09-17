@@ -47,6 +47,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The signer seam test loads ModularCA.API from its build output by reflection; its
+         controllers need the ASP.NET shared framework present at test time to be inspected. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Project references. The test project references every production library so any class
          under test is reachable without per-suite csproj edits. ModularCA.API is intentionally
          omitted — it's the host executable, not a library; controller tests will get a separate

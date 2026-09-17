@@ -2,10 +2,10 @@ using ModularCA.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Models;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
@@ -42,7 +42,6 @@ namespace ModularCA.Core.Services
         private readonly ICtSubmissionService _ctSubmission;
         private readonly ICertPolicyService _certPolicy;
         private readonly IQuotaService _quotaService;
-        private readonly IKeyWrappingPassphraseProvider _passphraseProvider;
         private readonly IAuditService _audit;
         private readonly ICertificateAccessService _certificateAccessService;
         private readonly ICertificateRevocationService _revocation;
@@ -60,7 +59,6 @@ namespace ModularCA.Core.Services
         /// <param name="ctSubmission">Service for submitting certificates to CT logs.</param>
         /// <param name="certPolicy">Service for evaluating system-wide certificate policy rules.</param>
         /// <param name="quotaService">Service for checking certificate quota limits per CA.</param>
-        /// <param name="passphraseProvider">Provider for HKDF wrap key derivation passphrase.</param>
         /// <param name="audit">Audit service for logging CT submission failures.</param>
         /// <param name="certificateAccessService">Service for managing certificate-level access control entries.</param>
         /// <param name="revocation">Revocation service used by the reissue flow to mark the previous certificate as Superseded through the proper revocation pipeline (CRL trigger, audit, notifications).</param>
@@ -75,7 +73,6 @@ namespace ModularCA.Core.Services
             ICtSubmissionService ctSubmission,
             ICertPolicyService certPolicy,
             IQuotaService quotaService,
-            IKeyWrappingPassphraseProvider passphraseProvider,
             IAuditService audit,
             ICertificateAccessService certificateAccessService,
             ICertificateRevocationService revocation,
@@ -90,7 +87,6 @@ namespace ModularCA.Core.Services
             _ctSubmission = ctSubmission;
             _certPolicy = certPolicy;
             _quotaService = quotaService;
-            _passphraseProvider = passphraseProvider;
             _audit = audit;
             _certificateAccessService = certificateAccessService;
             _revocation = revocation;
@@ -110,20 +106,32 @@ namespace ModularCA.Core.Services
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
             ValidityCeilingEnforcement ceilingEnforcement = ValidityCeilingEnforcement.AlwaysShorten,
             CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, null, allowCaProfile: false, ceilingEnforcement, cancellationToken);
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, allowCaProfile: false, ceilingEnforcement, cancellationToken);
 
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
+            X509Certificate caCert, KeyRef caKey, SigningContext caSigningContext, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(caCert);
+            ArgumentNullException.ThrowIfNull(caKey);
+            ArgumentNullException.ThrowIfNull(caSigningContext);
             // No enforcement parameter: this overload exists for infrastructure certificates issued
-            // before the CA is registered in the keystore, and those are exempt from the tenant
-            // ceiling altogether, so there is nothing for a tenant policy to refuse.
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: false, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
+            // before the CA is registered, and those are exempt from the tenant ceiling
+            // altogether, so there is nothing for a tenant policy to refuse.
+            return IssueCertificateInternalAsync(csrId, notBefore, notAfter, new PreResolvedCa(caCert, caKey, caSigningContext),
+                allowCaProfile: false, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
+        }
 
         /// <inheritdoc />
         public Task<IssuanceResult> IssueCaCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default)
-            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, caCert, caKeyHandle, allowCaProfile: true, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
+            CancellationToken cancellationToken = default)
+            => IssueCertificateInternalAsync(csrId, notBefore, notAfter, null, allowCaProfile: true, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
+
+        /// <summary>
+        /// The issuing CA as the CA creation seam names it: the certificate, the signer's
+        /// reference to its key and the context the signature is asked under.
+        /// </summary>
+        private sealed record PreResolvedCa(X509Certificate Certificate, KeyRef Key, SigningContext Context);
 
         /// <param name="allowCaProfile">
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
@@ -138,7 +146,7 @@ namespace ModularCA.Core.Services
         /// </param>
         private async Task<IssuanceResult> IssueCertificateInternalAsync(
             Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            X509Certificate? preResolvedCaCert, IPrivateKeyHandle? preResolvedCaKeyHandle,
+            PreResolvedCa? preResolvedCa,
             bool allowCaProfile,
             ValidityCeilingEnforcement ceilingEnforcement,
             CancellationToken cancellationToken = default)
@@ -237,22 +245,23 @@ namespace ModularCA.Core.Services
             if (!csrEntity.IsInfrastructureCert)
                 await EnforceQuotaAsync(csrEntity.SigningProfile);
 
-            // Resolve CA certificate and key — use pre-resolved values when provided
-            // (infrastructure certs may be issued before the CA is registered in the keystore)
+            // Resolve the CA certificate and its row. The key itself is never resolved here: the
+            // builder signs through the signer with a reference to this row. A pre-resolved CA is
+            // the CA creation seam, for a new CA whose infrastructure certificates are issued
+            // before its row is committed; that path signs with the reference and context the
+            // caller supplied, and the signer judges them as it judges any other signature.
             X509Certificate caMatch;
-            IPrivateKeyHandle caKeyHandle;
             CertificateEntity refCACert;
-            if (preResolvedCaCert != null && preResolvedCaKeyHandle != null)
+            if (preResolvedCa != null)
             {
-                caMatch = preResolvedCaCert;
-                caKeyHandle = preResolvedCaKeyHandle;
+                caMatch = preResolvedCa.Certificate;
                 refCACert = await _db.Certificates
                     .FirstOrDefaultAsync(c => c.CertificateId == csrEntity.SigningProfile.IssuerId, cancellationToken)
                     ?? throw new InvalidOperationException("CA certificate entity not found for pre-resolved CA.");
             }
             else
             {
-                (caMatch, caKeyHandle, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
+                (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
             }
 
             // Check tenant is enabled — block issuance if the CA's tenant has been disabled
@@ -385,43 +394,25 @@ namespace ModularCA.Core.Services
             EnsureSubjectDnIsStorable(subjectDn);
 
             // Build and sign the certificate
-            var issuedCert = await _builder.BuildCertificateAsync(
-                serialNumber, caMatch, caKeyHandle, subjectDn, subjectPublicKey,
+            var issuedCert = await BuildSignedAsync(
+                serialNumber, caMatch, refCACert, issuingCaEntity, preResolvedCa, subjectDn, subjectPublicKey,
                 validFrom, validTo, standardOids, extendedOids,
-                effectiveSans, refCACert.CertificateId, csrEntity.SigningProfile,
+                effectiveSans, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
-                allowWildcardSans: effectiveCertProfile.AllowWildcard,
-                additionalExtensions: RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
+                effectiveCertProfile.AllowWildcard,
+                RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);
 
-            // Handle private key re-encryption if present
-            byte[]? certIv = null;
-            byte[]? certEncryptedAes = null;
-            byte[]? certEncryptedPrivKey = null;
-
-            if (csrEntity.EncryptedPrivateKey != null && csrEntity.AesKeyEncryptionIv != null && csrEntity.EncryptedAesForPrivateKey != null && csrEntity.EncryptionCertSerialNumber != null)
-            {
-                var decryptedCsrPrivKey = DecryptPrivateKeyFromSerial(csrEntity.AesKeyEncryptionIv, csrEntity.EncryptedAesForPrivateKey, csrEntity.EncryptedPrivateKey, csrEntity.EncryptionCertSerialNumber, _db, _keystore, _passphraseProvider);
-                // Assign BY NAME. EncryptPrivateKey returns (aesKeyEncrypted, iv, encryptedPrivateKey),
-                // and this used to deconstruct it positionally into (certIv, certEncryptedAes, ...) --
-                // so the wrapped AES key was stored in the IV column and the 12-byte IV in the AES
-                // key column. Tuple element names do not protect a positional deconstruction, and
-                // nothing failed at issuance time: the swap only surfaced later, as an
-                // ArgumentOutOfRangeException deep inside the unwrap, the first time anyone tried
-                // to export a PFX. Every other caller assigns by name; this was the one that did not.
-                var encryptedForCert = KeyEncryptionUtil.EncryptPrivateKey(
-                    caMatch.GetPublicKey(), decryptedCsrPrivKey, _passphraseProvider.GetPassphrase());
-                certIv = encryptedForCert.iv;
-                certEncryptedAes = encryptedForCert.aesKeyEncrypted;
-                certEncryptedPrivKey = encryptedForCert.encryptedPrivateKey;
-            }
-
-            // Track which CA certificate was used to encrypt the private key
-            var encryptionCertSerial = certEncryptedPrivKey != null
-                ? CertificateUtil.FormatSerialNumber(caMatch.SerialNumber)
-                : null;
+            // A key the CA generated before re-download ended is stored, wrapped, on the request
+            // row. It is carried to the certificate row as it is, wrap and wrapping-CA serial
+            // together, so its holder can still export it until the certificate expires. Nothing
+            // is unwrapped here and nothing new is ever stored: a request made since carries no key.
+            var certIv = csrEntity.AesKeyEncryptionIv;
+            var certEncryptedAes = csrEntity.EncryptedAesForPrivateKey;
+            var certEncryptedPrivKey = csrEntity.EncryptedPrivateKey;
+            var encryptionCertSerial = certEncryptedPrivKey != null ? csrEntity.EncryptionCertSerialNumber : null;
 
             // Save to DB
             var certModel = BuildCertModel(issuedCert, certPem, standardOids, extendedOids,
@@ -700,8 +691,8 @@ namespace ModularCA.Core.Services
             if (!csrEntity.IsInfrastructureCert)
                 await EnforceQuotaAsync(csrEntity.SigningProfile);
 
-            // Resolve CA certificate and key
-            var (caMatch, caKeyHandle, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
+            // Resolve CA certificate and row; the key stays with the signer
+            var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
 
             // Check tenant is enabled — block reissuance if the CA's tenant has been disabled
             var reissueCaEntity = await _db.CertificateAuthorities
@@ -837,13 +828,13 @@ namespace ModularCA.Core.Services
             EnsureSubjectDnIsStorable(reissueSubjectDn);
 
             // Build and sign the certificate
-            var issuedCert = await _builder.BuildCertificateAsync(
-                serialNumber, caMatch, caKeyHandle, reissueSubjectDn, csr.GetPublicKey(),
+            var issuedCert = await BuildSignedAsync(
+                serialNumber, caMatch, refCACert, reissueCaEntity, null, reissueSubjectDn, csr.GetPublicKey(),
                 validFrom, validTo, standardOids, extendedOids,
-                reissueEffectiveSans, refCACert.CertificateId, csrEntity.SigningProfile,
+                reissueEffectiveSans, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
-                allowWildcardSans: effectiveCertProfile.AllowWildcard,
-                additionalExtensions: RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
+                effectiveCertProfile.AllowWildcard,
+                RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);
@@ -1616,11 +1607,60 @@ namespace ModularCA.Core.Services
             }
         }
 
+        /// <summary>The caller identity issuance signs under; the signer audits it with every decision.</summary>
+        private const string SignerCaller = nameof(CertificateIssuanceService);
+
         /// <summary>
-        /// Resolves the CA certificate, private key handle, and database certificate entity
-        /// for the given signing profile.
+        /// Signs the certificate through the builder. The ordinary path hands the builder a
+        /// <see cref="KeyRef"/> to the CA row and a context naming the CA and its tenant, and the
+        /// signer holds the key to that; the CA creation seam hands it the reference and context
+        /// the caller supplied, because the CA's row is not committed yet. A signer that has no
+        /// key for the CA, or is locked, is reported as the same configuration error the keystore
+        /// lookup used to raise; a policy refusal is a wiring bug and surfaces as itself.
         /// </summary>
-        private async Task<(X509Certificate caMatch, IPrivateKeyHandle caKeyHandle, CertificateEntity refCACert)> ResolveCaAsync(SigningProfileEntity signingProfile)
+        private async Task<X509Certificate> BuildSignedAsync(
+            BigInteger serialNumber, X509Certificate caMatch, CertificateEntity refCACert,
+            CertificateAuthorityEntity? caEntity, PreResolvedCa? preResolvedCa,
+            X509Name subjectDn, AsymmetricKeyParameter subjectPublicKey,
+            DateTime validFrom, DateTime validTo, List<string> standardOids, List<string> extendedOids,
+            string? sans, SigningProfileEntity signingProfile, bool isCa, bool allowWildcardSans,
+            IReadOnlyList<RequestedExtension>? additionalExtensions)
+        {
+            KeyRef caKey;
+            SigningContext context;
+            if (preResolvedCa != null)
+            {
+                caKey = preResolvedCa.Key;
+                context = preResolvedCa.Context;
+            }
+            else
+            {
+                if (caEntity == null)
+                    throw new ConfigurationValidationException(
+                        $"No certificate authority record names CA certificate {refCACert.CertificateId}; the signer cannot attribute its key.",
+                        ErrorCodes.IssuingCaKeyUnavailable);
+                caKey = new KeyRef(refCACert.CertificateId);
+                context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
+            }
+
+            try
+            {
+                return await _builder.BuildCertificateAsync(
+                    serialNumber, caMatch, caKey, context,
+                    subjectDn, subjectPublicKey, validFrom, validTo, standardOids, extendedOids,
+                    sans, refCACert.CertificateId, signingProfile, isCa, allowWildcardSans, additionalExtensions);
+            }
+            catch (SigningRefusedException ex) when (ex.Reason is SigningRefusalReason.UnknownKey or SigningRefusalReason.SignerLocked)
+            {
+                throw new ConfigurationValidationException($"Private key not found for CA: {caMatch.SubjectDN} ({ex.Message})", ErrorCodes.IssuingCaKeyUnavailable);
+            }
+        }
+
+        /// <summary>
+        /// Resolves the CA certificate and its database row for the given signing profile. The
+        /// private key is not resolved: the signer holds it, and is asked by reference to the row.
+        /// </summary>
+        private async Task<(X509Certificate caMatch, CertificateEntity refCACert)> ResolveCaAsync(SigningProfileEntity signingProfile)
         {
             var refCACert = await _db.Certificates
                 .FirstOrDefaultAsync(c => c.CertificateId == signingProfile.IssuerId);
@@ -1643,10 +1683,7 @@ namespace ModularCA.Core.Services
             if (caMatch == null)
                 throw new ResourceNotFoundException("Certificate authority", $"No CA found with subject matching: {refCACert.SubjectDN}");
 
-            var caKeyHandle = _keystore.GetPrivateKeyFor(caMatch)
-                ?? throw new ConfigurationValidationException($"Private key not found for CA: {caMatch.SubjectDN}", ErrorCodes.IssuingCaKeyUnavailable);
-
-            return (caMatch, caKeyHandle, refCACert);
+            return (caMatch, refCACert);
         }
 
         /// <summary>
@@ -1773,49 +1810,6 @@ namespace ModularCA.Core.Services
                 { "SHA 256", sha256thumbprint }
             };
             return JsonSerializer.Serialize(thumbprintDict);
-        }
-
-        /// <summary>
-        /// Decrypts a private key that was encrypted against a specific certificate's public key.
-        /// </summary>
-        private static AsymmetricKeyParameter DecryptPrivateKeyFromSerial(
-            byte[] iv,
-            byte[] encryptedAesKey,
-            byte[] encryptedPrivateKey,
-            string EncryptionCertSerialNumber,
-            ModularCADbContext db,
-            IKeystoreCertificates keystore,
-            IKeyWrappingPassphraseProvider passphraseProvider)
-        {
-            var encryptorPrivKeySerial = db.Certificates
-                .ResolveBySerialOrNull(EncryptionCertSerialNumber);
-            if (encryptorPrivKeySerial == null) throw new InvalidOperationException("Encryptor certificate not found for private key decryption.");
-            var encryptorPubKey = new X509CertificateParser();
-            var encryptorCert = encryptorPubKey.ReadCertificate(encryptorPrivKeySerial.RawCertificate);
-            var encryptorKeyHandle = keystore.GetPrivateKeyFor(encryptorCert);
-            if (encryptorKeyHandle == null) throw new InvalidOperationException("Encryptor private key not found for private key decryption.");
-
-            AsymmetricKeyParameter? encryptorPrivKey = null;
-            if (encryptorKeyHandle.CanExport)
-            {
-                // Zero the DER transport buffer as soon as BC has consumed it.
-                var der = encryptorKeyHandle.ExportPrivateKeyDer();
-                try
-                {
-                    encryptorPrivKey = PrivateKeyFactory.CreateKey(der);
-                }
-                finally
-                {
-                    if (der != null)
-                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(der);
-                }
-            }
-            else
-            {
-                throw new NotSupportedException("Non-exporting private key handles are not supported for private key decryption.");
-            }
-
-            return KeyEncryptionUtil.DecryptPrivateKey(encryptedAesKey, iv, encryptedPrivateKey, encryptorPrivKey, encryptorCert.GetPublicKey(), passphraseProvider.GetPassphrase());
         }
 
         /// <summary>

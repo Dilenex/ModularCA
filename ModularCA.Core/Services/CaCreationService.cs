@@ -2,15 +2,13 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
-using ModularCA.Core.Implementations;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
-using ModularCA.Keystore.Services;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto;
@@ -28,13 +26,21 @@ using System.Text.Json;
 namespace ModularCA.Core.Services;
 
 /// <summary>
-/// Creates Certificate Authorities at runtime: generates key pairs, signs CA certs
-/// (self-signed for root, parent-signed for intermediate), persists to DB and keystore,
-/// and registers in the in-memory CA registry.
+/// Creates Certificate Authorities at runtime: has the signer generate the key, signs the CA
+/// certificate through it (self-signed for a root, by the parent for an intermediate), persists
+/// the rows, and commits the key to its certificate so the signer holds and registers it.
 /// </summary>
+/// <remarks>
+/// No private key passes through this service. A new key is generated inside the signer under
+/// the ceremony context and held pending there: it signs the CA certificate or CSR and the
+/// CA's infrastructure certificates under that context only, and is written nowhere. Once the
+/// database transaction that names the CA has committed, each key is committed to its
+/// certificate row, which is when the signer appends it to the keystore and registers the
+/// identity. A failure anywhere before that retires the pending keys, so nothing usable is left
+/// behind; a failure while committing compensates the rows as a failed keystore write always has.
+/// </remarks>
 public class CaCreationService(
     ModularCADbContext db,
-    IKeystoreCertificates keystore,
     ICrlService crlService,
     ICaServiceUrlService caServiceUrls,
     ICsrService csrService,
@@ -42,8 +48,63 @@ public class CaCreationService(
     SystemConfig systemConfig,
     ILogger<CaCreationService> logger,
     IQuotaService quotaService,
+    ISigningService signer,
     IAuditService? audit = null)
 {
+    /// <summary>The caller identity CA creation asks the signer under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(CaCreationService);
+
+    /// <summary>
+    /// Whether the signer holds the key of certificate <paramref name="certificateId"/> among
+    /// the keys of <paramref name="ca"/>. Asked before a CA is used as a parent or as the issuer
+    /// of a new infrastructure certificate, so a missing key is reported as it was when the
+    /// keystore was consulted directly.
+    /// </summary>
+    private async Task<bool> SignerHoldsKeyAsync(CertificateAuthorityEntity ca, Guid certificateId)
+    {
+        var keys = await signer.ListKeysAsync(SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, ca.Id, ca.TenantId));
+        return keys.Any(k => k.Key.CertificateId == certificateId);
+    }
+
+    /// <summary>
+    /// Retires pending keys after a failure, best-effort: the failure that is being unwound is
+    /// the one to report, and a key that cannot be retired is logged, not thrown.
+    /// </summary>
+    private async Task RetireQuietlyAsync(SigningContext ceremony, params KeyRef?[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (key == null) continue;
+            try
+            {
+                await signer.RetireKeyAsync(key, ceremony);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Pending key {Key} could not be retired after a failed CA operation.", key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Commits each generated key to its certificate in order. If one fails, the keys not yet
+    /// committed are retired, and the failure propagates for the caller to compensate.
+    /// </summary>
+    private async Task CommitKeysAsync(SigningContext ceremony, IReadOnlyList<(KeyRef Key, Guid CertificateId)> keys)
+    {
+        for (var i = 0; i < keys.Count; i++)
+        {
+            try
+            {
+                await signer.CommitKeyAsync(keys[i].Key, keys[i].CertificateId, ceremony);
+            }
+            catch
+            {
+                await RetireQuietlyAsync(ceremony, keys.Skip(i).Select(k => (KeyRef?)k.Key).ToArray());
+                throw;
+            }
+        }
+    }
     /// <summary>
     /// Blocks CA creation when the owning tenant has reached its
     /// <c>MaxCertificateAuthorities</c> limit. Previously the value was stored on the
@@ -133,7 +194,49 @@ public class CaCreationService(
     {
         await EnforceTenantCaQuotaAsync(tenantId);
 
-        var newKeyPair = GenerateKeyPair(keyAlgorithm, keySize);
+        // The key is generated inside the signer and held pending under this ceremony context:
+        // it signs only under it until it is committed to the certificate row, and is retired
+        // if anything fails before then.
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null);
+        var generated = await signer.GenerateKeyAsync(
+            new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
+        X509Certificate newCaCert;
+        CertificateEntity certEntity;
+        try
+        {
+            (newCaCert, certEntity) = await SelfSignRootAsync(generated, ceremony,
+                subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC,
+                keyAlgorithm, keySize, validityYears, nameConstraintsPermittedJson, nameConstraintsExcludedJson);
+        }
+        catch
+        {
+            await RetireQuietlyAsync(ceremony, generated.Key);
+            throw;
+        }
+
+        return await PersistAndRegisterAsync(
+            certEntity, newCaCert, generated.Key, ceremony, subjectCN, label,
+            tenantId: tenantId,
+            caType: "Root", parentCaId: null,
+            parentCertificateId: null,
+            publicBaseUrl: publicBaseUrl,
+            nameConstraintsPermittedJson: nameConstraintsPermittedJson,
+            nameConstraintsExcludedJson: nameConstraintsExcludedJson);
+    }
+
+    /// <summary>
+    /// Builds the self-signed root certificate over the public half of the generated key, signs
+    /// it through the signer with the pending key under the ceremony context, and stores its
+    /// row. Self-signed roots cannot go through the pipeline (no parent signing profile).
+    /// </summary>
+    private async Task<(X509Certificate Certificate, CertificateEntity Entity)> SelfSignRootAsync(
+        GeneratedKey generated, SigningContext ceremony,
+        string subjectCN, string? subjectO, string? subjectOU,
+        string? subjectL, string? subjectST, string? subjectC,
+        string keyAlgorithm, int keySize, int validityYears,
+        string? nameConstraintsPermittedJson, string? nameConstraintsExcludedJson)
+    {
+        var publicKey = PublicKeyFactory.CreateKey(generated.PublicKeyDer);
         var subjectDN = BuildSubjectDN(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC);
 
         // 17 bytes with a forced 0x00 high byte guarantees a positive
@@ -151,11 +254,11 @@ public class CaCreationService(
         certGen.SetSubjectDN(subjectDN);
         certGen.SetNotBefore(notBefore);
         certGen.SetNotAfter(notAfter);
-        certGen.SetPublicKey(newKeyPair.Public);
+        certGen.SetPublicKey(publicKey);
 
         certGen.AddExtension(X509Extensions.BasicConstraints, true, new BasicConstraints(true));
 
-        var subPubKeyInfo = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(newKeyPair.Public);
+        var subPubKeyInfo = SubjectPublicKeyInfo.GetInstance(generated.PublicKeyDer);
         certGen.AddExtension(X509Extensions.SubjectKeyIdentifier, false,
             X509ExtensionUtilities.CreateSubjectKeyIdentifier(subPubKeyInfo));
 
@@ -188,26 +291,17 @@ public class CaCreationService(
             certGen.AddExtension(X509Extensions.NameConstraints, true, nameConstraints);
         }
 
-        // Self-sign with the new key pair's private key. Route through KeyAlgorithmPolicy so
+        // Self-sign through the signer with the pending key. Route through KeyAlgorithmPolicy so
         // the curve/hash pairing is centralised (P-256→SHA-256, P-384→SHA-384, P-521→SHA-512).
         var sigAlgName = KeyAlgorithmPolicy.ResolveSignatureAlgorithm(keyAlgorithm, keySize);
-        var signer = new Asn1SignatureFactory(sigAlgName, newKeyPair.Private, new SecureRandom());
-        var newCaCert = certGen.Generate(signer);
+        var signatureFactory = new SigningServiceSignatureFactory(signer, generated.Key, SignatureAlgorithm.FromName(sigAlgName), ceremony);
+        var newCaCert = certGen.Generate(signatureFactory);
 
-        // Self-signed roots can't go through the pipeline (no parent signing profile).
         // Build and store the cert entity directly, then register the CA.
         var certEntity = BuildCaCertEntity(newCaCert, parentCertificateId: null);
         db.Certificates.Add(certEntity);
         await db.SaveChangesAsync();
-
-        return await PersistAndRegisterAsync(
-            certEntity, newCaCert, newKeyPair, subjectCN, label,
-            tenantId: tenantId,
-            caType: "Root", parentCaId: null,
-            parentCertificateId: null,
-            publicBaseUrl: publicBaseUrl,
-            nameConstraintsPermittedJson: nameConstraintsPermittedJson,
-            nameConstraintsExcludedJson: nameConstraintsExcludedJson);
+        return (newCaCert, certEntity);
     }
 
     /// <summary>
@@ -233,8 +327,8 @@ public class CaCreationService(
         await EnforceTenantCaQuotaAsync(tenantId);
 
         var parentBcCert = CertificateUtil.ParseFromPem(parentCert.Pem);
-        var parentKeyHandle = keystore.GetPrivateKeyFor(parentBcCert)
-            ?? throw new InvalidOperationException("Parent CA private key not found in keystore");
+        if (!await SignerHoldsKeyAsync(parentCa, parentCert.CertificateId))
+            throw new InvalidOperationException("Parent CA private key not found in keystore");
 
         // Resolve parent CA's signing profile for the issuance pipeline
         var parentSigningProfile = await db.SigningProfiles
@@ -282,9 +376,18 @@ public class CaCreationService(
         var origExcluded = parentSigningProfile.NameConstraintsExcluded;
         var origMaxPath = parentSigningProfile.MaxPathLength;
 
+        // The intermediate's key is generated inside the signer and held pending under this
+        // ceremony context; it signs the CSR under it, and is retired if anything fails before
+        // it is committed to the issued certificate.
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, tenantId, null);
+        var generated = await signer.GenerateKeyAsync(
+            new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
+
         IssuanceResult result;
         Guid csrId;
-        Org.BouncyCastle.Crypto.AsymmetricCipherKeyPair newKeyPair;
+        CertificateEntity? certEntity;
+        try
+        {
         try
         {
             if (!string.IsNullOrWhiteSpace(nameConstraintsPermittedJson))
@@ -296,9 +399,14 @@ public class CaCreationService(
             // Build subject DN
             var subjectDnStr = BuildSubjectDN(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC).ToString();
 
-            // Generate CSR and issue through the standard pipeline
-            (csrId, newKeyPair) = await csrService.GenerateInfrastructureCsrAsync(
-                subjectDnStr, keyAlgorithm, keySize, caCertProfile.Id, parentSigningProfile.Id);
+            // Generate the CSR over the pending key, signed through the signer, and issue it
+            // through the standard pipeline: the parent is a registered CA whose key the signer
+            // holds, so issuance resolves it by row like any other certificate.
+            var csrSigner = new SigningServiceSignatureFactory(signer, generated.Key,
+                SignatureAlgorithm.FromName(KeyAlgorithmPolicy.ResolveSignatureAlgorithm(keyAlgorithm, keySize)), ceremony);
+            csrId = await csrService.GenerateInfrastructureCsrAsync(
+                subjectDnStr, keyAlgorithm, keySize, caCertProfile.Id, parentSigningProfile.Id,
+                PublicKeyFactory.CreateKey(generated.PublicKeyDer), csrSigner);
 
             var notBefore = CertificateValidityUtil.DefaultNotBefore();
             var notAfter = notBefore.AddYears(validityYears);
@@ -310,8 +418,7 @@ public class CaCreationService(
                 notAfter = parentBcCert.NotAfter;
             }
 
-            result = await issuanceService.IssueCaCertificateAsync(
-                csrId, notBefore, notAfter, parentBcCert, parentKeyHandle);
+            result = await issuanceService.IssueCaCertificateAsync(csrId, notBefore, notAfter);
         }
         finally
         {
@@ -325,14 +432,20 @@ public class CaCreationService(
 
         // Retrieve the stored cert entity via the CSR
         var csrEntity = await db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == csrId);
-        var certEntity = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == csrEntity!.IssuedCertificateId);
+        certEntity = await db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == csrEntity!.IssuedCertificateId);
         if (certEntity == null)
             throw new InvalidOperationException("Issued intermediate CA certificate not found in database.");
+        }
+        catch
+        {
+            await RetireQuietlyAsync(ceremony, generated.Key);
+            throw;
+        }
 
         var newCaCert = CertificateUtil.ParseFromPem(result.Pem);
 
         return await PersistAndRegisterAsync(
-            certEntity, newCaCert, newKeyPair, subjectCN, label,
+            certEntity, newCaCert, generated.Key, ceremony, subjectCN, label,
             tenantId: tenantId,
             caType: "Intermediate", parentCaId: parentCa.Id,
             parentCertificateId: parentCert.CertificateId,
@@ -357,12 +470,15 @@ public class CaCreationService(
     /// Creates a CA entity, per-CA signing profile, authorization groups, CRL schedule,
     /// service URLs, TSA/OCSP certs, and protocol configs for an already-issued CA certificate.
     /// The cert must already be stored in the database (via the issuance pipeline or direct
-    /// insert for self-signed roots). Keystore writes are deferred to after DB commit.
+    /// insert for self-signed roots). The keys are committed to the signer after DB commit:
+    /// <paramref name="caKey"/> is the pending key the signer generated under
+    /// <paramref name="ceremony"/>, and the infrastructure keys are generated the same way here.
     /// </summary>
     private async Task<CertificateAuthorityEntity> PersistAndRegisterAsync(
         CertificateEntity certEntity,
         X509Certificate newCaCert,
-        AsymmetricCipherKeyPair newKeyPair,
+        KeyRef caKey,
+        SigningContext ceremony,
         string name,
         string? label,
         Guid tenantId,
@@ -399,80 +515,22 @@ public class CaCreationService(
                 $"A CA with label '{caLabel}' already exists in this tenant.", ErrorCodes.NameAlreadyTaken);
         }
 
-        // Export the new child-CA private key ONCE, into a buffer we own and will
-        // zero in the finally block. The parent-CA private key is NOT exported here — it is
-        // held by the in-registry key handle and signed through a BouncyCastle ISignatureFactory
-        // adapter in CreateIntermediateAsync above.
-        var newPrivKeyDer = PrivateKeyInfoFactory.CreatePrivateKeyInfo(newKeyPair.Private).GetDerEncoded();
-
-        var ksPath = Path.Combine(AppContext.BaseDirectory, "keystores");
-        var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-
-        var signers = keystore.GetSigners();
-        if (signers.Count < 1)
-            throw new InvalidOperationException("Need at least 1 signer in registry for keystore operations");
-
-        // Resolve the signer whose public key matches the pinned SPKI for ca-certs.keystore.
-        // Bootstrap signs the keystore with the System Signing CA and pins its SPKI. signers[0]
-        // is NOT guaranteed to be that CA (it's whatever was first in the keystore file, usually
-        // the Root CA). Using the wrong signer causes the post-write verification to fail because
-        // the new file's signature doesn't match the pinned SPKI.
-        var pinnedSpki = KeystoreService.GetPinnedSignerSpki(db, "ca-certs.keystore");
-        CertificateAuthorityIdentity? matchedSigner = null;
-        if (pinnedSpki != null)
-        {
-            foreach (var s in signers)
-            {
-                var spki = KeystoreService.ComputeSpkiSha256Hex(s.PublicCertificate);
-                if (string.Equals(spki, pinnedSpki, StringComparison.OrdinalIgnoreCase))
-                {
-                    matchedSigner = s;
-                    break;
-                }
-            }
-        }
-        matchedSigner ??= signers[0];
-
-        var systemSignerKeyHandle = matchedSigner.PrivateKeyHandle ?? throw new InvalidOperationException("System signer private key handle is null");
-        // Mirror the CanExport guard used by every other export
-        // site so an HSM-backed system signer produces a clear error instead of an opaque
-        // NotSupportedException from ExportPrivateKeyDer. Until KeystoreService.AppendEntries
-        // accepts an IPrivateKeyHandle directly (deferred refactor), the system signer must
-        // be exportable for runtime keystore writes to succeed.
-        if (!systemSignerKeyHandle.CanExport)
-            throw new NotSupportedException(
-                "The system CA signer is backed by a non-exportable key handle (e.g. HSM). " +
-                "Runtime keystore signing currently requires an exportable signer — " +
-                "a deferred refactor will let KeystoreService.AppendEntries " +
-                "accept an IPrivateKeyHandle to support HSM-backed system signers.");
-        var systemSignerDer = systemSignerKeyHandle.ExportPrivateKeyDer()
-            ?? throw new InvalidOperationException("System signer private key DER export returned null");
-        AsymmetricKeyParameter systemSigner;
-        try
-        {
-            systemSigner = PrivateKeyFactory.CreateKey(systemSignerDer);
-        }
-        catch
-        {
-            CryptographicOperations.ZeroMemory(systemSignerDer);
-            throw;
-        }
-
         CertificateAuthorityEntity caEntity;
         SigningProfileEntity signingProfile;
-        X509Certificate tsaCertForKeystore;
-        byte[]? tsaPrivKeyDer = null;
-        X509Certificate ocspCertForKeystore;
-        byte[]? ocspPrivKeyDer = null;
-        AsymmetricKeyParameter? tsaPrivKey = null;
-        AsymmetricKeyParameter? ocspPrivKey = null;
+        X509Certificate tsaCert;
+        Guid tsaCertificateId;
+        X509Certificate ocspCert;
+        Guid ocspCertificateId;
+        KeyRef? tsaKey = null;
+        KeyRef? ocspKey = null;
 
         // Wrap every DB write in a single transaction so a mid-flight failure
-        // leaves no orphan rows. Keystore writes must remain OUTSIDE the transaction (file
-        // I/O is not transactional) so we defer all AppendEntries calls until after commit.
-        // A commit failure rolls back the DB and the keystore is never touched. If the DB
-        // commit succeeds but the keystore writes fail, KeystoreFileWriter leaves a .bak of
-        // the prior file in place and the catch-handler below unwinds the DB rows.
+        // leaves no orphan rows. The keys stay pending in the signer (file I/O is not
+        // transactional) until after commit, when each is committed to its certificate. A
+        // commit failure rolls back the DB and retires the pending keys, so the keystore is never
+        // touched. If the DB commit succeeds but a key cannot be committed, the signer's append
+        // path leaves a .bak of the prior file in place and the catch-handler below unwinds the
+        // DB rows.
         await using var tx = await db.Database.BeginTransactionAsync();
         try
         {
@@ -634,16 +692,15 @@ public class CaCreationService(
             // Intermediates inherit the parent CA's base URL when the operator didn't supply one.
             await CreateServiceUrlsAsync(certEntity, publicBaseUrl, parentCertificateId);
 
-            // Issue TSA signer and OCSP responder certs through the standard CSR pipeline.
-            // Uses the CA-override issuance overload since the CA isn't in the keystore yet.
-            var caKeyHandle = new SoftwarePrivateKeyHandle(newKeyPair.Private);
-
-            (tsaCertForKeystore, tsaPrivKeyDer, tsaPrivKey) = await IssueInfrastructureCertAsync(
-                newCaCert, newKeyPair.Private, caKeyHandle, caEntity, signingProfile,
+            // Issue TSA signer and OCSP responder certs through the standard CSR pipeline. The
+            // new CA signs them with its pending key under the ceremony context: its row is not
+            // committed yet, so the signer could not attribute a signature to it by row.
+            (tsaCert, tsaCertificateId, tsaKey) = await IssueInfrastructureCertAsync(
+                newCaCert, caKey, ceremony, caEntity, signingProfile,
                 "TSA Certificate Profile", "TSA", logger);
 
-            (ocspCertForKeystore, ocspPrivKeyDer, ocspPrivKey) = await IssueInfrastructureCertAsync(
-                newCaCert, newKeyPair.Private, caKeyHandle, caEntity, signingProfile,
+            (ocspCert, ocspCertificateId, ocspKey) = await IssueInfrastructureCertAsync(
+                newCaCert, caKey, ceremony, caEntity, signingProfile,
                 "OCSP Responder Certificate Profile", "OCSP Responder", logger);
 
             // Seed default protocol configs using the per-CA signing profile
@@ -668,29 +725,24 @@ public class CaCreationService(
         }
         catch
         {
-            // Roll back the DB transaction. The scrubbed tsaPrivKeyDer buffer (if we got that
-            // far) is zeroed in the outer finally block. Keystore files were never touched.
+            // Roll back the DB transaction and discard every pending key: nothing was written to
+            // the keystore, and a pending key signs under nothing but this ceremony.
             try { await tx.RollbackAsync(); } catch { /* best-effort */ }
-            CryptographicOperations.ZeroMemory(newPrivKeyDer);
-            if (tsaPrivKeyDer != null) CryptographicOperations.ZeroMemory(tsaPrivKeyDer);
-            if (ocspPrivKeyDer != null) CryptographicOperations.ZeroMemory(ocspPrivKeyDer);
-            CryptographicOperations.ZeroMemory(systemSignerDer);
+            await RetireQuietlyAsync(ceremony, caKey, tsaKey, ocspKey);
             throw;
         }
 
-        // DB is committed. Now stage the keystore writes outside the transaction.
-        // Batch both the new CA key + the TSA key into a single AppendEntries call per keystore
-        // file so we only pay one decrypt/re-encrypt/signature-rewrite cost for each store
-        // instead of four, and the per-file lock is held exactly once.
+        // DB is committed. Now commit the keys to their certificates: the signer appends each
+        // key and certificate to the keystore files and registers the identity, so the CA signs
+        // and its responder and TSA answer without a restart.
         try
         {
-            KeystoreService.AppendEntries(
-                Path.Combine(ksPath, "ca-certs.keystore"), yamlPath, "ca-certs.keystore",
-                new[] { newPrivKeyDer, tsaPrivKeyDer!, ocspPrivKeyDer! }, systemSigner, db);
-
-            KeystoreService.AppendEntries(
-                Path.Combine(ksPath, "ca-trust.keystore"), yamlPath, "ca-trust.keystore",
-                new[] { newCaCert.GetEncoded(), tsaCertForKeystore.GetEncoded(), ocspCertForKeystore.GetEncoded() }, systemSigner, db);
+            await CommitKeysAsync(ceremony, new[]
+            {
+                (caKey, certEntity.CertificateId),
+                (tsaKey, tsaCertificateId),
+                (ocspKey, ocspCertificateId),
+            });
 
             logger.LogInformation("Keystore updated with {Type} CA key and cert for {Subject}", caType, name);
 
@@ -718,8 +770,8 @@ public class CaCreationService(
                             CaSubject = newCaCert.SubjectDN?.ToString(),
                             CaType = caType,
                             EntryCount = 3,
-                            IncludesTsaKey = tsaPrivKeyDer != null,
-                            IncludesOcspKey = ocspPrivKeyDer != null,
+                            IncludesTsaKey = true,
+                            IncludesOcspKey = true,
                         },
                         certificateAuthorityId: caEntity.Id,
                         tenantId: caEntity.TenantId);
@@ -767,45 +819,11 @@ public class CaCreationService(
                 logger.LogError(compEx,
                     "Compensating cleanup after keystore failure also failed for CA '{Name}' — manual intervention required", name);
             }
-            CryptographicOperations.ZeroMemory(newPrivKeyDer);
-            if (tsaPrivKeyDer != null) CryptographicOperations.ZeroMemory(tsaPrivKeyDer);
-            if (ocspPrivKeyDer != null) CryptographicOperations.ZeroMemory(ocspPrivKeyDer);
-            CryptographicOperations.ZeroMemory(systemSignerDer);
             throw;
         }
-        finally
-        {
-            // Zero the DER buffers we materialised. The AsymmetricKeyParameter systemSigner
-            // still holds the decoded scalar in-heap but at least the DER transport copy is gone.
-            CryptographicOperations.ZeroMemory(newPrivKeyDer);
-            if (tsaPrivKeyDer != null) CryptographicOperations.ZeroMemory(tsaPrivKeyDer);
-            if (ocspPrivKeyDer != null) CryptographicOperations.ZeroMemory(ocspPrivKeyDer);
-            CryptographicOperations.ZeroMemory(systemSignerDer);
-        }
 
-        // Register in runtime registry (must happen after DB commit so a failed commit doesn't
-        // leave a stale entry in the registry). CRL generation below needs the key in place.
-        var privKeyHandle = new SoftwarePrivateKeyHandle(newKeyPair.Private);
-        var identity = new CertificateAuthorityIdentity(newCaCert, privKeyHandle);
-        if (keystore is MultiCARegistry registry)
-        {
-            registry.RegisterSigner(identity);
-
-            // Register the infrastructure identities too. Their private keys were just written to
-            // the keystore FILE, but IKeystoreCertificates is a singleton populated at startup and
-            // AppendEntries has no way to refresh it — so without this the OCSP responder resolves
-            // its own certificate, fails GetPrivateKeyFor, and answers every request with
-            // "unauthorized" until someone restarts the service. The TSA fails the same way, more
-            // quietly. Verified end to end: OCSP for a UI-created CA returned unauthorized before
-            // a restart and a correct extended-revoke response after one.
-            if (tsaPrivKey != null)
-                registry.RegisterSigner(new CertificateAuthorityIdentity(
-                    tsaCertForKeystore, new SoftwarePrivateKeyHandle(tsaPrivKey)));
-            if (ocspPrivKey != null)
-                registry.RegisterSigner(new CertificateAuthorityIdentity(
-                    ocspCertForKeystore, new SoftwarePrivateKeyHandle(ocspPrivKey)));
-        }
-
+        // Committing each key registered its identity with the runtime registry, so the CA signs
+        // and its responder and TSA answer without a restart; the initial CRL below needs that.
         // Generate the initial CRL now that the CA key is in the registry.
         try
         {
@@ -958,11 +976,14 @@ public class CaCreationService(
 
         var caCert = CertificateUtil.ParseFromPem(caCertEntity.Pem);
 
-        // The CA's own signing key must be present in the runtime registry — the new certificates
-        // are signed with it.
-        var caKeyHandle = keystore.GetPrivateKeyFor(caCert)
-            ?? throw new ConfigurationValidationException(
+        // The CA's own signing key must be held by the signer — the new certificates are signed
+        // with it.
+        if (!await SignerHoldsKeyAsync(caEntity, caCertEntity.CertificateId))
+            throw new ConfigurationValidationException(
                 "No private key is available for this CA, so it cannot sign a new responder certificate.", ErrorCodes.IssuingCaKeyUnavailable);
+        var caKey = new KeyRef(caCertEntity.CertificateId);
+        var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
+        var ceremony = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id);
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.
@@ -987,41 +1008,37 @@ public class CaCreationService(
         var previousTsaId = caEntity.TsaCertificateId;
         var previousCmpId = caEntity.CmpSigningCertificateId;
 
-        var ksPath = Path.Combine(AppContext.BaseDirectory, "keystores");
-        var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-        var (systemSigner, systemSignerDer) = ResolveSystemSignerForKeystoreWrite();
-
         X509Certificate? newTsaCert = null, newOcspCert = null, newCmpCert = null;
-        byte[]? tsaDer = null, ocspDer = null, cmpDer = null;
-        AsymmetricKeyParameter? tsaKey = null, ocspKey = null, cmpKey = null;
+        var newKeys = new List<(KeyRef Key, Guid CertificateId)>();
 
         try
         {
-            // IssueInfrastructureCertAsync uses the CA private key only to choose a matching key
-            // algorithm for the new subject key. Where the handle is exportable that is exact;
-            // where it is not (HSM), the CA certificate's public key carries the same algorithm.
-            var caKeyForAlgorithmChoice = caKeyHandle.CanExport
-                ? PrivateKeyFactory.CreateKey(caKeyHandle.ExportPrivateKeyDer()!)
-                : caCert.GetPublicKey();
-
+            // IssueInfrastructureCertAsync chooses the new subject key's algorithm from the CA
+            // certificate's public key; the CA key itself stays with the signer.
             if (reissueTsa)
             {
-                (newTsaCert, tsaDer, tsaKey) = await IssueInfrastructureCertAsync(
-                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
+                    caCert, caKey, caSigningContext, caEntity, signingProfile,
                     "TSA Certificate Profile", "TSA", logger);
+                newTsaCert = cert;
+                newKeys.Add((key, certificateId));
             }
 
             if (reissueOcsp)
             {
-                (newOcspCert, ocspDer, ocspKey) = await IssueInfrastructureCertAsync(
-                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
+                    caCert, caKey, caSigningContext, caEntity, signingProfile,
                     "OCSP Responder Certificate Profile", "OCSP Responder", logger);
+                newOcspCert = cert;
+                newKeys.Add((key, certificateId));
             }
             if (reissueCmpSigner)
             {
-                (newCmpCert, cmpDer, cmpKey) = await IssueInfrastructureCertAsync(
-                    caCert, caKeyForAlgorithmChoice, caKeyHandle, caEntity, signingProfile,
+                var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
+                    caCert, caKey, caSigningContext, caEntity, signingProfile,
                     CmpSignerProfileName, CmpSignerCertType, logger);
+                newCmpCert = cert;
+                newKeys.Add((key, certificateId));
             }
 
             // What came out of issuance is the only thing that matters to a relying party, so
@@ -1031,49 +1048,20 @@ public class CaCreationService(
             // The CMP signer needs no EKU, but it is useless without digitalSignature: that bit is
             // the whole reason it exists rather than the CA certificate signing directly.
             if (newCmpCert != null) EnsureIssuedCertCarriesDigitalSignature(newCmpCert, CmpSignerCertType);
-
-            // Keystore writes come after issuance so a failure above leaves no orphaned key.
-            var privateKeys = new List<byte[]>();
-            var publicCerts = new List<byte[]>();
-            if (tsaDer != null) { privateKeys.Add(tsaDer); publicCerts.Add(newTsaCert!.GetEncoded()); }
-            if (ocspDer != null) { privateKeys.Add(ocspDer); publicCerts.Add(newOcspCert!.GetEncoded()); }
-            if (cmpDer != null) { privateKeys.Add(cmpDer); publicCerts.Add(newCmpCert!.GetEncoded()); }
-
-            KeystoreService.AppendEntries(
-                Path.Combine(ksPath, "ca-certs.keystore"), yamlPath, "ca-certs.keystore",
-                privateKeys.ToArray(), systemSigner, db);
-            KeystoreService.AppendEntries(
-                Path.Combine(ksPath, "ca-trust.keystore"), yamlPath, "ca-trust.keystore",
-                publicCerts.ToArray(), systemSigner, db);
         }
-        finally
+        catch
         {
-            if (tsaDer != null) CryptographicOperations.ZeroMemory(tsaDer);
-            if (ocspDer != null) CryptographicOperations.ZeroMemory(ocspDer);
-            if (cmpDer != null) CryptographicOperations.ZeroMemory(cmpDer);
-            CryptographicOperations.ZeroMemory(systemSignerDer);
+            // A failure above leaves no orphaned key: the pending keys are retired and were never
+            // written anywhere.
+            await RetireQuietlyAsync(ceremony, newKeys.Select(k => (KeyRef?)k.Key).ToArray());
+            throw;
         }
 
-        // Register the new identities so the responder works immediately. Without this the key is
-        // in the keystore FILE but not in the singleton the resolver consults, and OCSP answers
-        // unauthorized until a restart — the same failure CA creation had before it registered.
-        if (keystore is MultiCARegistry registry)
-        {
-            if (tsaKey != null)
-                registry.RegisterSigner(new CertificateAuthorityIdentity(newTsaCert!, new SoftwarePrivateKeyHandle(tsaKey)));
-            if (ocspKey != null)
-                registry.RegisterSigner(new CertificateAuthorityIdentity(newOcspCert!, new SoftwarePrivateKeyHandle(ocspKey)));
-            if (cmpKey != null)
-                registry.RegisterSigner(new CertificateAuthorityIdentity(newCmpCert!, new SoftwarePrivateKeyHandle(cmpKey)));
-        }
-        else
-        {
-            logger.LogWarning(
-                "Infrastructure certificates reissued for CA {Label}, but the keystore is not a " +
-                "MultiCARegistry so the new identities could not be registered at runtime. " +
-                "A restart is required before they take effect.",
-                caEntity.Label);
-        }
+        // Commit the keys to their certificates after issuance. The signer appends each key and
+        // certificate to the keystore files and registers the identity, so the responder works
+        // immediately: without the registration the key would be in the keystore FILE but not in
+        // the singleton the resolver consults, and OCSP would answer unauthorized until a restart.
+        await CommitKeysAsync(ceremony, newKeys);
 
         var supersededRevoked = new List<string>();
         if (revokeSuperseded)
@@ -1102,58 +1090,6 @@ public class CaCreationService(
             newTsaCert == null ? null : CertificateUtil.FormatSerialNumber(newTsaCert.SerialNumber),
             supersededRevoked,
             newCmpCert == null ? null : CertificateUtil.FormatSerialNumber(newCmpCert.SerialNumber));
-    }
-
-    /// <summary>
-    /// Resolves the exportable system signer used to re-sign the keystore files after a write,
-    /// matching the SPKI pinned for <c>ca-certs.keystore</c>.
-    /// <para>
-    /// Extracted so CA creation and infrastructure reissue select the signer identically. The
-    /// pinned signer is not necessarily <c>signers[0]</c> — that is whatever came first out of the
-    /// keystore file, usually the Root CA — and signing with the wrong one produces a keystore
-    /// whose signature no longer matches the pin.
-    /// </para>
-    /// </summary>
-    private (AsymmetricKeyParameter signer, byte[] der) ResolveSystemSignerForKeystoreWrite()
-    {
-        var signers = keystore.GetSigners();
-        if (signers.Count < 1)
-            throw new InvalidOperationException("Need at least 1 signer in registry for keystore operations");
-
-        var pinnedSpki = KeystoreService.GetPinnedSignerSpki(db, "ca-certs.keystore");
-        CertificateAuthorityIdentity? matched = null;
-        if (pinnedSpki != null)
-        {
-            foreach (var s in signers)
-            {
-                if (string.Equals(KeystoreService.ComputeSpkiSha256Hex(s.PublicCertificate), pinnedSpki,
-                                  StringComparison.OrdinalIgnoreCase))
-                {
-                    matched = s;
-                    break;
-                }
-            }
-        }
-        matched ??= signers[0];
-
-        var handle = matched.PrivateKeyHandle
-            ?? throw new InvalidOperationException("System signer private key handle is null");
-        if (!handle.CanExport)
-            throw new NotSupportedException(
-                "The system CA signer is backed by a non-exportable key handle (e.g. HSM). " +
-                "Runtime keystore writes currently require an exportable signer.");
-
-        var der = handle.ExportPrivateKeyDer()
-            ?? throw new InvalidOperationException("System signer private key DER export returned null");
-        try
-        {
-            return (PrivateKeyFactory.CreateKey(der), der);
-        }
-        catch
-        {
-            CryptographicOperations.ZeroMemory(der);
-            throw;
-        }
     }
 
     /// <summary>
@@ -1519,16 +1455,19 @@ public class CaCreationService(
     }
 
     /// <summary>
-    /// Issues an infrastructure certificate (TSA or OCSP responder) through the standard CSR
-    /// pipeline. Generates a CSR, validates against the named cert profile, and issues the cert
-    /// via <see cref="ICertificateIssuanceService"/> with the CA-override path.
-    /// Returns the signed cert (for keystore) and the DER-encoded private key.
-    /// Also links the issued cert to the CA entity via TsaCertificateId or OcspResponderCertificateId.
+    /// Issues an infrastructure certificate (TSA, OCSP responder or CMP signer) through the
+    /// standard CSR pipeline. The subject key is generated inside the signer under a ceremony
+    /// context naming the CA and held pending; the CSR is signed through the signer with it;
+    /// the certificate is issued via <see cref="ICertificateIssuanceService"/> with the CA
+    /// named explicitly (<paramref name="caKey"/> under <paramref name="caSigningContext"/>),
+    /// since at CA creation the CA's row is not committed yet. Links the issued certificate to
+    /// the CA entity and returns it with its row id and the pending key's reference, for the
+    /// caller to commit once its rows are committed. The pending key is retired if issuance fails.
     /// </summary>
-    private async Task<(X509Certificate cert, byte[] privKeyDer, AsymmetricKeyParameter privKey)> IssueInfrastructureCertAsync(
+    private async Task<(X509Certificate cert, Guid certificateId, KeyRef key)> IssueInfrastructureCertAsync(
         X509Certificate caCert,
-        AsymmetricKeyParameter caPrivKey,
-        IPrivateKeyHandle caKeyHandle,
+        KeyRef caKey,
+        SigningContext caSigningContext,
         CertificateAuthorityEntity caEntity,
         SigningProfileEntity signingProfile,
         string certProfileName,
@@ -1536,7 +1475,7 @@ public class CaCreationService(
         ILogger logger)
     {
         // Resolve key algorithm to match the parent CA
-        var (alg, sizeOrCurve) = ResolveTsaKeyAlgorithmForParent(caPrivKey);
+        var (alg, sizeOrCurve) = ResolveTsaKeyAlgorithmForParent(caCert.GetPublicKey());
 
         // Extract parent CN for the subject
         var parentCn = certType;
@@ -1556,45 +1495,54 @@ public class CaCreationService(
         var certProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Name == certProfileName)
             ?? throw new InvalidOperationException($"Infrastructure cert profile '{certProfileName}' not found. Run bootstrap to seed it.");
 
-        // Generate CSR through the standard pipeline
-        var (csrId, keyPair) = await csrService.GenerateInfrastructureCsrAsync(
-            subjectDn, alg, sizeOrCurve, certProfile.Id, signingProfile.Id);
-
-        // Issue through the standard pipeline with pre-resolved CA
-        var notBefore = CertificateValidityUtil.DefaultNotBefore();
-        var notAfter = notBefore.AddYears(10);
-        if (notAfter > caCert.NotAfter)
-            notAfter = caCert.NotAfter;
-
-        var result = await issuanceService.IssueCaCertificateAsync(
-            csrId, notBefore, notAfter, caCert, caKeyHandle);
-
-        // Parse the issued cert PEM for keystore writing
-        var issuedCert = CertificateUtil.ParseFromPem(result.Pem);
-
-        // Link to the CA entity
-        var csrEntity = await db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == csrId);
-        if (csrEntity?.IssuedCertificateId != null)
+        // The subject key is the signer's: generated there, pending under a ceremony context
+        // naming this CA, and signing the CSR through the signer.
+        var keyContext = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id);
+        var generated = await signer.GenerateKeyAsync(
+            new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
+        try
         {
+            var csrSigner = new SigningServiceSignatureFactory(signer, generated.Key,
+                SignatureAlgorithm.FromName(KeyAlgorithmPolicy.ResolveSignatureAlgorithm(alg, sizeOrCurve)), keyContext);
+            var csrId = await csrService.GenerateInfrastructureCsrAsync(
+                subjectDn, alg, sizeOrCurve, certProfile.Id, signingProfile.Id,
+                PublicKeyFactory.CreateKey(generated.PublicKeyDer), csrSigner);
+
+            // Issue through the standard pipeline with the CA named explicitly
+            var notBefore = CertificateValidityUtil.DefaultNotBefore();
+            var notAfter = notBefore.AddYears(10);
+            if (notAfter > caCert.NotAfter)
+                notAfter = caCert.NotAfter;
+
+            var result = await issuanceService.IssueCertificateAsync(
+                csrId, notBefore, notAfter, caCert, caKey, caSigningContext);
+
+            var issuedCert = CertificateUtil.ParseFromPem(result.Pem);
+
+            // Link to the CA entity
+            var csrEntity = await db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == csrId);
+            var issuedCertificateId = csrEntity?.IssuedCertificateId
+                ?? throw new InvalidOperationException($"Issued {certType} certificate is not recorded on its request.");
             if (certType == "TSA")
-                caEntity.TsaCertificateId = csrEntity.IssuedCertificateId;
+                caEntity.TsaCertificateId = issuedCertificateId;
             else if (certType == "OCSP Responder")
-                caEntity.OcspResponderCertificateId = csrEntity.IssuedCertificateId;
+                caEntity.OcspResponderCertificateId = issuedCertificateId;
             else if (certType == CmpSignerCertType)
-                caEntity.CmpSigningCertificateId = csrEntity.IssuedCertificateId;
+                caEntity.CmpSigningCertificateId = issuedCertificateId;
             await db.SaveChangesAsync();
+
+            // {Subject} is the full Subject DN, which already begins with "CN=" — don't prefix another
+            // "CN=" here or the log reads "(CN=CN=... TSA)".
+            logger.LogInformation("{CertType} certificate issued for CA '{CaName}' via standard pipeline (subject={Subject})",
+                certType, caEntity.Name, issuedCert.SubjectDN);
+
+            return (issuedCert, issuedCertificateId, generated.Key);
         }
-
-        // {Subject} is the full Subject DN, which already begins with "CN=" — don't prefix another
-        // "CN=" here or the log reads "(CN=CN=... TSA)".
-        logger.LogInformation("{CertType} certificate issued for CA '{CaName}' via standard pipeline (subject={Subject})",
-            certType, caEntity.Name, issuedCert.SubjectDN);
-
-        var privKeyDer = PrivateKeyInfoFactory.CreatePrivateKeyInfo(keyPair.Private).GetDerEncoded();
-        // The key itself is returned too, not just its DER: the DER buffer is zeroed by the
-        // caller's finally block, but the runtime registry needs a live handle so the TSA and
-        // OCSP responder work without waiting for a restart.
-        return (issuedCert, privKeyDer, keyPair.Private);
+        catch
+        {
+            await RetireQuietlyAsync(keyContext, generated.Key);
+            throw;
+        }
     }
 
     /// <summary>
@@ -1617,7 +1565,8 @@ public class CaCreationService(
     // CSR → profile validation → CertificateIssuanceService pipeline.
 
     /// <summary>
-    /// Choose an infrastructure key algorithm compatible with the parent CA. For classical CAs
+    /// Choose an infrastructure key algorithm compatible with the parent CA, from the parent
+    /// certificate's public key (the private key stays with the signer). For classical CAs
     /// (RSA, ECDSA, Ed25519, Ed448) the TSA gets the same family. For PQC CAs (ML-DSA, SLH-DSA)
     /// the TSA also uses a PQC key so the time-stamp chain remains PQ-secure end-to-end.
     /// </summary>
@@ -1625,19 +1574,16 @@ public class CaCreationService(
     {
         return parentKey switch
         {
-            RsaPrivateCrtKeyParameters or RsaKeyParameters => ("RSA", 3072),
-            ECPrivateKeyParameters => ("ECDSA", 256), // P-256
-            Ed25519PrivateKeyParameters => ("Ed25519", 0),
-            Ed448PrivateKeyParameters => ("Ed448", 0),
-            MLDsaPrivateKeyParameters => ("ML-DSA-65", 0),
-            SlhDsaPrivateKeyParameters => ("SLH-DSA-SHA2-128F", 0),
+            RsaKeyParameters => ("RSA", 3072),
+            ECPublicKeyParameters or ECPrivateKeyParameters => ("ECDSA", 256), // P-256
+            Ed25519PublicKeyParameters or Ed25519PrivateKeyParameters => ("Ed25519", 0),
+            Ed448PublicKeyParameters or Ed448PrivateKeyParameters => ("Ed448", 0),
+            MLDsaPublicKeyParameters or MLDsaPrivateKeyParameters => ("ML-DSA-65", 0),
+            SlhDsaPublicKeyParameters or SlhDsaPrivateKeyParameters => ("SLH-DSA-SHA2-128F", 0),
             // Safe default for any key type not enumerated above.
             _ => ("ECDSA", 256)
         };
     }
-
-    private static AsymmetricCipherKeyPair GenerateKeyPair(string keyAlgorithm, int keySize)
-        => KeyAlgorithmPolicy.GenerateKeyPair(keyAlgorithm, keySize);
 
     private static X509Name BuildSubjectDN(string cn, string? o, string? ou, string? l, string? st, string? c)
     {
