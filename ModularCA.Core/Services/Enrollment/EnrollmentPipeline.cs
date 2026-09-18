@@ -146,6 +146,21 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         // 6. The names, against the request profile. A fixed value in the profile can rewrite the
         //    subject, which is why the row below is written from the result and not from the CSR.
         var subject = request.Subject ?? string.Empty;
+
+        // Every component within the limits the certificate will be held to, before the name
+        // reaches the ASN.1 library. Since BouncyCastle 2.7.0 an over-long common name is refused
+        // when the name is constructed, deep inside issuance, where the exception is a server
+        // error rather than something a client can act on. Checked here, it is a refusal like any
+        // other, and every protocol inherits it.
+        if (!string.IsNullOrWhiteSpace(subject))
+        {
+            try { DnComponentSanitizer.SanitizeDistinguishedName(subject); }
+            catch (InvalidOperationException ex)
+            {
+                return await RefuseAsync(submission, request, ca, EnrollmentRefusalReason.NameRejectedByProfile, ex.Message);
+            }
+        }
+
         var sanJson = JsonSerializer.Serialize(request.SubjectAlternativeNames);
         var requireApproval = false;
         if (context.RequestProfileId != null)

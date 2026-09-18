@@ -653,32 +653,10 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Applies <see cref="DnComponentSanitizer"/> to every RDN component of a
-        /// comma-separated DN string, rebuilding it in canonical form. Used by
-        /// <see cref="ParseSubtrees"/> so NameConstraints subtrees can't carry
-        /// invisible / spoofing characters into a cert.
+        /// Applies <see cref="DnComponentSanitizer"/> to every component of a distinguished name.
+        /// Used by <see cref="ParseSubtrees"/> so name-constraint subtrees cannot carry invisible
+        /// or spoofing characters into a certificate.
         /// </summary>
-        private static string SanitizeDnString(string dn)
-        {
-            // Cheap pre-parser: split on commas that are not escaped. X509Name
-            // re-parses the result so we keep the same canonicalisation
-            // semantics for the final construct; we're just rejecting malicious
-            // characters up front.
-            var parts = dn.Split(',');
-            var rebuilt = new List<string>(parts.Length);
-            foreach (var raw in parts)
-            {
-                var eq = raw.IndexOf('=');
-                if (eq <= 0)
-                {
-                    throw new InvalidOperationException($"DN component '{raw}' is missing a '='.");
-                }
-                var field = raw[..eq].Trim();
-                var value = raw[(eq + 1)..];
-                var sanitized = DnComponentSanitizer.Sanitize(field, value, DnComponentSanitizer.GetMaxLength(field));
-                rebuilt.Add($"{field}={sanitized}");
-            }
-            return string.Join(",", rebuilt);
-        }
+        private static string SanitizeDnString(string dn) => DnComponentSanitizer.SanitizeDistinguishedName(dn);
     }
 }

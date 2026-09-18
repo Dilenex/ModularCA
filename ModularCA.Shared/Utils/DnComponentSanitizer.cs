@@ -1,4 +1,4 @@
-﻿using System.Net.Mail;
+using System.Net.Mail;
 
 namespace ModularCA.Shared.Utils
 {
@@ -87,6 +87,35 @@ namespace ModularCA.Shared.Utils
         /// </summary>
         /// <param name="fieldName">Field name such as "CN", "O", "OU".</param>
         /// <returns>Maximum allowed length in characters.</returns>
+        /// <summary>
+        /// Applies <see cref="Sanitize"/> to every component of a comma-separated distinguished
+        /// name, returning it rebuilt in canonical form and throwing
+        /// <see cref="InvalidOperationException"/> naming the offending component otherwise.
+        /// </summary>
+        /// <remarks>
+        /// Callers that only want the check can discard the result. It matters that this runs
+        /// before a name is handed to the ASN.1 library: since BouncyCastle 2.7.0 an over-long
+        /// common name is refused when the name is constructed, and an exception from there is a
+        /// server error rather than an answer a client can read.
+        /// </remarks>
+        public static string SanitizeDistinguishedName(string distinguishedName)
+        {
+            // Cheap pre-parser: split on commas that are not escaped. The ASN.1 library re-parses
+            // the result, so canonicalisation is unchanged; this only rejects bad components.
+            var parts = distinguishedName.Split(',');
+            var rebuilt = new List<string>(parts.Length);
+            foreach (var raw in parts)
+            {
+                var eq = raw.IndexOf('=');
+                if (eq <= 0)
+                    throw new InvalidOperationException($"DN component '{raw}' is missing a '='.");
+                var field = raw[..eq].Trim();
+                var value = raw[(eq + 1)..];
+                rebuilt.Add($"{field}={Sanitize(field, value, GetMaxLength(field))}");
+            }
+            return string.Join(",", rebuilt);
+        }
+
         public static int GetMaxLength(string fieldName)
         {
             return fieldName.Trim().ToUpperInvariant() switch

@@ -278,6 +278,29 @@ public class EnrollmentPipelineTests
     }
 
     [Fact]
+    public async Task A_name_longer_than_a_certificate_may_carry_is_refused_rather_than_thrown()
+    {
+        var h = Build();
+
+        // Sixty-five characters: one past what RFC 5280 allows a common name, and one past what
+        // the ASN.1 library will construct a name from since 2.7.0. Reaching the library with it
+        // would be a server error; the middle answers with a refusal instead, for every protocol.
+        var outcome = Assert.IsType<EnrollmentOutcome.Refused>(
+            await h.Pipeline.SubmitAsync(Submission(h, subject: "CN=" + new string('a', 65))));
+
+        Assert.Equal(EnrollmentRefusalReason.NameRejectedByProfile, outcome.Reason);
+        Assert.Contains("64", outcome.Message);
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+        Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal(EnrollmentAuditEvent.Refused, Assert.Single(h.Audit).Event);
+
+        // Sixty-four is issued, so the boundary is where the standard puts it.
+        var ok = Build();
+        Assert.IsType<EnrollmentOutcome.Issued>(
+            await ok.Pipeline.SubmitAsync(Submission(ok, subject: "CN=" + new string('a', 64))));
+    }
+
+    [Fact]
     public async Task A_profile_that_requires_approval_takes_the_request_under_submission_instead_of_issuing()
     {
         var profile = ProfileRequiringOrganisation();
