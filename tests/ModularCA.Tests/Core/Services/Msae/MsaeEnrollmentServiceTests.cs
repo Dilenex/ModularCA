@@ -181,7 +181,10 @@ public class MsaeEnrollmentServiceTests
         var requestProfiles = new RequestProfileValidationService(db, profiles);
         var enrollmentAuth = new EnrollmentAuthorizationService(
             db, new EnrollmentTokenServiceStub(), resolver, authorizer, NullLogger<EnrollmentAuthorizationService>.Instance);
-        var service = new MsaeEnrollmentService(db, issuance, resolver, enrollmentAuth, requestProfiles, profiles, audit,
+        var pipeline = new ModularCA.Core.Services.Enrollment.EnrollmentPipeline(
+            db, resolver, enrollmentAuth, requestProfiles, profiles, issuance, new NoopNotificationService(),
+            NullLogger<ModularCA.Core.Services.Enrollment.EnrollmentPipeline>.Instance);
+        var service = new MsaeEnrollmentService(db, resolver, audit, pipeline,
             NullLogger<MsaeEnrollmentService>.Instance);
 
         return new Harness

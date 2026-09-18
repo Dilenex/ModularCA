@@ -132,6 +132,32 @@ public class ProtocolCleanupJobTests
         Assert.Single(audit.Entries);
     }
 
+    /// <summary>
+    /// What the seven days a SCEP transaction gets while an approver owns it end in: the
+    /// transaction row goes, so a client polling after it is told badCertId and starts a fresh
+    /// enrollment, and the request row it named stays in the approval queue, which is a person's
+    /// decision and not the sweep's to make.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_pending_scep_transaction_is_swept_and_its_request_stays_in_the_queue()
+    {
+        var (job, db, _) = Build();
+        var awaitingApproval = Request(status: "PendingApproval");
+        db.CertificateRequests.Add(awaitingApproval);
+        db.ScepTransactions.Add(new ScepTransactionEntity
+        {
+            Id = Guid.NewGuid(), TransactionId = "tx-unapproved", Status = "PendingApproval",
+            CertRequestId = awaitingApproval.Id, ExpiresAt = Now.AddMinutes(-1),
+        });
+        await db.SaveChangesAsync();
+
+        var result = await job.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal((0, 1), (result.OrphanedRequests, result.ScepTransactions));
+        Assert.Empty(db.ScepTransactions);
+        Assert.Equal(awaitingApproval.Id, Assert.Single(db.CertificateRequests).Id);
+    }
+
     [Fact]
     public async Task A_held_request_key_whose_certificate_was_revoked_is_discarded_on_the_same_tick()
     {

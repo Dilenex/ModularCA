@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ModularCA.Database;
 
@@ -11,9 +12,11 @@ using ModularCA.Database;
 namespace ModularCA.Database.Migrations
 {
     [DbContext(typeof(ModularCADbContext))]
-    partial class ModularCADbContextModelSnapshot : ModelSnapshot
+    [Migration("20260917211612_WidenMsaeTemplateOid")]
+    partial class WidenMsaeTemplateOid
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2412,9 +2415,6 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("CaId")
                         .HasColumnType("char(36)");
 
-                    b.Property<Guid?>("CertRequestId")
-                        .HasColumnType("char(36)");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -2444,8 +2444,6 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("varchar(255)");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("CertRequestId");
 
                     b.HasIndex("CreatedAt");
 
@@ -4152,16 +4150,6 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("CreatedByUser");
 
                     b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("ModularCA.Shared.Entities.ScepTransactionEntity", b =>
-                {
-                    b.HasOne("ModularCA.Shared.Entities.CertRequestEntity", "CertRequest")
-                        .WithMany()
-                        .HasForeignKey("CertRequestId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("CertRequest");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SigningProfileEntity", b =>

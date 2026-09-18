@@ -6,6 +6,33 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
+  configuration can name a request profile, and both protocols used that profile to choose the
+  certificate profile and to validate the names a client asked for. Neither ever read the flag
+  saying a human must approve first. Every ACME order finalized, and every CMP certificate request
+  issued, straight to a certificate with no approver, while the console showed the gate as set.
+  EST and Windows autoenrollment, the two anyone had exercised, both honoured it.
+
+  ACME and CMP now refuse and close the request, because neither offers a way for a client to come
+  back for a certificate approved later: nothing links a later approval to an ACME order, and CMP
+  implements no polling operation at all. SCEP, which does have a poll, answers with its pending
+  status and leaves the request in the queue for an approver. A deployment with any of the three
+  enabled on a CA whose request profile requires approval will see those clients start failing, or
+  in SCEP's case start waiting, where they previously succeeded.
+
+  All three were found by moving the protocols onto the shared enrollment pipeline, which is the
+  point of that work: the rule now lives in one place instead of being reimplemented, correctly or
+  not, five times. Three of the five were wrong, including the one whose wire format had carried a
+  pending status since it was written, declared and never once used.
+
+- **SCEP enrollment refused every request.** The key-algorithm rule read the certificate profile's
+  permitted list, which is JSON, by splitting it on commas. The profile default is an empty JSON
+  array, which splits into one token that matches no algorithm, and a populated list splits into
+  fragments that match nothing either, so every enrollment was answered with a bad-algorithm
+  failure. The same column is read correctly everywhere else. It is read as JSON now.
+
 ### Separation of duties
 
 - **The signer is its own process.** Every stored private key is reached through one signing

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.API.Startup;
@@ -22,8 +23,33 @@ public class AdminProtocolConfigController(
     ModularCADbContext db,
     IAuditService audit,
     ICurrentUserService currentUser,
-    IDistributedCache cache) : ControllerBase
+    IDistributedCache cache,
+    IEnumerable<IEnrollmentProtocol> protocols) : ControllerBase
 {
+    private readonly IReadOnlyList<IEnrollmentProtocol> _protocols = protocols.ToList();
+
+    /// <summary>
+    /// What a protocol says it can do, as the names of the flags it declares, or null for a
+    /// protocol that does not declare itself yet.
+    /// </summary>
+    /// <remarks>
+    /// Read from the implementation through <see cref="IEnrollmentProtocol.Capabilities"/> rather
+    /// than from a table kept beside it, which is the point of the declaration: a protocol that
+    /// gains renewal or loses server-side key generation says so where the change is made. Only the
+    /// protocols migrated onto the shared middle declare it so far, and the rest report null rather
+    /// than an empty list, which would read as a protocol that can do nothing.
+    /// </remarks>
+    private string[]? CapabilitiesOf(string protocol)
+    {
+        var declared = _protocols.FirstOrDefault(
+            p => string.Equals(p.Name, protocol, StringComparison.OrdinalIgnoreCase));
+        if (declared == null) return null;
+        return Enum.GetValues<EnrollmentCapabilities>()
+            .Where(c => c != EnrollmentCapabilities.None && declared.Capabilities.HasFlag(c))
+            .Select(c => c.ToString())
+            .ToArray();
+    }
+
     private readonly ModularCADbContext _db = db;
     private readonly IDistributedCache _cache = cache;
 
@@ -89,7 +115,21 @@ public class AdminProtocolConfigController(
                 c.MsaeAllowKerberos,
             })
             .ToListAsync();
-        return Ok(configs);
+        // What each protocol can do, from the protocol itself; see CapabilitiesOf.
+        return Ok(configs.Select(c => new { Config = c, Capabilities = CapabilitiesOf(c.Protocol) })
+            .Select(x => new
+            {
+                x.Config.Id, x.Config.CaId, x.Config.Protocol, x.Config.Enabled,
+                x.Config.SigningProfileId, x.Config.SigningProfileName,
+                x.Config.CertProfileId, x.Config.CertProfileName,
+                x.Config.IsPublicVisible,
+                x.Config.EstRequireClientCert, x.Config.EstHttpAuthEnabled,
+                x.Config.ScepChallengeRequired, x.Config.CmpRequireSignature, x.Config.CmpSignerConfigured,
+                x.Config.AcmeRequireEab, x.Config.AcmeAllowedChallengeTypes, x.Config.AcmeAllowPrivateAddressValidation,
+                x.Config.OcspSignResponses,
+                x.Config.MsaeAllowUsernameToken, x.Config.MsaeAllowKerberos,
+                x.Capabilities,
+            }));
     }
 
     /// <summary>

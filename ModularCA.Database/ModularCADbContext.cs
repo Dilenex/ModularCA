@@ -1107,6 +1107,15 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(e => new { e.CaId, e.TransactionId }).IsUnique();
             entity.HasIndex(e => e.ExpiresAt);
             entity.HasIndex(e => e.CreatedAt);
+
+            // The request row an approval-gated PKCSReq created, so GetCertInitial can follow the
+            // approval to its certificate. SetNull like the ACME order's FinalizedCsr, the same
+            // kind of optional link onto the same table: a request row removed under a transaction
+            // leaves the transaction to expire on its TTL rather than taking it with it.
+            entity.HasOne(e => e.CertRequest)
+                  .WithMany()
+                  .HasForeignKey(e => e.CertRequestId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         // CMP transaction state. Unique (CaId, TransactionId) rejects

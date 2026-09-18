@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Enrollment;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
@@ -29,8 +31,49 @@ namespace ModularCA.Core.Services.Scep;
 /// SCEP responder service implementing the Simple Certificate Enrollment Protocol (RFC 8894).
 /// Handles GetCACert, GetCACaps, and PKIOperation messages.
 /// </summary>
-public class ScepService : IScepService
+/// <remarks>
+/// <para>
+/// The middle of a PKCSReq — the CA, SCEP's enablement on it, the caller's authorization, the
+/// effective profiles, the names against the request profile, the request row, issuance or
+/// submission for approval, and the audit row — is <see cref="IEnrollmentPipeline"/>, the same
+/// sequence every protocol runs. What stays here is SCEP's own: the CMS envelope on both sides,
+/// the challenge password and the renewal signer checks that decide which credential is asking,
+/// the transaction row and the replay detection keyed on it, <c>GetCertInitial</c>, and the
+/// rendering of every answer as a signed CertRep.
+/// </para>
+/// <para>
+/// Only PKCSReq goes through the pipeline. <c>GetCACert</c> and <c>GetCACaps</c> publish
+/// configuration, and <c>GetCertInitial</c> asks after a request that has already been through it;
+/// none of the three issues, so none has a middle to share.
+/// </para>
+/// </remarks>
+public class ScepService : IScepService, IEnrollmentProtocol
 {
+    /// <summary>The protocol name as per-CA protocol configuration and audit rows record it.</summary>
+    public const string Protocol = "SCEP";
+
+    /// <inheritdoc />
+    string IEnrollmentProtocol.Name => Protocol;
+
+    /// <summary>
+    /// What SCEP offers here: first issuance against a challenge password, re-enrollment where the
+    /// PKCSReq is signed by the certificate being replaced (RFC 8894 §3.2.2), and
+    /// <c>GetCertInitial</c>, which both asks after a request and fetches the certificate once
+    /// there is one.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="EnrollmentCapabilities.Poll"/> and <see cref="EnrollmentCapabilities.Collect"/>
+    /// are one message here, which is why both are declared: RFC 8894 §4.5 has the client re-send
+    /// its subject and transaction id, and the answer is PENDING or the certificate. Not
+    /// <see cref="EnrollmentCapabilities.Renew"/>: a SCEP renewal is credentialed by the
+    /// certificate it replaces and carries no separate evidence naming one, which is
+    /// re-enrollment. No revocation — RFC 8894 dropped it — and no server-side key generation.
+    /// </remarks>
+    EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
+        EnrollmentCapabilities.Enroll | EnrollmentCapabilities.ReEnroll
+        | EnrollmentCapabilities.Poll | EnrollmentCapabilities.Collect;
+
+
     // SCEP-defined OIDs for transaction attributes
     private static readonly DerObjectIdentifier IdTransactionId = new("2.16.840.1.113733.1.9.7");
     private static readonly DerObjectIdentifier IdMessageType = new("2.16.840.1.113733.1.9.2");
@@ -58,11 +101,11 @@ public class ScepService : IScepService
 
     private readonly ModularCADbContext _db;
     private readonly IKeystoreCertificates _keystore;
-    private readonly ICertificateIssuanceService _issuanceService;
     private readonly ICaResolverService _caResolver;
     private readonly IProtocolAuditService _protocolAudit;
-    private readonly IEnrollmentAuthorizationService _enrollmentAuth;
-    private readonly RequestProfileValidationService _requestProfileValidation;
+
+    /// <summary>The shared middle every PKCSReq runs; see <see cref="IEnrollmentPipeline"/>.</summary>
+    private readonly IEnrollmentPipeline _pipeline;
     private readonly ILogger<ScepService> _logger;
 
     /// <summary>
@@ -82,26 +125,37 @@ public class ScepService : IScepService
 
     /// <summary>
     /// Constructs the responder over the database, the runtime registry (for the trusted
-    /// certificates it publishes), the issuance pipeline and the signer that holds the CA key.
+    /// certificates it publishes), the shared enrollment middle and the signer that holds the CA
+    /// key.
     /// </summary>
+    /// <remarks>
+    /// Takes <see cref="IEnrollmentPipeline"/> rather than issuance, enrollment authorization and
+    /// profile resolution separately: the middle of an enrollment is the same work in every
+    /// protocol, and this service now supplies only what is SCEP's own — the CMS envelopes, the
+    /// credential that decides whether a challenge password is required, the transaction row, and
+    /// the CertRep rendering.
+    /// </remarks>
+    /// <param name="db">Database, for the transaction rows and the certificates a response carries.</param>
+    /// <param name="keystore">The runtime registry, for the trusted authorities GetCACert publishes.</param>
+    /// <param name="caResolver">Resolves the CA and profiles an exchange addresses.</param>
+    /// <param name="protocolAudit">Writes the SCEP audit rows the protocol tab shows.</param>
+    /// <param name="pipeline">The shared enrollment middle; see <see cref="IEnrollmentPipeline"/>.</param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="signer">Holds the CA key every response is signed with and every envelope opened with.</param>
     public ScepService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
-        ICertificateIssuanceService issuanceService,
         ICaResolverService caResolver,
         IProtocolAuditService protocolAudit,
-        IEnrollmentAuthorizationService enrollmentAuth,
-        RequestProfileValidationService requestProfileValidation,
+        IEnrollmentPipeline pipeline,
         ILogger<ScepService> logger,
         ISigningService signer)
     {
         _db = db;
         _keystore = keystore;
-        _issuanceService = issuanceService;
         _caResolver = caResolver;
         _protocolAudit = protocolAudit;
-        _enrollmentAuth = enrollmentAuth;
-        _requestProfileValidation = requestProfileValidation;
+        _pipeline = pipeline;
         _logger = logger;
         _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
@@ -332,6 +386,13 @@ public class ScepService : IScepService
         // enrollment, which requires the challenge password. That keeps legitimate first-time
         // enrollment (self-signed signer, per RFC 8894 §2.3) working while removing the bypass.
         bool isRenewal = false;
+
+        // The certificate a renewal replaces, once the signer has been proven to be one this CA
+        // issued. SCEP's renewal checks are the protocol's own and stay where they are, ahead of
+        // the middle, because they decide which credential is asking and therefore whether a
+        // challenge password is required at all; what the middle is handed is the conclusion. See
+        // EnrollmentRenewal.
+        EnrollmentRenewal? renewal = null;
         if (cmsSignerCert != null)
         {
             try
@@ -406,6 +467,19 @@ public class ScepService : IScepService
                             "Renewal CSR requests a SAN the signer certificate does not hold.");
                         return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
                     }
+
+                    // The signer's own row, so the new request row is linked to the certificate it
+                    // replaces. Nothing recorded that link before: a SCEP renewal produced a
+                    // request indistinguishable from a first enrollment, and the certificate it
+                    // superseded could only be inferred from the subject. Scoped by the issuer for
+                    // the same reason the revocation lookup above is.
+                    var renewedId = await _db.Certificates.AsNoTracking()
+                        .Where(c => c.SerialNumber == signerSerial &&
+                            (c.IssuerCertificateId == null || c.IssuerCertificateId == issuerCertId))
+                        .Select(c => (Guid?)c.CertificateId)
+                        .FirstOrDefaultAsync();
+                    if (renewedId != null)
+                        renewal = new EnrollmentRenewal(renewedId.Value, signerSerial);
                 }
                 else
                 {
@@ -423,176 +497,395 @@ public class ScepService : IScepService
             }
         }
 
-        // Enrollment authorization check (includes SCEP challenge password validation).
-        // Renewals skip the challenge password requirement — the CA-trusted signer cert
-        // is the authentication factor.
-        if (!isRenewal)
-        {
-            var (authAllowed, authError) = await _enrollmentAuth.ValidateAsync("SCEP", context.Ca?.Label, csrPem, null, false);
-            if (!authAllowed)
-            {
-                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
-                    authError ?? "Enrollment not authorized (challenge password or policy).");
-                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
-            }
-        }
-
-        // Persist SCEP transaction before issuance. Unique index
-        // on (CaId, TransactionId) means a replayed PKCSReq hits DbUpdateException which
-        // we translate to FailInfoBadRequest.
-        ScepTransactionEntity? txRow = null;
-        if (!string.IsNullOrEmpty(transactionId))
-        {
-            // SHA-256 the requester public key so GetCertInitial can
-            // verify the polling client matches the original PKCSReq.
-            var pubKeyHash = Convert.ToHexString(
-                SHA256.HashData(parsedCsr.PublicKeyDer ?? Array.Empty<byte>()));
-            txRow = new ScepTransactionEntity
-            {
-                CaId = context.Ca?.Id,
-                TransactionId = transactionId,
-                Subject = parsedCsr.SubjectName,
-                RequesterPublicKeyHash = pubKeyHash,
-                Status = "Pending",
-                ExpiresAt = DateTime.UtcNow.AddMinutes(10)
-            };
-            _db.ScepTransactions.Add(txRow);
-            try
-            {
-                await _db.SaveChangesAsync();
-            }
-            catch (DbUpdateException)
-            {
-                // Duplicate transaction id → replay.
-                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
-                    "Duplicate SCEP transaction id (replay).");
-                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
-            }
-        }
-
-        // Use resolved profiles from the CA context
-        var signingProfileId = context.SigningProfileId;
-
-        // Resolve cert profile: SCEP doesn't support requester choice → protocol default → request profile default
-        var (resolvedCertProfileId, certProfileError) = await _requestProfileValidation
-            .ResolveCertProfileIdAsync(null, context.CertProfileId, context.RequestProfileId);
-        if (resolvedCertProfileId == null)
-            throw new InvalidOperationException(certProfileError ?? "No certificate profile available for SCEP");
-        var certProfileId = resolvedCertProfileId.Value;
-
-        var signingProfile = await _db.SigningProfiles.FindAsync(signingProfileId)
-            ?? throw new InvalidOperationException("Configured SCEP signing profile not found.");
-        var certProfile = await _db.CertProfiles.FindAsync(certProfileId)
-            ?? throw new InvalidOperationException("Configured SCEP certificate profile not found.");
-
-        // Validate CSR key algorithm against the cert profile's allowed algorithms
-        if (!string.IsNullOrEmpty(certProfile.AllowedKeyAlgorithms))
-        {
-            var allowedAlgs = certProfile.AllowedKeyAlgorithms
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (allowedAlgs.Length > 0 && !allowedAlgs.Any(a =>
-                string.Equals(a, parsedCsr.KeyAlgorithm, StringComparison.OrdinalIgnoreCase)))
-            {
-                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
-                    $"CSR key algorithm '{parsedCsr.KeyAlgorithm}' not permitted by certificate profile.");
-                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadAlg);
-            }
-        }
-
-        var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
-        var subject = parsedCsr.SubjectName;
-
-        // Validate against request profile if one is configured for this protocol
-        if (context.RequestProfileId != null)
-        {
-            var (isValid, error, modifiedSubject) = await _requestProfileValidation
-                .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
-            if (!isValid)
-            {
-                await LogPkcsReqRejectedAsync(subject, context, transactionId, sourceIp,
-                    error ?? "Request profile validation failed.");
-                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
-            }
-            if (modifiedSubject != null)
-                subject = modifiedSubject;
-        }
-
-        var csrEntity = new CertRequestEntity
-        {
-            Subject = subject,
-            SubjectAlternativeNames = sanJson,
-            CSR = csrPem,
-            KeyAlgorithm = parsedCsr.KeyAlgorithm,
-            KeySize = parsedCsr.KeySize,
-            SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
-            SubmittedAt = DateTime.UtcNow,
-            Status = "Pending",
-            CertProfileId = certProfileId,
-            CertProfile = certProfile,
-            SigningProfileId = signingProfileId,
-            SigningProfile = signingProfile
-        };
-
-        _db.CertificateRequests.Add(csrEntity);
-        await _db.SaveChangesAsync();
-
-        var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-        var notBefore = CertificateValidityUtil.DefaultNotBefore();
-        var notAfter = notBefore.Add(maxValidity);
-
-        var issuanceResult = await _issuanceService.IssueCertificateAsync(
-            csrEntity.Id, notBefore, notAfter);
-        var certPem = issuanceResult.Pem;
-
-        // Build the issued cert chain as PKCS#7
-        var issuedCert = CertificateUtil.ParseFromPem(certPem);
-
-        // Update the SCEP transaction row with the issued cert id
-        // so GetCertInitial can return it to the legitimate polling client.
-        if (txRow != null)
-        {
-            var issuedEntity = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c =>
-                c.SerialNumber == CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber));
-            txRow.IssuedCertificateId = issuedEntity?.CertificateId;
-            txRow.Status = "Issued";
-            await _db.SaveChangesAsync();
-        }
-
         var callerPrincipal = isRenewal && cmsSignerCert != null
             ? $"scep-renewal:{CertificateUtil.FormatSerialNumber(cmsSignerCert.SerialNumber)}"
             : "scep-initial";
 
-        await _protocolAudit.LogScepAsync("PKCSReq", csrEntity.Subject,
-            CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber),
-            csrEntity.KeyAlgorithm, csrEntity.KeySize, context.Ca?.Label, transactionId, sourceIp,
-            callerPrincipal: callerPrincipal);
-        var certChain = new List<X509Certificate> { issuedCert };
+        // The transaction row, written by the post-authorization check below and read again once
+        // the middle has answered.
+        ScepTransactionEntity? txRow = null;
 
-        // Walk issuer chain
-        var reloadedCsr = await _db.CertificateRequests
-            .Include(c => c.SigningProfile)
-            .FirstOrDefaultAsync(c => c.Id == csrEntity.Id);
-
-        if (reloadedCsr?.SigningProfile?.IssuerId != null)
+        var submission = BuildSubmission(
+            parsedCsr, csrPem, context, transactionId, sourceIp, callerPrincipal, isRenewal, renewal);
+        submission = submission with
         {
-            var visited = new HashSet<Guid>();
-            var issuerId = reloadedCsr.SigningProfile.IssuerId;
-            while (issuerId.HasValue && visited.Add(issuerId.Value))
+            AfterAuthorization = authorized =>
             {
-                var issuerEntity = await _db.Certificates
-                    .Include(c => c.SigningProfile)
-                    .FirstOrDefaultAsync(c => c.CertificateId == issuerId.Value);
-                if (issuerEntity == null) break;
+                txRow = null;
+                return PersistTransactionAsync(
+                    authorized, parsedCsr, context, transactionId, sourceIp, row => txRow = row);
+            },
+            AfterProfileValidation = policy => EnforceKeyAlgorithmAsync(
+                parsedCsr, policy, context, transactionId, sourceIp),
+            Audit = record => WriteScepAuditAsync(record, sourceIp, callerPrincipal),
+        };
 
-                certChain.Add(CertificateUtil.ParseFromPem(issuerEntity.Pem));
-                issuerId = issuerEntity.SigningProfile?.IssuerId;
-            }
+        EnrollmentOutcome outcome;
+        try
+        {
+            outcome = await _pipeline.SubmitAsync(submission);
+        }
+        catch (ScepRefusalException refusal)
+        {
+            // A check of SCEP's own refused, having already written its audit row: the replay
+            // detection or the key-algorithm rule. Each carries the failInfo it has always
+            // rendered, which is why it is thrown rather than returned — the middle has no failInfo
+            // to carry and must not learn one.
+            return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, refusal.FailInfo);
         }
 
-        var certsPkcs7 = BuildCertsOnlyPkcs7(certChain);
+        switch (outcome)
+        {
+            case EnrollmentOutcome.Issued issued:
+            {
+                var issuedCert = CertificateUtil.ParseFromPem(issued.CertificatePem);
 
-        return await BuildSuccessResponse(caCert, caKey, transactionId, senderNonce, certsPkcs7);
+                // Update the SCEP transaction row with the issued cert id
+                // so GetCertInitial can return it to the legitimate polling client.
+                if (txRow != null)
+                {
+                    var issuedEntity = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c =>
+                        c.SerialNumber == CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber));
+                    txRow.IssuedCertificateId = issuedEntity?.CertificateId;
+                    txRow.Status = TransactionIssued;
+                    await _db.SaveChangesAsync();
+                }
+
+                // The chain the middle walked through the signing profile's issuer links, which is
+                // the same walk this method used to make for itself, in the same order.
+                var certChain = new List<X509Certificate> { issuedCert };
+                foreach (var issuerPem in issued.ChainPem)
+                    certChain.Add(CertificateUtil.ParseFromPem(issuerPem));
+
+                return await BuildSuccessResponse(
+                    caCert, caKey, transactionId, senderNonce, BuildCertsOnlyPkcs7(certChain));
+            }
+
+            // The request profile requires an approver. SCEP is the one protocol whose wire format
+            // has always been able to say so — pkiStatus PENDING, RFC 8894 §3.2.1.2 — and the one
+            // that never did: nothing on this path read RequireApproval, so a CA whose console
+            // showed the gate as set issued to SCEP clients with no approver at all. The constant
+            // for PENDING has been declared here since the responder was written and was never
+            // used once.
+            case EnrollmentOutcome.Pending pending:
+            {
+                if (txRow != null)
+                {
+                    // The link the poll follows once an approver acts. Written in the same save as
+                    // the status and the extended TTL, because a row marked PendingApproval with
+                    // no request named on it is a transaction nothing can ever complete.
+                    txRow.CertRequestId = pending.RequestId;
+                    txRow.Status = TransactionPendingApproval;
+                    txRow.ExpiresAt = DateTime.UtcNow.Add(PendingApprovalTransactionTtl);
+                    await _db.SaveChangesAsync();
+                }
+                _logger.LogInformation(
+                    "SCEP PKCSReq at CA {CaLabel} awaits approval; answering PENDING (txId={TxId}).",
+                    context.Ca?.Label, transactionId);
+                return await BuildPendingResponse(caCert, caKey, transactionId, senderNonce);
+            }
+
+            // Already audited, by the writer above. The sentence reaches the audit row and the log
+            // and never the client: SCEP answers a numeric failInfo and carries no text at all,
+            // which is the strongest scrubbing of the five and needs no help to stay that way.
+            case EnrollmentOutcome.Refused:
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
+
+            // A configuration fault, not a decision about the request. Thrown because that is how
+            // this method has always answered one — the caller catches it and renders badRequest.
+            case EnrollmentOutcome.Failed failed:
+                throw new InvalidOperationException(failed.Message);
+
+            default:
+                throw new InvalidOperationException("Unrecognised enrollment outcome.");
+        }
     }
+
+    /// <summary>
+    /// Turns a parsed PKCSReq into the normalized submission the shared middle takes: what the CSR
+    /// asks for, and which credential is asking.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Static, and separate from <see cref="HandlePkcsReqAsync"/>, because everything a SCEP
+    /// request becomes on its way into the middle is decided here and none of it was reachable in
+    /// a test while it sat inside a method that also opened a CMS envelope. The three hooks and
+    /// the audit writer need the service and are attached by the caller.
+    /// </para>
+    /// <para>
+    /// The credential is the whole of what <paramref name="isRenewal"/> changes. An initial
+    /// enrollment carries a challenge password inside the certification request and is not verified
+    /// by SCEP itself, so <see cref="EnrollmentCaller.IsVerified"/> is false and the shared
+    /// authorization step finds the password in <see cref="EnrollmentRequestMaterial.CsrPem"/> and
+    /// consumes it — the same check, on the same CSR, at the same point in the order it has always
+    /// run at. A renewal is verified here, by the signer checks above, and carries no password;
+    /// it is verified, and the authorization step takes the signature for what it is.
+    /// </para>
+    /// </remarks>
+    /// <param name="parsedCsr">The certification request, already parsed.</param>
+    /// <param name="csrPem">The same request as PEM, which is what the request row stores.</param>
+    /// <param name="context">The CA and profiles this exchange resolved before dispatching.</param>
+    /// <param name="transactionId">The SCEP transaction id, carried into the audit row.</param>
+    /// <param name="sourceIp">Caller address.</param>
+    /// <param name="callerPrincipal">How the audit row names the caller.</param>
+    /// <param name="isRenewal">Whether the PKCSReq was signed by a certificate this CA issued.</param>
+    /// <param name="renewal">The certificate that signature names, when it is one this CA has a row for.</param>
+    internal static EnrollmentSubmission BuildSubmission(
+        CertificateUtil.ParsedCsrInfo parsedCsr,
+        string csrPem,
+        ResolvedCaContext context,
+        string? transactionId,
+        string? sourceIp,
+        string callerPrincipal,
+        bool isRenewal,
+        EnrollmentRenewal? renewal)
+        => new()
+        {
+            Protocol = Protocol,
+            CaLabel = context.Ca?.Label,
+            SourceIp = sourceIp,
+            Correlation = transactionId,
+            ResolvedContext = context,
+            Renewal = renewal,
+            Caller = new EnrollmentCaller(
+                Principal: callerPrincipal,
+                AuthMethod: isRenewal
+                    ? EnrollmentAuthMethod.MessageSignature
+                    : EnrollmentAuthMethod.SharedSecret,
+                IsVerified: isRenewal),
+            Request = new EnrollmentRequestMaterial
+            {
+                CsrPem = csrPem,
+                Subject = parsedCsr.SubjectName,
+                SubjectAlternativeNames = parsedCsr.SubjectAlternativeNames,
+                KeyAlgorithm = parsedCsr.KeyAlgorithm,
+                KeySize = parsedCsr.KeySize,
+                SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
+            },
+        };
+
+    /// <summary>
+    /// Writes the SCEP transaction row, which is also the replay check: the unique index on
+    /// (CaId, TransactionId) is what a replayed PKCSReq collides with.
+    /// </summary>
+    /// <remarks>
+    /// Runs from the pipeline's post-authorization hook, which is the place in the order it already
+    /// had — after the caller is authorized, before any profile is read — so a caller who fails
+    /// both is told about the credential and not about the replay. It settles nothing about the
+    /// request and returns what it was given.
+    /// </remarks>
+    /// <param name="authorized">The request as the middle now holds it.</param>
+    /// <param name="parsedCsr">The parsed request, for the subject and the public key hash.</param>
+    /// <param name="context">The CA this exchange addresses.</param>
+    /// <param name="transactionId">The client's transaction id; no row is written without one.</param>
+    /// <param name="sourceIp">Caller address, for the audit row a replay writes.</param>
+    /// <param name="captured">Receives the row, so the caller can complete it once the middle answers.</param>
+    private async Task<EnrollmentAuthorizedRequest> PersistTransactionAsync(
+        EnrollmentAuthorizedRequest authorized,
+        CertificateUtil.ParsedCsrInfo parsedCsr,
+        ResolvedCaContext context,
+        string? transactionId,
+        string? sourceIp,
+        Action<ScepTransactionEntity> captured)
+    {
+        if (string.IsNullOrEmpty(transactionId))
+            return authorized;
+
+        // SHA-256 the requester public key so GetCertInitial can
+        // verify the polling client matches the original PKCSReq.
+        var pubKeyHash = Convert.ToHexString(
+            SHA256.HashData(parsedCsr.PublicKeyDer ?? Array.Empty<byte>()));
+        var txRow = new ScepTransactionEntity
+        {
+            CaId = context.Ca?.Id,
+            TransactionId = transactionId,
+            Subject = parsedCsr.SubjectName,
+            RequesterPublicKeyHash = pubKeyHash,
+            Status = TransactionPending,
+            ExpiresAt = DateTime.UtcNow.Add(TransactionTtl)
+        };
+        _db.ScepTransactions.Add(txRow);
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // Duplicate transaction id → replay.
+            _db.Entry(txRow).State = EntityState.Detached;
+            await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp,
+                "Duplicate SCEP transaction id (replay).");
+            throw new ScepRefusalException(FailInfoBadRequest, "Duplicate SCEP transaction id (replay).");
+        }
+
+        captured(txRow);
+        return authorized;
+    }
+
+    /// <summary>
+    /// Holds the CSR's key algorithm to what the certificate profile the request resolved to
+    /// permits, refusing with <c>badAlg</c> as SCEP always has.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Kept as SCEP's own check rather than handed to the middle because no other protocol makes
+    /// one before issuance, and because <c>badAlg</c> is the only failInfo SCEP renders that a
+    /// shared refusal reason could ever reach: every other refusal the middle can produce comes
+    /// out as <c>badRequest</c>. Issuance applies the same rule again, against the effective
+    /// profile, for every protocol including this one.
+    /// </para>
+    /// <para>
+    /// The list is JSON — <c>["RSA","ECDSA"]</c> — and this check used to split the raw column on
+    /// commas. Nothing then matched: a profile left at its default <c>[]</c> produced the single
+    /// token <c>[]</c>, which equals no key algorithm, so the check refused every PKCSReq that
+    /// reached it with <c>badAlg</c>. No test covered the SCEP enrollment path at all, so it held.
+    /// Reading the list as what it is means the rule now refuses what the profile actually forbids
+    /// and permits everything else, which is a deliberate change to what a client is answered.
+    /// </para>
+    /// </remarks>
+    /// <param name="parsedCsr">The parsed request, for the key algorithm and the subject.</param>
+    /// <param name="policy">What the middle settled: the CA, the profiles, the names.</param>
+    /// <param name="context">The CA this exchange addresses, for the audit row.</param>
+    /// <param name="transactionId">The client's transaction id, for the audit row.</param>
+    /// <param name="sourceIp">Caller address, for the audit row.</param>
+    private async Task EnforceKeyAlgorithmAsync(
+        CertificateUtil.ParsedCsrInfo parsedCsr,
+        EnrollmentPolicyContext policy,
+        ResolvedCaContext context,
+        string? transactionId,
+        string? sourceIp)
+    {
+        var allowed = await _db.CertProfiles.AsNoTracking()
+            .Where(p => p.Id == policy.CertProfileId)
+            .Select(p => p.AllowedKeyAlgorithms)
+            .FirstOrDefaultAsync();
+        if (KeyAlgorithmPermitted(allowed, parsedCsr.KeyAlgorithm))
+            return;
+
+        var message = $"CSR key algorithm '{parsedCsr.KeyAlgorithm}' not permitted by certificate profile.";
+        await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp, message);
+        throw new ScepRefusalException(FailInfoBadAlg, message);
+    }
+
+    /// <summary>
+    /// Whether a certificate profile's allowed-key-algorithm list permits an algorithm. An empty
+    /// or absent list permits everything, which is what an unconstrained profile means.
+    /// </summary>
+    /// <remarks>
+    /// The column holds a JSON array. A value that is not JSON is read as a comma-separated list
+    /// instead, so a profile edited by hand into <c>RSA,ECDSA</c> is understood rather than
+    /// silently refusing every request — which is what the comma-only reading did to every profile
+    /// the application itself writes.
+    /// </remarks>
+    /// <param name="allowedKeyAlgorithms">The profile's list, as stored.</param>
+    /// <param name="keyAlgorithm">The CSR's key algorithm.</param>
+    internal static bool KeyAlgorithmPermitted(string? allowedKeyAlgorithms, string? keyAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(allowedKeyAlgorithms))
+            return true;
+
+        string[] allowed;
+        var trimmed = allowedKeyAlgorithms.Trim();
+        if (trimmed.StartsWith('['))
+        {
+            try
+            {
+                allowed = JsonSerializer.Deserialize<string[]>(trimmed) ?? [];
+            }
+            catch (JsonException)
+            {
+                return true;
+            }
+        }
+        else
+        {
+            allowed = trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        if (allowed.Length == 0)
+            return true;
+        return allowed.Any(a => string.Equals(a, keyAlgorithm, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Writes the shared audit fields the pipeline supplies as a SCEP row, in SCEP's own message
+    /// types.
+    /// </summary>
+    /// <param name="record">The shared fields; see <see cref="EnrollmentAuditRecord"/>.</param>
+    /// <param name="sourceIp">Caller address.</param>
+    /// <param name="callerPrincipal">How the row names the caller.</param>
+    private Task WriteScepAuditAsync(EnrollmentAuditRecord record, string? sourceIp, string callerPrincipal)
+        => record.Event switch
+        {
+            EnrollmentAuditEvent.Issued => _protocolAudit.LogScepAsync(
+                PkcsReqOperation, record.Subject, record.SerialNumber,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: callerPrincipal),
+
+            // Not a failure: the client is answered PENDING and may come back for it. Recorded
+            // under its own message type so the SCEP tab tells a request awaiting an approver from
+            // one that was issued and from one that was refused.
+            EnrollmentAuditEvent.Pending => _protocolAudit.LogScepAsync(
+                PkcsReqPendingOperation, record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: callerPrincipal),
+
+            _ => _protocolAudit.LogScepAsync(
+                PkcsReqOperation, record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
+                success: false, errorMessage: record.Message ?? "Enrollment refused.",
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: callerPrincipal),
+        };
+
+    /// <summary>
+    /// A refusal one of SCEP's own checks made, carrying the failInfo that check has always
+    /// rendered. Thrown rather than returned because the pipeline's hooks refuse by throwing, and
+    /// caught immediately around the pipeline call.
+    /// </summary>
+    private sealed class ScepRefusalException : Exception
+    {
+        /// <summary>Constructs a refusal carrying a SCEP failInfo code.</summary>
+        /// <param name="failInfo">The failInfo value, per RFC 8894 §3.2.1.4.</param>
+        /// <param name="message">The sentence, for the log; it never reaches the client.</param>
+        public ScepRefusalException(string failInfo, string message) : base(message)
+        {
+            FailInfo = failInfo;
+        }
+
+        /// <summary>The failInfo the response carries.</summary>
+        public string FailInfo { get; }
+    }
+
+    /// <summary>Audit message type recorded for a PKCSReq that was issued or refused.</summary>
+    private const string PkcsReqOperation = "PKCSReq";
+
+    /// <summary>Audit message type recorded for a PKCSReq an approver now owns.</summary>
+    private const string PkcsReqPendingOperation = "PKCSReqPending";
+
+    /// <summary>Transaction status while the request is in flight.</summary>
+    private const string TransactionPending = "Pending";
+
+    /// <summary>Transaction status once the certificate exists and the client may collect it.</summary>
+    private const string TransactionIssued = "Issued";
+
+    /// <summary>
+    /// Transaction status while an approver owns the request row, so <c>GetCertInitial</c> answers
+    /// PENDING rather than badCertId.
+    /// </summary>
+    private const string TransactionPendingApproval = "PendingApproval";
+
+    /// <summary>How long a transaction row is kept for a client that will poll within the exchange.</summary>
+    private static readonly TimeSpan TransactionTtl = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// How long a transaction row is kept once an approver owns the request. Ten minutes is a
+    /// client's retry window; an approval is a person's, and a row swept before they act would
+    /// turn a PENDING answer into badCertId with nothing having gone wrong.
+    /// </summary>
+    private static readonly TimeSpan PendingApprovalTransactionTtl = TimeSpan.FromDays(7);
 
     /// <summary>
     /// Handles GetCertInitial (RFC 8894 §4.5) by looking up the
@@ -600,6 +893,32 @@ public class ScepService : IScepService
     /// hash matches the original requester's hash, and returning the associated cert.
     /// No match → <c>FailInfoBadCertId</c> (no more "most recent cert" leak across tenants).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is a poll and a collection in one message, and it is not the shared middle. The design
+    /// carried a <c>PollAsync</c> on the pipeline and it was dropped while migrating Windows
+    /// autoenrollment; SCEP is the second poller and confirms the drop rather than reversing it.
+    /// The two are keyed on different things — a request row identifier there, a CA and a
+    /// transaction id here — and prove ownership differently: autoenrollment checks the account
+    /// that submitted the row, and SCEP checks that the polling client holds the key that signed
+    /// the original PKCSReq, because a SCEP client has no account. What is left over once both are
+    /// removed is "has this row been issued yet", which is a database read and not a middle.
+    /// </para>
+    /// <para>
+    /// A request an approver owns is followed through <see cref="ScepTransactionEntity.CertRequestId"/>,
+    /// written when the PKCSReq was answered PENDING: still waiting is PENDING again, approved and
+    /// issued is the certificate rendered exactly as an immediate enrollment renders it, and
+    /// rejected or cancelled is the failInfo a refused PKCSReq already carries. The ownership proof
+    /// runs before any of that is read, so the approval state is only ever disclosed to the client
+    /// that made the request.
+    /// </para>
+    /// </remarks>
+    /// <param name="caCert">The CA certificate the response is signed under.</param>
+    /// <param name="caKey">The key the signer holds for it.</param>
+    /// <param name="transactionId">The transaction id the client is asking after.</param>
+    /// <param name="senderNonce">The client's nonce, echoed as the recipient nonce.</param>
+    /// <param name="context">The CA and profiles this exchange addresses.</param>
+    /// <param name="cmsSignerCert">The certificate that signed the poll, when the CMS carried one.</param>
     private async Task<byte[]> HandleGetCertInitialAsync(
         X509Certificate caCert,
         ScepSignerKey caKey,
@@ -614,7 +933,17 @@ public class ScepService : IScepService
         var tx = await _db.ScepTransactions
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.CaId == context.Ca!.Id && t.TransactionId == transactionId);
-        if (tx == null || tx.IssuedCertificateId == null)
+
+        // A request an approver owns is answered PENDING again, not badCertId: nothing has gone
+        // wrong and the client is right to keep asking. This branch exists only because the
+        // PKCSReq path now reads the approval gate at all; before that no transaction row could
+        // ever be in this state.
+        var underApproval = tx != null
+            && tx.Status == TransactionPendingApproval
+            && tx.IssuedCertificateId == null
+            && tx.ExpiresAt >= DateTime.UtcNow;
+
+        if (tx == null || (tx.IssuedCertificateId == null && !underApproval))
             return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
         if (tx.ExpiresAt < DateTime.UtcNow)
@@ -640,9 +969,39 @@ public class ScepService : IScepService
             }
         }
 
+        // Proven to be the client that made the request. What the approver has since done with the
+        // request row is the whole of what is left to answer, and it is only asked after the proof
+        // above: a caller who guessed the transaction id learns nothing about its state.
+        var certificateId = tx.IssuedCertificateId;
+        if (underApproval)
+        {
+            var (state, approvedCertificateId) = await ResolveApprovalAsync(tx, transactionId);
+            switch (state)
+            {
+                // Nobody has acted yet: PENDING again, which is what the client is asking for.
+                case ApprovalPollState.StillPending:
+                    return await BuildPendingResponse(caCert, caKey, transactionId, senderNonce);
+
+                // An operator refused it. badRequest is the failInfo a refused PKCSReq already
+                // renders, so a refusal reads the same whether it arrived at submission or later.
+                case ApprovalPollState.Refused:
+                    return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
+
+                // Approved and issued — fall through to the rendering every successful poll uses.
+                case ApprovalPollState.Issued:
+                    certificateId = approvedCertificateId;
+                    break;
+
+                // The link is missing or the row it named is gone: nothing to collect and nothing
+                // to wait for, which is what badCertId says.
+                default:
+                    return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
+            }
+        }
+
         var recentCertEntity = await _db.Certificates
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CertificateId == tx.IssuedCertificateId.Value);
+            .FirstOrDefaultAsync(c => c.CertificateId == certificateId!.Value);
         if (recentCertEntity == null)
             return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadCertId);
 
@@ -672,6 +1031,87 @@ public class ScepService : IScepService
         var pkcs7Bytes = BuildCertsOnlyPkcs7(certChain);
         return await BuildSuccessResponse(caCert, caKey, transactionId, senderNonce, pkcs7Bytes);
     }
+
+    /// <summary>What a poll found had become of the request an approver owns.</summary>
+    private enum ApprovalPollState
+    {
+        /// <summary>The request row is still waiting for an approver, or approved but not yet issued.</summary>
+        StillPending,
+
+        /// <summary>The request was issued; the certificate is named alongside this state.</summary>
+        Issued,
+
+        /// <summary>An operator rejected or cancelled the request.</summary>
+        Refused,
+
+        /// <summary>
+        /// Nothing can be resolved: the transaction names no request row, or names one the database
+        /// no longer has.
+        /// </summary>
+        Unresolvable,
+    }
+
+    /// <summary>
+    /// Follows a pending transaction's <see cref="ScepTransactionEntity.CertRequestId"/> to what the
+    /// approver did with it, and completes the transaction row when a certificate exists.
+    /// </summary>
+    /// <remarks>
+    /// The completion is the same bookkeeping an immediate enrollment does in
+    /// <c>HandlePkcsReqAsync</c> — the issued certificate recorded on the transaction and the status
+    /// moved to <c>Issued</c> — so a second poll is answered by the ordinary collection path and
+    /// returns the same certificate rather than re-resolving the approval. A rejection leaves the
+    /// row as it is: every further poll then reads the refusal the same way, until the row reaches
+    /// its TTL and the sweep removes it.
+    /// </remarks>
+    /// <param name="tx">The transaction row, as read for the poll.</param>
+    /// <param name="transactionId">The transaction id, for the log.</param>
+    /// <returns>The state, and the issued certificate's id when there is one.</returns>
+    private async Task<(ApprovalPollState State, Guid? CertificateId)> ResolveApprovalAsync(
+        ScepTransactionEntity tx, string transactionId)
+    {
+        if (tx.CertRequestId == null)
+        {
+            // A row written before this link existed. It can never be completed, and saying so is
+            // better than answering PENDING to a client that would poll until its TTL for nothing.
+            _logger.LogWarning(
+                "SCEP GetCertInitial cannot complete transaction {TxId}: it names no request row.",
+                transactionId);
+            return (ApprovalPollState.Unresolvable, null);
+        }
+
+        var request = await _db.CertificateRequests
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == tx.CertRequestId.Value);
+        if (request == null)
+            return (ApprovalPollState.Unresolvable, null);
+
+        if (request.IssuedCertificateId != null)
+        {
+            var completed = await _db.ScepTransactions.FirstOrDefaultAsync(t => t.Id == tx.Id);
+            if (completed != null)
+            {
+                completed.IssuedCertificateId = request.IssuedCertificateId;
+                completed.Status = TransactionIssued;
+                await _db.SaveChangesAsync();
+            }
+            _logger.LogInformation(
+                "SCEP GetCertInitial collected the approved certificate for transaction {TxId}.",
+                transactionId);
+            return (ApprovalPollState.Issued, request.IssuedCertificateId);
+        }
+
+        return request.Status switch
+        {
+            RequestRejectedStatus or RequestCancelledStatus => (ApprovalPollState.Refused, null),
+            _ => (ApprovalPollState.StillPending, null),
+        };
+    }
+
+    /// <summary>Request-row status an operator's refusal writes.</summary>
+    private const string RequestRejectedStatus = "Rejected";
+
+    /// <summary>Request-row status an operator's withdrawal writes.</summary>
+    private const string RequestCancelledStatus = "Cancelled";
 
     /// <summary>
     /// Chooses the CA that signs this exchange: the resolved CA when it has one and the signer
@@ -730,6 +1170,24 @@ public class ScepService : IScepService
     {
         return BuildScepResponse(caCert, caKey, transactionId, senderNonce,
             PkiStatusSuccess, null, certsPkcs7Content);
+    }
+
+    /// <summary>
+    /// Builds a signed CertRep carrying PENDING: the request exists and an approver owns it, and
+    /// the client should ask after it with <c>GetCertInitial</c> (RFC 8894 §3.2.1.2).
+    /// </summary>
+    /// <param name="caCert">The CA certificate the response is signed under.</param>
+    /// <param name="caKey">The key the signer holds for it.</param>
+    /// <param name="transactionId">The client's transaction id, echoed back.</param>
+    /// <param name="senderNonce">The client's nonce, echoed as the recipient nonce.</param>
+    private Task<byte[]> BuildPendingResponse(
+        X509Certificate caCert,
+        ScepSignerKey caKey,
+        string? transactionId,
+        byte[]? senderNonce)
+    {
+        return BuildScepResponse(caCert, caKey, transactionId, senderNonce,
+            PkiStatusPending, null, null);
     }
 
     /// <summary>Builds a signed CertRep carrying FAILURE and the given failInfo.</summary>

@@ -85,10 +85,11 @@ public class CertificateTemplateEntity
     /// The OID under which this template is offered to Windows clients through the MSAE policy
     /// service (MS-XCEP), and by which a client's CSR names it (szOID_CERTIFICATE_TEMPLATE).
     /// Null means the template is not offered to Windows clients. Generated from the template id
-    /// under the UUID arc (2.25.x) unless an operator supplies one, for example to keep the OID
-    /// of a template migrated from Active Directory Certificate Services.
+    /// under this product's own enterprise arc unless an operator supplies one, for example to keep
+    /// the OID of a template migrated from Active Directory Certificate Services. The width holds
+    /// a base arc of any realistic enterprise number plus the four generated arcs.
     /// </summary>
-    [MaxLength(64)]
+    [MaxLength(128)]
     public string? MsaeTemplateOid { get; set; }
 
     /// <summary>

@@ -84,7 +84,7 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         return protocolUpper switch
         {
             "EST" => await ValidateEstAsync(protocolConfig, ca, clientCert, isAuthenticated, callerUsername),
-            "SCEP" => await ValidateScep(protocolConfig, csrPem),
+            "SCEP" => await ValidateScep(protocolConfig, csrPem, isAuthenticated),
             "CMP" => ValidateCmp(protocolConfig, clientCert, isAuthenticated),
             "MSAE" => await ValidateMsaeAsync(ca, isAuthenticated, callerUsername),
             "ACME" => (true, null), // ACME handles its own authorization via challenges
@@ -192,9 +192,36 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         return (false, "no authentication method enabled");
     }
 
+    /// <summary>
+    /// Authorizes a SCEP enrollment: a message-level credential the responder has already verified
+    /// against this CA, or else the challenge password carried inside the certification request.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="isAuthenticated"/> means for SCEP what it means for CMP: the protocol has
+    /// verified a credential of its own before anything reached here. <c>ScepService</c> sets it
+    /// only for a renewal, where the PKCSReq is signed by a certificate it has proven chains to
+    /// this CA, is unrevoked, carries the same subject as the CSR and already holds every name the
+    /// CSR asks for. That signature is what stands in for the challenge password — RFC 8894 §3.2.2
+    /// — and has always exempted a renewal from it.
+    /// </para>
+    /// <para>
+    /// Before the SCEP migration the exemption was expressed by <c>ScepService</c> not calling this
+    /// method at all on a renewal, which also skipped the CA lookup and the protocol-enablement
+    /// check above it: a renewal was answered at a CA with SCEP switched off. Saying it here
+    /// instead keeps the exemption and closes that, and makes the SCEP branch read like the CMP
+    /// one, which is the same rule in the same words.
+    /// </para>
+    /// </remarks>
+    /// <param name="config">The CA's SCEP configuration, for <c>ScepChallengeRequired</c>.</param>
+    /// <param name="csrPem">The certification request carrying the challenge password.</param>
+    /// <param name="isAuthenticated">Whether the responder verified a message-level credential.</param>
     private async Task<(bool, string?)> ValidateScep(
-        CaProtocolConfigEntity config, string? csrPem)
+        CaProtocolConfigEntity config, string? csrPem, bool isAuthenticated)
     {
+        if (isAuthenticated)
+            return (true, null);
+
         if (!config.ScepChallengeRequired)
             return (true, null);
 

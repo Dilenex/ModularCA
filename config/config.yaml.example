@@ -396,3 +396,20 @@ Https:
 #     - 3
 #     - 1
 #   Schedule: "0 6 * * *"       # Cron expression — default is daily at 6 AM UTC
+
+# Windows autoenrollment (MSAE). Generated certificate template identifiers are minted under this
+# product's own arc, 1.3.6.1.4.1.66874.1.1, with nothing set here: a new installation is correct
+# out of the box. Both settings below are for existing installations, and for an operator who
+# holds their own Private Enterprise Number (see docs/oid-allocation.md).
+#
+# TemplateOidArc overrides the arc new identifiers are minted under. It must leave room for four
+# arcs of ten digits, so it can be at most eighty-four characters.
+#
+# MoveGeneratedTemplateOids moves identifiers minted by an older build to the current arc, once,
+# at the next start. It is off by default because a Windows client recognises a certificate it
+# already holds by that identifier: after a move every client sees those templates as new and
+# enrolls again. Identifiers an operator typed are never touched, and certificates already issued
+# keep the old identifier and stay valid. Choose the moment; a maintenance window is the place.
+# Msae:
+#   TemplateOidArc: "1.3.6.1.4.1.66874.1.1"
+#   MoveGeneratedTemplateOids: true

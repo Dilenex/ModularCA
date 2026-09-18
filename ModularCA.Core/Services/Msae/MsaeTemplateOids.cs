@@ -23,7 +23,7 @@ namespace ModularCA.Core.Services.Msae;
 /// </para>
 /// <para>
 /// The base arc is the operator's: a Private Enterprise Number arc such as
-/// <c>1.3.6.1.4.1.99999.4</c>, configured as <c>Msae:TemplateOidArc</c>. Until one is configured,
+/// <c>1.3.6.1.4.1.66874.1.1</c>, configured as <c>Msae:TemplateOidArc</c>. Until one is configured,
 /// generated OIDs sit under <c>2.25</c>, the UUID arc: a first sub-arc below 2^31 is an integer no
 /// RFC 4122 UUID can take (their variant bits put every real UUID above 2^63), so the space is
 /// unclaimed, though it is not the letter of X.667. An operator may also supply an OID outright,
@@ -34,10 +34,43 @@ namespace ModularCA.Core.Services.Msae;
 public static partial class MsaeTemplateOids
 {
     /// <summary>Longest OID accepted; matches the column width.</summary>
-    public const int MaxLength = 64;
+    public const int MaxLength = 128;
 
-    /// <summary>The arc generated OIDs live under when no <c>Msae:TemplateOidArc</c> is configured.</summary>
-    public const string DefaultArc = "2.25";
+    /// <summary>
+    /// The arc generated OIDs live under when no <c>Msae:TemplateOidArc</c> is configured: this
+    /// product's own arc, under Dilenex LLC's Private Enterprise Number 66874. A template minted
+    /// by any installation therefore says "a ModularCA template" and is correct with no
+    /// configuration at all, which is how Active Directory Certificate Services also mints
+    /// template identifiers for its customers, under its vendor's arc. An operator holding their
+    /// own enterprise number overrides it; see <c>docs/oid-allocation.md</c>.
+    /// </summary>
+    public const string DefaultArc = "1.3.6.1.4.1.66874.1.1";
+
+    /// <summary>
+    /// Arcs this product generated under before <see cref="DefaultArc"/>, recognised so an
+    /// identifier minted by an older build is still known to be generated rather than mistaken
+    /// for one an operator typed. <c>2.25</c> is the arc for identifiers derived from a
+    /// universally unique identifier, which is legitimate but says nothing about who minted it.
+    /// </summary>
+    public static readonly IReadOnlyList<string> HistoricalArcs = ["2.25"];
+
+    /// <summary>
+    /// Whether <paramref name="oid"/> is one this product generated for <paramref name="templateId"/>:
+    /// the pre-2026-09-15 single-arc form, or the four-arc form under the current arc,
+    /// <paramref name="effectiveArc"/> if an operator configured one, or any historical arc.
+    /// Anything else is an operator's own and is never rewritten.
+    /// </summary>
+    public static bool IsGenerated(Guid templateId, string? oid, string? effectiveArc = null)
+    {
+        if (string.IsNullOrWhiteSpace(oid)) return false;
+        if (oid == LegacyFromTemplateId(templateId)) return true;
+        if (oid == FromTemplateId(templateId, DefaultArc)) return true;
+        if (!string.IsNullOrWhiteSpace(effectiveArc) && IsValidBaseArc(effectiveArc.Trim())
+            && oid == FromTemplateId(templateId, effectiveArc.Trim())) return true;
+        foreach (var arc in HistoricalArcs)
+            if (oid == FromTemplateId(templateId, arc)) return true;
+        return false;
+    }
 
     /// <summary>Largest arc value Windows parses: a signed 64-bit integer.</summary>
     public static readonly BigInteger MaxArc = long.MaxValue;

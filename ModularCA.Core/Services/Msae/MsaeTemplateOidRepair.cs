@@ -28,23 +28,21 @@ public static class MsaeTemplateOidRepair
     /// Rewrites generated OIDs under <paramref name="baseArc"/> and returns how many changed.
     /// With no arc configured it changes nothing and returns 0.
     /// </summary>
-    public static async Task<int> RunAsync(ModularCADbContext db, string? baseArc, ILogger logger, CancellationToken cancellation = default)
+    public static async Task<int> RunAsync(ModularCADbContext db, string? baseArc, bool move, ILogger logger, CancellationToken cancellation = default)
     {
         var offered = await db.CertificateTemplates
             .Where(t => t.MsaeTemplateOid != null)
             .ToListAsync(cancellation);
-        var active = !string.IsNullOrWhiteSpace(baseArc);
+        var arc = string.IsNullOrWhiteSpace(baseArc) ? MsaeTemplateOids.DefaultArc : baseArc.Trim();
         var waiting = 0;
         var changed = 0;
         foreach (var template in offered)
         {
-            var generated = template.MsaeTemplateOid == MsaeTemplateOids.LegacyFromTemplateId(template.Id)
-                || template.MsaeTemplateOid == MsaeTemplateOids.FromTemplateId(template.Id, MsaeTemplateOids.DefaultArc);
-            if (generated)
+            if (MsaeTemplateOids.IsGenerated(template.Id, template.MsaeTemplateOid, baseArc))
             {
-                if (!active) { waiting++; continue; }
-                var fresh = MsaeTemplateOids.FromTemplateId(template.Id, baseArc);
+                var fresh = MsaeTemplateOids.FromTemplateId(template.Id, arc);
                 if (fresh == template.MsaeTemplateOid) continue;
+                if (!move) { waiting++; continue; }
                 logger.LogWarning("Template {Name} ({Id}): generated OID {Old} moved to {New}. Windows clients see a new template and re-enroll once.",
                     template.Name, template.Id, template.MsaeTemplateOid, fresh);
                 template.MsaeTemplateOid = fresh;
@@ -57,7 +55,7 @@ public static class MsaeTemplateOidRepair
             }
         }
         if (waiting > 0)
-            logger.LogInformation("{Count} template OID(s) are generated under the default arc; set Msae:TemplateOidArc to your Private Enterprise Number arc and they move there at the next start.", waiting);
+            logger.LogInformation("{Count} template OID(s) were generated under an older arc. Set Msae:MoveGeneratedTemplateOids to move them to {Arc} at the next start; every Windows client then sees those templates as new and enrolls once, so choose the moment.", waiting, arc);
         if (changed > 0) await db.SaveChangesAsync(cancellation);
         return changed;
     }
