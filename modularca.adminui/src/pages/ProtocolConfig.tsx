@@ -19,6 +19,27 @@ import { ToggleField, labelClass } from '@shared/components/forms';
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
 
+/** One reason a protocol configuration on this CA cannot work, as the API reports it. */
+interface ProtocolAdvisory {
+    /** A stable code, e.g. `ScepRequiresRsaKey`. */
+    reason: string;
+    /** The sentence to show the operator. */
+    message: string;
+}
+
+/**
+ * The advisory for SCEP on an authority whose key is not RSA, written here for the card of a
+ * protocol that has no configuration row yet; a row that exists carries the sentence the server
+ * sent instead. Proven live: the client encrypts its request to the CA certificate with RSA key
+ * transport, the only recipient type SCEP defines, so an ECDSA authority cannot serve it.
+ */
+const scepKeyAdvisory = (keyAlgorithm: string): ProtocolAdvisory => ({
+    reason: 'ScepRequiresRsaKey',
+    message: `SCEP cannot run on this CA: its key is ${keyAlgorithm}, and a SCEP client encrypts its `
+        + 'certification request to the CA certificate using RSA key transport, the only recipient type '
+        + 'SCEP defines. Serve SCEP from an RSA authority instead.',
+});
+
 const ProtocolConfig: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
@@ -34,6 +55,10 @@ const ProtocolConfig: React.FC = () => {
     const [expandedProtocol, setExpandedProtocol] = useState<string | null>(null);
     const [protocolConfigs, setProtocolConfigs] = useState<any[]>([]);
     const [configLoading, setConfigLoading] = useState(false);
+    // Protocols this deployment serves at all. Null until the system says so, and it stays null
+    // when the lookup fails, which shows every protocol: a page that hid protocols because one
+    // unrelated request failed would read as a system that no longer has them.
+    const [systemProtocols, setSystemProtocols] = useState<string[] | null>(null);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [saving, setSaving] = useState<string | null>(null);
@@ -53,6 +78,17 @@ const ProtocolConfig: React.FC = () => {
         }
         return result;
     };
+
+    // Which protocols the system feature flags leave switched on: the same list the public portal
+    // advertises, so a protocol disabled system-wide is not offered for configuration here.
+    useEffect(() => {
+        apiGet<any>('/api/v1/public/info')
+            .then((info) => {
+                const enabled = info?.enabledProtocols;
+                if (Array.isArray(enabled)) setSystemProtocols(enabled.map((p: string) => String(p).toUpperCase()));
+            })
+            .catch(() => setSystemProtocols(null));
+    }, []);
 
     useEffect(() => {
         setLoading(true);
@@ -92,6 +128,25 @@ const ProtocolConfig: React.FC = () => {
     }, [selectedCaId]);
 
     const allCasFlat = flattenCas(authorities);
+    const selectedCa = allCasFlat.find((ca) => (ca.id || ca.certificateId || ca.name) === selectedCaId) || null;
+    const caKeyAlgorithm: string = selectedCa?.keyAlgorithm || '';
+
+    // A protocol disabled system-wide is refused at the edge, so it is not listed here either.
+    const visibleProtocols = systemProtocols
+        ? PROTOCOLS.filter((p) => systemProtocols.includes(p))
+        : PROTOCOLS;
+    const hiddenProtocols = PROTOCOLS.filter((p) => !visibleProtocols.includes(p));
+
+    /**
+     * What is wrong with this protocol on this CA: the advisories the server attached to a
+     * configured row, or the one we can tell without a row, SCEP on a non-RSA authority.
+     */
+    const advisoriesFor = (protocol: string, config: any): ProtocolAdvisory[] => {
+        if (config) return (config.advisories as ProtocolAdvisory[]) || [];
+        if (protocol === 'SCEP' && caKeyAlgorithm && caKeyAlgorithm.toUpperCase() !== 'RSA')
+            return [scepKeyAdvisory(caKeyAlgorithm)];
+        return [];
+    };
 
     const getProtocolConfig = (protocol: string): any | null => {
         return protocolConfigs.find(
@@ -152,7 +207,24 @@ const ProtocolConfig: React.FC = () => {
             {configLoading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading protocol configs...</div>}
 
             {/* Protocol Cards */}
-            {selectedCaId && !configLoading && PROTOCOLS.map((protocol) => {
+            {selectedCaId && !configLoading && visibleProtocols.length === 0 && (
+                <InlineNotice
+                    severity="info"
+                    notice={{
+                        title: 'No enrollment protocols are enabled on this system',
+                        detail: `${PROTOCOLS.join(', ')} are all switched off by their system feature flags, so there is nothing to configure here.`,
+                        remediation: 'Turn a protocol on under Settings \u2192 Features; the configuration it had is still there.',
+                    }}
+                />
+            )}
+            {selectedCaId && !configLoading && hiddenProtocols.length > 0 && visibleProtocols.length > 0 && (
+                <p className="text-xs text-gray-600 dark:text-gray-400">
+                    Not listed: {hiddenProtocols.join(', ')} &mdash; disabled system-wide under{' '}
+                    <Link to="/settings" className="text-blue-600 dark:text-blue-400 hover:underline">Settings &rarr; Features</Link>.
+                    Their configuration is kept and returns when the flag does.
+                </p>
+            )}
+            {selectedCaId && !configLoading && visibleProtocols.map((protocol) => {
                 const config = getProtocolConfig(protocol);
                 const expanded = expandedProtocol === protocol;
 
@@ -166,6 +238,7 @@ const ProtocolConfig: React.FC = () => {
                         onToggleExpand={() => setExpandedProtocol(expanded ? null : protocol)}
                         onSave={(updates) => handleSave(protocol, updates)}
                         saving={saving === protocol}
+                        advisories={advisoriesFor(protocol, config)}
                         signingProfiles={signingProfiles}
                         certProfiles={certProfiles}
                         labelClass={labelClass}
@@ -192,6 +265,8 @@ interface ProtocolCardProps {
     onToggleExpand: () => void;
     onSave: (updates: any) => void;
     saving: boolean;
+    /** Reasons this protocol cannot work on this CA, if any; shown before anything is saved. */
+    advisories: ProtocolAdvisory[];
     signingProfiles: any[];
     certProfiles: any[];
     labelClass: string;
@@ -200,7 +275,7 @@ interface ProtocolCardProps {
 
 const ProtocolCard: React.FC<ProtocolCardProps> = ({
     caId,
-    protocol, config, expanded, onToggleExpand, onSave, saving,
+    protocol, config, expanded, onToggleExpand, onSave, saving, advisories,
     signingProfiles, certProfiles, labelClass, selectClass,
 }) => {
     const [form, setForm] = useState<Record<string, any>>({
@@ -306,12 +381,22 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 ) : (
                     <StatusBadge status="disabled" label="Not Configured" />
                 )}
+                {advisories.length > 0 && (
+                    <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Cannot run on this CA</span>
+                )}
                 {config?.signingProfileName && (
                     <span className="text-xs text-gray-600 ml-auto">Signing: {config.signingProfileName}</span>
                 )}
             </button>
             {expanded && (
                 <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                    {advisories.map((a) => (
+                        <InlineNotice
+                            key={a.reason}
+                            severity="warning"
+                            notice={{ title: `${protocol} cannot run on this CA`, detail: a.message, code: a.reason }}
+                        />
+                    ))}
                     {/* Common fields */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
