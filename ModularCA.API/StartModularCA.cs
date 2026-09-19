@@ -307,22 +307,11 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
         cfg.DB.App.SslMode = dbYaml2.App.SslMode;
     }
 
-    // Honor the operator-selected TLS mode; clamp typos to Required.
-    var backfillSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(
-        cfg.DB.App.SslMode, ignoreCase: true, out var _backfillSsl)
-        ? _backfillSsl : MySqlConnector.MySqlSslMode.Required;
-    var appCsb = new MySqlConnector.MySqlConnectionStringBuilder
-    {
-        Server = cfg.DB.App.Host,
-        Port = (uint)cfg.DB.App.Port,
-        Database = cfg.DB.App.Database,
-        UserID = cfg.DB.App.Username,
-        Password = cfg.DB.App.Password,
-        SslMode = backfillSslMode,
-    };
-    var backfillConnStr = appCsb.ConnectionString;
+    // Honor the operator-selected TLS mode; clamp typos to Require.
+    ModularCA.Shared.Utils.LegacyDatabaseGuard.EnsureNotMySql(cfg.DB);
+    var backfillConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(cfg.DB.App);
     var dbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-        .UseMySql(backfillConnStr, ServerVersion.AutoDetect(backfillConnStr))
+        .UseNpgsql(backfillConnStr)
         .Options;
     using var backfillDb = new ModularCADbContext(dbOptions);
     var keystoresDir = Path.Combine(AppContext.BaseDirectory, "keystores");
@@ -496,17 +485,15 @@ if (!isSetupMode)
 {
     try
     {
-        var flagConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-        {
-            Server = config.DB.App.Host,
-            Port = (uint)config.DB.App.Port,
-            Database = config.DB.App.Database,
-            UserID = config.DB.App.Username,
-            Password = config.DB.App.Password
-        };
-        using var flagConn = new MySqlConnector.MySqlConnection(flagConnBuilder.ConnectionString);
+        var flagConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
+        using var flagConn = new Npgsql.NpgsqlConnection(flagConnStr);
         flagConn.Open();
-        using var flagCmd = new MySqlConnector.MySqlCommand("SELECT Name, Enabled FROM FeatureFlags WHERE Name IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')", flagConn);
+        // Quoted identifiers: EF created these as "FeatureFlags"."Name", and PostgreSQL folds
+        // unquoted identifiers to lower case, so an unquoted copy of this query would look for
+        // a table called featureflags and fail.
+        using var flagCmd = new Npgsql.NpgsqlCommand(
+            """SELECT "Name", "Enabled" FROM "FeatureFlags" WHERE "Name" IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')""",
+            flagConn);
         using var reader = flagCmd.ExecuteReader();
         while (reader.Read())
             sinkFlags[reader.GetString(0)] = reader.GetBoolean(1);
@@ -675,21 +662,32 @@ builder.Host.UseSerilog((context, services, configuration) =>
 });
 
 // Add services to the container.
-// Enforce TLS on MySQL connections. Default is "Required"; operators
-// can tighten to VerifyCA/VerifyFull or (non-compliant) downgrade via db.yaml / env var.
-// Unparseable values clamp back to MySqlSslMode.Required so a typo cannot silently drop TLS.
-var appSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _appSsl)
-    ? _appSsl : MySqlConnector.MySqlSslMode.Required;
-var appConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
+//
+// Refuse a MySQL/MariaDB configuration before anything opens a connection. This build speaks
+// PostgreSQL only, and the failure mode without this check is either an unreadable protocol
+// error from deep inside Npgsql or — far worse — a migration applied over a live MariaDB
+// schema. The guard names docs/architecture/postgresql-migration.md and the three-step upgrade
+// path, so the operator learns they ran the upgrade out of order rather than filing a bug.
+//
+// Skipped in setup mode, where the database is not configured yet and the port is whatever
+// default the wizard has not yet overwritten.
+if (!isSetupMode)
 {
-    Server = config.DB.App.Host,
-    Port = (uint)config.DB.App.Port,
-    Database = config.DB.App.Database,
-    UserID = config.DB.App.Username,
-    Password = config.DB.App.Password,
-    SslMode = appSslMode
-};
-var appConnStr = appConnBuilder.ConnectionString;
+    try
+    {
+        ModularCA.Shared.Utils.LegacyDatabaseGuard.EnsureNotMySql(config.DB);
+    }
+    catch (InvalidOperationException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(1);
+    }
+}
+
+// Enforce TLS on PostgreSQL connections. Default is "Required"; operators can tighten to
+// VerifyCA/VerifyFull or (non-compliant) downgrade via db.yaml / env var. Unparseable values
+// clamp back to SslMode.Require so a typo cannot silently drop TLS.
+var appConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
 
 // === Process roles ===
 // Every role by default: one process, the signer in it, as every install before stage 2.
@@ -758,18 +756,20 @@ var dbDurationInterceptor = new ModularCA.Core.Services.DbCommandDurationInterce
 const int defaultCommandTimeoutSeconds = 30;
 
 // In setup mode with no DB credentials, the prior code wired a dummy
-// connection to `localhost:3306` as root with empty password — a footgun on developer
-// machines with a local MySQL. Instead register a sentinel DbContextOptions that fails
-// loudly on first query, forcing callers in setup mode to route through the setup wizard.
+// connection to the database default port as root with empty password — a footgun on
+// developer machines running a local server. Instead register a sentinel DbContextOptions
+// that fails loudly on first query, forcing callers in setup mode to route through the setup
+// wizard.
 if (isSetupMode && string.IsNullOrWhiteSpace(config.DB.App.Username))
 {
     builder.Services.AddDbContext<ModularCADbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             // Syntactically-valid but unusable connection string: the hostname is an RFC
             // 2606 reserved name that will never resolve, and the credentials are empty.
-            "Server=setup-placeholder.invalid;Database=modularca-setup;Uid=disabled;Pwd='';",
-            new MySqlServerVersion(new System.Version(8, 0, 0)),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds))
+            // Npgsql needs no server version, so unlike the MySQL provider this never
+            // attempts a connection just to build the model.
+            "Host=setup-placeholder.invalid;Database=modularca-setup;Username=disabled;Password=disabled",
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds))
         .AddInterceptors(dbDurationInterceptor)
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
@@ -778,10 +778,9 @@ if (isSetupMode && string.IsNullOrWhiteSpace(config.DB.App.Username))
 else
 {
     builder.Services.AddDbContext<ModularCADbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             appConnStr,
-            ServerVersion.AutoDetect(appConnStr),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds)
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds)
         ).AddInterceptors(dbDurationInterceptor)
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
@@ -826,23 +825,11 @@ builder.Services.AddSingleton<ModularCA.Shared.Interfaces.IEntitlementService>(s
 if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
 {
     // Audit DB gets the same TLS-Required default as the app DB.
-    var auditSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(config.DB.Audit.SslMode, ignoreCase: true, out var _auditSsl)
-        ? _auditSsl : MySqlConnector.MySqlSslMode.Required;
-    var auditConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-    {
-        Server = config.DB.Audit.Host,
-        Port = (uint)config.DB.Audit.Port,
-        Database = config.DB.Audit.Database,
-        UserID = config.DB.Audit.Username,
-        Password = config.DB.Audit.Password,
-        SslMode = auditSslMode
-    };
-    var auditConnStr = auditConnBuilder.ConnectionString;
+    var auditConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.Audit);
     builder.Services.AddDbContext<AuditDbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             auditConnStr,
-            ServerVersion.AutoDetect(auditConnStr),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds)
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds)
         ).AddInterceptors(dbDurationInterceptor));
 }
 
@@ -1609,7 +1596,7 @@ builder.Services.AddSingleton(apiCertProvider);
 // made elsewhere. In setup mode there is no database and no tenant, so it stays empty.
 var tenantHostnameDbOptions = new Lazy<DbContextOptions<ModularCADbContext>>(() =>
     new DbContextOptionsBuilder<ModularCADbContext>()
-        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+        .UseNpgsql(appConnStr)
         .Options);
 var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache(
     () =>
@@ -1679,7 +1666,7 @@ if (isSetupMode)
 
     // The setup wizard is defense-in-depth'd by
     // (1) cert fingerprint verification printed to console, (2) a process-wide semaphore
-    // + MySQL advisory lock preventing racing callers, (3) MySqlConnectionStringBuilder
+    // + a PostgreSQL advisory lock preventing racing callers, (3) NpgsqlConnectionStringBuilder
     // + strict input validation on /api/v1/setup/database/test, and (4) the
     // IpWhitelistMiddleware RFC1918+loopback fallback gate. ModularCA is a headless server
     // product, so the Kestrel listener defaults to IPAddress.Any — operators reach the
@@ -1965,7 +1952,7 @@ else
                 try
                 {
                     var anchorDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .UseNpgsql(appConnStr)
                         .Options;
                     using var anchorDb = new ModularCADbContext(anchorDbOptions);
 
@@ -2049,7 +2036,7 @@ else
             if (!isSetupMode && !string.IsNullOrEmpty(estSubdomainFqdn))
             {
                 var estDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                    .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                    .UseNpgsql(appConnStr)
                     .Options;
 
                 estTrustAnchors = new ModularCA.Core.Services.Est.EstTrustAnchorCache(
@@ -2132,7 +2119,7 @@ else
                 try
                 {
                     var cmpDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .UseNpgsql(appConnStr)
                         .Options;
                     using var cmpDb = new ModularCADbContext(cmpDbOptions);
                     var unsignedCmpCas = (from cfg in cmpDb.CaProtocolConfigs.AsNoTracking()

@@ -796,22 +796,36 @@ namespace ModularCA.Shared.Models.Config
     public class DbInstance
     {
         public string Host { get; set; } = "localhost";
-        public int Port { get; set; } = 3306;
+
+        /// <summary>
+        /// Server port. Defaults to PostgreSQL's 5432. A configuration still naming 3306 is
+        /// taken as evidence that it was written for MariaDB and is refused at startup by
+        /// <see cref="ModularCA.Shared.Utils.LegacyDatabaseGuard"/>.
+        /// </summary>
+        public int Port { get; set; } = 5432;
         public string Username { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
         public string Database { get; set; } = string.Empty;
 
         /// <summary>
-        /// TLS mode for the MySQL connection. Maps to <c>MySqlConnector.MySqlSslMode</c>.
-        /// Valid values: <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c>, <c>"VerifyCA"</c>,
-        /// <c>"VerifyFull"</c>. Default is <c>"Required"</c> to protect the
-        /// confidentiality and integrity of data in transit between ModularCA and
-        /// the backing MySQL server. Downgrading to <c>"Preferred"</c> or <c>"None"</c> allows
-        /// silent fallback to unencrypted transport; use <c>"VerifyCA"</c> or <c>"VerifyFull"</c> to additionally validate the
-        /// server certificate chain. On parse failure the runtime clamps back to
-        /// <c>MySqlSslMode.Required</c>.
+        /// TLS mode for the PostgreSQL connection. Translated to <c>Npgsql.SslMode</c> by
+        /// <see cref="ModularCA.Shared.Utils.PostgresConnection.ParseSslMode"/>.
+        /// <para>
+        /// Both vocabularies are accepted so existing configuration keeps working: the MySQL
+        /// spellings <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c> and the Npgsql
+        /// spellings <c>"Disable"</c>, <c>"Allow"</c>, <c>"Prefer"</c>, <c>"Require"</c>, plus
+        /// <c>"VerifyCA"</c> and <c>"VerifyFull"</c>, which mean the same thing in both.
+        /// </para>
+        /// <para>
+        /// Default is <c>"Require"</c> to protect the confidentiality and integrity of data in
+        /// transit between ModularCA and the backing server. Downgrading to <c>"Prefer"</c> or
+        /// <c>"Disable"</c> allows silent fallback to unencrypted transport; use
+        /// <c>"VerifyCA"</c> or <c>"VerifyFull"</c> to additionally validate the server
+        /// certificate chain. On parse failure the runtime clamps back to
+        /// <c>SslMode.Require</c> rather than to anything weaker.
+        /// </para>
         /// </summary>
-        public string SslMode { get; set; } = "Required";
+        public string SslMode { get; set; } = "Require";
     }
 
     public class JwtConfig

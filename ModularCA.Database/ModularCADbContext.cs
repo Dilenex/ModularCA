@@ -20,6 +20,14 @@ namespace ModularCA.Database;
 /// </summary>
 public class ModularCADbContext : DbContext
 {
+    /// <summary>
+    /// Name of the shadow property that carries the PostgreSQL <c>xmin</c> optimistic-concurrency
+    /// token. Shadow, because no entity needs to see it: EF reads it back after every write and
+    /// compares it on the next one, which is the whole of the contract. Named rather than
+    /// repeated as a literal so the seven registrations below cannot drift apart.
+    /// </summary>
+    private const string XminShadowProperty = "xmin";
+
     // Never null — the single-arg constructor populates this with UnresolvedTenantContext.Instance.
     private readonly ITenantContext _tenantContext;
 
@@ -233,6 +241,25 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public DbSet<SignerAuditEntity> SignerAudit { get; set; }
 
+    /// <summary>
+    /// Applies the model-wide conventions that are not entity-specific.
+    /// <para>
+    /// Every <see cref="DateTime"/> and <see cref="DateTime"/>? property is routed through
+    /// <see cref="UtcDateTimeConverter"/>. PostgreSQL columns are <c>timestamp with time
+    /// zone</c>, and Npgsql rejects a value whose <see cref="DateTimeKind"/> is not UTC rather
+    /// than silently storing a local wall-clock reading the way MySQL's <c>datetime(6)</c> did.
+    /// Registering the conversion once here rather than per-property is what keeps that
+    /// guarantee true of properties added later.
+    /// </para>
+    /// </summary>
+    /// <param name="configurationBuilder">The convention builder EF Core supplies.</param>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<NullableUtcDateTimeConverter>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -297,12 +324,17 @@ public class ModularCADbContext : DbContext
         {
             c.HasIndex(c => new { c.SerialNumber, c.Issuer }).IsUnique();
 
-            // Prefix index. SubjectDN widened from 255 to 1024 so it can hold every DN the
-            // application will issue (see CertificateEntity.SubjectDnMaxLength), and InnoDB caps an
-            // index key at 3072 bytes — 768 characters under utf8mb4 — so the full column is no
-            // longer indexable. 255 characters is ample selectivity for the lookups that use this,
-            // which search for a subject rather than range over it.
-            c.HasIndex(c => c.SubjectDN).HasPrefixLength(255);
+            // Full-column index. This was a 255-character prefix index under MySQL, because
+            // SubjectDN was widened from 255 to 1024 (see CertificateEntity.SubjectDnMaxLength)
+            // and InnoDB caps an index key at 3072 bytes — 768 characters under utf8mb4 — which
+            // put the whole column out of reach.
+            //
+            // PostgreSQL has no prefix index, and does not need one here: its btree limit is
+            // roughly 2704 bytes per index entry, which a 1024-character DN fits inside for any
+            // DN this application will issue. The expression-index alternative,
+            // left("SubjectDN", 255), would only be used by a query written against that same
+            // expression, so it would silently stop serving the lookups this index exists for.
+            c.HasIndex(c => c.SubjectDN);
 
             // Index for CRL revoked-cert lookup by issuer FK.
             c.HasIndex(c => c.IssuerCertificateId);
@@ -980,33 +1012,41 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(c => c.ValidatedAt);
         });
 
-        // Concurrency tokens on the high-risk entities that get mutated
-        // by multi-step admin workflows. EF maps a `byte[] RowVersion` with IsRowVersion() to
-        // MySQL as a TIMESTAMP(6) stamped on every UPDATE, producing optimistic-concurrency
-        // semantics without requiring application-level counter maintenance. Controllers
-        // that mutate these entities should catch DbUpdateConcurrencyException and return
-        // 409 Conflict.
-        modelBuilder.Entity<CertificateAuthorityEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<UserEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CaGroupEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CertRequestEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CsrApprovalEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<SigningProfileEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<KeyCeremonyEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
+        // Concurrency tokens on the high-risk entities that get mutated by multi-step admin
+        // workflows. Controllers that mutate these entities catch DbUpdateConcurrencyException
+        // and return 409 Conflict.
+        //
+        // These used to be a `byte[] RowVersion` property marked IsRowVersion(), which the MySQL
+        // provider implemented as a TIMESTAMP(6) column it stamped on every UPDATE. PostgreSQL
+        // has no such column type and no such provider behaviour, but it does not need one: every
+        // row already carries a system column, `xmin`, holding the id of the transaction that
+        // last wrote it. Npgsql maps it through UseXminAsConcurrencyToken(), which gives exactly
+        // the same optimistic-concurrency semantics with no application-maintained counter, no
+        // schema column, and — because xmin is maintained by the storage engine rather than by a
+        // trigger or a provider convention — no way for a writer that bypasses EF to forget it.
+        // The now-unused `byte[] RowVersion` property has been removed from all seven entities;
+        // nothing outside this file ever read it.
+        //
+        // The mapping is a shadow `uint` property marked IsRowVersion(). Npgsql's model-
+        // finalizing convention recognises exactly that shape — uint, generated on add or
+        // update, concurrency token — and rewrites it onto the `xmin` system column of type
+        // `xid`; its migrations generator then excludes system columns, so nothing appears in
+        // the schema. (The older, more obvious `UseXminAsConcurrencyToken()` helper was removed
+        // in Npgsql 9; this is its replacement, not a workaround for it.)
+        //
+        // Guarded by provider because none of this is meaningful to the InMemory and SQLite
+        // providers the unit suite runs against, where a uint shadow property would become a
+        // real column rather than a system one.
+        if (Database.IsNpgsql())
+        {
+            modelBuilder.Entity<CertificateAuthorityEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<UserEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CaGroupEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CertRequestEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CsrApprovalEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<SigningProfileEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<KeyCeremonyEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+        }
 
         // Global query filters for tenant isolation +
         // soft-delete. The filter is evaluated against the scoped ITenantContext and,

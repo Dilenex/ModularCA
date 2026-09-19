@@ -31,7 +31,7 @@ interface ReviewProps {
     setupToken?: string;
     /**
      * Invoked once initialize succeeds so the parent wizard can
-     * scrub the cleartext root MySQL password and admin password from React state.
+     * scrub the cleartext database superuser password and admin password from React state.
      */
     onClearSecrets?: () => void;
 }

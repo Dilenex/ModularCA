@@ -26,6 +26,18 @@ namespace ModularCA.API.Controllers.v1;
 public class SetupController(ModularCADbContext db, IHostApplicationLifetime appLifetime, IServiceProvider serviceProvider) : ControllerBase
 {
     /// <summary>
+    /// Key for the cluster-wide advisory lock that serializes bootstrap across nodes.
+    /// <para>
+    /// PostgreSQL advisory locks are keyed by a 64-bit integer, not by a name, so this is a
+    /// fixed arbitrary constant standing in for the string <c>modularca_bootstrap</c> the MySQL
+    /// GET_LOCK call used. It only has to be stable and unlikely to collide with a key chosen by
+    /// anything else sharing the cluster; it is written out literally rather than computed from
+    /// a hash so that an operator reading <c>pg_locks</c> can match it against this line.
+    /// </para>
+    /// </summary>
+    private const long BootstrapAdvisoryLockKey = 0x4D43_4142_4F4F_5401L;
+
+    /// <summary>
     /// Process-wide serialization gate for <see cref="Initialize"/>.
     /// A second concurrent caller returns HTTP 409 Conflict immediately so two parallel
     /// POST bodies cannot both execute <c>BootstrapService.RunFromSetupRequest</c> and
@@ -351,14 +363,12 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         try
         {
-            var rootBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-            {
-                Server = setupDb.SqlRoot.Host,
-                Port = (uint)setupDb.SqlRoot.Port,
-                UserID = setupDb.SqlRoot.Username,
-                Password = setupDb.SqlRoot.Password
-            };
-            using var conn = new MySqlConnector.MySqlConnection(rootBuilder.ConnectionString);
+            // Connects to the maintenance database: PostgreSQL will not drop a database from a
+            // session attached to it, and a connection has to name some database.
+            var rootConnStr = PostgresConnection.BuildMaintenance(
+                setupDb.SqlRoot.Host, setupDb.SqlRoot.Port, setupDb.SqlRoot.Username,
+                setupDb.SqlRoot.Password, setupDb.SqlRoot.SslMode);
+            using var conn = new Npgsql.NpgsqlConnection(rootConnStr);
             conn.Open();
 
             var dropped = new List<string>();
@@ -367,7 +377,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 if (string.IsNullOrWhiteSpace(schema))
                     continue;
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = $"DROP DATABASE IF EXISTS `{schema.Replace("`", "``")}`";
+                // WITH (FORCE) terminates sessions still attached to the database. Without it a
+                // single leftover connection from the failed install this recovery flow exists
+                // to clean up turns the drop into an error the operator cannot act on.
+                cmd.CommandText = $"DROP DATABASE IF EXISTS {PostgresConnection.QuoteIdentifier(schema)} WITH (FORCE)";
                 cmd.ExecuteNonQuery();
                 dropped.Add(schema);
             }
@@ -395,7 +408,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// </summary>
     /// <summary>
     /// Checks whether the database has CAs from a previous installation (stale state).
-    /// Uses a raw MySqlConnection to avoid EF Core logging stack traces on connection failure.
+    /// Uses a raw NpgsqlConnection to avoid EF Core logging stack traces on connection failure.
     /// </summary>
     private bool HasStaleDatabaseState()
     {
@@ -409,17 +422,23 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         try
         {
-            using var conn = new MySqlConnector.MySqlConnection(connStr);
+            using var conn = new Npgsql.NpgsqlConnection(connStr);
             conn.Open();
 
+            // to_regclass returns null when the table is absent — the PostgreSQL equivalent of
+            // the information_schema count this replaces, and it needs no database name because
+            // a session only ever sees one database. The identifier is quoted because EF created
+            // the table with that casing and PostgreSQL lower-cases unquoted names.
             using var tableCheck = conn.CreateCommand();
-            tableCheck.CommandText = "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'CertificateAuthorities'";
-            if (Convert.ToInt64(tableCheck.ExecuteScalar()) == 0)
+            tableCheck.CommandText = """SELECT to_regclass('public."CertificateAuthorities"')""";
+            if (tableCheck.ExecuteScalar() is null or DBNull)
                 return false;
 
+            // IsDeleted is a real boolean here rather than MySQL's tinyint(1), so the test is
+            // against FALSE rather than against 0.
             using var caCheck = conn.CreateCommand();
-            caCheck.CommandText = "SELECT EXISTS(SELECT 1 FROM CertificateAuthorities WHERE IsDeleted = 0 LIMIT 1)";
-            return Convert.ToInt64(caCheck.ExecuteScalar()) > 0;
+            caCheck.CommandText = """SELECT EXISTS(SELECT 1 FROM public."CertificateAuthorities" WHERE "IsDeleted" = FALSE)""";
+            return caCheck.ExecuteScalar() is bool found && found;
         }
         catch
         {
@@ -432,9 +451,9 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// Returns whether the connection succeeded and if the database already exists.
     /// Gate behind <see cref="IsConfigured"/> so that once setup has
     /// completed, anonymous callers cannot use this endpoint as an SSRF / credential-stuffing
-    /// oracle against arbitrary MySQL hosts. A middleware in the pipeline provides a
+    /// oracle against arbitrary PostgreSQL hosts. A middleware in the pipeline provides a
     /// second layer of defense against forgotten per-action checks.
-    /// Connection string is now built via <see cref="MySqlConnector.MySqlConnectionStringBuilder"/>
+    /// Connection string is built via <see cref="ModularCA.Shared.Utils.PostgresConnection"/>
     /// with typed property assignment, host/username/port are validated before use, and the
     /// exception message is never returned to the unauthenticated caller.
     /// </summary>
@@ -464,28 +483,22 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         try
         {
-            // Honor the operator-selected TLS mode when probing MySQL.
-            // Unparseable values clamp back to Required so a typo can't silently disable TLS.
-            var sslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(
-                dbConfig.SslMode, ignoreCase: true, out var _ssl)
-                ? _ssl : MySqlConnector.MySqlSslMode.Required;
-            var builder = new MySqlConnector.MySqlConnectionStringBuilder
+            // Honor the operator-selected TLS mode when probing the server.
+            // Unparseable values clamp back to Require so a typo can't silently disable TLS.
+            var builder = new Npgsql.NpgsqlConnectionStringBuilder(
+                PostgresConnection.BuildMaintenance(
+                    dbConfig.RootHost, dbConfig.RootPort, dbConfig.RootUsername,
+                    dbConfig.RootPassword ?? string.Empty, dbConfig.SslMode))
             {
-                Server = dbConfig.RootHost,
-                Port = (uint)dbConfig.RootPort,
-                UserID = dbConfig.RootUsername,
-                Password = dbConfig.RootPassword ?? string.Empty,
-                SslMode = sslMode,
-                ConnectionTimeout = 5,
+                Timeout = 5,
             };
 
-            using var conn = new MySqlConnector.MySqlConnection(builder.ConnectionString);
+            using var conn = new Npgsql.NpgsqlConnection(builder.ConnectionString);
             conn.Open();
 
             // Check if the app database already exists
-            using var cmd = new MySqlConnector.MySqlCommand(
-                "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = @dbName", conn);
-            cmd.Parameters.AddWithValue("@dbName", dbConfig.AppDatabase);
+            using var cmd = new Npgsql.NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @dbName", conn);
+            cmd.Parameters.AddWithValue("dbName", dbConfig.AppDatabase);
             var exists = cmd.ExecuteScalar() != null;
 
             Log.Warning(
@@ -628,12 +641,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         var setupDbPath = Path.Combine(AppContext.BaseDirectory, "config", "setup-database.yaml");
 
-        // Normalize the selected TLS mode before persisting so
-        // downstream consumers never have to re-validate. Unparseable values clamp
-        // back to Required so a typo can't silently disable TLS.
-        var selectedSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(
-            dbConfig.SslMode, ignoreCase: true, out var _persistSsl)
-            ? _persistSsl.ToString() : MySqlConnector.MySqlSslMode.Required.ToString();
+        // Normalize the selected TLS mode before persisting so downstream consumers never have
+        // to re-validate. Unparseable values clamp back to Require so a typo can't silently
+        // disable TLS.
+        var selectedSslMode = PostgresConnection.ParseSslMode(dbConfig.SslMode).ToString();
 
         var config = new YamlSetupDatabaseLoader.SetupDatabaseConfig
         {
@@ -808,31 +819,39 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 }
             }
 
-            // Defense-in-depth: take a MySQL named advisory lock so that
-            // two API instances behind a load balancer with a shared DB cannot both run the
-            // bootstrap concurrently. GET_LOCK returns 1 on acquire, 0 on timeout, NULL on error.
-            // We try against the app DB using the operator-supplied root creds; if the DB does
-            // not yet exist (first run), the lock acquisition is skipped (safe — the
-            // _initializeLock semaphore still serializes within the current process).
-            MySqlConnector.MySqlConnection? advisoryConn = null;
+            // Defense-in-depth: take a PostgreSQL session advisory lock so that two API
+            // instances behind a load balancer with a shared database cannot both run the
+            // bootstrap concurrently. pg_try_advisory_lock returns true on acquire and false
+            // when someone else holds it; it never blocks, which is what the MySQL
+            // GET_LOCK(..., 0) timeout of zero was emulating.
+            //
+            // PostgreSQL advisory locks are keyed by a number rather than a name, so the old
+            // 'modularca_bootstrap' string is hashed into one. The lock is cluster-wide and
+            // session-scoped: it is released when the connection closes, which is what makes
+            // the best-effort release in the finally block a tidiness measure rather than a
+            // correctness requirement.
+            //
+            // Taken on the maintenance database, because on a first run the application
+            // database does not exist yet — under MySQL this path simply failed and fell
+            // through to the in-process gate.
+            Npgsql.NpgsqlConnection? advisoryConn = null;
             try
             {
                 try
                 {
-                    var advisoryBuilder = new MySqlConnector.MySqlConnectionStringBuilder
+                    var advisoryBuilder = new Npgsql.NpgsqlConnectionStringBuilder(
+                        PostgresConnection.BuildMaintenance(
+                            request.Database.RootHost, request.Database.RootPort,
+                            request.Database.RootUsername, request.Database.RootPassword ?? string.Empty,
+                            request.Database.SslMode))
                     {
-                        Server = request.Database.RootHost,
-                        Port = (uint)request.Database.RootPort,
-                        UserID = request.Database.RootUsername,
-                        Password = request.Database.RootPassword ?? string.Empty,
-                        ConnectionTimeout = 5,
+                        Timeout = 5,
                     };
-                    advisoryConn = new MySqlConnector.MySqlConnection(advisoryBuilder.ConnectionString);
+                    advisoryConn = new Npgsql.NpgsqlConnection(advisoryBuilder.ConnectionString);
                     advisoryConn.Open();
-                    using var lockCmd = new MySqlConnector.MySqlCommand(
-                        "SELECT GET_LOCK('modularca_bootstrap', 0)", advisoryConn);
-                    var lockResult = lockCmd.ExecuteScalar();
-                    var lockAcquired = lockResult != null && lockResult != DBNull.Value && Convert.ToInt32(lockResult) == 1;
+                    using var lockCmd = new Npgsql.NpgsqlCommand(
+                        $"SELECT pg_try_advisory_lock({BootstrapAdvisoryLockKey})", advisoryConn);
+                    var lockAcquired = lockCmd.ExecuteScalar() is bool acquired && acquired;
                     if (!lockAcquired)
                     {
                         return Conflict(new { error = "Another ModularCA instance is currently running bootstrap. Retry in a few seconds." });
@@ -840,9 +859,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 }
                 catch (Exception lockEx)
                 {
-                    // GET_LOCK unavailable (MySQL unreachable pre-setup or insufficient privs).
-                    // The in-process semaphore still blocks multi-caller races on this node.
-                    Log.Warning(lockEx, "Setup initialize: MySQL advisory lock could not be acquired — falling back to in-process gate only");
+                    // Advisory lock unavailable (server unreachable pre-setup or insufficient
+                    // privileges). The in-process semaphore still blocks multi-caller races on
+                    // this node.
+                    Log.Warning(lockEx, "Setup initialize: PostgreSQL advisory lock could not be acquired — falling back to in-process gate only");
                 }
 
                 var result = BootstrapService.RunFromSetupRequest(request, serviceProvider);
@@ -891,8 +911,8 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 {
                     try
                     {
-                        using var releaseCmd = new MySqlConnector.MySqlCommand(
-                            "SELECT RELEASE_LOCK('modularca_bootstrap')", advisoryConn);
+                        using var releaseCmd = new Npgsql.NpgsqlCommand(
+                            $"SELECT pg_advisory_unlock({BootstrapAdvisoryLockKey})", advisoryConn);
                         releaseCmd.ExecuteScalar();
                     }
                     catch { /* best-effort — the session-scoped lock drops on close anyway */ }
@@ -918,7 +938,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// </summary>
     /// <summary>
     /// Checks whether the system has been fully configured (config.yaml exists and at
-    /// least one CA is present). Uses a raw MySqlConnection to avoid EF Core logging
+    /// least one CA is present). Uses a raw NpgsqlConnection to avoid EF Core logging
     /// full stack traces when the database is unreachable.
     /// </summary>
     private bool IsConfigured()
@@ -933,17 +953,23 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 
         try
         {
-            using var conn = new MySqlConnector.MySqlConnection(connStr);
+            using var conn = new Npgsql.NpgsqlConnection(connStr);
             conn.Open();
 
+            // to_regclass returns null when the table is absent — the PostgreSQL equivalent of
+            // the information_schema count this replaces, and it needs no database name because
+            // a session only ever sees one database. The identifier is quoted because EF created
+            // the table with that casing and PostgreSQL lower-cases unquoted names.
             using var tableCheck = conn.CreateCommand();
-            tableCheck.CommandText = "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'CertificateAuthorities'";
-            if (Convert.ToInt64(tableCheck.ExecuteScalar()) == 0)
+            tableCheck.CommandText = """SELECT to_regclass('public."CertificateAuthorities"')""";
+            if (tableCheck.ExecuteScalar() is null or DBNull)
                 return false;
 
+            // IsDeleted is a real boolean here rather than MySQL's tinyint(1), so the test is
+            // against FALSE rather than against 0.
             using var caCheck = conn.CreateCommand();
-            caCheck.CommandText = "SELECT EXISTS(SELECT 1 FROM CertificateAuthorities WHERE IsDeleted = 0 LIMIT 1)";
-            return Convert.ToInt64(caCheck.ExecuteScalar()) > 0;
+            caCheck.CommandText = """SELECT EXISTS(SELECT 1 FROM public."CertificateAuthorities" WHERE "IsDeleted" = FALSE)""";
+            return caCheck.ExecuteScalar() is bool found && found;
         }
         catch (Exception ex)
         {
@@ -971,7 +997,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
 /// Shape-validation helpers for the unauthenticated setup wizard.
 /// These are deliberately restrictive: hosts must be valid DNS names or IP addresses,
 /// usernames are constrained to <c>[A-Za-z0-9._-]{1,64}</c>, and all inputs are rejected
-/// if they contain control characters. The typed <c>MySqlConnectionStringBuilder</c>
+/// if they contain control characters. The typed <c>NpgsqlConnectionStringBuilder</c>
 /// escapes reserved characters, but validating shape up-front blocks SSRF tricks and
 /// produces uniform error responses that do not leak driver internals.
 /// </summary>

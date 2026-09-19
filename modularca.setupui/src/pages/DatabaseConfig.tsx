@@ -10,7 +10,7 @@ export interface DatabaseData {
     appUsername: string;
     auditDatabase: string;
     auditUsername: string;
-    /** MySQL TLS mode. Round-trips to setup-database.yaml then to db.yaml. */
+    /** PostgreSQL TLS mode. Round-trips to setup-database.yaml then to db.yaml. */
     sslMode: string;
     /**
      * Discard any existing audit history instead of preserving it. Defaults to false: audit
@@ -197,7 +197,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                 <p className="text-gray-600 dark:text-gray-400 mt-1">
                     {staleDb
                         ? 'An existing database was detected from a previous installation.'
-                        : 'No database configuration was found. Enter your MySQL/MariaDB root credentials.'}
+                        : 'No database configuration was found. Enter your PostgreSQL superuser credentials.'}
                 </p>
             </div>
 
@@ -292,7 +292,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             <label className={labelClass}>Port</label>
                             <input type="text" inputMode="numeric" value={data.rootPort}
                                 onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, rootPort: v === '' ? ('' as any) : parseInt(v) }); }}
-                                onBlur={() => { if (!data.rootPort) onChange({ ...data, rootPort: 3306 }); }}
+                                onBlur={() => { if (!data.rootPort) onChange({ ...data, rootPort: 5432 }); }}
                                 className={inputClass} />
                         </div>
                         <div>
@@ -318,15 +318,15 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             onChange={e => onChange({ ...data, sslMode: e.target.value })}
                             className={inputClass}
                         >
-                            <option value="Required">Required (recommended)</option>
-                            <option value="Preferred">Preferred (TLS if available, plaintext fallback)</option>
+                            <option value="Require">Require (recommended)</option>
+                            <option value="Prefer">Prefer (TLS if available, plaintext fallback)</option>
                             <option value="VerifyCA">VerifyCA (TLS + CA chain validation)</option>
                             <option value="VerifyFull">VerifyFull (TLS + chain + hostname)</option>
-                            <option value="None">None (unencrypted — not recommended)</option>
+                            <option value="Disable">Disable (unencrypted — not recommended)</option>
                         </select>
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            FISMA SC-8(1) / SC-28 require <code>Required</code> or stronger. Choose
-                            <code> None</code> only on a trusted loopback where MySQL is not configured for TLS.
+                            FISMA SC-8(1) / SC-28 require <code>Require</code> or stronger. Choose
+                            <code> Disable</code> only on a trusted loopback where PostgreSQL is not configured for TLS.
                         </p>
                     </div>
 

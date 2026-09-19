@@ -80,10 +80,6 @@ namespace ModularCA.Shared.Entities
         /// <summary>Roles assigned directly to this user.</summary>
         public virtual ICollection<RoleAssignmentEntity> RoleAssignments { get; set; } = new List<RoleAssignmentEntity>();
 
-        /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-        [Timestamp]
-        public byte[]? RowVersion { get; set; }
-
         /// <summary>
         /// Soft-delete flag. When true, the user is hidden by
         /// the global query filter; existing tokens still invalidate via the security

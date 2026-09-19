@@ -17,6 +17,25 @@ public class AuditDbContext(DbContextOptions<AuditDbContext> options) : DbContex
     public DbSet<AuditNetworkEntity> AuditNetwork { get; set; }
     public DbSet<CertComplianceFindingEntity> CertComplianceFindings { get; set; }
 
+    /// <summary>
+    /// Applies the model-wide conventions that are not entity-specific.
+    /// <para>
+    /// Every <see cref="DateTime"/> and <see cref="DateTime"/>? property is routed through
+    /// <see cref="UtcDateTimeConverter"/>. PostgreSQL columns are <c>timestamp with time
+    /// zone</c>, and Npgsql rejects a value whose <see cref="DateTimeKind"/> is not UTC rather
+    /// than silently storing a local wall-clock reading the way MySQL's <c>datetime(6)</c> did.
+    /// Registering the conversion once here rather than per-property is what keeps that
+    /// guarantee true of properties added later.
+    /// </para>
+    /// </summary>
+    /// <param name="configurationBuilder">The convention builder EF Core supplies.</param>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<NullableUtcDateTimeConverter>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

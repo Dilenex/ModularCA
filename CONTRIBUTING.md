@@ -38,7 +38,7 @@ single-page apps:
 
 - The .NET SDK targeted by the projects (see the `*.csproj` `TargetFramework`).
 - Node.js LTS + npm (for the frontends).
-- A MySQL-compatible database for running the API locally.
+- A PostgreSQL 14+ server for running the API locally.
 
 ## Building
 

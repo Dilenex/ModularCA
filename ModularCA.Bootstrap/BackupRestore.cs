@@ -5,7 +5,7 @@ using ModularCA.Bootstrap.Crypto;
 using ModularCA.Core.Helpers;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
+using Npgsql;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -29,7 +29,7 @@ internal static class BackupSecretDenylist
         "backup-password.key",   // StoredPassword-mode derived KEK
         "keystore.yaml",         // plaintext secondary keystore passphrases
         "db.yaml",               // app/audit DB credentials (now sourced from secret manager)
-        "setup-database.yaml",   // root MySQL credentials used during bootstrap
+        "setup-database.yaml",   // superuser database credentials used during bootstrap
         "api-tls.pfx",           // Web TLS PFX (private key on disk)
     };
 
@@ -53,6 +53,32 @@ internal static class BackupSecretDenylist
 /// </remarks>
 public static class BackupRestore
 {
+    /// <summary>
+    /// Archive member holding the application database, produced by <c>pg_dump --format=custom</c>.
+    /// Archives taken before the PostgreSQL move carry <c>db-app.sql</c> instead; see
+    /// <see cref="IsPrePostgresArchive"/>.
+    /// </summary>
+    private const string AppDumpFileName = "db-app.dump";
+
+    /// <summary>Archive member holding the audit database, in the same format.</summary>
+    private const string AuditDumpFileName = "db-audit.dump";
+
+    /// <summary>
+    /// True when an extracted archive is one taken from a MySQL/MariaDB installation: it holds
+    /// <c>db-app.sql</c>, a mysqldump script, and no <c>db-app.dump</c>.
+    /// <para>
+    /// This exists so a restore fails by name rather than by omission. Without it the restore
+    /// would look for a file that is not there, skip the database entirely, and go on to report
+    /// success — leaving an operator who believed they had a working backup with an empty
+    /// database and no error to explain it.
+    /// </para>
+    /// </summary>
+    /// <param name="restoreDir">Directory the archive was extracted into.</param>
+    /// <returns>True when the archive predates the PostgreSQL move.</returns>
+    private static bool IsPrePostgresArchive(string restoreDir) =>
+        File.Exists(Path.Combine(restoreDir, "db-app.sql"))
+        && !File.Exists(Path.Combine(restoreDir, AppDumpFileName));
+
     /// <summary>The caller a backup names at the signer.</summary>
     private const string BackupCaller = "backup";
 
@@ -105,35 +131,57 @@ public static class BackupRestore
                 BootstrapDatabaseSetup.ValidateIdentifier(config.DB.Audit.Database, "audit database name");
 
             // 1. Database dumps
+            //
+            // pg_dump in its custom format, not a plain SQL script. The custom format is
+            // compressed, carries its own table of contents, and is what pg_restore needs in
+            // order to restore inside a single transaction — so a restore that fails halfway
+            // leaves the database as it was rather than half-replaced. The archive member is
+            // therefore db-app.dump, not db-app.sql; see RestoreAsync for how an archive taken
+            // before this change is recognised and refused rather than silently skipped.
             Console.Write("  Dumping app database...");
-            var appDumpPath = Path.Combine(backupDir, "db-app.sql");
-            var dumpFlags = "--single-transaction --skip-lock-tables";
-            var appDefaultsFile = WriteMysqlDefaultsFile(config.DB.App.Host, config.DB.App.Port, config.DB.App.Username, config.DB.App.Password);
+            var appDumpPath = Path.Combine(backupDir, AppDumpFileName);
+            var appPassFile = WritePgPassFile(config.DB.App.Host, config.DB.App.Port, config.DB.App.Database, config.DB.App.Username, config.DB.App.Password);
             try
             {
-                var (appExit, _, appErr) = await ProcessRunner.RunAsync("mysqldump",
-                    $"--defaults-extra-file=\"{appDefaultsFile}\" {dumpFlags} --result-file=\"{appDumpPath}\" {config.DB.App.Database}", 120000);
+                var (appExit, _, appErr) = await RunPostgresToolAsync("pg_dump", new[]
+                {
+                    "--host", config.DB.App.Host,
+                    "--port", config.DB.App.Port.ToString(),
+                    "--username", config.DB.App.Username,
+                    "--no-password",
+                    "--format=custom",
+                    "--file", appDumpPath,
+                    config.DB.App.Database,
+                }, appPassFile, 120000);
                 Console.WriteLine(appExit == 0 ? " ✓" : $" ⚠ (exit {appExit}: {appErr})");
             }
             finally
             {
-                try { File.Delete(appDefaultsFile); } catch { }
+                try { File.Delete(appPassFile); } catch { }
             }
 
             if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
             {
                 Console.Write("  Dumping audit database...");
-                var auditDumpPath = Path.Combine(backupDir, "db-audit.sql");
-                var auditDefaultsFile = WriteMysqlDefaultsFile(config.DB.Audit.Host, config.DB.Audit.Port, config.DB.Audit.Username, config.DB.Audit.Password);
+                var auditDumpPath = Path.Combine(backupDir, AuditDumpFileName);
+                var auditPassFile = WritePgPassFile(config.DB.Audit.Host, config.DB.Audit.Port, config.DB.Audit.Database, config.DB.Audit.Username, config.DB.Audit.Password);
                 try
                 {
-                    var auditConnStr = $"--defaults-extra-file=\"{auditDefaultsFile}\" {dumpFlags} --result-file=\"{auditDumpPath}\" {config.DB.Audit.Database}";
-                    var (auditExit, _, _) = await ProcessRunner.RunAsync("mysqldump", auditConnStr, 120000);
-                    Console.WriteLine(auditExit == 0 ? " ✓" : $" ⚠ (mysqldump exit {auditExit})");
+                    var (auditExit, _, auditErr) = await RunPostgresToolAsync("pg_dump", new[]
+                    {
+                        "--host", config.DB.Audit.Host,
+                        "--port", config.DB.Audit.Port.ToString(),
+                        "--username", config.DB.Audit.Username,
+                        "--no-password",
+                        "--format=custom",
+                        "--file", auditDumpPath,
+                        config.DB.Audit.Database,
+                    }, auditPassFile, 120000);
+                    Console.WriteLine(auditExit == 0 ? " ✓" : $" ⚠ (pg_dump exit {auditExit}: {auditErr})");
                 }
                 finally
                 {
-                    try { File.Delete(auditDefaultsFile); } catch { }
+                    try { File.Delete(auditPassFile); } catch { }
                 }
             }
 
@@ -619,36 +667,56 @@ public static class BackupRestore
             if (!string.IsNullOrWhiteSpace(backupConfig.DB.Audit.Database))
                 BootstrapDatabaseSetup.ValidateIdentifier(backupConfig.DB.Audit.Database, "audit database name");
 
-            // 1. Restore databases
-            var appDump = Path.Combine(restoreDir, "db-app.sql");
+            // 1. Restore databases.
+            //
+            // An archive taken before the PostgreSQL move contains db-app.sql: a mysqldump
+            // script, full of backticks and ENGINE=InnoDB, that no PostgreSQL tool can read.
+            // Without this check the restore would find no db-app.dump, restore nothing, and
+            // report success while leaving the operator with an empty database — which is the
+            // worst possible outcome for a restore. Refusing by name is the whole point.
+            if (IsPrePostgresArchive(restoreDir))
+            {
+                Console.WriteLine("❌ This archive was taken from a MySQL/MariaDB installation (it contains db-app.sql).");
+                Console.WriteLine("   PostgreSQL cannot read a mysqldump script, so there is nothing this build can restore from it.");
+                Console.WriteLine();
+                Console.WriteLine("   To recover data from it: restore it with a 0.3.0 build onto MariaDB, then run the");
+                Console.WriteLine("   migration helper against that database. See docs/architecture/postgresql-migration.md.");
+                return 1;
+            }
+
+            var appDump = Path.Combine(restoreDir, AppDumpFileName);
             if (File.Exists(appDump))
             {
                 Console.Write("  Restoring app database...");
-                var restoreAppDefaults = WriteMysqlDefaultsFile(backupConfig.DB.App.Host, backupConfig.DB.App.Port, backupConfig.DB.App.Username, backupConfig.DB.App.Password);
+                var restoreAppPass = WritePgPassFile(backupConfig.DB.App.Host, backupConfig.DB.App.Port, backupConfig.DB.App.Database, backupConfig.DB.App.Username, backupConfig.DB.App.Password);
                 try
                 {
-                    var (exit, err) = await RestoreSqlFileAsync(restoreAppDefaults, backupConfig.DB.App.Database, appDump);
+                    var (exit, err) = await RestoreDumpFileAsync(
+                        restoreAppPass, backupConfig.DB.App.Host, backupConfig.DB.App.Port,
+                        backupConfig.DB.App.Username, backupConfig.DB.App.Database, appDump);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
                 {
-                    try { File.Delete(restoreAppDefaults); } catch { }
+                    try { File.Delete(restoreAppPass); } catch { }
                 }
             }
 
-            var auditDump = Path.Combine(restoreDir, "db-audit.sql");
+            var auditDump = Path.Combine(restoreDir, AuditDumpFileName);
             if (File.Exists(auditDump))
             {
                 Console.Write("  Restoring audit database...");
-                var restoreAuditDefaults = WriteMysqlDefaultsFile(backupConfig.DB.Audit.Host, backupConfig.DB.Audit.Port, backupConfig.DB.Audit.Username, backupConfig.DB.Audit.Password);
+                var restoreAuditPass = WritePgPassFile(backupConfig.DB.Audit.Host, backupConfig.DB.Audit.Port, backupConfig.DB.Audit.Database, backupConfig.DB.Audit.Username, backupConfig.DB.Audit.Password);
                 try
                 {
-                    var (exit, err) = await RestoreSqlFileAsync(restoreAuditDefaults, backupConfig.DB.Audit.Database, auditDump);
+                    var (exit, err) = await RestoreDumpFileAsync(
+                        restoreAuditPass, backupConfig.DB.Audit.Host, backupConfig.DB.Audit.Port,
+                        backupConfig.DB.Audit.Username, backupConfig.DB.Audit.Database, auditDump);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
                 {
-                    try { File.Delete(restoreAuditDefaults); } catch { }
+                    try { File.Delete(restoreAuditPass); } catch { }
                 }
             }
 
@@ -757,23 +825,14 @@ public static class BackupRestore
         var migrationIds = new List<string>();
         try
         {
-            // Reuse the app SslMode setting for the information_schema probe.
-            var schemaSslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _schemaSsl)
-                ? _schemaSsl : MySqlSslMode.Required;
-            var schemaConnBuilder = new MySqlConnectionStringBuilder
-            {
-                Server = config.DB.App.Host,
-                Port = (uint)config.DB.App.Port,
-                UserID = config.DB.App.Username,
-                Password = config.DB.App.Password,
-                Database = "information_schema",
-                SslMode = schemaSslMode
-            };
-            var schemaConnStr = schemaConnBuilder.ConnectionString;
-            using var schemaConn = new MySqlConnection(schemaConnStr);
+            // MySQL exposed information_schema as a database you could connect to and then
+            // filter by TABLE_SCHEMA. PostgreSQL scopes a session to one database and pg_tables
+            // already shows only that database, so the probe connects to the application
+            // database itself and filters by schema name instead.
+            using var schemaConn = new NpgsqlConnection(AppConnectionString(config));
             await schemaConn.OpenAsync();
-            using var listCmd = new MySqlCommand("SELECT TABLE_NAME FROM TABLES WHERE TABLE_SCHEMA = @schema ORDER BY TABLE_NAME", schemaConn);
-            listCmd.Parameters.AddWithValue("@schema", config.DB.App.Database);
+            using var listCmd = new NpgsqlCommand(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename", schemaConn);
             using var reader = await listCmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
                 tableNames.Add(reader.GetString(0));
@@ -789,21 +848,15 @@ public static class BackupRestore
         {
             try
             {
-                // Honor the configured SslMode for the __EFMigrationsHistory probe.
-                var appSslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _appSsl)
-                    ? _appSsl : MySqlSslMode.Required;
-                var appConnBuilder = new MySqlConnectionStringBuilder
-                {
-                    Server = config.DB.App.Host,
-                    Port = (uint)config.DB.App.Port,
-                    UserID = config.DB.App.Username,
-                    Password = config.DB.App.Password,
-                    Database = config.DB.App.Database,
-                    SslMode = appSslMode
-                };
-                using var appConn = new MySqlConnection(appConnBuilder.ConnectionString);
+                // Honor the configured SslMode for the __EFMigrationsHistory probe. The table
+                // and column names are quoted: EF created them with that exact casing, and
+                // PostgreSQL folds an unquoted identifier to lower case.
+                using var appConn = new NpgsqlConnection(AppConnectionString(config));
                 await appConn.OpenAsync();
-                using var migCmd = new MySqlCommand("SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId", appConn);
+                using var migCmd = new NpgsqlCommand(
+                    """
+                    SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId"
+                    """, appConn);
                 using var migReader = await migCmd.ExecuteReaderAsync();
                 while (await migReader.ReadAsync())
                     migrationIds.Add(migReader.GetString(0));
@@ -882,78 +935,119 @@ public static class BackupRestore
     /// <returns>A tuple of (caCount, certCount, userCount).</returns>
     private static async Task<(int caCount, int certCount, int userCount)> CountEntitiesAsync(ModularCA.Shared.Models.Config.SystemConfig config)
     {
-        var countDefaultsFile = WriteMysqlDefaultsFile(config.DB.App.Host, config.DB.App.Port, config.DB.App.Username, config.DB.App.Password);
+        // This used to shell out to the `mysql` client and parse tab-separated stdout. There is
+        // no reason to launch a process to run one query: the driver is already referenced here,
+        // and going through it removes a client-binary dependency, a temporary credentials file
+        // and a text-parsing step from the backup path at once.
         try
         {
             BootstrapDatabaseSetup.ValidateIdentifier(config.DB.App.Database, "app database name");
-            var connArgs = $"--defaults-extra-file=\"{countDefaultsFile}\" -N -e \"SELECT (SELECT COUNT(*) FROM CertificateAuthorities), (SELECT COUNT(*) FROM Certificates), (SELECT COUNT(*) FROM Users);\" {config.DB.App.Database}";
-            var (exit, stdout, _) = await ProcessRunner.RunAsync("mysql", connArgs, 30000);
-            if (exit == 0 && !string.IsNullOrWhiteSpace(stdout))
-            {
-                var parts = stdout.Trim().Split('\t', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (parts.Length >= 3 &&
-                    int.TryParse(parts[0], out var ca) &&
-                    int.TryParse(parts[1], out var cert) &&
-                    int.TryParse(parts[2], out var user))
-                {
-                    return (ca, cert, user);
-                }
-            }
+            using var conn = new NpgsqlConnection(AppConnectionString(config));
+            await conn.OpenAsync();
+            using var cmd = new NpgsqlCommand(
+                """
+                SELECT (SELECT COUNT(*) FROM "CertificateAuthorities"),
+                       (SELECT COUNT(*) FROM "Certificates"),
+                       (SELECT COUNT(*) FROM "Users")
+                """, conn);
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+                return ((int)reader.GetInt64(0), (int)reader.GetInt64(1), (int)reader.GetInt64(2));
         }
         catch
         {
             // Best effort — return zeros if the database is unreachable
         }
-        finally
-        {
-            try { File.Delete(countDefaultsFile); } catch { }
-        }
         return (0, 0, 0);
     }
 
     /// <summary>
-    /// Restores a SQL dump file into a MySQL database by piping it via standard input,
-    /// avoiding shell redirection operators that could allow command injection.
+    /// Restores a pg_dump custom-format archive into a PostgreSQL database.
+    /// <para>
+    /// Every argument is passed as its own token, so nothing in a database or user name can
+    /// become a second argument, and the password never appears on the command line or in the
+    /// process environment — it is read by the tool from the pgpass file this is given.
+    /// </para>
+    /// <para>
+    /// The flags are what make a restore safe to repeat: <c>--clean --if-exists</c> drops what
+    /// it is about to replace without failing on what is not there, <c>--no-owner
+    /// --no-privileges</c> keep the dump's ownership and grants from overwriting the roles this
+    /// installation actually uses, and <c>--single-transaction</c> makes the whole restore
+    /// atomic — a failure halfway leaves the database exactly as it was. The MySQL version had
+    /// none of these properties: it piped a script into the client statement by statement.
+    /// </para>
     /// </summary>
-    /// <param name="defaultsFile">Path to the MySQL defaults-extra-file with credentials.</param>
+    /// <param name="pgPassFile">Path to the pgpass file holding the credentials.</param>
+    /// <param name="host">Server hostname.</param>
+    /// <param name="port">Server port.</param>
+    /// <param name="username">Role to connect as.</param>
     /// <param name="database">The target database name (must be pre-validated).</param>
-    /// <param name="sqlFile">Path to the SQL dump file to restore.</param>
+    /// <param name="dumpFile">Path to the custom-format archive to restore.</param>
     /// <returns>A tuple of (exitCode, errorOutput).</returns>
-    private static async Task<(int ExitCode, string Stderr)> RestoreSqlFileAsync(string defaultsFile, string database, string sqlFile)
+    private static async Task<(int ExitCode, string Stderr)> RestoreDumpFileAsync(
+        string pgPassFile, string host, int port, string username, string database, string dumpFile)
     {
-        using var process = new Process
+        var (exit, _, stderr) = await RunPostgresToolAsync("pg_restore", new[]
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "mysql",
-                Arguments = $"--defaults-extra-file=\"{defaultsFile}\" {database}",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
+            "--host", host,
+            "--port", port.ToString(),
+            "--username", username,
+            "--no-password",
+            "--dbname", database,
+            "--clean",
+            "--if-exists",
+            "--no-owner",
+            "--no-privileges",
+            "--single-transaction",
+            dumpFile,
+        }, pgPassFile, 120000);
+        return (exit, stderr);
+    }
 
+    /// <summary>
+    /// Runs one of the PostgreSQL command-line tools with the credentials supplied through a
+    /// pgpass file rather than through the command line or the environment.
+    /// <para>
+    /// <c>PGPASSFILE</c> is set on the child process only. Putting the password in
+    /// <c>PGPASSWORD</c> instead would be shorter and is what most examples do; it also makes
+    /// the password readable to anything that can list the process environment, which on a
+    /// machine holding CA private keys is not a trade worth making.
+    /// </para>
+    /// </summary>
+    /// <param name="tool">The executable name, e.g. <c>pg_dump</c> or <c>pg_restore</c>.</param>
+    /// <param name="arguments">Arguments, each passed as exactly one token.</param>
+    /// <param name="pgPassFile">Path to the pgpass file to point PGPASSFILE at.</param>
+    /// <param name="timeoutMs">How long to wait before killing the process.</param>
+    /// <returns>A tuple of (exitCode, stdout, stderr).</returns>
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunPostgresToolAsync(
+        string tool, IReadOnlyList<string> arguments, string pgPassFile, int timeoutMs)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = tool,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+        startInfo.Environment["PGPASSFILE"] = pgPassFile;
+
+        using var process = new Process { StartInfo = startInfo };
         process.Start();
 
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
-        await using (var fileStream = File.OpenRead(sqlFile))
-        {
-            await fileStream.CopyToAsync(process.StandardInput.BaseStream);
-        }
-        process.StandardInput.Close();
-
-        var completed = await Task.Run(() => process.WaitForExit(120000));
+        var completed = await Task.Run(() => process.WaitForExit(timeoutMs));
         if (!completed)
         {
             process.Kill(entireProcessTree: true);
-            return (-1, "Process timed out after 120 seconds");
+            return (-1, string.Empty, $"Process '{tool}' timed out after {timeoutMs}ms");
         }
 
-        var stderr = await stderrTask;
-        return (process.ExitCode, stderr);
+        return (process.ExitCode, await stdoutTask, await stderrTask);
     }
 
     /// <summary>
@@ -986,30 +1080,37 @@ public static class BackupRestore
     }
 
     /// <summary>
-    /// Creates a temporary MySQL defaults-extra-file containing connection credentials.
-    /// The caller must delete this file when done (use a finally block).
+    /// Creates a temporary PostgreSQL password file (<c>pgpass</c>) containing connection
+    /// credentials. The caller must delete this file when done (use a finally block).
     /// </summary>
     /// <remarks>
     /// On POSIX systems the file is opened with explicit
     /// <see cref="UnixFileMode.UserRead"/>+<see cref="UnixFileMode.UserWrite"/> at create time
     /// (no race window between create and chmod). On Windows the file is created in the
     /// per-user temp directory and immediately ACL-tightened via
-    /// <see cref="FileSecurityUtil.SetOwnerOnly"/>.
-    /// <para>
-    /// Password handling: my.cnf treats <c>#</c> as a comment delimiter even mid-line, so an
-    /// unquoted password containing <c>#</c> would be silently truncated at that character —
-    /// producing a confusing <c>Access denied (using password: YES)</c> when the truncated
-    /// fragment fails to authenticate. <see cref="PasswordUtil.Generate"/>'s symbol set
-    /// includes <c>#</c>, so this is a real (intermittent) failure mode. We wrap the password
-    /// in double quotes and escape <c>\</c> and <c>"</c> per MySQL's option-file parsing rules
-    /// so any character is preserved verbatim.
-    /// </para>
+    /// <see cref="FileSecurityUtil.SetOwnerOnly"/>. Both matter more here than they did for the
+    /// MySQL option file: libpq <em>refuses to read</em> a pgpass file that is group- or
+    /// world-readable, so a permissive file does not leak the password, it silently produces an
+    /// authentication failure instead.
     /// </remarks>
-    internal static string WriteMysqlDefaultsFile(string host, int port, string username, string password)
+    /// <remarks>
+    /// Escaping: a pgpass line is five colon-separated fields, and a literal colon or backslash
+    /// inside any field is escaped with a backslash. That is the whole grammar — there is no
+    /// quoting, and no comment character to be truncated at, which removes the <c>#</c> trap the
+    /// MySQL option file had. <see cref="PasswordUtil.Generate"/>'s symbol set can produce both
+    /// escaped characters, so this is a real failure mode rather than a theoretical one.
+    /// </remarks>
+    /// <param name="host">Server hostname, matched literally by libpq.</param>
+    /// <param name="port">Server port.</param>
+    /// <param name="database">Database name the entry applies to.</param>
+    /// <param name="username">Role the entry applies to.</param>
+    /// <param name="password">The password to supply.</param>
+    /// <returns>The path of the temporary file, which the caller must delete.</returns>
+    internal static string WritePgPassFile(string host, int port, string database, string username, string password)
     {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"modularca-mysql-{Guid.NewGuid():N}.cnf");
-        var escapedPassword = password.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        var content = $"[client]\nuser={username}\npassword=\"{escapedPassword}\"\nhost={host}\nport={port}\n";
+        var tempPath = Path.Combine(Path.GetTempPath(), $"modularca-pgpass-{Guid.NewGuid():N}.conf");
+        static string Field(string value) => value.Replace("\\", "\\\\").Replace(":", "\\:");
+        var content = $"{Field(host)}:{port}:{Field(database)}:{Field(username)}:{Field(password)}\n";
         var bytes = Encoding.UTF8.GetBytes(content);
 
         var options = new FileStreamOptions
@@ -1191,17 +1292,7 @@ public static class BackupRestore
     /// </summary>
     private static string AppConnectionString(ModularCA.Shared.Models.Config.SystemConfig config)
     {
-        var sslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var parsed)
-            ? parsed : MySqlSslMode.Required;
-        return new MySqlConnectionStringBuilder
-        {
-            Server = config.DB.App.Host,
-            Port = (uint)config.DB.App.Port,
-            UserID = config.DB.App.Username,
-            Password = config.DB.App.Password,
-            Database = config.DB.App.Database,
-            SslMode = sslMode,
-        }.ConnectionString;
+        return ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
     }
 
     /// <summary>

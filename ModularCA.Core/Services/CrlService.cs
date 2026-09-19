@@ -144,15 +144,15 @@ public class CrlService : ICrlService
         int revokedCount = 0;
 
         // Use RepeatableRead + row-level lock on the CrlConfigurations row
-        // so two concurrent generators can't issue the same number. The in-process
-        // MySql `SELECT ... FOR UPDATE` is simple and enough for single-node. HA distributed
+        // so two concurrent generators can't issue the same number. A plain
+        // `SELECT ... FOR UPDATE` is simple and enough for single-node. HA distributed
         // lock lives in the scheduler.
         using var transaction = await _dbContext.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.RepeatableRead, cancellationToken);
         try
         {
             var lockedCrlJob = await _dbContext.CrlConfigurations
-                .FromSqlRaw("SELECT * FROM CrlConfigurations WHERE TaskId = {0} FOR UPDATE", crlJob.TaskId)
+                .FromSqlRaw("""SELECT * FROM "CrlConfigurations" WHERE "TaskId" = {0} FOR UPDATE""", crlJob.TaskId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? crlJob;
 
@@ -382,7 +382,7 @@ public class CrlService : ICrlService
         {
             var counterRow = deltaCrlJob ?? fullCrlJob!;
             var lockedCounter = await _dbContext.CrlConfigurations
-                .FromSqlRaw("SELECT * FROM CrlConfigurations WHERE TaskId = {0} FOR UPDATE", counterRow.TaskId)
+                .FromSqlRaw("""SELECT * FROM "CrlConfigurations" WHERE "TaskId" = {0} FOR UPDATE""", counterRow.TaskId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? counterRow;
 

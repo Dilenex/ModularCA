@@ -74,12 +74,12 @@ confirmed at source before the next release is distributed.
 | [Microsoft.OpenApi](https://github.com/Microsoft/OpenAPI.NET) | 2.7.5 | MIT | © Microsoft Corporation. All rights reserved. |
 | [MimeKit](https://www.mimekit.net/) | 4.16.0 | MIT | .NET Foundation and Contributors |
 | [Mono.TextTemplating](https://github.com/mono/t4) | 3.0.0 | MIT | — |
-| [MySqlConnector](https://mysqlconnector.net/) | 2.5.0 | MIT | Copyright 2016–2025 Bradley Grainger |
+| [Npgsql](https://www.npgsql.org/) | 10.0.3 | PostgreSQL | Copyright 2002–2026 Npgsql Contributors |
 | [NCrontab.Signed](https://github.com/atifaziz/NCrontab) | 3.4.0 | Apache-2.0 | Copyright © 2008 Atif Aziz. All rights reserved. Portions Copyright © 2001 The OpenSymphony Group. All rights reserved. Portions Copyright © 2023 Microsoft Corp. All rights reserved. |
 | [NSec.Cryptography](https://nsec.rocks/) | 25.4.0 | MIT | © 2025 Klaus Hartke |
 | [Pipelines.Sockets.Unofficial](https://github.com/mgravell/Pipelines.Sockets.Unofficial) | 2.2.8 | MIT | Marc Gravell 2018 |
 | [Pkcs11Interop](https://www.pkcs11interop.net/) | 5.3.0 | Apache-2.0 | Copyright (c) 2012-2025 The Pkcs11Interop Project |
-| [Pomelo.EntityFrameworkCore.MySql](https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql) | 9.0.0 | MIT | Copyright 2025 © Pomelo Foundation |
+| [Npgsql.EntityFrameworkCore.PostgreSQL](https://www.npgsql.org/efcore/) | 10.0.3 | PostgreSQL | Copyright 2002–2026 Npgsql Contributors |
 | [prometheus-net.AspNetCore](https://github.com/prometheus-net/prometheus-net) | 8.2.1 | MIT | Copyright © prometheus-net developers |
 | [prometheus-net](https://github.com/prometheus-net/prometheus-net) | 8.2.1 | MIT | Copyright © prometheus-net developers |
 | [Serilog.AspNetCore](https://github.com/serilog/serilog-aspnetcore) | 10.0.0 | Apache-2.0 | — |

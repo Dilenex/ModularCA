@@ -85,7 +85,7 @@ public static class YamlSetupDatabaseLoader
     public class SqlConnectionConfig
     {
         public string Host { get; set; } = "localhost";
-        public int Port { get; set; } = 3306;
+        public int Port { get; set; } = 5432;
         public string Database { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
@@ -96,6 +96,6 @@ public static class YamlSetupDatabaseLoader
         /// choice. Valid values: <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c>,
         /// <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to <c>"Required"</c>.
         /// </summary>
-        public string SslMode { get; set; } = "Required";
+        public string SslMode { get; set; } = "Require";
     }
 }

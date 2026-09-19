@@ -29,7 +29,7 @@ non-executable apphost and world-readable secrets. Use the installer.
 
 ## First install
 
-1. Create the MySQL/MariaDB database and a root credential for setup.
+1. Create the PostgreSQL cluster and a superuser credential for setup.
 2. Fill in `/opt/modularca/config/setup-database.yaml` from the `.example`.
 3. `sudo systemctl enable --now modularca`
 4. Complete the setup wizard. It is reachable only while the install is unconfigured and closes

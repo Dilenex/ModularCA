@@ -17,7 +17,7 @@ Designed around the functionality the average administrator will appreciate — 
 
 ## Current Features
 - Simple certificate request and signing via the development API.
-- Bootstrap a MySQL/MariaDB database with tables and necessary entries.
+- Bootstrap a PostgreSQL database with tables and necessary entries.
 - Generate a system CA cert for internal functions and file signing.
 - Generate a default CA cert for all certificate signing functions.
 - Generate a custom keystore that signs all entries with the system and default CA cert for integrity.
@@ -45,7 +45,8 @@ Planned for exploration:
 - **.NET 10** for the API backend — https://learn.microsoft.com/en-us/dotnet/core/install/
 - **dotnet ef migrations** tool (after .NET 10 is installed): `dotnet tool install --global dotnet-ef`
 - **npm + Node.js** for the web frontend — https://nodejs.org/en/download
-- **MySQL/MariaDB** for the database backend — https://mariadb.org/download/
+- **PostgreSQL 14+** for the database backend — https://www.postgresql.org/download/
+  (`pg_dump` and `pg_restore` from the same distribution are required for backup and restore)
 
 1. Clone the repository
 ```

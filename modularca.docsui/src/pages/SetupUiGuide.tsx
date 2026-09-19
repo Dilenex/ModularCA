@@ -85,12 +85,12 @@ export default function SetupUiGuide() {
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
                     Configures database connection parameters. This step is automatically skipped when
                     the server already has database configuration (the Welcome step checks this). When
-                    shown, the user configures MySQL/MariaDB connection details.
+                    shown, the user configures PostgreSQL connection details.
                 </p>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Configuration Fields</h3>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li><strong>Root Host:</strong> Database server hostname (default: localhost)</li>
-                    <li><strong>Root Port:</strong> Database server port (default: 3306)</li>
+                    <li><strong>Root Port:</strong> Database server port (default: 5432)</li>
                     <li><strong>Root Username:</strong> Privileged database user for schema creation</li>
                     <li><strong>Root Password:</strong> Password for the privileged database user</li>
                     <li><strong>App Database:</strong> Name for the main application database (default: modularca-app)</li>

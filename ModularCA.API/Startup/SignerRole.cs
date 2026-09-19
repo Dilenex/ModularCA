@@ -110,7 +110,7 @@ public static class SignerRole
                 builder.Host.UseSerilog();
 
                 builder.Services.AddDbContext<ModularCADbContext>(o => o
-                    .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr), mysql => mysql.CommandTimeout(30))
+                    .UseNpgsql(appConnStr, npgsql => npgsql.CommandTimeout(30))
                     .ConfigureWarnings(w => w.Ignore(
                         Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
                             .PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));

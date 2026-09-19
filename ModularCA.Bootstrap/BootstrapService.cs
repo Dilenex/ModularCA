@@ -8,7 +8,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Setup;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
+using Npgsql;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
@@ -60,16 +60,14 @@ public class BootstrapService
             var persistedSetupDb = YamlSetupDatabaseLoader.Load(setupDbYamlPath);
 
             // Honor the operator-selected TLS mode from whichever
-            // source is authoritative. Unparseable values clamp back to Required so a typo
+            // source is authoritative. Unparseable values clamp back to Require so a typo
             // can't silently disable TLS.
             var effectiveSslModeRaw = !string.IsNullOrWhiteSpace(persistedSetupDb?.SqlApp?.SslMode)
                 ? persistedSetupDb.SqlApp.SslMode
                 : (!string.IsNullOrWhiteSpace(persistedSetupDb?.SqlRoot?.SslMode)
                     ? persistedSetupDb.SqlRoot.SslMode
                     : request.Database.SslMode);
-            var selectedSslMode = Enum.TryParse<MySqlSslMode>(
-                effectiveSslModeRaw, ignoreCase: true, out var _selSsl)
-                ? _selSsl : MySqlSslMode.Required;
+            var selectedSslMode = PostgresConnection.ParseSslMode(effectiveSslModeRaw);
             var selectedSslModeString = selectedSslMode.ToString();
 
             // Prefer values from setup-database.yaml for every DB field. Fall back to the
@@ -117,18 +115,11 @@ public class BootstrapService
                 ? setupDbConfig.SqlRoot
                 : setupDbConfig.SqlApp;
 
-            // Apply the operator-selected TLS mode for the setup-wizard
-            // root-credential pass. Defaults to Required when no choice was provided.
-            var rootConnBuilder = new MySqlConnectionStringBuilder
-            {
-                Server = rootConfig.Host,
-                Port = (uint)rootConfig.Port,
-                Database = setupDbConfig.SqlApp.Database,
-                UserID = rootConfig.Username,
-                Password = rootConfig.Password,
-                SslMode = selectedSslMode
-            };
-            var rootConnStr = rootConnBuilder.ConnectionString;
+            // Apply the operator-selected TLS mode for the setup-wizard superuser pass.
+            // Defaults to Require when no choice was provided.
+            var rootConnStr = PostgresConnection.Build(
+                rootConfig.Host, rootConfig.Port, setupDbConfig.SqlApp.Database,
+                rootConfig.Username, rootConfig.Password, selectedSslModeString);
 
             // === Clean state — ensure fresh database schema ===
             BootstrapModularCA.DeleteArtifacts(certPath, trustPath);
@@ -655,8 +646,8 @@ public class BootstrapService
 
             // === Write db.yaml with generated app credentials ===
             var dbYamlPath = Path.Combine(configDir, "db.yaml");
-            var (appUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlApp.Username, rootConfig.Host);
-            var (auditUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlAudit.Username, rootConfig.Host);
+            var appUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlApp.Username);
+            var auditUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlAudit.Username);
             YamlDbConfigLoader.Write(dbYamlPath, new YamlDbConfigLoader.DbYamlConfig
             {
                 App = new YamlDbConfigLoader.DbInstanceConfig

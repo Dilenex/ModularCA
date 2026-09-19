@@ -84,8 +84,4 @@ public class KeyCeremonyEntity
     /// within the same tenant. Populated from ParametersJson at initiation time.
     /// </summary>
     public Guid? TenantId { get; set; }
-
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
 }

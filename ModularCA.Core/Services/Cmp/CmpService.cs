@@ -956,7 +956,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             {
                 await _db.SaveChangesAsync();
             }
-            catch (DbUpdateException ex) when (MySqlErrorUtil.IsUniqueViolation(ex))
+            catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
             {
                 // MySQL ER_DUP_ENTRY (1062) on the unique (CaId, TransactionId) index from a
                 // concurrent insert race — the canonical replay signal. Other DbUpdateException

@@ -5,7 +5,7 @@
 #
 # ── Database TLS ───────────────────────────────────────────────────────
 # The app and audit DB connections are authenticated and encrypted in transit
-# via MySQL TLS. The per-instance SslMode lives in db.yaml alongside the
+# via PostgreSQL TLS. The per-instance SslMode lives in db.yaml alongside the
 # credentials (DB.App.SslMode / DB.Audit.SslMode) and defaults to "Required"
 # on fresh bootstrap. Valid values, in ascending strictness:
 #   None        — plaintext only (never do this in production)

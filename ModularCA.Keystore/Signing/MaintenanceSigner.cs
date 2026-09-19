@@ -32,7 +32,7 @@ public static class MaintenanceSigner
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDbContext<ModularCADbContext>(o => o.UseMySql(appConnectionString, ServerVersion.AutoDetect(appConnectionString)));
+        services.AddDbContext<ModularCADbContext>(o => o.UseNpgsql(appConnectionString));
         var provider = services.BuildServiceProvider();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
         var registry = new LockedRegistry();

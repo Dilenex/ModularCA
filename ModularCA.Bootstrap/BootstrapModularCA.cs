@@ -5,7 +5,7 @@ using ModularCA.Keystore.Utils;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
+using Npgsql;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
@@ -67,18 +67,12 @@ public class BootstrapModularCA
             {
                 var dbCfg = YamlDbConfigLoader.Load(dbYamlPath);
                 if (dbCfg == null) { Console.WriteLine("❌ Failed to load db.yaml."); return 1; }
-                // Honor SslMode stamped in db.yaml; clamp typos to Required.
-                var dbCfgSslMode = Enum.TryParse<MySqlSslMode>(dbCfg.App.SslMode, ignoreCase: true, out var _dbCfgSsl)
-                    ? _dbCfgSsl : MySqlSslMode.Required;
-                var dbCfgConnBuilder = new MySqlConnectionStringBuilder
-                {
-                    Server = dbCfg.App.Host,
-                    Port = (uint)dbCfg.App.Port,
-                    UserID = dbCfg.App.Username,
-                    Password = dbCfg.App.Password,
-                    SslMode = dbCfgSslMode
-                };
-                connStr = dbCfgConnBuilder.ConnectionString;
+                // Honor SslMode stamped in db.yaml; clamp typos to Require. Connects to the
+                // maintenance database: PostgreSQL has no "connect to the server without naming
+                // a database", and the work below drops tables in the app database, which
+                // cannot be done from a session attached to it.
+                connStr = PostgresConnection.BuildMaintenance(
+                    dbCfg.App.Host, dbCfg.App.Port, dbCfg.App.Username, dbCfg.App.Password, dbCfg.App.SslMode);
                 appDatabase = dbCfg.App.Database;
                 auditDatabase = dbCfg.Audit.Database;
                 Console.WriteLine($"Using db.yaml for DB connection ({dbCfg.App.Host}:{dbCfg.App.Port})");
@@ -86,18 +80,9 @@ public class BootstrapModularCA
             else if (File.Exists(runtimeConfigPath))
             {
                 var cfg = YamlConfigLoader.Load(runtimeConfigPath);
-                // Honor SslMode from runtime config; clamp typos to Required.
-                var cfgSslMode = Enum.TryParse<MySqlSslMode>(cfg.DB.App.SslMode, ignoreCase: true, out var _cfgSsl)
-                    ? _cfgSsl : MySqlSslMode.Required;
-                var cfgConnBuilder = new MySqlConnectionStringBuilder
-                {
-                    Server = cfg.DB.App.Host,
-                    Port = (uint)cfg.DB.App.Port,
-                    UserID = cfg.DB.App.Username,
-                    Password = cfg.DB.App.Password,
-                    SslMode = cfgSslMode
-                };
-                connStr = cfgConnBuilder.ConnectionString;
+                // Honor SslMode from runtime config; clamp typos to Require.
+                connStr = PostgresConnection.BuildMaintenance(
+                    cfg.DB.App.Host, cfg.DB.App.Port, cfg.DB.App.Username, cfg.DB.App.Password, cfg.DB.App.SslMode);
                 appDatabase = cfg.DB.App.Database;
                 auditDatabase = cfg.DB.Audit.Database;
                 Console.WriteLine($"Using runtime config for DB connection ({cfg.DB.App.Host}:{cfg.DB.App.Port})");
@@ -147,7 +132,7 @@ public class BootstrapModularCA
             // tables can be recreated; a deleted signing key cannot.
             // Connect without a specific database first to check existence.
             Console.WriteLine("\nVerifying database connectivity before deleting anything...");
-            using var conn = new MySqlConnection(connStr);
+            using var conn = new NpgsqlConnection(connStr);
             try
             {
                 conn.Open();
@@ -180,35 +165,42 @@ public class BootstrapModularCA
             // Check if app database exists before attempting to drop tables
             if (!string.IsNullOrWhiteSpace(appDatabase))
             {
-                using var checkCmd = new MySqlCommand("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = @schema", conn);
-                checkCmd.Parameters.AddWithValue("@schema", appDatabase);
-                var appDbExists = Convert.ToInt64(checkCmd.ExecuteScalar()) > 0;
+                bool appDbExists;
+                using (var checkCmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @name", conn))
+                {
+                    checkCmd.Parameters.AddWithValue("name", appDatabase);
+                    appDbExists = checkCmd.ExecuteScalar() != null;
+                }
 
                 if (appDbExists)
                 {
-                    conn.ChangeDatabase(appDatabase);
-
-                    using (var fkOff = new MySqlCommand("SET FOREIGN_KEY_CHECKS = 0;", conn))
-                        fkOff.ExecuteNonQuery();
+                    // Npgsql has no ChangeDatabase: a PostgreSQL session is bound to one database
+                    // for its lifetime. A second connection to the app database is therefore
+                    // opened here, while `conn` stays on the maintenance database.
+                    var appConnStr = new NpgsqlConnectionStringBuilder(connStr) { Database = appDatabase }.ConnectionString;
+                    using var appConn = new NpgsqlConnection(appConnStr);
+                    appConn.Open();
 
                     var tables = new List<string>();
-                    using (var listCmd = new MySqlCommand("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = @schema AND TABLE_TYPE = 'BASE TABLE';", conn))
+                    using (var listCmd = new NpgsqlCommand(
+                        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename", appConn))
+                    using (var reader = listCmd.ExecuteReader())
                     {
-                        listCmd.Parameters.AddWithValue("@schema", appDatabase);
-                        using var reader = listCmd.ExecuteReader();
                         while (reader.Read())
                             tables.Add(reader.GetString(0));
                     }
 
+                    // CASCADE rather than a foreign-key-checks toggle: PostgreSQL has no session
+                    // switch that suspends referential integrity, and CASCADE removes the
+                    // dependent constraints along with the table, which is the same end state
+                    // the MySQL version reached by turning the checks off around the loop.
                     foreach (var table in tables)
                     {
-                        using var dropCmd = new MySqlCommand($"DROP TABLE IF EXISTS `{appDatabase}`.`{table}`;", conn);
+                        using var dropCmd = new NpgsqlCommand(
+                            $"DROP TABLE IF EXISTS public.{PostgresConnection.QuoteIdentifier(table)} CASCADE", appConn);
                         dropCmd.ExecuteNonQuery();
                     }
                     Console.WriteLine($"✓ Dropped {tables.Count} table(s) from {appDatabase}");
-
-                    using (var fkOn = new MySqlCommand("SET FOREIGN_KEY_CHECKS = 1;", conn))
-                        fkOn.ExecuteNonQuery();
                 }
                 else
                 {
@@ -216,10 +208,10 @@ public class BootstrapModularCA
                 }
             }
 
-            // Audit database cleanup is deferred to the next setup run, which reconnects with root
-            // credentials from setup-database.yaml and unconditionally drops/recreates the audit DB.
-            // The runtime app and audit users are both scoped to their own databases and have no
-            // privileges to drop audit tables here. Historical audit entries persist across resets
+            // Audit database cleanup is deferred to the next setup run, which reconnects with
+            // superuser credentials from setup-database.yaml. The runtime app and audit roles are
+            // each confined to their own database and neither owns the audit database, so neither
+            // can drop audit tables here. Historical audit entries persist across resets
             // by design until the next root-credentialed bootstrap replaces the schema.
             if (!string.IsNullOrWhiteSpace(auditDatabase))
             {
@@ -312,22 +304,12 @@ public class BootstrapModularCA
             ? setupDbConfig.SqlRoot
             : setupDbConfig.SqlApp;
 
-        // Root-credential bootstrap connection honors the operator-selected
-        // TLS mode now that setup-database.yaml round-trips SqlRoot.SslMode from the setup wizard.
-        // Unparseable / missing values clamp back to Required so a typo can't silently disable TLS.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var rootConnBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            Database = setupDbConfig.SqlApp.Database,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            SslMode = rootSslMode
-        };
-        var rootConnStr = rootConnBuilder.ConnectionString;
+        // Superuser bootstrap connection honors the operator-selected TLS mode now that
+        // setup-database.yaml round-trips SqlRoot.SslMode from the setup wizard. Unparseable /
+        // missing values clamp back to Require so a typo can't silently disable TLS.
+        var rootConnStr = PostgresConnection.Build(
+            rootConfig.Host, rootConfig.Port, setupDbConfig.SqlApp.Database,
+            rootConfig.Username, rootConfig.Password, rootConfig.SslMode);
 
         bool dbExists = DatabaseExists(setupDbConfig, rootConfig);
         if (dbExists)
@@ -782,15 +764,13 @@ public class BootstrapModularCA
 
         // === Write db.yaml with generated app credentials ===
         var dbYamlPath = Path.Combine(configDir, "db.yaml");
-        var (appUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlApp.Username, rootConfig.Host);
-        var (auditUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlAudit.Username, rootConfig.Host);
-        // Carry the operator-selected TLS mode (round-tripped through
-        // setup-database.yaml) into db.yaml. Normalize via MySqlSslMode so unparseable values
-        // land on Required instead of writing a typo that a later loader would clamp anyway.
-        var appSslModeString = (Enum.TryParse<MySqlSslMode>(setupDbConfig.SqlApp.SslMode, ignoreCase: true, out var _appSsl)
-            ? _appSsl : MySqlSslMode.Required).ToString();
-        var auditSslModeString = (Enum.TryParse<MySqlSslMode>(setupDbConfig.SqlAudit.SslMode, ignoreCase: true, out var _auditSsl)
-            ? _auditSsl : MySqlSslMode.Required).ToString();
+        var appUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlApp.Username);
+        var auditUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlAudit.Username);
+        // Carry the operator-selected TLS mode (round-tripped through setup-database.yaml) into
+        // db.yaml. Normalize through PostgresConnection.ParseSslMode so unparseable values land
+        // on Require instead of writing a typo that a later loader would clamp anyway.
+        var appSslModeString = PostgresConnection.ParseSslMode(setupDbConfig.SqlApp.SslMode).ToString();
+        var auditSslModeString = PostgresConnection.ParseSslMode(setupDbConfig.SqlAudit.SslMode).ToString();
         YamlDbConfigLoader.Write(dbYamlPath, new YamlDbConfigLoader.DbYamlConfig
         {
             App = new YamlDbConfigLoader.DbInstanceConfig
@@ -965,12 +945,14 @@ public class BootstrapModularCA
 
     /// <summary>
     /// Creates a <see cref="ModularCADbContext"/> from a raw connection string
-    /// using <see cref="DbContextOptionsBuilder{T}"/> and MySql auto-detection.
+    /// using <see cref="DbContextOptionsBuilder{T}"/>.
     /// </summary>
+    /// <param name="connectionString">A PostgreSQL connection string.</param>
+    /// <returns>An unopened context bound to that connection string.</returns>
     public static ModularCADbContext CreateDbContext(string connectionString)
     {
         var optionsBuilder = new DbContextOptionsBuilder<ModularCADbContext>();
-        optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
+        optionsBuilder.UseNpgsql(connectionString);
         return new ModularCADbContext(optionsBuilder.Options);
     }
 
@@ -978,10 +960,12 @@ public class BootstrapModularCA
     /// Creates a new database context and connection from the given connection string.
     /// Ensures the database schema is created.
     /// </summary>
-    public static (ModularCADbContext, MySqlConnection dbConnect) CreateDatabaseConnection(string appConnStr)
+    /// <param name="appConnStr">Connection string naming the application database.</param>
+    /// <returns>The context and an open connection to the same database.</returns>
+    public static (ModularCADbContext, NpgsqlConnection dbConnect) CreateDatabaseConnection(string appConnStr)
     {
         var dbContext = CreateDbContext(appConnStr);
-        var conn = new MySqlConnection(appConnStr);
+        var conn = new NpgsqlConnection(appConnStr);
         CreateDatabase(dbContext);
         conn.Open();
         return (dbContext, conn);
@@ -1025,20 +1009,12 @@ public class BootstrapModularCA
     /// </summary>
     public static void CreateAuditDatabase(YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig, string auditDbName)
     {
-        // Honor the operator-selected TLS mode; clamp typos to Required.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var connBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            Database = auditDbName,
-            SslMode = rootSslMode
-        };
-        CreateAuditDatabase(connBuilder.ConnectionString, auditDbName);
+        // Honor the operator-selected TLS mode; clamp typos to Require.
+        CreateAuditDatabase(
+            PostgresConnection.Build(
+                rootConfig.Host, rootConfig.Port, auditDbName,
+                rootConfig.Username, rootConfig.Password, rootConfig.SslMode),
+            auditDbName);
     }
 
     /// <summary>
@@ -1047,7 +1023,7 @@ public class BootstrapModularCA
     public static void CreateAuditDatabase(string connectionString, string auditDbName)
     {
         var optionsBuilder = new DbContextOptionsBuilder<AuditDbContext>();
-        optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
+        optionsBuilder.UseNpgsql(connectionString);
         using var auditDb = new AuditDbContext(optionsBuilder.Options);
         try
         {
@@ -1067,32 +1043,24 @@ public class BootstrapModularCA
     }
 
     /// <summary>
-    /// Checks whether the target database already exists on the MySQL server.
+    /// Checks whether the target database already exists in the PostgreSQL cluster.
     /// </summary>
+    /// <param name="setupDbConfig">Names the application database to look for.</param>
+    /// <param name="rootConfig">Superuser credentials used for the probe.</param>
+    /// <returns>True when the database exists; false when it does not, or the probe failed.</returns>
     public static bool DatabaseExists(YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig)
     {
         // Honor the operator-selected TLS mode for the existence probe;
-        // clamp typos to Required so a misconfigured value can't silently disable TLS.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var serverConnBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            SslMode = rootSslMode
-        };
-        var serverConnStr = serverConnBuilder.ConnectionString;
+        // clamp typos to Require so a misconfigured value can't silently disable TLS.
+        var serverConnStr = PostgresConnection.BuildMaintenance(
+            rootConfig.Host, rootConfig.Port, rootConfig.Username, rootConfig.Password, rootConfig.SslMode);
         try
         {
-            using var conn = new MySqlConnection(serverConnStr);
+            using var conn = new NpgsqlConnection(serverConnStr);
             conn.Open();
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = @db", conn);
-            cmd.Parameters.AddWithValue("@db", setupDbConfig.SqlApp.Database);
-            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            using var cmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @db", conn);
+            cmd.Parameters.AddWithValue("db", setupDbConfig.SqlApp.Database);
+            return cmd.ExecuteScalar() != null;
         }
         catch (Exception ex)
         {
@@ -1104,22 +1072,27 @@ public class BootstrapModularCA
     /// <summary>
     /// Checks whether the database already contains CA certificate records.
     /// </summary>
-    public static bool CheckDatabase(MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
+    /// <param name="conn">An open connection to the application database.</param>
+    /// <param name="setupDbConfig">Unused for the lookup itself; kept for call-site symmetry.</param>
+    /// <returns>True when a row in Certificates is marked as a CA.</returns>
+    public static bool CheckDatabase(NpgsqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
     {
         bool dbhasCa = false;
 
         try
         {
-
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = @db AND table_name = 'Certificates'", conn);
-            cmd.Parameters.AddWithValue("@db", setupDbConfig.SqlApp.Database);
-
-            var exists = Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            // to_regclass returns null when the table does not exist, which is the PostgreSQL
+            // equivalent of the information_schema count this replaces — and unlike that query it
+            // needs no database name, because a PostgreSQL session only ever sees one.
+            using var cmd = new NpgsqlCommand("SELECT to_regclass('public.\"Certificates\"')", conn);
+            var exists = cmd.ExecuteScalar() is not null and not DBNull;
             if (exists)
             {
-                using var checkCmd = new MySqlCommand("SELECT COUNT(*) FROM Certificates WHERE IsCa = 1", conn);
-                dbhasCa = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+                // IsCa is a real boolean here, not MySQL's tinyint(1), so the comparison is to
+                // TRUE rather than to 1.
+                using var checkCmd = new NpgsqlCommand(
+                    "SELECT COUNT(*) FROM public.\"Certificates\" WHERE \"IsCa\" = TRUE", conn);
+                dbhasCa = Convert.ToInt64(checkCmd.ExecuteScalar()) > 0;
             }
         }
         catch (Exception ex)
@@ -1133,7 +1106,7 @@ public class BootstrapModularCA
     /// Returns true if bootstrap should proceed, false if the user aborted.
     /// Prompts the user three times to confirm destruction of existing artifacts.
     /// </summary>
-    public static bool ConfirmDelete(bool needsConfirm, string certPath, string trustPath, ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
+    public static bool ConfirmDelete(bool needsConfirm, string certPath, string trustPath, ModularCADbContext db, NpgsqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
     {
         if (!needsConfirm)
             return true;
@@ -1195,7 +1168,15 @@ public class BootstrapModularCA
     /// destroying the install, which is precisely what this method does.
     /// </para>
     /// </param>
-    public static void ReconstructDatabase(ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
+    /// <param name="db">The application context, migrated after the database is recreated.</param>
+    /// <param name="conn">
+    /// An open connection to the application database. PostgreSQL cannot drop a database from a
+    /// session attached to it, so this method derives a second connection to the maintenance
+    /// database from this one and does every DROP/CREATE there. The MySQL version ran all of it
+    /// on the passed connection, which was attached to the database it was dropping.
+    /// </param>
+    /// <param name="setupDbConfig">Database and role names.</param>
+    public static void ReconstructDatabase(ModularCADbContext db, NpgsqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
     {
         // Validate all identifiers before any DROP/CREATE SQL
         BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlApp.Database, "app database name");
@@ -1206,11 +1187,25 @@ public class BootstrapModularCA
         if (!string.IsNullOrWhiteSpace(setupDbConfig.SqlAudit.Username))
             BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlAudit.Username, "audit username");
 
-        // Drop app database
+        var qAppDb = PostgresConnection.QuoteIdentifier(setupDbConfig.SqlApp.Database);
+
+        // Every statement below runs on the maintenance database, not on `conn`. CREATE DATABASE
+        // and DROP DATABASE cannot run inside the database they name, and DROP DATABASE also
+        // cannot run inside a transaction — both are PostgreSQL rules MySQL did not have.
+        var adminConnStr = new NpgsqlConnectionStringBuilder(conn.ConnectionString)
+        {
+            Database = PostgresConnection.MaintenanceDatabase
+        }.ConnectionString;
+        using var admin = new NpgsqlConnection(adminConnStr);
+        admin.Open();
+
+        // Drop app database. WITH (FORCE) terminates the sessions still attached — including the
+        // caller's own `conn` and any pooled connection EF has open — which is what makes this
+        // reliable rather than a coin toss on whether something else is still connected.
         try
         {
-            using var dropAppCmd = new MySqlCommand($"DROP DATABASE IF EXISTS `{setupDbConfig.SqlApp.Database}`", conn);
-            dropAppCmd.ExecuteNonQuery();
+            NpgsqlConnection.ClearAllPools();
+            ExecuteAdminSql(admin, $"DROP DATABASE IF EXISTS {qAppDb} WITH (FORCE)");
             Console.WriteLine($"✓ Dropped app database '{setupDbConfig.SqlApp.Database}'");
         }
         catch (Exception ex)
@@ -1228,8 +1223,7 @@ public class BootstrapModularCA
             }
             else if (!string.IsNullOrWhiteSpace(auditDbName))
             {
-                using var dropAuditCmd = new MySqlCommand($"DROP DATABASE IF EXISTS `{auditDbName}`", conn);
-                dropAuditCmd.ExecuteNonQuery();
+                ExecuteAdminSql(admin, $"DROP DATABASE IF EXISTS {PostgresConnection.QuoteIdentifier(auditDbName)} WITH (FORCE)");
                 Console.WriteLine($"✓ Dropped audit database '{auditDbName}'");
             }
         }
@@ -1238,20 +1232,20 @@ public class BootstrapModularCA
             Console.WriteLine($"(!) Failed to drop audit database: {ex.Message}");
         }
 
-        // Drop existing DB users (they'll be recreated by CreateDatabaseUsers)
+        // Drop existing DB roles (they are recreated by CreateDatabaseUsers)
         try
         {
             var appUser = setupDbConfig.SqlApp.Username;
             var auditUser = setupDbConfig.SqlAudit.Username;
             var rootUser = setupDbConfig.SqlRoot.Username?.Trim() ?? string.Empty;
 
-            // Refuse BEFORE dropping anything if either service account names the admin user.
+            // Refuse BEFORE dropping anything if either service account names the admin role.
             // BootstrapDatabaseSetup.CreateDatabaseUsers has this exact guard, with the comment
             // "This would drop and recreate your admin account" — but Run() reaches
-            // ReconstructDatabase first, so the DROP USER below executed and only then did the
-            // guard fire. `SqlApp.Username: root` therefore destroyed the MySQL administrative
-            // account and aborted with no config written: unrecoverable without
-            // --skip-grant-tables. The guard is only worth having if it runs first.
+            // ReconstructDatabase first, so the DROP below executed and only then did the guard
+            // fire. `SqlApp.Username: postgres` would therefore destroy the cluster's
+            // administrative role and abort with no config written. The guard is only worth
+            // having if it runs first.
             if (!string.IsNullOrWhiteSpace(rootUser))
             {
                 if (string.Equals(appUser?.Trim(), rootUser, StringComparison.OrdinalIgnoreCase))
@@ -1264,34 +1258,44 @@ public class BootstrapModularCA
                         + "Dropping it would destroy the database administrative account.");
             }
 
+            // One DROP ROLE each, not two. A PostgreSQL role is a cluster-wide object with no
+            // host component, so the 'user'@'%' / 'user'@'localhost' pair the MySQL version had
+            // to drop separately does not exist.
+            //
+            // DROP ROLE fails while the role still owns an object. That is the reason the app
+            // database is dropped first, above: its owner cannot be removed until it is gone.
             if (!string.IsNullOrWhiteSpace(appUser))
             {
-                using var dropAppUser = new MySqlCommand($"DROP USER IF EXISTS '{appUser}'@'%'", conn);
-                dropAppUser.ExecuteNonQuery();
-                // Also try localhost variant
-                using var dropAppUserLocal = new MySqlCommand($"DROP USER IF EXISTS '{appUser}'@'localhost'", conn);
-                dropAppUserLocal.ExecuteNonQuery();
-                Console.WriteLine($"✓ Dropped app DB user '{appUser}'");
+                ExecuteAdminSql(admin, $"DROP ROLE IF EXISTS {PostgresConnection.QuoteIdentifier(BootstrapDatabaseSetup.ResolveRoleName(appUser))}");
+                Console.WriteLine($"✓ Dropped app DB role '{appUser}'");
             }
             if (!string.IsNullOrWhiteSpace(auditUser))
             {
-                using var dropAuditUser = new MySqlCommand($"DROP USER IF EXISTS '{auditUser}'@'%'", conn);
-                dropAuditUser.ExecuteNonQuery();
-                using var dropAuditUserLocal = new MySqlCommand($"DROP USER IF EXISTS '{auditUser}'@'localhost'", conn);
-                dropAuditUserLocal.ExecuteNonQuery();
-                Console.WriteLine($"✓ Dropped audit DB user '{auditUser}'");
+                // The audit role holds grants inside the audit database, which also block a
+                // DROP ROLE. Revoking them requires a session in that database, and when the
+                // audit database is being preserved the role is simply left in place for
+                // CreateDatabaseUsers to rotate the password on.
+                if (wipeAuditDatabase)
+                {
+                    ExecuteAdminSql(admin, $"DROP ROLE IF EXISTS {PostgresConnection.QuoteIdentifier(BootstrapDatabaseSetup.ResolveRoleName(auditUser))}");
+                    Console.WriteLine($"✓ Dropped audit DB role '{auditUser}'");
+                }
+                else
+                {
+                    Console.WriteLine($"(i) Audit DB role '{auditUser}' kept — it holds grants in the preserved audit database; its password is rotated instead.");
+                }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"(!) Failed to drop DB users: {ex.Message}");
+            Console.WriteLine($"(!) Failed to drop DB roles: {ex.Message}");
         }
 
         // Recreate app database and apply schema via migrations (EnsureCreated fails with FK ordering)
         try
         {
-            using var createCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{setupDbConfig.SqlApp.Database}`", conn);
-            createCmd.ExecuteNonQuery();
+            if (!AdminDatabaseExists(admin, setupDbConfig.SqlApp.Database))
+                ExecuteAdminSql(admin, $"CREATE DATABASE {qAppDb}");
             db.Database.Migrate();
             Console.WriteLine($"✓ App database '{setupDbConfig.SqlApp.Database}' recreated with schema via migrations");
         }
@@ -1306,22 +1310,47 @@ public class BootstrapModularCA
             var auditDbName = setupDbConfig.SqlAudit.Database;
             if (!string.IsNullOrWhiteSpace(auditDbName))
             {
-                using var createAuditCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{auditDbName}`", conn);
-                createAuditCmd.ExecuteNonQuery();
+                if (!AdminDatabaseExists(admin, auditDbName))
+                    ExecuteAdminSql(admin, $"CREATE DATABASE {PostgresConnection.QuoteIdentifier(auditDbName)}");
 
                 // Apply any pending audit migrations (preserves existing audit data).
-                // SslMode is inherited from the source conn.ConnectionString
-                // (built upstream with TLS-Required), so no explicit SslMode assignment is needed here.
-                var auditConnBuilder = new MySqlConnectionStringBuilder(conn.ConnectionString)
+                // SslMode is inherited from the source conn.ConnectionString (built upstream with
+                // TLS required), so no explicit SslMode assignment is needed here.
+                var auditConnStr = new NpgsqlConnectionStringBuilder(conn.ConnectionString)
                 {
                     Database = auditDbName
-                };
-                CreateAuditDatabase(auditConnBuilder.ConnectionString, auditDbName);
+                }.ConnectionString;
+                CreateAuditDatabase(auditConnStr, auditDbName);
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"(!) Failed to recreate audit database: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Executes one administrative statement on the maintenance connection.
+    /// </summary>
+    /// <param name="admin">An open connection to the maintenance database.</param>
+    /// <param name="sql">The statement to run.</param>
+    private static void ExecuteAdminSql(NpgsqlConnection admin, string sql)
+    {
+        using var cmd = new NpgsqlCommand(sql, admin);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Returns true when a database of the given name exists in the cluster. PostgreSQL has no
+    /// <c>CREATE DATABASE IF NOT EXISTS</c>, so the test is a query.
+    /// </summary>
+    /// <param name="admin">An open connection to the maintenance database.</param>
+    /// <param name="databaseName">The database to look for.</param>
+    /// <returns>True when <c>pg_database</c> holds a row with that name.</returns>
+    private static bool AdminDatabaseExists(NpgsqlConnection admin, string databaseName)
+    {
+        using var cmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @name", admin);
+        cmd.Parameters.AddWithValue("name", databaseName);
+        return cmd.ExecuteScalar() != null;
     }
 }

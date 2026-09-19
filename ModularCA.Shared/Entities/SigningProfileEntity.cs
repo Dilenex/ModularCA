@@ -93,8 +93,4 @@ public class SigningProfileEntity
     /// </summary>
     [ForeignKey("InheritsFromId")]
     public virtual SigningProfileEntity? InheritsFrom { get; set; }
-
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
 }

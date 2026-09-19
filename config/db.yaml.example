@@ -1,18 +1,24 @@
 # === ModularCA Runtime Database Credentials ===
 # Auto-generated during bootstrap or setup wizard.
-# Contains least-privilege app credentials (not root).
-# This file survives --reset --force (DB users/grants are preserved).
+# Contains least-privilege app credentials (not the cluster superuser).
+# This file survives --reset --force (roles and grants are preserved).
+#
+# PostgreSQL only. A file still naming port 3306 was written for MariaDB and the node will
+# refuse to start against it — see docs/architecture/postgresql-migration.md.
 
 App:
   Host: localhost
-  Port: 3306
+  Port: 5432
   Database: modularca-app
   Username: modularca_app
   Password: "auto-generated-by-bootstrap"
+  # Disable | Allow | Prefer | Require | VerifyCA | VerifyFull
+  SslMode: Require
 
 Audit:
   Host: localhost
-  Port: 3306
+  Port: 5432
   Database: modularca-audit
   Username: modularca_audit
   Password: "auto-generated-by-bootstrap"
+  SslMode: Require

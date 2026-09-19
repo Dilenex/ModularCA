@@ -17,8 +17,8 @@ export default function SetupGuide() {
                                 <span className="w-2 h-2 rounded-full bg-blue-500" />
                             </span>
                             <div>
-                                <span className="font-medium text-gray-900 dark:text-white">MySQL 8.0+</span>
-                                <p className="text-sm text-gray-600 dark:text-gray-400">Required as the primary database. MariaDB 10.6+ is also supported.</p>
+                                <span className="font-medium text-gray-900 dark:text-white">PostgreSQL 14+</span>
+                                <p className="text-sm text-gray-600 dark:text-gray-400">Required as the primary database. MySQL and MariaDB are not supported.</p>
                             </div>
                         </li>
                         <li className="flex items-start gap-3">
@@ -163,7 +163,7 @@ export default function SetupGuide() {
                     Database Configuration
                 </h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
-                    ModularCA uses two separate MySQL databases with distinct users and permissions.
+                    ModularCA uses two separate PostgreSQL databases with distinct roles and permissions.
                 </p>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">

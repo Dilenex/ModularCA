@@ -4,7 +4,6 @@ using ModularCA.Keystore.Config;
 using ModularCA.Keystore.Crypto;
 using ModularCA.Keystore.KeystoreFormat;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
 using System.Text;
 
 namespace ModularCA.Keystore.Utils
@@ -15,7 +14,7 @@ namespace ModularCA.Keystore.Utils
     /// <remarks>
     /// This is the single canonical loader (the duplicate at
     /// <c>ModularCA.API/Startup/KeystoreDbPassphraseLoader.cs</c> was removed). DB connection
-    /// strings are built via <see cref="MySqlConnectionStringBuilder"/> so a password containing
+    /// strings are built via <see cref="ModularCA.Shared.Utils.PostgresConnection"/> so a password containing
     /// <c>;</c>, <c>"</c>, or <c>=</c> cannot inject extra connection-string options. The literal
     /// <c>"ModularCA:PassWrap"</c> passed to <see cref="ScryptKeyDeriver.DeriveFileKey"/> is a
     /// domain-separation tag, not a secret — its purpose is to bind the derivation to this code
@@ -67,25 +66,14 @@ namespace ModularCA.Keystore.Utils
                 config.DB.App.SslMode = dbYaml.App.SslMode;
             }
 
-            // Build the connection string with MySqlConnectionStringBuilder so values are
-            // properly escaped (defends against ;/"/= in the password).
-            // Enforce TLS on the app DB connection; unparseable mode
-            // values clamp back to Required to prevent a typo silently disabling TLS.
-            var sslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _ssl)
-                ? _ssl : MySqlSslMode.Required;
-            var builder = new MySqlConnectionStringBuilder
-            {
-                Server = config.DB.App.Host,
-                Port = (uint)config.DB.App.Port,
-                Database = config.DB.App.Database,
-                UserID = config.DB.App.Username,
-                Password = config.DB.App.Password,
-                SslMode = sslMode
-            };
-            var appConnStr = builder.ConnectionString;
+            // Build the connection string through PostgresConnection so values are properly
+            // escaped (defends against ;/"/= in the password) and so the TLS mode is enforced
+            // in exactly one place; unparseable mode values clamp back to Require to prevent a
+            // typo silently disabling TLS.
+            var appConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
 
             var options = new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                .UseNpgsql(appConnStr)
                 .Options;
 
             using var db = new ModularCADbContext(options);

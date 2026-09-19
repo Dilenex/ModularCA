@@ -165,7 +165,7 @@ public class SetupWebTlsCertificate
 public class SetupDatabase
 {
     public string RootHost { get; set; } = "localhost";
-    public int RootPort { get; set; } = 3306;
+    public int RootPort { get; set; } = 5432;
     public string RootUsername { get; set; } = "root";
     public string RootPassword { get; set; } = string.Empty;
     public string AppDatabase { get; set; } = "modularca-app";
@@ -180,7 +180,7 @@ public class SetupDatabase
     /// <c>"Required"</c>, <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to
     /// <c>"Required"</c> to use encrypted transport on fresh installs.
     /// </summary>
-    public string SslMode { get; set; } = "Required";
+    public string SslMode { get; set; } = "Require";
 
     /// <summary>
     /// When true, the audit database is dropped and recreated during setup, discarding any

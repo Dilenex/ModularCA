@@ -169,7 +169,7 @@ public class CertExpiryNotificationJob : SingletonCronJob
             {
                 await _db.SaveChangesAsync(cancellationToken);
             }
-            catch (DbUpdateException ex) when (MySqlErrorUtil.IsUniqueViolation(ex))
+            catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
             {
                 // MySQL ER_DUP_ENTRY (1062) on the (EventType, TargetEntityId, NotificationDate)
                 // unique index — another instance or prior run already sent this notification

@@ -13,7 +13,7 @@ import Review from './pages/Review';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
 // Helper used by Review.tsx after a successful initialization
-// to scrub the cleartext root MySQL password and admin password from React
+// to scrub the cleartext database superuser password and admin password from React
 // state so they don't linger in heap until the tab is closed.
 function isLoopbackHostname(host: string): boolean {
     if (!host) return true;
@@ -90,14 +90,14 @@ interface WizardData {
 const initialData: WizardData = {
     database: {
         rootHost: 'localhost',
-        rootPort: 3306,
+        rootPort: 5432,
         rootUsername: 'root',
         rootPassword: '',
         appDatabase: 'modularca-app',
         appUsername: 'modularca_app',
         auditDatabase: 'modularca-audit',
         auditUsername: 'modularca_audit',
-        sslMode: 'Required',
+        sslMode: 'Require',
         wipeAuditDatabase: false,
     },
     organization: {

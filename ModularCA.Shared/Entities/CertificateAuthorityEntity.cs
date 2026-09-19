@@ -145,15 +145,6 @@ namespace ModularCA.Shared.Entities
         public int? UserCeremonyRequiredApprovals { get; set; }
 
         /// <summary>
-        /// Optimistic concurrency token. Mapped to MySQL TIMESTAMP(6)
-        /// via <c>IsRowVersion()</c> in <see cref="ModularCA.Database.ModularCADbContext"/>,
-        /// auto-updated on every row UPDATE. Concurrent edits raise
-        /// <see cref="Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException"/>.
-        /// </summary>
-        [Timestamp]
-        public byte[]? RowVersion { get; set; }
-
-        /// <summary>
         /// Soft-delete flag. When true, the row is hidden by the
         /// global query filter. The filtered unique index on <c>(TenantId, Label)</c>
         /// permits re-creating a CA with the same label after soft-deletion.

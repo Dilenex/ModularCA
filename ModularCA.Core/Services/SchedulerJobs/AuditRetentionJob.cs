@@ -12,11 +12,12 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// Scheduled job that enforces audit retention by chunked deletes
 /// across the AuditLogs / AuditEst / AuditScep / AuditCmp / AuditAcme / AuditMsae / AuditNetwork
 /// tables. Respects separate retention windows for the "general" audit tables and
-/// the noisier AuditNetwork table, uses per-batch <c>LIMIT</c> so no single DELETE
+/// the noisier AuditNetwork table, deletes in bounded batches so no single DELETE
 /// holds a long-running transaction, and optionally streams matching rows to a
 /// gzip jsonl archive file before deleting them (<c>ArchiveBeforeDelete</c>).
 ///
-/// Row-level DELETE only — the <c>modularca_audit</c> user cannot DROP tables by
+/// Row-level DELETE only — the <c>modularca_audit</c> role does not own the audit database
+/// and therefore cannot drop it or its tables by
 /// design (see <c>project_audit_reset.md</c>), which is the reason old entries
 /// survive <c>--reset --force</c>. Retention is the only mechanism that shrinks
 /// the audit DB footprint on a live system.
@@ -196,10 +197,21 @@ public class AuditRetentionJob : SingletonCronJob
             var totalDeleted = 0;
             while (!ct.IsCancellationRequested)
             {
-                // Raw SQL keeps the DELETE off EF's change tracker. MySQL supports
-                // DELETE ... LIMIT; the parameter form avoids any string-formatting risk
-                // even though the cutoff is purely numeric.
-                var sql = $"DELETE FROM `{table}` WHERE Timestamp < {{0}} LIMIT {{1}}";
+                // Raw SQL keeps the DELETE off EF's change tracker. The parameter form avoids
+                // any string-formatting risk even though the cutoff is purely numeric; the
+                // table name is not operator-supplied (it comes from the literals in RunAsync
+                // above) and is quoted because PostgreSQL folds unquoted identifiers to lower
+                // case, and EF created these tables with their C# casing.
+                //
+                // PostgreSQL has no DELETE ... LIMIT — the clause MySQL offered and this job was
+                // built around. The batching is preserved by selecting the batch first and
+                // deleting by ctid, the physical row address, which is the cheapest possible
+                // join back to the rows just chosen. The behaviour is the same: bounded batches
+                // so no single DELETE holds a long transaction over an audit table.
+                var quoted = "\"" + table.Replace("\"", "\"\"") + "\"";
+                var sql =
+                    $"DELETE FROM {quoted} WHERE ctid IN ("
+                    + $"SELECT ctid FROM {quoted} WHERE \"Timestamp\" < {{0}} LIMIT {{1}})";
                 var affected = await _auditDb!.Database.ExecuteSqlRawAsync(
                     sql, new object[] { cutoff, batchSize }, ct);
 
@@ -260,7 +272,11 @@ public class AuditRetentionJob : SingletonCronJob
         try
         {
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"SELECT * FROM `{table}` WHERE Timestamp < @cutoff";
+            // Double-quoted, not backticked: PostgreSQL uses backticks for nothing at all, and
+            // folds an unquoted identifier to lower case, so both the table and the column have
+            // to be quoted to match the casing EF created them with.
+            cmd.CommandText =
+                $"SELECT * FROM \"{table.Replace("\"", "\"\"")}\" WHERE \"Timestamp\" < @cutoff";
             var p = cmd.CreateParameter();
             p.ParameterName = "@cutoff";
             p.Value = cutoff;

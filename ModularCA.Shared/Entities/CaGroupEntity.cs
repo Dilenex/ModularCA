@@ -106,8 +106,4 @@ public class CaGroupEntity
 
     /// <summary>Roles assigned to this group.</summary>
     public virtual ICollection<RoleAssignmentEntity> RoleAssignments { get; set; } = new List<RoleAssignmentEntity>();
-
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
 }

@@ -5,7 +5,6 @@ using ModularCA.Keystore.Crypto;
 using ModularCA.Keystore.Services;
 using ModularCA.Keystore.Utils;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
 using System.Security;
 using System.Security.Cryptography;
 using System.Text;
@@ -248,21 +247,10 @@ public static class Unlocker
                 }
             }
 
-            // TLS-Required by default; unparseable values clamp to Required.
-            var sslMode = Enum.TryParse<MySqlSslMode>(cfg.DB.App.SslMode, ignoreCase: true, out var _ssl)
-                ? _ssl : MySqlSslMode.Required;
-            var builder = new MySqlConnectionStringBuilder
-            {
-                Server = cfg.DB.App.Host,
-                Port = (uint)cfg.DB.App.Port,
-                Database = cfg.DB.App.Database,
-                UserID = cfg.DB.App.Username,
-                Password = cfg.DB.App.Password,
-                SslMode = sslMode,
-            };
-            var connStr = builder.ConnectionString;
+            // TLS-Require by default; unparseable values clamp to Require.
+            var connStr = ModularCA.Shared.Utils.PostgresConnection.Build(cfg.DB.App);
             var options = new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(connStr, ServerVersion.AutoDetect(connStr))
+                .UseNpgsql(connStr)
                 .Options;
             return new ModularCADbContext(options);
         }

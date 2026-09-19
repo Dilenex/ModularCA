@@ -56,7 +56,7 @@ HttpsApi:
 SqlRoot:
   # Admin DB credentials — used only during bootstrap, never saved to config.yaml.
   Host: "localhost"
-  Port: 3306
+  Port: 5432
   Username: "root"
   Password: "your-root-password-here"
 
