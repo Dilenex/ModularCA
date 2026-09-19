@@ -564,7 +564,8 @@ namespace ModularCA.Database.Migrations
                     TenantId = table.Column<Guid>(type: "uuid", nullable: true),
                     UsedForCmp = table.Column<bool>(type: "boolean", nullable: false),
                     CmpReferenceValue = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
-                    CmpSecretHashBase64 = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true)
+                    CmpSecretHashBase64 = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
+                    CmpSecretPlaintext = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true)
                 },
                 constraints: table =>
                 {

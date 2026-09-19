@@ -504,12 +504,44 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 if (tokenEntity != null && tokenEntity.ExpiresAt >= DateTime.UtcNow
                     && (tokenEntity.MaxUses <= 0 || tokenEntity.UsesRemaining > 0))
                 {
-                    // We already hash in EnrollmentTokenService; here we need a
-                    // byte-wise secret for PBMAC. The stored plaintext `Token` column
-                    // IS the plaintext shared secret (issued once at admin creation).
-                    // It is never returned from admin GET endpoints (see
-                    // AdminProtocolConfigController).
-                    candidates.Add((System.Text.Encoding.UTF8.GetBytes(tokenEntity.Token), referenceValue, tokenEntity));
+                    // PBMAC needs the secret itself, not a hash: verification recomputes the MAC.
+                    // The row holds it wrapped, under a key the signer derives from the keystore,
+                    // so recovering it is a call to the signer — which this transaction is about
+                    // to make anyway to sign its response. An unreachable signer therefore stops
+                    // PBMAC the same way it already stops issuance, and the secret is in this
+                    // process's memory only for as long as the MAC takes, plus the zeroing the
+                    // caller's finally does.
+                    if (string.IsNullOrEmpty(tokenEntity.CmpSecretWrapped))
+                    {
+                        _logger.LogWarning(
+                            "CMP PBMAC credential {TokenId} has no stored shared secret — rejected.",
+                            tokenEntity.Id);
+                    }
+                    else
+                    {
+                        byte[]? secret = null;
+                        try
+                        {
+                            secret = await _signer.UnwrapSecretAsync(
+                                Convert.FromBase64String(tokenEntity.CmpSecretWrapped),
+                                new SigningContext(SignerCaller, SigningPurpose.Cmp, tokenEntity.TenantId, caId));
+                        }
+                        catch (SigningRefusedException ex)
+                        {
+                            _logger.LogWarning(
+                                "CMP PBMAC credential {TokenId} could not be unwrapped by the signer ({Reason}) — rejected.",
+                                tokenEntity.Id, ex.Reason);
+                        }
+                        catch (FormatException)
+                        {
+                            _logger.LogWarning(
+                                "CMP PBMAC credential {TokenId} does not hold a wrapped secret — rejected.",
+                                tokenEntity.Id);
+                        }
+
+                        if (secret != null)
+                            candidates.Add((secret, referenceValue, tokenEntity));
+                    }
                 }
             }
 

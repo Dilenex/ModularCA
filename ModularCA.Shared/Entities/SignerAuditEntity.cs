@@ -76,6 +76,25 @@ public class SignerAuditEntity
     [MaxLength(64)]
     public string? DataHash { get; set; }
 
+    /// <summary>
+    /// What kind of secret a <c>WrapSecret</c> or <c>UnwrapSecret</c> decision was about, as the
+    /// <c>SecretKind</c> member's name, including for a refusal: the row says which separation
+    /// the policy was applying. Null for every operation that is about a key rather than a
+    /// secret.
+    /// </summary>
+    [MaxLength(32)]
+    public string? SecretKind { get; set; }
+
+    /// <summary>
+    /// The id of the key that wrapped, or was asked to unwrap, a secret: SHA-256 over the DER
+    /// SubjectPublicKeyInfo of the keystore key the wrapping key was derived from, lower-case
+    /// hex, as the blob's own header names it. This is what makes a rotation legible after the
+    /// fact: the rows say which key was still in use, and for what. Null for every operation
+    /// that is about a key rather than a secret.
+    /// </summary>
+    [MaxLength(64)]
+    public string? WrappingKeyId { get; set; }
+
     /// <summary>The policy allowed the operation.</summary>
     public const string AllowedOutcome = "allowed";
 

@@ -166,7 +166,7 @@ const EnrollmentManagement: React.FC = () => {
         columns: [
             { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (t) => !!t.isRevoked, exportValue: (t) => (t.isRevoked ? 'Revoked' : 'Active'),
                 render: (t) => <StatusBadge status={t.isRevoked ? 'revoked' : 'active'} /> },
-            { key: 'token', header: 'Token / Reference', defaultWidth: 220, exportValue: (t) => (isCmpCredentialRow(t) ? `CMP ${t.cmpReferenceValue || ''}` : t.token),
+            { key: 'token', header: 'Token / Reference', defaultWidth: 220, exportValue: (t) => (isCmpCredentialRow(t) ? `CMP ${t.cmpReferenceValue || ''}` : `Token ${t.id}`),
                 render: (t) => <span className="font-mono text-xs">{tokenColumnLabel(t)}</span> },
             { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
                 render: (t) => <span className="text-gray-600 dark:text-gray-400">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
@@ -180,7 +180,8 @@ const EnrollmentManagement: React.FC = () => {
                 { label: 'Type', value: (t) => (isCmpCredentialRow(t) ? 'CMP shared-secret credential' : 'Enrollment token') },
                 { label: 'Reference Value', value: (t) => (isCmpCredentialRow(t) ? t.cmpReferenceValue : null), mono: true, copyable: true },
                 { label: 'Secret', value: (t) => (isCmpCredentialRow(t) ? 'Shown once at creation; not stored in a form that can be shown again.' : null) },
-                { label: 'Token', value: (t) => (isCmpCredentialRow(t) ? null : t.token), mono: true, copyable: true },
+                { label: 'Token', value: (t) => (isCmpCredentialRow(t) ? null : 'Shown once at creation; only a hash is stored, so it cannot be shown again.') },
+                { label: 'Token ID', value: (t) => t.id, mono: true, copyable: true },
                 { label: 'Uses Remaining', value: (t) => `${t.usesRemaining}/${t.maxUses || '∞'}` },
                 { label: 'Protocol', value: (t) => t.protocol || 'Any' },
             ] },

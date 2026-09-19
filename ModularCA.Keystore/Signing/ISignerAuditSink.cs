@@ -14,7 +14,9 @@ namespace ModularCA.Keystore.Signing;
 /// <param name="Algorithm">The signature algorithm, for a signature.</param>
 /// <param name="Allowed">Whether policy allowed the operation.</param>
 /// <param name="Reason">The refusal reason, or null when allowed.</param>
-/// <param name="DataHash">SHA-256 over what was signed, for a signature; null otherwise.</param>
+/// <param name="DataHash">SHA-256 over what was signed, for a signature; for a wrap or an unwrap, over the wrapped blob, never over the secret.</param>
+/// <param name="SecretKind">What kind of secret a wrap or an unwrap was for, including a refused one; null for every other operation.</param>
+/// <param name="WrappingKeyId">The id of the key that wrapped, or was asked to unwrap, as the blob names it: lower-case hex. Null for every other operation.</param>
 public sealed record SignerDecision(
     DateTime At,
     string Operation,
@@ -23,7 +25,9 @@ public sealed record SignerDecision(
     SignatureAlgorithm? Algorithm,
     bool Allowed,
     string? Reason,
-    byte[]? DataHash);
+    byte[]? DataHash,
+    SecretKind? SecretKind = null,
+    string? WrappingKeyId = null);
 
 /// <summary>
 /// Where the signer writes its decisions. The signer records every decision through this before

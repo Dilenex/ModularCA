@@ -91,6 +91,10 @@ public class AdminEnrollmentTokenController(
     /// Returns all active enrollment tokens, filtered by tenant access for non-system-admins.
     /// Filters on the token's <c>TenantId</c> column directly so users who
     /// have moved between tenants don't leak prior-tenant token visibility.
+    /// <para>
+    /// The <c>token</c> field is always null: only the hash is stored, so a token is visible
+    /// exactly once, in the response to the call that created it.
+    /// </para>
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
@@ -108,14 +112,16 @@ public class AdminEnrollmentTokenController(
                 t.TenantId.HasValue && tenantIds != null && tenantIds.Contains(t.TenantId.Value)).ToList();
         }
 
-        // For CMP PBMAC tokens we explicitly OMIT `Token` (the
-        // plaintext secret) from the list payload. Only `CmpReferenceValue` and
-        // `LastFourOfToken` are returned so operators can identify the credential.
+        // No token value leaves this endpoint, for any row. Bearer tokens used to be echoed
+        // back here, which made the list a way to recover a credential long after it was
+        // issued; now only their hash is stored, so there is nothing to echo. CMP rows keep
+        // the last four characters of their secret, which is how an operator tells two
+        // credentials on the same reference value apart, and is the one deliberate exception.
         return Ok(tokens.Select(t => new
         {
             t.Id,
-            Token = t.UsedForCmp ? null : t.Token,
-            LastFourOfToken = t.UsedForCmp && t.Token.Length >= 4 ? t.Token[^4..] : null,
+            Token = (string?)null,
+            LastFourOfToken = t.UsedForCmp ? t.CmpSecretLastFour : null,
             t.UsedForCmp,
             t.CmpReferenceValue,
             t.CreatedAt,

@@ -22,6 +22,8 @@ service Signer {
   rpc ExportKey (ExportKeyRequest) returns (ExportKeyResponse);
   rpc ListKeys (ListKeysRequest) returns (ListKeysResponse);
   rpc RetireKey (RetireKeyRequest) returns (RetireKeyResponse);
+  rpc WrapSecret (WrapSecretRequest) returns (WrapSecretResponse);
+  rpc UnwrapSecret (UnwrapSecretRequest) returns (UnwrapSecretResponse);
   rpc Health (HealthRequest) returns (HealthResponse);
 }
 
@@ -141,6 +143,31 @@ message RetireKeyRequest {
 }
 
 message RetireKeyResponse {
+}
+
+// A secret the node has to keep but cannot hold in the clear. No key is named: the kind says
+// what the secret is, and the signer decides which key wraps for it. The secret crosses in the
+// clear inside the mutual-TLS channel, in both directions, because the node has to use it.
+message WrapSecretRequest {
+  string kind = 1;
+  bytes secret = 2;
+  SigningContext context = 3;
+}
+
+message WrapSecretResponse {
+  bytes wrapped = 1;
+}
+
+// Nothing here but the blob and who is asking: the kind the policy is applied to and the id of
+// the key to derive from are read out of the blob's own header, so a caller cannot reach a kind
+// it is not permitted by describing it differently.
+message UnwrapSecretRequest {
+  bytes wrapped = 1;
+  SigningContext context = 2;
+}
+
+message UnwrapSecretResponse {
+  bytes secret = 1;
 }
 
 message HealthRequest {

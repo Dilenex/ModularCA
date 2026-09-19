@@ -1368,6 +1368,200 @@ public abstract class SigningServiceContractTests
         Assert.Empty(world.Persistence.Appended);
     }
 
+    private static readonly byte[] WrappableSecret = Encoding.UTF8.GetBytes("a-cmp-pbmac-shared-secret-0123456789");
+
+    [Fact]
+    public async Task A_wrapped_secret_comes_back_and_the_blob_never_holds_it()
+    {
+        var signer = CreateSigner(SharedWorld);
+        var context = Context(SigningPurpose.Cmp, null, null);
+
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, context);
+
+        Assert.NotEqual(WrappableSecret, blob);
+        Assert.DoesNotContain(Convert.ToHexStringLower(WrappableSecret), Convert.ToHexStringLower(blob));
+        Assert.Equal(WrappableSecret, await signer.UnwrapSecretAsync(blob, context));
+
+        // Two wraps of the same secret differ: the salt and the nonce are per blob.
+        Assert.NotEqual(blob, await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, context));
+    }
+
+    [Fact]
+    public async Task A_wrapped_secret_names_its_kind_and_the_key_that_wrapped_it()
+    {
+        var world = SharedWorld;
+        var signer = CreateSigner(world);
+
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, Context(SigningPurpose.Cmp, null, null));
+
+        Assert.True(WrappedSecretEnvelope.TryRead(blob, out var header));
+        Assert.Equal(SecretKind.CmpSharedSecret, header.Kind);
+        Assert.Equal(WrappedSecretEnvelope.KeyIdLength, header.KeyId.Length);
+        Assert.NotEqual(new byte[WrappedSecretEnvelope.KeyIdLength], header.KeyId);
+
+        // The id is the SPKI digest of a key the signer actually holds, which is what makes a
+        // rotation resolvable: the blob is unwrapped by the key it names, not by the current one.
+        var held = world.Keystore.GetSigners()
+            .Select(s => SHA256.HashData(SubjectPublicKeyInfoFactory
+                .CreateSubjectPublicKeyInfo(s.PublicCertificate.GetPublicKey()).GetDerEncoded()))
+            .ToList();
+        Assert.Contains(held, id => id.AsSpan().SequenceEqual(header.KeyId));
+    }
+
+    [Fact]
+    public async Task A_blob_whose_key_id_the_signer_does_not_hold_is_refused_rather_than_failing_to_decrypt()
+    {
+        var signer = CreateSigner(SharedWorld);
+        var context = Context(SigningPurpose.Cmp, null, null);
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, context);
+
+        // What a blob written under a key that has since left the keystore looks like.
+        RandomNumberGenerator.Fill(blob.AsSpan(6, WrappedSecretEnvelope.KeyIdLength));
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(blob, context));
+        Assert.Equal(SigningRefusalReason.UnknownKey, ex.Reason);
+    }
+
+    [Fact]
+    public async Task Only_the_purposes_the_policy_names_wrap_a_kind()
+    {
+        var signer = CreateSigner(SharedWorld);
+
+        await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, Context(SigningPurpose.Cmp, null, null));
+        await signer.WrapSecretAsync(SecretKind.HeldPrivateKey, WrappableSecret, Context(SigningPurpose.Certificate, null, null));
+
+        async Task Refused(SecretKind kind, SigningPurpose purpose)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+                () => signer.WrapSecretAsync(kind, WrappableSecret, Context(purpose, null, null)));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, ex.Reason);
+        }
+
+        // Each purpose wraps its own kind and no other, and most purposes wrap nothing.
+        await Refused(SecretKind.HeldPrivateKey, SigningPurpose.Cmp);
+        await Refused(SecretKind.CmpSharedSecret, SigningPurpose.Certificate);
+        await Refused(SecretKind.CmpSharedSecret, SigningPurpose.Export);
+        foreach (var purpose in new[] { SigningPurpose.Ocsp, SigningPurpose.Crl, SigningPurpose.Backup, SigningPurpose.Ceremony, SigningPurpose.Bootstrap })
+            await Refused(SecretKind.CmpSharedSecret, purpose);
+
+        // A Kerberos realm key has no purpose at all until the design says how it is cached.
+        foreach (var purpose in Enum.GetValues<SigningPurpose>())
+            await Refused(SecretKind.KerberosRealmKey, purpose);
+    }
+
+    [Fact]
+    public async Task A_caller_that_may_unwrap_one_kind_cannot_unwrap_another()
+    {
+        var signer = CreateSigner(SharedWorld);
+        var cmp = Context(SigningPurpose.Cmp, null, null);
+        var issuance = Context(SigningPurpose.Certificate, null, null);
+        var export = Context(SigningPurpose.Export, null, null);
+
+        var cmpSecret = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, cmp);
+        var heldKey = await signer.WrapSecretAsync(SecretKind.HeldPrivateKey, WrappableSecret, issuance);
+
+        // What each may read.
+        Assert.Equal(WrappableSecret, await signer.UnwrapSecretAsync(cmpSecret, cmp));
+        Assert.Equal(WrappableSecret, await signer.UnwrapSecretAsync(heldKey, export));
+
+        async Task Refused(byte[] blob, SigningContext context)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(blob, context));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, ex.Reason);
+        }
+
+        // And what neither may: the CMP caller cannot read a held private key, and the issuance
+        // path that wrote one cannot read it back, which is the export right and a person's.
+        await Refused(heldKey, cmp);
+        await Refused(heldKey, issuance);
+        await Refused(cmpSecret, export);
+    }
+
+    [Fact]
+    public async Task A_blob_relabelled_as_another_kind_does_not_authenticate()
+    {
+        var signer = CreateSigner(SharedWorld);
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, Context(SigningPurpose.Cmp, null, null));
+
+        // The kind is in the associated data and in the key derivation, so relabelling a blob to
+        // a kind the caller may read does not make it readable: the policy would now allow it and
+        // the cryptography still refuses.
+        blob[5] = (byte)SecretKind.HeldPrivateKey;
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.UnwrapSecretAsync(blob, Context(SigningPurpose.Export, null, null)));
+        Assert.Equal(SigningRefusalReason.IntegrityFailure, ex.Reason);
+    }
+
+    [Fact]
+    public async Task A_tampered_or_malformed_blob_is_refused()
+    {
+        var signer = CreateSigner(SharedWorld);
+        var context = Context(SigningPurpose.Cmp, null, null);
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, context);
+
+        var flipped = (byte[])blob.Clone();
+        flipped[^1] ^= 0xFF;
+        var tampered = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(flipped, context));
+        Assert.Equal(SigningRefusalReason.IntegrityFailure, tampered.Reason);
+
+        foreach (var nonsense in new[] { Array.Empty<byte>(), new byte[] { 1, 2, 3 }, Encoding.ASCII.GetBytes("not a wrapped secret at all, but long enough to be one") })
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(nonsense, context));
+            Assert.Equal(SigningRefusalReason.OperationUnsupported, ex.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task A_wrap_and_an_unwrap_are_audited_with_the_kind_the_wrapping_key_and_the_hash_of_the_blob()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var context = Context(SigningPurpose.Cmp, world.CaRsaId, world.TenantA);
+
+        var blob = await signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, context);
+        await signer.UnwrapSecretAsync(blob, context);
+
+        Assert.True(WrappedSecretEnvelope.TryRead(blob, out var header));
+        var rows = await ReadAuditAsync(world);
+        Assert.Equal(new[] { "WrapSecret", "UnwrapSecret" }, rows.Select(r => r.Operation));
+        Assert.All(rows, row =>
+        {
+            Assert.Equal(SignerAuditEntity.AllowedOutcome, row.Outcome);
+            Assert.Equal(Caller, row.Caller);
+            Assert.Equal(nameof(SigningPurpose.Cmp), row.Purpose);
+            Assert.Equal(world.CaRsaId, row.CaId);
+            Assert.Equal(world.TenantA, row.TenantId);
+            Assert.Equal(ExpectedPeerIdentity, row.PeerIdentity);
+            Assert.Equal(nameof(SecretKind.CmpSharedSecret), row.SecretKind);
+            Assert.Equal(WrappedSecretEnvelope.KeyIdText(header.KeyId), row.WrappingKeyId);
+            // The hash is of the blob, never of the secret: an audit row must not be an oracle
+            // for the thing the wrap exists to protect.
+            Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(blob)), row.DataHash);
+            Assert.NotEqual(Convert.ToHexStringLower(SHA256.HashData(WrappableSecret)), row.DataHash);
+            Assert.Null(row.KeyCertificateId);
+        });
+    }
+
+    [Fact]
+    public async Task A_refused_unwrap_is_audited_with_what_it_was_told()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var blob = await signer.WrapSecretAsync(SecretKind.HeldPrivateKey, WrappableSecret, Context(SigningPurpose.Certificate, null, null));
+
+        await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.UnwrapSecretAsync(blob, Context(SigningPurpose.Cmp, null, null)));
+
+        Assert.True(WrappedSecretEnvelope.TryRead(blob, out var header));
+        var row = (await ReadAuditAsync(world)).Last();
+        Assert.Equal("UnwrapSecret", row.Operation);
+        Assert.Equal(SignerAuditEntity.RefusedOutcome, row.Outcome);
+        Assert.Equal(nameof(SecretKind.HeldPrivateKey), row.SecretKind);
+        Assert.Equal(WrappedSecretEnvelope.KeyIdText(header.KeyId), row.WrappingKeyId);
+        Assert.Contains("does not unwrap", row.Reason);
+    }
+
     private static bool VerifyWith(Org.BouncyCastle.Crypto.AsymmetricKeyParameter publicKey, string algorithm, byte[] signature)
     {
         var verifier = SignerUtilities.GetSigner(algorithm);

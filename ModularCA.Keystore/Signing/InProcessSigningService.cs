@@ -390,6 +390,101 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The wrapping key is derived, per blob, from the keystore key this signer designates
+    /// (<see cref="ResolveWrappingKey"/>): HKDF-SHA256 over its PKCS#8 encoding with a fresh
+    /// salt, and AES-256-GCM under the result with the blob's header as associated data. The
+    /// derived key exists only where that private key exists, which is the keystore, which is
+    /// behind the signer; a node in remote mode cannot reproduce it. The blob names the key it
+    /// was derived from, so the designation can change without re-wrapping anything.
+    /// </remarks>
+    public async Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(secret);
+        ArgumentNullException.ThrowIfNull(context);
+
+        var refusal = JudgeSecretWrap(context, kind, wrapping: true);
+        byte[]? keyId = null;
+        byte[]? material = null;
+        byte[]? blob = null;
+        if (refusal == null)
+            (keyId, material, refusal) = ResolveWrappingKey(null);
+        if (refusal == null)
+        {
+            try
+            {
+                blob = Seal(kind, keyId!, material!, secret);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(material!);
+            }
+        }
+
+        if (refusal != null)
+        {
+            await RecordSecretAsync("WrapSecret", context, kind, keyId, allowed: false, refusal.Message, null, cancellationToken);
+            throw refusal;
+        }
+
+        await RecordSecretAsync("WrapSecret", context, kind, keyId, allowed: true, reason: null, SHA256.HashData(blob!), cancellationToken);
+        return blob!;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Everything the unwrap needs comes out of the blob and nothing out of the caller: the kind
+    /// the policy is applied to, and the id of the key to derive from. A caller permitted one
+    /// kind therefore cannot reach another by asking differently, and because the kind is in the
+    /// associated data, a blob relabelled on its way here does not authenticate at all.
+    /// </remarks>
+    public async Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(wrapped);
+        ArgumentNullException.ThrowIfNull(context);
+
+        var dataHash = SHA256.HashData(wrapped);
+        if (!WrappedSecretEnvelope.TryRead(wrapped, out var header))
+        {
+            var malformed = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                "The bytes offered are not a wrapped secret this signer recognises.");
+            await RecordSecretAsync("UnwrapSecret", context, null, null, allowed: false, malformed.Message, dataHash, cancellationToken);
+            throw malformed;
+        }
+
+        var refusal = JudgeSecretWrap(context, header.Kind, wrapping: false);
+        byte[]? material = null;
+        byte[]? secret = null;
+        if (refusal == null)
+            (_, material, refusal) = ResolveWrappingKey(header.KeyId);
+        if (refusal == null)
+        {
+            try
+            {
+                secret = Open(header, material!);
+            }
+            catch (CryptographicException)
+            {
+                refusal = new SigningRefusedException(SigningRefusalReason.IntegrityFailure,
+                    $"The wrapped {header.Kind} does not authenticate under the key {WrappedSecretEnvelope.KeyIdText(header.KeyId)} its header names.");
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(material!);
+            }
+        }
+
+        if (refusal != null)
+        {
+            await RecordSecretAsync("UnwrapSecret", context, header.Kind, header.KeyId, allowed: false, refusal.Message, dataHash, cancellationToken);
+            throw refusal;
+        }
+
+        await RecordSecretAsync("UnwrapSecret", context, header.Kind, header.KeyId, allowed: true, reason: null, dataHash, cancellationToken);
+        return secret!;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -657,6 +752,197 @@ public sealed class InProcessSigningService : ISigningService
                 $"Tenant {tenantId} requires a key ceremony and the context names none.");
         return null;
     }
+
+    /// <summary>
+    /// What a purpose may wrap. One row per purpose: a purpose that is not here wraps nothing.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<SigningPurpose, SecretKind> WrapRights =
+        new Dictionary<SigningPurpose, SecretKind>
+        {
+            [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
+            [SigningPurpose.Certificate] = SecretKind.HeldPrivateKey,
+        };
+
+    /// <summary>
+    /// What a purpose may unwrap, which is deliberately not what it may wrap: the issuance path
+    /// that wraps a requester's held key has no right to read one back, and reading one back is
+    /// the export right, which is a person's. <see cref="SecretKind.KerberosRealmKey"/> appears
+    /// in neither table, so nothing wraps or unwraps it until the caching question the design
+    /// document raises is answered.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<SigningPurpose, SecretKind> UnwrapRights =
+        new Dictionary<SigningPurpose, SecretKind>
+        {
+            [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
+            [SigningPurpose.Export] = SecretKind.HeldPrivateKey,
+        };
+
+    /// <summary>
+    /// The wrap policy: the signer is unlocked, the context names a caller, and the purpose is
+    /// one the kind permits for this direction. Nothing is held to a CA or a tenant, because the
+    /// wrapping key belongs to the signer and not to any CA, so there is no owner to hold it to;
+    /// the context still names them and the audit still records them.
+    /// </summary>
+    private SigningRefusedException? JudgeSecretWrap(SigningContext context, SecretKind kind, bool wrapping)
+    {
+        if (!_unlocked)
+            return new SigningRefusedException(SigningRefusalReason.SignerLocked, "The signer has not unlocked its keystore.");
+        if (string.IsNullOrWhiteSpace(context.Caller))
+            return new SigningRefusedException(SigningRefusalReason.ContextRequired,
+                "A secret is wrapped and unwrapped for a named caller; a context with no caller gets neither.");
+
+        var rights = wrapping ? WrapRights : UnwrapRights;
+        if (!rights.TryGetValue(context.Purpose, out var permitted) || permitted != kind)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"A {context.Purpose} context does not {(wrapping ? "wrap" : "unwrap")} a {kind}.");
+        return null;
+    }
+
+    /// <summary>
+    /// The key a wrapping key is derived from, and the material to derive it with. With
+    /// <paramref name="requiredKeyId"/> null this is the key the signer designates for new
+    /// wraps: the one whose SPKI is pinned for the default keystore, which is the same key
+    /// <see cref="ISignerKeyPersistence"/> re-signs the keystore files with, falling back to the
+    /// first signer the registry holds when no pin resolves. With a key id it is that key and no
+    /// other, which is what lets an old blob outlive a rotation. The material is the key's PKCS#8
+    /// encoding; the caller zeroes it. A key on a PKCS#11 token cannot serve, since the token
+    /// does not hand the material out.
+    /// </summary>
+    private (byte[]? KeyId, byte[]? Material, SigningRefusedException? Refusal) ResolveWrappingKey(byte[]? requiredKeyId)
+    {
+        var signers = _keystore.GetSigners();
+        if (signers.Count == 0)
+            return (null, null, new SigningRefusedException(SigningRefusalReason.UnknownKey,
+                "The signer holds no key to derive a wrapping key from."));
+
+        CertificateAuthorityIdentity? chosen = null;
+        if (requiredKeyId != null)
+        {
+            foreach (var candidate in signers)
+            {
+                if (SpkiDigest(candidate.PublicCertificate) is byte[] digest && digest.AsSpan().SequenceEqual(requiredKeyId))
+                {
+                    chosen = candidate;
+                    break;
+                }
+            }
+            if (chosen == null)
+                return (null, null, new SigningRefusedException(SigningRefusalReason.UnknownKey,
+                    $"The signer holds no key {WrappedSecretEnvelope.KeyIdText(requiredKeyId)}; the secret was wrapped under a key this keystore does not have."));
+        }
+        else
+        {
+            string? pinned = null;
+            try
+            {
+                using var scope = _scopes.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+                pinned = KeystoreService.GetPinnedSignerSpki(db, KeyRef.DefaultKeystore);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Signer: the pinned signer for {Keystore} could not be read; the first registered signer wraps.", KeyRef.DefaultKeystore);
+            }
+
+            if (pinned != null)
+            {
+                foreach (var candidate in signers)
+                {
+                    if (string.Equals(KeystoreService.ComputeSpkiSha256Hex(candidate.PublicCertificate), pinned, StringComparison.OrdinalIgnoreCase))
+                    {
+                        chosen = candidate;
+                        break;
+                    }
+                }
+            }
+            chosen ??= signers[0];
+        }
+
+        var keyId = SpkiDigest(chosen.PublicCertificate);
+        if (keyId == null)
+            return (null, null, new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                "The designated wrapping key's public half cannot be encoded, so it cannot identify a wrapped secret."));
+
+        var handle = _keystore.GetPrivateKeyFor(chosen.PublicCertificate);
+        if (handle == null)
+            return (keyId, null, new SigningRefusedException(SigningRefusalReason.UnknownKey,
+                $"The signer holds no private key for the wrapping key {WrappedSecretEnvelope.KeyIdText(keyId)}."));
+        if (handle is not SoftwarePrivateKeyHandle software)
+            return (keyId, null, new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                "The designated wrapping key is held on a PKCS#11 token, which does not hand out the material a derived wrapping key needs."));
+
+        return (keyId, PrivateKeyInfoFactory.CreatePrivateKeyInfo(software.PrivateKey).GetDerEncoded(), null);
+    }
+
+    /// <summary>SHA-256 over the DER-encoded SubjectPublicKeyInfo of a certificate, or null when it cannot be encoded.</summary>
+    private static byte[]? SpkiDigest(X509Certificate certificate)
+    {
+        try
+        {
+            return SHA256.HashData(SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(certificate.GetPublicKey()).GetDerEncoded());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Derives the wrapping key and encrypts: HKDF-SHA256 over the keystore key's PKCS#8
+    /// encoding with a fresh 32-byte salt and the kind and key id as info, then AES-256-GCM
+    /// under it with the blob's header as associated data. The derived key is zeroed before the
+    /// blob is returned.
+    /// </summary>
+    private static byte[] Seal(SecretKind kind, byte[] keyId, byte[] material, byte[] secret)
+    {
+        var salt = RandomNumberGenerator.GetBytes(WrappedSecretEnvelope.SaltLength);
+        var nonce = RandomNumberGenerator.GetBytes(WrappedSecretEnvelope.NonceLength);
+        var aad = WrappedSecretEnvelope.AssociatedData(kind, keyId);
+        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, material, 32, salt, WrappedSecretEnvelope.DerivationInfo(kind, keyId));
+        try
+        {
+            var ciphertext = new byte[secret.Length];
+            var tag = new byte[WrappedSecretEnvelope.TagLength];
+            using var gcm = new AesGcm(key, WrappedSecretEnvelope.TagLength);
+            gcm.Encrypt(nonce, secret, ciphertext, tag, aad);
+            return WrappedSecretEnvelope.Build(kind, keyId, salt, nonce, ciphertext, tag);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    /// <summary>
+    /// Re-derives the wrapping key from the blob's own salt and decrypts it. Throws
+    /// <see cref="CryptographicException"/> when the blob does not authenticate, which is every
+    /// case where the key, the header or the ciphertext is not the one that was sealed.
+    /// </summary>
+    private static byte[] Open(WrappedSecretHeader header, byte[] material)
+    {
+        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, material, 32, header.Salt,
+            WrappedSecretEnvelope.DerivationInfo(header.Kind, header.KeyId));
+        try
+        {
+            var secret = new byte[header.Ciphertext.Length];
+            using var gcm = new AesGcm(key, WrappedSecretEnvelope.TagLength);
+            gcm.Decrypt(header.Nonce, header.Ciphertext, header.Tag, secret, header.AssociatedData);
+            return secret;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    /// <summary>
+    /// Records a wrap or an unwrap. The hash is of the wrapped blob in both directions and never
+    /// of the secret, which would make the audit a verification oracle for what it is protecting.
+    /// </summary>
+    private Task RecordSecretAsync(string operation, SigningContext context, SecretKind? kind, byte[]? keyId,
+        bool allowed, string? reason, byte[]? dataHash, CancellationToken cancellationToken)
+        => RecordAsync(operation, context, null, null, allowed, reason, dataHash, cancellationToken,
+            kind, keyId == null ? null : WrappedSecretEnvelope.KeyIdText(keyId));
 
     /// <summary>
     /// The backup wrap: the keystore file the reference names, byte for byte as the persistence
@@ -1029,9 +1315,10 @@ public sealed class InProcessSigningService : ISigningService
     /// signature, key or file the operation produced is dropped with it.
     /// </summary>
     private async Task RecordAsync(string operation, SigningContext context, KeyRef? key, SignatureAlgorithm? algorithm,
-        bool allowed, string? reason, byte[]? dataHash, CancellationToken cancellationToken)
+        bool allowed, string? reason, byte[]? dataHash, CancellationToken cancellationToken,
+        SecretKind? secretKind = null, string? wrappingKeyId = null)
     {
-        var decision = new SignerDecision(DateTime.UtcNow, operation, context, key, algorithm, allowed, reason, dataHash);
+        var decision = new SignerDecision(DateTime.UtcNow, operation, context, key, algorithm, allowed, reason, dataHash, secretKind, wrappingKeyId);
         try
         {
             await _audit.RecordAsync(decision, cancellationToken);

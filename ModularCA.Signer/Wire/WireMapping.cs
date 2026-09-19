@@ -152,6 +152,15 @@ public static class WireMapping
             info.Backend);
     }
 
+    /// <summary>Renders a secret kind for the wire: the enum member's name, as purposes cross.</summary>
+    public static string ToWire(SecretKind kind) => kind.ToString();
+
+    /// <summary>Reads a secret kind from the wire; an unknown kind is an argument error rather than a guess.</summary>
+    public static SecretKind ToSecretKind(string value)
+        => Enum.TryParse<SecretKind>(value, ignoreCase: false, out var kind) && Enum.IsDefined(kind)
+            ? kind
+            : throw new ArgumentException($"'{value}' is not a secret kind.", "kind");
+
     /// <summary>Maps a health report to the wire.</summary>
     public static HealthResponse ToWire(SignerHealth health) => new()
     {

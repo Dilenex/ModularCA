@@ -16,7 +16,7 @@ describe('CMP credential rows', () => {
     it('are recognised by the usedForCmp flag, not by the absence of a token', () => {
         expect(isCmpCredentialRow({ usedForCmp: true, token: null })).toBe(true);
         expect(isCmpCredentialRow({ usedForCmp: false, token: null })).toBe(false);
-        expect(isCmpCredentialRow({ token: 'abc' })).toBe(false);
+        expect(isCmpCredentialRow({ id: 'abc' })).toBe(false);
     });
 
     it('show the reference value in the token column, since the secret is never returned', () => {
@@ -24,14 +24,17 @@ describe('CMP credential rows', () => {
         expect(tokenColumnLabel({ usedForCmp: true })).toBe('CMP · (no reference)');
     });
 
-    it('bearer tokens keep the prefix display', () => {
-        expect(tokenColumnLabel({ token: 'E_6BRiQddLy8J-msLzn23WgmhwcL0JU0rWCRhkJqBOI' })).toBe('E_6BRiQddLy8J-msLzn2…');
-        expect(tokenColumnLabel({ token: 'short' })).toBe('short');
+    it('identify bearer tokens by row id, because the token value is no longer returned', () => {
+        // Only a hash of the token is stored, so the list endpoint returns no token at all. A
+        // column that showed the token now shows the row's handle instead.
+        expect(tokenColumnLabel({ id: '8f14e45f-ceea-467a-9b3b-000000000000', token: null }))
+            .toBe('Token 8f14e45f…');
+        expect(tokenColumnLabel({ token: null })).toBe('Token (unidentified)');
     });
 
     it('title the drawer by reference value rather than a missing token', () => {
         expect(drawerTitle({ usedForCmp: true, cmpReferenceValue: 'printer-fleet' })).toBe('CMP credential printer-fleet');
-        expect(drawerTitle({ token: 'E_6BRiQddLy8J-msLzn23W' })).toBe('Token E_6BRiQddLy8…');
+        expect(drawerTitle({ id: '8f14e45f-ceea-467a-9b3b-000000000000' })).toBe('Token 8f14e45f…');
     });
 });
 

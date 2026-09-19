@@ -10,8 +10,8 @@ export const adminEnrollmentTokens: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of enrollment tokens with id, token (null for CMP), lastFourOfToken (CMP only), usedForCmp, cmpReferenceValue, createdAt, expiresAt, maxUses, usesRemaining, subjectRestriction, sanRestriction, protocol, isRevoked, requestProfileId, certProfileId, signingProfileId, certificateAuthorityId, and tenantId.',
-        notes: 'CMP PBMAC tokens omit the plaintext secret for security; only lastFourOfToken and cmpReferenceValue are returned.',
+        responseDescription: 'Array of enrollment tokens with id, token (always null), lastFourOfToken (CMP only), usedForCmp, cmpReferenceValue, createdAt, expiresAt, maxUses, usesRemaining, subjectRestriction, sanRestriction, protocol, isRevoked, requestProfileId, certProfileId, signingProfileId, certificateAuthorityId, and tenantId.',
+        notes: 'Only a SHA-256 hash of a token is stored, so token is always null here — the value is returned exactly once, by the call that created it. CMP rows additionally expose lastFourOfToken and cmpReferenceValue so an operator can identify a credential.',
     },
     {
         method: 'POST',

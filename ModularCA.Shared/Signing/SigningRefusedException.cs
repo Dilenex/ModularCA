@@ -44,7 +44,9 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// The material offered did not verify: a keystore file whose signature is not the pinned
-    /// signer's, or whose pin the signer could not authenticate. Nothing was written.
+    /// signer's, or whose pin the signer could not authenticate, or a wrapped secret that does
+    /// not authenticate under the key its header names. Nothing was written and nothing was
+    /// returned.
     /// </summary>
     IntegrityFailure,
 

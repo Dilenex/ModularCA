@@ -46,6 +46,8 @@ public sealed class DatabaseSignerAuditSink : ISignerAuditSink
         Outcome = decision.Allowed ? SignerAuditEntity.AllowedOutcome : SignerAuditEntity.RefusedOutcome,
         Reason = decision.Reason == null ? null : Truncate(decision.Reason, 1024),
         DataHash = decision.DataHash == null ? null : Convert.ToHexStringLower(decision.DataHash),
+        SecretKind = decision.SecretKind?.ToString(),
+        WrappingKeyId = decision.WrappingKeyId,
     };
 
     private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];

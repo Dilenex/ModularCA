@@ -14,7 +14,13 @@ namespace ModularCA.Shared.Signing;
 /// <item>a CMP protection key signs CMP responses for its own CA only;</item>
 /// <item>export is allowed only for end-entity keys and only to a caller holding the export right;</item>
 /// <item>generation, import, commit and retire are allowed only under a ceremony or bootstrap context;</item>
-/// <item>a generated key not yet committed signs only under the context that generated it.</item>
+/// <item>a generated key not yet committed signs only under the context that generated it;</item>
+/// <item>
+/// secrets are wrapped and unwrapped under the purposes listed for their
+/// <see cref="SecretKind"/>: <see cref="SigningPurpose.Cmp"/> both wraps and unwraps a CMP
+/// shared secret, <see cref="SigningPurpose.Certificate"/> wraps a held private key and
+/// <see cref="SigningPurpose.Export"/> unwraps one, and nothing else wraps or unwraps anything.
+/// </item>
 /// </list>
 /// Anything else is refused with a <see cref="SigningRefusedException"/>, and every decision,
 /// allowed or refused, is written to the signer's own audit before the call returns.
@@ -81,6 +87,40 @@ public interface ISigningService
     /// </summary>
     /// <exception cref="SigningRefusedException">The key is unknown, or policy refuses the export.</exception>
     Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Wraps a secret the node has to keep but cannot hold in the clear, so that the key which
+    /// protects it lives in the keystore rather than on the node. This is not
+    /// <see cref="ExportKeyAsync"/>: nothing here is a key the signer holds, and the caller names
+    /// no key at all. It names what the secret <b>is</b>, with <paramref name="kind"/>, and the
+    /// signer decides which key wraps for it and whether this context may ask.
+    /// </summary>
+    /// <param name="kind">What kind of secret this is; the policy is keyed on it and the purpose.</param>
+    /// <param name="secret">The bytes to protect. The signer does not interpret them.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>
+    /// An opaque blob, laid out as <see cref="WrappedSecretEnvelope"/> describes: it names its
+    /// own kind and the key that wrapped it, so the key can be rotated and an old blob still
+    /// unwraps under the key it names.
+    /// </returns>
+    /// <exception cref="SigningRefusedException">The purpose may not wrap this kind, the signer is locked, or the wrapping key cannot be derived.</exception>
+    Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Recovers a secret <see cref="WrapSecretAsync"/> wrapped. The blob says which kind of
+    /// secret it holds and which key wrapped it; the caller says nothing about either, so a
+    /// caller permitted to unwrap one kind cannot unwrap another by asking differently.
+    /// </summary>
+    /// <param name="wrapped">The blob as <see cref="WrapSecretAsync"/> returned it.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <exception cref="SigningRefusedException">
+    /// The blob is not a well-formed envelope, the purpose may not unwrap its kind, the signer
+    /// holds no key with the id the blob names, the signer is locked, or the blob does not
+    /// authenticate under the key it names.
+    /// </exception>
+    Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists the keys the signer holds, with their public halves and what kind of key each is.

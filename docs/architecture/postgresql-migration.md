@@ -86,6 +86,15 @@ reports what it did and what it checked, and it never writes to the source.
 Keystores are files and are not touched, which removes the most dangerous part of the problem from
 its scope entirely.
 
+One column is not copied across as it stands. `EnrollmentTokens.Token` held the enrollment token
+itself on MariaDB and holds a SHA-256 hash of it on PostgreSQL, so the helper must hash each value
+as it copies it rather than moving it; the tokens stay usable and stop being readable, which is the
+whole point of the change. `EnrollmentTokens.CmpSecretWrapped` is the other half of that split and
+is new, so for a CMP row the helper hands the source `Token` value to the signer to wrap and puts
+the blob there — PBMAC needs the secret itself, so it has to be recoverable, and the signer is now
+what can recover it — with the hash in `Token` as for every other row, and the secret's last four
+characters in `CmpSecretLastFour` for the console.
+
 ## Order of work
 
 1. The provider swap, both contexts, single migrations, and the configuration that names them.

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModularCA.Database.Migrations
 {
     [DbContext(typeof(ModularCADbContext))]
-    [Migration("20260918173955_InitialCreate")]
+    [Migration("20260918200759_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -1461,6 +1461,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("CmpSecretHashBase64")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
+
+                    b.Property<string>("CmpSecretPlaintext")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");

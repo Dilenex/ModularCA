@@ -71,6 +71,29 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     }
 
     [Fact]
+    public async Task A_locked_signer_wraps_and_unwraps_nothing()
+    {
+        var world = SignerTestWorld.Create();
+        var unlocked = Create(world, unlocked: true);
+        var context = new SigningContext("contract-test", SigningPurpose.Cmp, null, null);
+        var blob = await unlocked.WrapSecretAsync(SecretKind.CmpSharedSecret, new byte[] { 1, 2, 3, 4 }, context);
+
+        // The wrapping key is derived from a keystore key, so a signer that has not unlocked has
+        // nothing to derive it from and must say so rather than fail somewhere deeper.
+        var locked = Create(world, unlocked: false);
+
+        var wrap = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => locked.WrapSecretAsync(SecretKind.CmpSharedSecret, new byte[] { 1, 2, 3, 4 }, context));
+        Assert.Equal(SigningRefusalReason.SignerLocked, wrap.Reason);
+
+        var unwrap = await Assert.ThrowsAsync<SigningRefusedException>(() => locked.UnwrapSecretAsync(blob, context));
+        Assert.Equal(SigningRefusalReason.SignerLocked, unwrap.Reason);
+
+        var refusals = (await ReadAuditAsync(world)).Where(r => r.Outcome == "refused").ToList();
+        Assert.Equal(new[] { "WrapSecret", "UnwrapSecret" }, refusals.Select(r => r.Operation));
+    }
+
+    [Fact]
     public async Task A_locked_signer_still_moves_whole_keystore_files_since_that_is_how_it_comes_to_hold_keys()
     {
         var world = SignerTestWorld.Create();

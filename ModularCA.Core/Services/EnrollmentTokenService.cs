@@ -2,6 +2,7 @@ using ModularCA.Shared.Utils;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Signing;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -65,13 +66,53 @@ public interface IEnrollmentTokenService
 /// </summary>
 public class EnrollmentTokenService : IEnrollmentTokenService
 {
-    private readonly ModularCADbContext _db;
+    /// <summary>The caller the signer's audit records for the secrets this service wraps.</summary>
+    public const string SignerCaller = "enrollment-token-service";
 
-    public EnrollmentTokenService(ModularCADbContext db)
+    private readonly ModularCADbContext _db;
+    private readonly ISigningService? _signer;
+
+    /// <summary>
+    /// Creates the service.
+    /// </summary>
+    /// <param name="db">The database.</param>
+    /// <param name="signer">
+    /// The signer that wraps a CMP shared secret so the node does not hold the key protecting it.
+    /// Optional only so the paths that have nothing to do with CMP can be constructed without
+    /// one; <see cref="GenerateCmpSharedSecretAsync"/> refuses outright when it is absent rather
+    /// than falling back to storing the secret in the clear.
+    /// </param>
+    public EnrollmentTokenService(ModularCADbContext db, ISigningService? signer = null)
     {
         _db = db;
+        _signer = signer;
     }
 
+    /// <summary>
+    /// Hashes an enrollment token for storage and for lookup. SHA-256, uppercase hex — the same
+    /// scheme <c>JwtTokenService.HashRefreshToken</c> uses for refresh tokens, deliberately, so
+    /// there is one way to treat a bearer credential in this product rather than two.
+    /// <para>
+    /// A fast digest is the right primitive here and a slow password hash is not: lookup is by
+    /// exact value against the unique index on <c>EnrollmentTokens.Token</c>, which a per-row
+    /// salt would make impossible, and the input is 32 bytes from
+    /// <see cref="RandomNumberGenerator"/>, so there is no guessable space for a work factor to
+    /// defend.
+    /// </para>
+    /// </summary>
+    /// <param name="plaintextToken">The token as issued to the operator.</param>
+    /// <returns>The hex digest stored in <see cref="EnrollmentTokenEntity.Token"/>.</returns>
+    public static string HashEnrollmentToken(string plaintextToken)
+    {
+        if (plaintextToken == null) return string.Empty;
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plaintextToken)));
+    }
+
+    /// <summary>
+    /// Generates an enrollment token, stores only its hash, and returns the plaintext. This is
+    /// the only moment the plaintext exists outside the caller's request — nothing can read it
+    /// back out of the database afterwards.
+    /// </summary>
     public async Task<string> GenerateTokenAsync(Guid userId, TimeSpan expiresIn, int maxUses = 1,
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
@@ -82,7 +123,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
 
         var entity = new EnrollmentTokenEntity
         {
-            Token = tokenValue,
+            Token = HashEnrollmentToken(tokenValue), // DB stores hash
             CreatedByUserId = userId,
             ExpiresAt = DateTime.UtcNow.Add(expiresIn),
             MaxUses = maxUses,
@@ -109,12 +150,16 @@ public class EnrollmentTokenService : IEnrollmentTokenService
     }
 
     /// <summary>
-    /// Retrieves a valid enrollment token entity by its token string without consuming a use.
+    /// Retrieves a valid enrollment token entity by its plaintext token string without consuming
+    /// a use. The lookup is by hash: the stored column holds no value a caller could present.
     /// </summary>
     public async Task<EnrollmentTokenEntity?> GetByTokenAsync(string token)
     {
+        if (string.IsNullOrEmpty(token)) return null;
+        var hashed = HashEnrollmentToken(token);
+
         var entity = await _db.EnrollmentTokens
-            .FirstOrDefaultAsync(t => t.Token == token && !t.IsRevoked);
+            .FirstOrDefaultAsync(t => t.Token == hashed && !t.IsRevoked);
 
         if (entity == null) return null;
         if (entity.ExpiresAt < DateTime.UtcNow) return null;
@@ -123,10 +168,18 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         return entity;
     }
 
+    /// <summary>
+    /// Validates a presented plaintext enrollment token against the stored hash and, if every
+    /// restriction holds, consumes one use of it.
+    /// </summary>
     public async Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null)
     {
+        if (string.IsNullOrEmpty(token))
+            return (false, "Invalid enrollment token");
+        var hashed = HashEnrollmentToken(token);
+
         var entity = await _db.EnrollmentTokens
-            .FirstOrDefaultAsync(t => t.Token == token && !t.IsRevoked);
+            .FirstOrDefaultAsync(t => t.Token == hashed && !t.IsRevoked);
 
         if (entity == null)
             return (false, "Invalid enrollment token");
@@ -244,14 +297,28 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         var plaintext = Convert.ToBase64String(secretBytes)
             .Replace("+", "-").Replace("/", "_").TrimEnd('=');
 
+        if (_signer == null)
+            throw new InvalidOperationException(
+                "A CMP PBMAC credential cannot be provisioned without the signer: its shared secret is stored wrapped under a key the node does not hold, and storing it any other way is what this replaced.");
+
         var salt = RandomNumberGenerator.GetBytes(Pbkdf2SaltLen);
         var hash = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(plaintext), salt, Pbkdf2Iterations, HashAlgorithmName.SHA256, Pbkdf2HashLen);
 
-        // Also use the plaintext bytes as the "Token" column (required/unique) so existing
-        // token-style admin list endpoints don't need to special-case CMP rows.
+        // The "Token" column is required and unique, so a CMP row still needs one: it gets the
+        // hash of its own secret, like every other row. The secret itself has to be recoverable,
+        // because PBMAC verification recomputes a MAC and therefore holds the key — so it goes to
+        // the signer, which returns it wrapped under a key derived from the keystore. The node
+        // stores the blob and cannot open it on its own.
+        var wrapped = await _signer.WrapSecretAsync(
+            SecretKind.CmpSharedSecret,
+            Encoding.UTF8.GetBytes(plaintext),
+            new SigningContext(SignerCaller, SigningPurpose.Cmp, tenantId, certificateAuthorityId));
+
         var entity = new EnrollmentTokenEntity
         {
-            Token = plaintext,
+            Token = HashEnrollmentToken(plaintext),
+            CmpSecretWrapped = Convert.ToBase64String(wrapped),
+            CmpSecretLastFour = plaintext.Length >= 4 ? plaintext[^4..] : null,
             CreatedByUserId = userId,
             ExpiresAt = DateTime.UtcNow.Add(expiresIn),
             MaxUses = maxUses,

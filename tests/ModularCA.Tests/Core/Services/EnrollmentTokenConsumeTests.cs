@@ -25,8 +25,15 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class EnrollmentTokenConsumeTests
 {
+    /// <summary>The plaintext every token in this class is issued as.</summary>
+    private const string DefaultPlaintext = "tok";
+
+    /// <summary>
+    /// Builds a stored token row. <paramref name="token"/> is the PLAINTEXT; what lands in the
+    /// row is its hash, because that is all the column ever holds.
+    /// </summary>
     private static EnrollmentTokenEntity Token(
-        string token = "tok",
+        string token = DefaultPlaintext,
         int maxUses = 1,
         int usesRemaining = 1,
         string? subjectRestriction = null,
@@ -35,7 +42,7 @@ public class EnrollmentTokenConsumeTests
         bool revoked = false,
         DateTime? expiresAt = null) => new()
         {
-            Token = token,
+            Token = EnrollmentTokenService.HashEnrollmentToken(token),
             MaxUses = maxUses,
             UsesRemaining = usesRemaining,
             SubjectRestriction = subjectRestriction,
@@ -46,15 +53,20 @@ public class EnrollmentTokenConsumeTests
             CreatedAt = DateTime.UtcNow,
         };
 
+    /// <summary>
+    /// Stores <paramref name="token"/> and presents <paramref name="plaintext"/> to the service,
+    /// which is the only thing a caller ever has.
+    /// </summary>
     private static async Task<(bool ok, string? error)> ValidateAsync(
-        EnrollmentTokenEntity token, string? subject, string? protocol = "SCEP", IEnumerable<string>? sans = null)
+        EnrollmentTokenEntity token, string? subject, string? protocol = "SCEP",
+        IEnumerable<string>? sans = null, string plaintext = DefaultPlaintext)
     {
         using var db = InMemoryDbContextFactory.Create();
         db.EnrollmentTokens.Add(token);
         await db.SaveChangesAsync();
 
         var service = new EnrollmentTokenService(db);
-        return await service.ValidateAndConsumeAsync(token.Token, subject, protocol, sans);
+        return await service.ValidateAndConsumeAsync(plaintext, subject, protocol, sans);
     }
 
     // ── The bug this shares with the public enrollment path ────────────────────
