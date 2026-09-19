@@ -1,9 +1,10 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using ModularCA.Auth.Utils;
 using ModularCA.Shared.Utils;
 using Npgsql;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using ModularCA.Database.Conventions;
 
 namespace ModularCA.Bootstrap;
 
@@ -166,6 +167,23 @@ public static class BootstrapDatabaseSetup
             ExecuteSql(conn, $"ALTER DATABASE {qAppDb} OWNER TO {qAppRole}");
             Console.WriteLine($"✓ Application database '{appDbName}' already present; ownership confirmed for role '{appUser}'.");
         }
+
+        // citext has to exist before the first migration runs: the application schema declares its
+        // identifier columns with that type (see TextCaseSensitivity), and a type that does not
+        // exist yet is a CREATE TABLE that fails on its first line. InitialCreate carries its own
+        // CREATE EXTENSION IF NOT EXISTS, but that one runs as the application role and succeeds
+        // only because PostgreSQL 13 marks citext trusted and the role owns the database. Creating
+        // it here, on the privileged connection that just created the database, makes the
+        // migration's copy a no-op and leaves the install standing on neither of those facts.
+        var appAdminConnStr = PostgresConnection.BuildMaintenance(
+            rootConfig.Host, rootConfig.Port, rootConfig.Username, rootConfig.Password,
+            rootConfig.SslMode, appDbName);
+        using (var appConn = new NpgsqlConnection(appAdminConnStr))
+        {
+            appConn.Open();
+            ExecuteSql(appConn, $"CREATE EXTENSION IF NOT EXISTS {TextCaseSensitivity.Extension}");
+        }
+        Console.WriteLine($"✓ '{TextCaseSensitivity.Extension}' extension present in '{appDbName}' — usernames, CA labels and hostnames compare without regard to case.");
 
         // Audit database: preserved unless the operator explicitly asked for a wipe.
         if (wipeAuditDatabase)

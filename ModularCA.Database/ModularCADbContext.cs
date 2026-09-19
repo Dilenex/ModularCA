@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
+using ModularCA.Database.Conventions;
 using ModularCA.Shared.Interfaces;
 
 namespace ModularCA.Database;
@@ -1173,6 +1174,10 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(e => e.CmpReferenceValue);
         });
 
+        // Last, because it reads the indexes and the max lengths every block above declared:
+        // decide per column whether case matters, rather than letting the server collation decide
+        // for all of them the way MySQL did. See TextCaseSensitivity for the reasoning per column.
+        TextCaseSensitivity.Apply(modelBuilder);
     }
 
     // ===========================================================================================

@@ -20,6 +20,7 @@ namespace ModularCA.Database.Migrations
                 .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
+            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "citext");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeEntity", b =>
@@ -44,7 +45,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -57,7 +58,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("UserId", "Name")
                         .IsUnique();
 
-                    b.ToTable("AccessBadges");
+                    b.ToTable("AccessBadges", t =>
+                        {
+                            t.HasCheckConstraint("CK_AccessBadges_Name_Length", "length(\"Name\") <= 100");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeSourceEntity", b =>
@@ -399,7 +403,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("citext");
 
                     b.Property<int>("RequiredQuorum")
                         .HasColumnType("integer");
@@ -428,7 +432,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("CaGroups");
+                    b.ToTable("CaGroups", t =>
+                        {
+                            t.HasCheckConstraint("CK_CaGroups_Name_Length", "length(\"Name\") <= 200");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupMemberEntity", b =>
@@ -508,7 +515,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Protocol")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("RequestProfileId")
                         .HasColumnType("uuid");
@@ -530,7 +537,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CaId", "Protocol")
                         .IsUnique();
 
-                    b.ToTable("CaProtocolConfigs");
+                    b.ToTable("CaProtocolConfigs", t =>
+                        {
+                            t.HasCheckConstraint("CK_CaProtocolConfigs_Protocol_Length", "length(\"Protocol\") <= 20");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CaServiceUrlEntity", b =>
@@ -705,7 +715,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("ProfileHash")
                         .IsRequired()
@@ -739,7 +749,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("CertProfiles");
+                    b.ToTable("CertProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_CertProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CertRequestEntity", b =>
@@ -936,12 +949,12 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Label")
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("OcspResponderCertificateId")
                         .HasColumnType("uuid");
@@ -990,7 +1003,12 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("TenantId", "Name")
                         .IsUnique();
 
-                    b.ToTable("CertificateAuthorities");
+                    b.ToTable("CertificateAuthorities", t =>
+                        {
+                            t.HasCheckConstraint("CK_CertificateAuthorities_Label_Length", "length(\"Label\") <= 255");
+
+                            t.HasCheckConstraint("CK_CertificateAuthorities_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CertificateEntity", b =>
@@ -1033,7 +1051,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Issuer")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("IssuerCertificateId")
                         .HasColumnType("uuid");
@@ -1070,7 +1088,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("SerialNumber")
                         .IsRequired()
                         .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("SigningProfileId")
                         .HasColumnType("uuid");
@@ -1102,7 +1120,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("SerialNumber", "Issuer")
                         .IsUnique();
 
-                    b.ToTable("Certificates");
+                    b.ToTable("Certificates", t =>
+                        {
+                            t.HasCheckConstraint("CK_Certificates_SerialNumber_Length", "length(\"SerialNumber\") <= 64");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CertificateTagEntity", b =>
@@ -1120,7 +1141,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("Value")
                         .IsRequired()
@@ -1134,7 +1155,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CertificateId", "Key")
                         .IsUnique();
 
-                    b.ToTable("CertificateTags");
+                    b.ToTable("CertificateTags", t =>
+                        {
+                            t.HasCheckConstraint("CK_CertificateTags_Key_Length", "length(\"Key\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CertificateTemplateEntity", b =>
@@ -1175,7 +1199,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("RequestProfileId")
                         .HasColumnType("uuid");
@@ -1199,7 +1223,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("SigningProfileId");
 
-                    b.ToTable("CertificateTemplates");
+                    b.ToTable("CertificateTemplates", t =>
+                        {
+                            t.HasCheckConstraint("CK_CertificateTemplates_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CmpTransactionEntity", b =>
@@ -1237,7 +1264,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("TransactionId")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
+                        .HasColumnType("citext");
 
                     b.HasKey("Id");
 
@@ -1246,7 +1273,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CaId", "TransactionId")
                         .IsUnique();
 
-                    b.ToTable("CmpTransactions");
+                    b.ToTable("CmpTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_CmpTransactions_TransactionId_Length", "length(\"TransactionId\") <= 256");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CrlConfigurationEntity", b =>
@@ -1288,7 +1318,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("NextUpdateUtc")
                         .HasColumnType("timestamp with time zone");
@@ -1313,7 +1343,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("CrlConfigurations");
+                    b.ToTable("CrlConfigurations", t =>
+                        {
+                            t.HasCheckConstraint("CK_CrlConfigurations_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CrlEntity", b =>
@@ -1336,7 +1369,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("IssuerName")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("NextUpdate")
                         .HasColumnType("timestamp with time zone");
@@ -1459,9 +1492,13 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
 
-                    b.Property<string>("CmpSecretPlaintext")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
+                    b.Property<string>("CmpSecretLastFour")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("CmpSecretWrapped")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -1527,7 +1564,7 @@ namespace ModularCA.Database.Migrations
             modelBuilder.Entity("ModularCA.Shared.Entities.FeatureFlagEntity", b =>
                 {
                     b.Property<string>("Name")
-                        .HasColumnType("text");
+                        .HasColumnType("citext");
 
                     b.Property<string>("Description")
                         .HasColumnType("text");
@@ -1625,7 +1662,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Realm")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("ServicePrincipal")
                         .IsRequired()
@@ -1644,7 +1681,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("KerberosRealms");
+                    b.ToTable("KerberosRealms", t =>
+                        {
+                            t.HasCheckConstraint("CK_KerberosRealms_Realm_Length", "length(\"Realm\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmKeyEntity", b =>
@@ -1659,7 +1699,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("EncryptionType")
                         .IsRequired()
                         .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("citext");
 
                     b.Property<int>("Kvno")
                         .HasColumnType("integer");
@@ -1685,7 +1725,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("RealmId", "Kvno", "EncryptionType")
                         .IsUnique();
 
-                    b.ToTable("KerberosRealmKeys");
+                    b.ToTable("KerberosRealmKeys", t =>
+                        {
+                            t.HasCheckConstraint("CK_KerberosRealmKeys_EncryptionType_Length", "length(\"EncryptionType\") <= 64");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.KeyCeremonyEntity", b =>
@@ -1786,7 +1829,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("citext");
 
                     b.Property<byte[]>("Passblob")
                         .IsRequired()
@@ -1848,7 +1891,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("NextUpdateUtc")
                         .HasColumnType("timestamp with time zone");
@@ -1985,7 +2028,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("EventType")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("NotificationDate")
                         .HasColumnType("timestamp with time zone");
@@ -1993,7 +2036,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("TargetEntityId")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("citext");
 
                     b.HasKey("Id");
 
@@ -2001,7 +2044,12 @@ namespace ModularCA.Database.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_NotificationLogs_EventType_Target_Date");
 
-                    b.ToTable("NotificationLogs");
+                    b.ToTable("NotificationLogs", t =>
+                        {
+                            t.HasCheckConstraint("CK_NotificationLogs_EventType_Length", "length(\"EventType\") <= 100");
+
+                            t.HasCheckConstraint("CK_NotificationLogs_TargetEntityId_Length", "length(\"TargetEntityId\") <= 200");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.NotificationPreferenceEntity", b =>
@@ -2267,7 +2315,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<bool>("RequireApproval")
                         .HasColumnType("boolean");
@@ -2297,7 +2345,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("RequestProfiles");
+                    b.ToTable("RequestProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_RequestProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.RoleAssignmentEntity", b =>
@@ -2394,7 +2445,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
@@ -2408,7 +2459,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("Roles");
+                    b.ToTable("Roles", t =>
+                        {
+                            t.HasCheckConstraint("CK_Roles_Name_Length", "length(\"Name\") <= 200");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.ScepTransactionEntity", b =>
@@ -2449,7 +2503,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("TransactionId")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.HasKey("Id");
 
@@ -2462,14 +2516,17 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CaId", "TransactionId")
                         .IsUnique();
 
-                    b.ToTable("ScepTransactions");
+                    b.ToTable("ScepTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_ScepTransactions_TransactionId_Length", "length(\"TransactionId\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SchedulerJobStateEntity", b =>
                 {
                     b.Property<string>("JobName")
                         .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasColumnType("citext");
 
                     b.Property<int>("ConsecutiveFailureCount")
                         .HasColumnType("integer");
@@ -2495,14 +2552,17 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("NextRunUtc");
 
-                    b.ToTable("SchedulerJobStates");
+                    b.ToTable("SchedulerJobStates", t =>
+                        {
+                            t.HasCheckConstraint("CK_SchedulerJobStates_JobName_Length", "length(\"JobName\") <= 100");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SchedulerLeaseEntity", b =>
                 {
                     b.Property<string>("Name")
                         .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("AcquiredAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -2519,7 +2579,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("ExpiresAtUtc");
 
-                    b.ToTable("SchedulerLeases");
+                    b.ToTable("SchedulerLeases", t =>
+                        {
+                            t.HasCheckConstraint("CK_SchedulerLeases_Name_Length", "length(\"Name\") <= 100");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SecurityPolicyEntity", b =>
@@ -2673,8 +2736,16 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)");
 
+                    b.Property<string>("SecretKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("WrappingKeyId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.HasKey("Id");
 
@@ -2732,7 +2803,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("NameConstraintsExcluded")
                         .HasColumnType("text");
@@ -2767,7 +2838,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("SigningProfiles");
+                    b.ToTable("SigningProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_SigningProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshCaKeyEntity", b =>
@@ -2853,7 +2927,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("RequiredExtensions")
                         .IsRequired()
@@ -2864,7 +2938,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("SshCertProfiles");
+                    b.ToTable("SshCertProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshCertProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshCertificateEntity", b =>
@@ -2949,7 +3026,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid>("SshCaKeyId")
                         .HasColumnType("uuid");
@@ -2976,7 +3053,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("SshSigningProfileId");
 
-                    b.ToTable("SshCertificateTemplates");
+                    b.ToTable("SshCertificateTemplates", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshCertificateTemplates_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshRequestProfileEntity", b =>
@@ -3009,7 +3089,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<bool>("RequireApproval")
                         .HasColumnType("boolean");
@@ -3019,7 +3099,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("SshRequestProfiles");
+                    b.ToTable("SshRequestProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshRequestProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshSigningProfileEntity", b =>
@@ -3055,7 +3138,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("SourceAddressRestrictions")
                         .IsRequired()
@@ -3071,7 +3154,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("SshCaKeyId");
 
-                    b.ToTable("SshSigningProfiles");
+                    b.ToTable("SshSigningProfiles", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshSigningProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TenantEntity", b =>
@@ -3122,7 +3208,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<bool>("RequireKeyCeremony")
                         .HasColumnType("boolean");
@@ -3130,7 +3216,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<int?>("UserCeremonyRequiredApprovals")
                         .HasColumnType("integer");
@@ -3148,7 +3234,12 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Slug")
                         .IsUnique();
 
-                    b.ToTable("Tenants");
+                    b.ToTable("Tenants", t =>
+                        {
+                            t.HasCheckConstraint("CK_Tenants_Name_Length", "length(\"Name\") <= 255");
+
+                            t.HasCheckConstraint("CK_Tenants_Slug_Length", "length(\"Slug\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TenantHostnameEntity", b =>
@@ -3166,7 +3257,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Hostname")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<Guid>("IssuingCaId")
                         .HasColumnType("uuid");
@@ -3193,7 +3284,10 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("TenantHostnames");
+                    b.ToTable("TenantHostnames", t =>
+                        {
+                            t.HasCheckConstraint("CK_TenantHostnames_Hostname_Length", "length(\"Hostname\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>
@@ -3287,7 +3381,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Issuer")
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("Label")
                         .HasMaxLength(255)
@@ -3309,7 +3403,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("SerialNumber")
                         .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("SubjectDN")
                         .IsRequired()
@@ -3324,7 +3418,12 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("SerialNumber", "Issuer")
                         .IsUnique();
 
-                    b.ToTable("TrustAnchors");
+                    b.ToTable("TrustAnchors", t =>
+                        {
+                            t.HasCheckConstraint("CK_TrustAnchors_Issuer_Length", "length(\"Issuer\") <= 255");
+
+                            t.HasCheckConstraint("CK_TrustAnchors_SerialNumber_Length", "length(\"SerialNumber\") <= 64");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.UserCapabilityGrantEntity", b =>
@@ -3396,7 +3495,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<int>("FailedLoginAttempts")
                         .HasColumnType("integer");
@@ -3462,7 +3561,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Username")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("citext");
 
                     b.Property<uint>("xmin")
                         .IsConcurrencyToken()
@@ -3489,7 +3588,12 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Username")
                         .IsUnique();
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", t =>
+                        {
+                            t.HasCheckConstraint("CK_Users_Email_Length", "length(\"Email\") <= 255");
+
+                            t.HasCheckConstraint("CK_Users_Username_Length", "length(\"Username\") <= 255");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.UserPreferenceEntity", b =>
@@ -3501,7 +3605,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("citext");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -3518,7 +3622,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("UserId", "Key")
                         .IsUnique();
 
-                    b.ToTable("UserPreferences");
+                    b.ToTable("UserPreferences", t =>
+                        {
+                            t.HasCheckConstraint("CK_UserPreferences_Key_Length", "length(\"Key\") <= 200");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.WhitelistEntity", b =>
@@ -3554,7 +3661,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<string>("Protocol")
                         .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
+                        .HasColumnType("citext");
 
                     b.Property<string>("Scope")
                         .IsRequired()
@@ -3571,7 +3678,10 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Scope", "CertificateAuthorityId", "Protocol")
                         .IsUnique();
 
-                    b.ToTable("Whitelists");
+                    b.ToTable("Whitelists", t =>
+                        {
+                            t.HasCheckConstraint("CK_Whitelists_Protocol_Length", "length(\"Protocol\") <= 20");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AccessBadgeEntity", b =>

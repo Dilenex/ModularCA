@@ -50,6 +50,62 @@ or hostname resolved from a URL is the subtle one. Every such column needs a del
 normalise on write and compare exactly, or index on a lowered expression. Doing nothing is the one
 option that silently changes who can sign in.
 
+### As built
+
+Done, and neither of the two options above is what it became. Both of them decide the question in
+the *queries*, and that is the part nobody can finish: a unique index on `lower(col)` only helps a
+lookup written to use it, and normalising on write only helps a lookup that remembers to normalise
+its argument too. Miss one site out of the hundreds that exist and it is case-sensitive again,
+silently, with the index sitting there looking correct.
+
+So the answer is a column type instead. `citext` folds case inside the type, so equality, `LIKE`
+and the unique index all behave as they did on MySQL and no query has to know. The decision is
+recorded per column in `TextCaseSensitivity`, which is the registry the rest of this hangs off, and
+`TextCaseSensitivityTests` fails the build when a text column comes under a uniqueness constraint
+without appearing in one of its two sets. That test is the real deliverable: the original problem
+was a schema that inherited one answer for every column at once, and what replaces it has to be a
+thing that cannot be inherited by accident again.
+
+Thirty-nine columns fold case. The ones that matter are the identifiers a person or a client types:
+usernames and email addresses, tenant slugs and CA labels as they appear in enrollment URLs,
+hostnames from a `Host` header or an SNI extension, Kerberos realms, role and group names. Then
+distinguished names and hex serials, where RFC 4518 already says case does not distinguish, and
+where the consequence is concrete rather than cosmetic — `(SerialNumber, Issuer)` is what stops one
+certificate being imported twice, and `(IssuerName, CrlNumber)` is what stops one issuer publishing
+two different CRLs under a single number.
+
+Nine columns deliberately do not, and this is the direction the move *fixes* rather than breaks.
+Refresh tokens, ACME replay nonces, account key thumbprints and FIDO2 credential identifiers are
+base64 or base64url, where case carries information. MySQL compared all of them case-insensitively,
+which for a bearer token is a straight halving of the alphabet it was drawn from, and for a nonce or
+a thumbprint invents collisions between values that are genuinely different. Each entry carries its
+reason in the registry, because case-sensitive is the direction that can break a client that used to
+work, so it is the direction that has to be argued for.
+
+Two things worth recording because they were not in the plan:
+
+- A sweep of unique indexes is not the whole question. A text **primary key** asks it too, through
+  a different API, and `SchedulerLeases.Name` and `SchedulerJobState.JobName` are both text primary
+  keys that a unique-index-only pass walks straight past. The lease is what stops two nodes running
+  one scheduled job at once; two spellings of a job name would be two leases, and both nodes would
+  hold one and believe they held it alone. The detector reads primary and alternate keys as well
+  now, which is how those two were found.
+- `citext` takes no length modifier, so every converted `character varying(n)` would have quietly
+  become unbounded. Each one gained a `length(col) <= n` check constraint carrying the same limit
+  the model already declared, so the case fix does not buy a ten-thousand-character username.
+
+The type has to exist before the first `CREATE TABLE`, so `InitialCreate` opens with
+`CREATE EXTENSION IF NOT EXISTS citext` — and bootstrap creates it first anyway, on the privileged
+connection that just created the database, so the migration's own copy is a no-op. Leaving it to
+the migration alone would work, but only because PostgreSQL 13 marks `citext` trusted and the app
+role owns its database; an install should not rest on two facts it never states. This is the one
+new deployment requirement: `citext` ships in `postgresql-contrib`, and is available on every
+managed PostgreSQL service checked.
+
+It follows that the helper gains a preflight check. For every case-insensitive column it groups the
+source rows by the folded value and refuses if any two collide — which MariaDB should have made
+impossible, and is exactly the sort of thing to confirm rather than assume before a one-way copy.
+
 **The audit hash chain must survive the copy.** Rows are chained, so they must be inserted in
 order and verify afterwards. The helper verifies the chain on the destination before it reports
 success, and refuses to finish if it does not. A migration that quietly breaks the audit is worse
@@ -100,7 +156,7 @@ characters in `CmpSecretLastFour` for the console.
 1. The provider swap, both contexts, single migrations, and the configuration that names them.
 2. The database-specific SQL: bootstrap, backup, restore, setup wizard, and the six files using
    the driver directly.
-3. The case-sensitivity decision, applied per column, with tests that fail if a lookup becomes
-   case-sensitive where it was not.
+3. ~~The case-sensitivity decision, applied per column, with tests that fail if a lookup becomes
+   case-sensitive where it was not.~~ Done — see **As built** above.
 4. The helper, and a rehearsal of the whole path against a copy of the staging database.
 5. A rehearsal against a copy of production before anything touches production.

@@ -13,6 +13,7 @@ using Org.BouncyCastle.Security;
 using System.Data;
 using System.Text.Json;
 using static ModularCA.Keystore.Services.KeystoreService;
+using ModularCA.Database.Conventions;
 
 namespace ModularCA.Bootstrap;
 
@@ -1296,6 +1297,20 @@ public class BootstrapModularCA
         {
             if (!AdminDatabaseExists(admin, setupDbConfig.SqlApp.Database))
                 ExecuteAdminSql(admin, $"CREATE DATABASE {qAppDb}");
+
+            // Same reason as the install path: the schema's identifier columns are citext, so the
+            // type has to exist before the first CREATE TABLE. Created here on the administrative
+            // connection rather than left to the migration's own statement, which runs with
+            // whatever rights the application role happens to have.
+            using (var appConn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(conn.ConnectionString)
+                   {
+                       Database = setupDbConfig.SqlApp.Database
+                   }.ConnectionString))
+            {
+                appConn.Open();
+                ExecuteAdminSql(appConn, $"CREATE EXTENSION IF NOT EXISTS {TextCaseSensitivity.Extension}");
+            }
+
             db.Database.Migrate();
             Console.WriteLine($"✓ App database '{setupDbConfig.SqlApp.Database}' recreated with schema via migrations");
         }

@@ -12,6 +12,9 @@ namespace ModularCA.Database.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.AlterDatabase()
+                .Annotation("Npgsql:PostgresExtension:citext", ",,");
+
             migrationBuilder.CreateTable(
                 name: "AcmeAccounts",
                 columns: table => new
@@ -87,7 +90,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     CaId = table.Column<Guid>(type: "uuid", nullable: true),
-                    TransactionId = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
+                    TransactionId = table.Column<string>(type: "citext", maxLength: 256, nullable: false),
                     SenderNonce = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
                     ResponseNonce = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
                     MessageTime = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
@@ -98,6 +101,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CmpTransactions", x => x.Id);
+                    table.CheckConstraint("CK_CmpTransactions_TransactionId_Length", "length(\"TransactionId\") <= 256");
                 });
 
             migrationBuilder.CreateTable(
@@ -120,7 +124,7 @@ namespace ModularCA.Database.Migrations
                 name: "FeatureFlags",
                 columns: table => new
                 {
-                    Name = table.Column<string>(type: "text", nullable: false),
+                    Name = table.Column<string>(type: "citext", nullable: false),
                     Enabled = table.Column<bool>(type: "boolean", nullable: false),
                     Value = table.Column<string>(type: "text", nullable: true),
                     Description = table.Column<string>(type: "text", nullable: true),
@@ -164,7 +168,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<int>(type: "integer", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
-                    Name = table.Column<string>(type: "text", nullable: false),
+                    Name = table.Column<string>(type: "citext", nullable: false),
                     Passblob = table.Column<byte[]>(type: "bytea", nullable: false),
                     ScryptN = table.Column<int>(type: "integer", nullable: false),
                     ScryptR = table.Column<int>(type: "integer", nullable: false),
@@ -201,14 +205,16 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    EventType = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
-                    TargetEntityId = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                    EventType = table.Column<string>(type: "citext", maxLength: 100, nullable: false),
+                    TargetEntityId = table.Column<string>(type: "citext", maxLength: 200, nullable: false),
                     NotificationDate = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     CreatedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_NotificationLogs", x => x.Id);
+                    table.CheckConstraint("CK_NotificationLogs_EventType_Length", "length(\"EventType\") <= 100");
+                    table.CheckConstraint("CK_NotificationLogs_TargetEntityId_Length", "length(\"TargetEntityId\") <= 200");
                 });
 
             migrationBuilder.CreateTable(
@@ -287,7 +293,7 @@ namespace ModularCA.Database.Migrations
                 name: "SchedulerJobStates",
                 columns: table => new
                 {
-                    JobName = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                    JobName = table.Column<string>(type: "citext", maxLength: 100, nullable: false),
                     LastRunUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     NextRunUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     LastResult = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
@@ -298,13 +304,14 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SchedulerJobStates", x => x.JobName);
+                    table.CheckConstraint("CK_SchedulerJobStates_JobName_Length", "length(\"JobName\") <= 100");
                 });
 
             migrationBuilder.CreateTable(
                 name: "SchedulerLeases",
                 columns: table => new
                 {
-                    Name = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 100, nullable: false),
                     OwnerInstanceId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     AcquiredAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     ExpiresAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
@@ -312,6 +319,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SchedulerLeases", x => x.Name);
+                    table.CheckConstraint("CK_SchedulerLeases_Name_Length", "length(\"Name\") <= 100");
                 });
 
             migrationBuilder.CreateTable(
@@ -370,7 +378,9 @@ namespace ModularCA.Database.Migrations
                     Algorithm = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     Outcome = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
                     Reason = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: true),
-                    DataHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true)
+                    DataHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    SecretKind = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
+                    WrappingKeyId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -382,7 +392,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     AllowedPrincipalPatterns = table.Column<string>(type: "text", nullable: false),
                     MaxPrincipals = table.Column<int>(type: "integer", nullable: false),
@@ -394,6 +404,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SshCertProfiles", x => x.Id);
+                    table.CheckConstraint("CK_SshCertProfiles_Name_Length", "length(\"Name\") <= 255");
                 });
 
             migrationBuilder.CreateTable(
@@ -401,7 +412,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     AllowedSshSigningProfileIds = table.Column<string>(type: "text", nullable: false),
                     AllowedSshCertProfileIds = table.Column<string>(type: "text", nullable: false),
@@ -413,6 +424,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SshRequestProfiles", x => x.Id);
+                    table.CheckConstraint("CK_SshRequestProfiles_Name_Length", "length(\"Name\") <= 255");
                 });
 
             migrationBuilder.CreateTable(
@@ -420,8 +432,8 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
-                    Slug = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
+                    Slug = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     IsEnabled = table.Column<bool>(type: "boolean", nullable: false),
                     IsSystemTenant = table.Column<bool>(type: "boolean", nullable: false),
@@ -441,6 +453,8 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Tenants", x => x.Id);
+                    table.CheckConstraint("CK_Tenants_Name_Length", "length(\"Name\") <= 255");
+                    table.CheckConstraint("CK_Tenants_Slug_Length", "length(\"Slug\") <= 255");
                 });
 
             migrationBuilder.CreateTable(
@@ -449,8 +463,8 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     SubjectDN = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
-                    Issuer = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
-                    SerialNumber = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    Issuer = table.Column<string>(type: "citext", maxLength: 255, nullable: true),
+                    SerialNumber = table.Column<string>(type: "citext", maxLength: 64, nullable: true),
                     Pem = table.Column<string>(type: "text", nullable: false),
                     RawCertificate = table.Column<byte[]>(type: "bytea", nullable: false),
                     NotBefore = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
@@ -466,6 +480,8 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_TrustAnchors", x => x.Id);
+                    table.CheckConstraint("CK_TrustAnchors_Issuer_Length", "length(\"Issuer\") <= 255");
+                    table.CheckConstraint("CK_TrustAnchors_SerialNumber_Length", "length(\"SerialNumber\") <= 64");
                 });
 
             migrationBuilder.CreateTable(
@@ -474,13 +490,14 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     UserId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Key = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                    Key = table.Column<string>(type: "citext", maxLength: 200, nullable: false),
                     ValueJson = table.Column<string>(type: "text", nullable: false),
                     UpdatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_UserPreferences", x => x.Id);
+                    table.CheckConstraint("CK_UserPreferences_Key_Length", "length(\"Key\") <= 200");
                 });
 
             migrationBuilder.CreateTable(
@@ -488,8 +505,8 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Username = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
-                    Email = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Username = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
+                    Email = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     PasswordHash = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
                     PasswordNeverExpires = table.Column<bool>(type: "boolean", nullable: false),
                     PasswordExpirationDate = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
@@ -516,6 +533,8 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Users", x => x.Id);
+                    table.CheckConstraint("CK_Users_Email_Length", "length(\"Email\") <= 255");
+                    table.CheckConstraint("CK_Users_Username_Length", "length(\"Username\") <= 255");
                 });
 
             migrationBuilder.CreateTable(
@@ -524,7 +543,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     UserId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 100, nullable: false),
                     Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     IsDefault = table.Column<bool>(type: "boolean", nullable: false),
                     CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
@@ -534,6 +553,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_AccessBadges", x => x.Id);
+                    table.CheckConstraint("CK_AccessBadges_Name_Length", "length(\"Name\") <= 100");
                     table.ForeignKey(
                         name: "FK_AccessBadges_Users_UserId",
                         column: x => x.UserId,
@@ -565,7 +585,8 @@ namespace ModularCA.Database.Migrations
                     UsedForCmp = table.Column<bool>(type: "boolean", nullable: false),
                     CmpReferenceValue = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     CmpSecretHashBase64 = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
-                    CmpSecretPlaintext = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true)
+                    CmpSecretWrapped = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: true),
+                    CmpSecretLastFour = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -608,7 +629,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     TenantId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Realm = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Realm = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     DnsDomain = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
                     ServicePrincipal = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
                     EnrollmentUserId = table.Column<Guid>(type: "uuid", nullable: false),
@@ -622,6 +643,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_KerberosRealms", x => x.Id);
+                    table.CheckConstraint("CK_KerberosRealms_Realm_Length", "length(\"Realm\") <= 255");
                     table.ForeignKey(
                         name: "FK_KerberosRealms_Tenants_TenantId",
                         column: x => x.TenantId,
@@ -692,7 +714,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 200, nullable: false),
                     Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     IsBuiltIn = table.Column<bool>(type: "boolean", nullable: false),
                     TenantId = table.Column<Guid>(type: "uuid", nullable: true),
@@ -702,6 +724,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Roles", x => x.Id);
+                    table.CheckConstraint("CK_Roles_Name_Length", "length(\"Name\") <= 200");
                     table.ForeignKey(
                         name: "FK_Roles_Tenants_TenantId",
                         column: x => x.TenantId,
@@ -788,7 +811,7 @@ namespace ModularCA.Database.Migrations
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     RealmId = table.Column<Guid>(type: "uuid", nullable: false),
                     Kvno = table.Column<int>(type: "integer", nullable: false),
-                    EncryptionType = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    EncryptionType = table.Column<string>(type: "citext", maxLength: 64, nullable: false),
                     ProtectedKey = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
                     Source = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
                     CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
@@ -797,6 +820,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_KerberosRealmKeys", x => x.Id);
+                    table.CheckConstraint("CK_KerberosRealmKeys_EncryptionType_Length", "length(\"EncryptionType\") <= 64");
                     table.ForeignKey(
                         name: "FK_KerberosRealmKeys_KerberosRealms_RealmId",
                         column: x => x.RealmId,
@@ -936,7 +960,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 200, nullable: false),
                     DisplayName = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: false),
                     CertificateAuthorityId = table.Column<Guid>(type: "uuid", nullable: true),
                     TemplateName = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
@@ -954,6 +978,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CaGroups", x => x.Id);
+                    table.CheckConstraint("CK_CaGroups_Name_Length", "length(\"Name\") <= 200");
                 });
 
             migrationBuilder.CreateTable(
@@ -991,7 +1016,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     CaId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Protocol = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                    Protocol = table.Column<string>(type: "citext", maxLength: 20, nullable: false),
                     IsEnabled = table.Column<bool>(type: "boolean", nullable: false),
                     IsPublicVisible = table.Column<bool>(type: "boolean", nullable: false),
                     SigningProfileId = table.Column<Guid>(type: "uuid", nullable: true),
@@ -1011,6 +1036,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CaProtocolConfigs", x => x.Id);
+                    table.CheckConstraint("CK_CaProtocolConfigs_Protocol_Length", "length(\"Protocol\") <= 20");
                 });
 
             migrationBuilder.CreateTable(
@@ -1062,8 +1088,8 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     CertificateId = table.Column<Guid>(type: "uuid", nullable: true),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
-                    Label = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
+                    Label = table.Column<string>(type: "citext", maxLength: 255, nullable: true),
                     IsDefault = table.Column<bool>(type: "boolean", nullable: false),
                     Type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                     IsEnabled = table.Column<bool>(type: "boolean", nullable: false),
@@ -1085,6 +1111,8 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CertificateAuthorities", x => x.Id);
+                    table.CheckConstraint("CK_CertificateAuthorities_Label_Length", "length(\"Label\") <= 255");
+                    table.CheckConstraint("CK_CertificateAuthorities_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_CertificateAuthorities_CertificateAuthorities_ParentCaId",
                         column: x => x.ParentCaId,
@@ -1104,7 +1132,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
                     IsCaProfile = table.Column<bool>(type: "boolean", nullable: false),
                     KeyUsages = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
@@ -1130,6 +1158,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CertProfiles", x => x.Id);
+                    table.CheckConstraint("CK_CertProfiles_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_CertProfiles_CertProfiles_InheritsFromId",
                         column: x => x.InheritsFromId,
@@ -1149,7 +1178,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "text", nullable: false),
+                    Name = table.Column<string>(type: "citext", nullable: false),
                     Enabled = table.Column<bool>(type: "boolean", nullable: false),
                     Description = table.Column<string>(type: "text", nullable: true),
                     Host = table.Column<string>(type: "text", nullable: false),
@@ -1313,7 +1342,7 @@ namespace ModularCA.Database.Migrations
                     Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     Scope = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                     CertificateAuthorityId = table.Column<Guid>(type: "uuid", nullable: true),
-                    Protocol = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
+                    Protocol = table.Column<string>(type: "citext", maxLength: 20, nullable: true),
                     Cidrs = table.Column<string>(type: "text", nullable: false),
                     IsEnabled = table.Column<bool>(type: "boolean", nullable: false),
                     IsSystemDefault = table.Column<bool>(type: "boolean", nullable: false),
@@ -1323,6 +1352,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Whitelists", x => x.Id);
+                    table.CheckConstraint("CK_Whitelists_Protocol_Length", "length(\"Protocol\") <= 20");
                     table.ForeignKey(
                         name: "FK_Whitelists_CertificateAuthorities_CertificateAuthorityId",
                         column: x => x.CertificateAuthorityId,
@@ -1336,7 +1366,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     SubjectDnRules = table.Column<string>(type: "text", nullable: false),
                     SanRules = table.Column<string>(type: "text", nullable: false),
@@ -1353,6 +1383,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_RequestProfiles", x => x.Id);
+                    table.CheckConstraint("CK_RequestProfiles_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_RequestProfiles_CertProfiles_DefaultCertProfileId",
                         column: x => x.DefaultCertProfileId,
@@ -1409,7 +1440,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     SshCaKeyId = table.Column<Guid>(type: "uuid", nullable: true),
                     MaxValidityHours = table.Column<int>(type: "integer", nullable: false),
@@ -1423,6 +1454,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SshSigningProfiles", x => x.Id);
+                    table.CheckConstraint("CK_SshSigningProfiles_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_SshSigningProfiles_SshCaKeys_SshCaKeyId",
                         column: x => x.SshCaKeyId,
@@ -1436,7 +1468,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     SshCaKeyId = table.Column<Guid>(type: "uuid", nullable: false),
                     SshSigningProfileId = table.Column<Guid>(type: "uuid", nullable: false),
@@ -1448,6 +1480,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SshCertificateTemplates", x => x.Id);
+                    table.CheckConstraint("CK_SshCertificateTemplates_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_SshCertificateTemplates_SshCaKeys_SshCaKeyId",
                         column: x => x.SshCaKeyId,
@@ -1560,7 +1593,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     CaId = table.Column<Guid>(type: "uuid", nullable: true),
-                    TransactionId = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    TransactionId = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Subject = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
                     RequesterPublicKeyHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     IssuedCertificateId = table.Column<Guid>(type: "uuid", nullable: true),
@@ -1572,6 +1605,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_ScepTransactions", x => x.Id);
+                    table.CheckConstraint("CK_ScepTransactions_TransactionId_Length", "length(\"TransactionId\") <= 255");
                     table.ForeignKey(
                         name: "FK_ScepTransactions_CertificateRequests_CertRequestId",
                         column: x => x.CertRequestId,
@@ -1585,10 +1619,10 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     CertificateId = table.Column<Guid>(type: "uuid", nullable: false),
-                    SerialNumber = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    SerialNumber = table.Column<string>(type: "citext", maxLength: 64, nullable: false),
                     Pem = table.Column<string>(type: "text", nullable: false),
                     SubjectDN = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
-                    Issuer = table.Column<string>(type: "text", nullable: false),
+                    Issuer = table.Column<string>(type: "citext", nullable: false),
                     SubjectAlternativeNamesJson = table.Column<string>(type: "text", nullable: false),
                     KeyUsagesJson = table.Column<string>(type: "text", nullable: false),
                     ExtendedKeyUsagesJson = table.Column<string>(type: "text", nullable: false),
@@ -1615,6 +1649,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Certificates", x => x.CertificateId);
+                    table.CheckConstraint("CK_Certificates_SerialNumber_Length", "length(\"SerialNumber\") <= 64");
                     table.ForeignKey(
                         name: "FK_Certificates_CertProfiles_CertProfileId",
                         column: x => x.CertProfileId,
@@ -1629,13 +1664,14 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     CertificateId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Key = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Key = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Value = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
                     CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CertificateTags", x => x.Id);
+                    table.CheckConstraint("CK_CertificateTags_Key_Length", "length(\"Key\") <= 255");
                     table.ForeignKey(
                         name: "FK_CertificateTags_Certificates_CertificateId",
                         column: x => x.CertificateId,
@@ -1649,7 +1685,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     TaskId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Enabled = table.Column<bool>(type: "boolean", nullable: false),
                     IssuerDN = table.Column<string>(type: "text", nullable: true),
                     CaCertificateId = table.Column<Guid>(type: "uuid", nullable: false),
@@ -1668,6 +1704,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CrlConfigurations", x => x.TaskId);
+                    table.CheckConstraint("CK_CrlConfigurations_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_CrlConfigurations_Certificates_CaCertificateId",
                         column: x => x.CaCertificateId,
@@ -1720,7 +1757,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "text", nullable: false),
                     MaxPathLength = table.Column<int>(type: "integer", nullable: true),
                     AllowedAlgorithms = table.Column<string>(type: "text", nullable: false),
@@ -1743,6 +1780,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_SigningProfiles", x => x.Id);
+                    table.CheckConstraint("CK_SigningProfiles_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_SigningProfiles_Certificates_IssuerId",
                         column: x => x.IssuerId,
@@ -1763,7 +1801,7 @@ namespace ModularCA.Database.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     TenantId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Hostname = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Hostname = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     IssuingCaId = table.Column<Guid>(type: "uuid", nullable: false),
                     CertificateId = table.Column<Guid>(type: "uuid", nullable: true),
                     CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
@@ -1773,6 +1811,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_TenantHostnames", x => x.Id);
+                    table.CheckConstraint("CK_TenantHostnames_Hostname_Length", "length(\"Hostname\") <= 255");
                     table.ForeignKey(
                         name: "FK_TenantHostnames_CertificateAuthorities_IssuingCaId",
                         column: x => x.IssuingCaId,
@@ -1798,7 +1837,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    IssuerName = table.Column<string>(type: "text", nullable: false),
+                    IssuerName = table.Column<string>(type: "citext", nullable: false),
                     GeneratedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     CrlNumber = table.Column<long>(type: "bigint", nullable: false),
                     IsDelta = table.Column<bool>(type: "boolean", nullable: false),
@@ -1825,7 +1864,7 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
+                    Name = table.Column<string>(type: "citext", maxLength: 255, nullable: false),
                     Description = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     CaId = table.Column<Guid>(type: "uuid", nullable: false),
                     RequestProfileId = table.Column<Guid>(type: "uuid", nullable: true),
@@ -1841,6 +1880,7 @@ namespace ModularCA.Database.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CertificateTemplates", x => x.Id);
+                    table.CheckConstraint("CK_CertificateTemplates_Name_Length", "length(\"Name\") <= 255");
                     table.ForeignKey(
                         name: "FK_CertificateTemplates_CertProfiles_CertProfileId",
                         column: x => x.CertProfileId,
