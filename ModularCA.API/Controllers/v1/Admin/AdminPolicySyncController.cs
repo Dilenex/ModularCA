@@ -10,6 +10,7 @@ using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/policy/sync")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminPolicySyncController(
     IPolicySyncService policySyncService,
     SystemConfig config,

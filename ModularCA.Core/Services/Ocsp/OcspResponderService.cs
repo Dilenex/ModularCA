@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
@@ -50,20 +50,49 @@ public class OcspResponderService : IOcspService
     private readonly ISecurityPolicyService _securityPolicy;
 
     /// <summary>
+    /// Signs every response. The responder holds a <see cref="KeyRef"/> to the delegated
+    /// responder certificate, or to the CA certificate when CA-direct signing is allowed, and a
+    /// context naming the CA; the key stays with the signer.
+    /// </summary>
+    private readonly ISigningService _signer;
+
+    /// <summary>The caller identity the responder signs under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(OcspResponderService);
+
+    /// <summary>
     /// Constructs the responder. Takes <see cref="ISecurityPolicyService"/> so
     /// the per-response TTL defaults, CA-direct-signing gate and signed-request policy
-    /// come from the DB-backed <see cref="SecurityPolicyEntity"/>.
+    /// come from the DB-backed <see cref="SecurityPolicyEntity"/>, and the signer that holds
+    /// the responder and CA keys.
     /// </summary>
     public OcspResponderService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
         ILogger<OcspResponderService> logger,
-        ISecurityPolicyService securityPolicy)
+        ISecurityPolicyService securityPolicy,
+        ISigningService signer)
     {
         _db = db;
         _keystore = keystore;
         _logger = logger;
         _securityPolicy = securityPolicy;
+        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
+    }
+
+    /// <summary>The context every OCSP signature for <paramref name="caEntity"/> is asked under.</summary>
+    private static SigningContext ContextFor(CertificateAuthorityEntity caEntity)
+        => SigningContext.ForCa(SignerCaller, SigningPurpose.Ocsp, caEntity.Id, caEntity.TenantId);
+
+    /// <summary>
+    /// Whether the signer holds the key <paramref name="key"/> among the keys of
+    /// <paramref name="caEntity"/>. Asked while choosing the responder so a missing key is
+    /// reported as it was when the keystore was consulted directly (unauthorized, or the next
+    /// candidate), rather than surfacing as a failure at signing time.
+    /// </summary>
+    private async Task<bool> SignerHoldsKeyAsync(CertificateAuthorityEntity caEntity, KeyRef key, CancellationToken ct)
+    {
+        var keys = await _signer.ListKeysAsync(ContextFor(caEntity), ct);
+        return keys.Any(k => k.Key.CertificateId == key.CertificateId);
     }
 
     /// <summary>
@@ -182,7 +211,8 @@ public class OcspResponderService : IOcspService
             return BuildStatusResponse(OcspRespStatus.TryLater, result);
         if (resolved.Status == ResolveOutcome.ResponderMisconfigured)
             return BuildStatusResponse(OcspRespStatus.Unauthorized, result);
-        if (resolved.Status != ResolveOutcome.Ok || resolved.SignerCert == null || resolved.SignerKey == null || resolved.CaCert == null)
+        if (resolved.Status != ResolveOutcome.Ok || resolved.SignerCert == null || resolved.SignerKey == null
+            || resolved.SigningContext == null || resolved.CaCert == null)
             return BuildStatusResponse(OcspRespStatus.InternalError, result);
 
         result.CaLabel = resolved.CaLabel ?? caLabel ?? string.Empty;
@@ -190,6 +220,7 @@ public class OcspResponderService : IOcspService
         var caCert = resolved.CaCert;
         var signerCert2 = resolved.SignerCert;
         var signerKey = resolved.SignerKey;
+        var signingContext = resolved.SigningContext;
         var signingCaEntity = resolved.CaEntity;
         var isOurIssuer = resolved.IsOurIssuer;
 
@@ -319,7 +350,7 @@ public class OcspResponderService : IOcspService
         {
             var sigAlgName = KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(signerCert2.GetPublicKey());
             var normalizedSigAlg = CertificateUtil.NormalizeSigAlgName(sigAlgName);
-            var sigFactory = new PrivateKeyHandleSignatureFactory(normalizedSigAlg, signerKey);
+            var sigFactory = new SigningServiceSignatureFactory(_signer, signerKey, SignatureAlgorithm.FromName(normalizedSigAlg), signingContext);
 
             // Include the responder cert chain. When the delegated
             // responder is in use, append the signing CA so strict clients can
@@ -518,6 +549,7 @@ public class OcspResponderService : IOcspService
                     CaCert = caCert,
                     SignerCert = delegatedResult.ResponderCert,
                     SignerKey = delegatedResult.ResponderKey,
+                    SigningContext = ContextFor(caEntity),
                     CaEntity = caEntity,
                     CaCertificateId = caEntity.CertificateId,
                     IsOurIssuer = true,
@@ -543,10 +575,10 @@ public class OcspResponderService : IOcspService
                 return new ResolveResult(ResolveOutcome.ResponderMisconfigured) { CaEntity = caEntity };
             }
 
-            var keyHandle = signer.PrivateKeyHandle ?? _keystore.GetPrivateKeyFor(caCert);
-            if (keyHandle == null)
+            var caKey = new KeyRef(caEntity.CertificateId.GetValueOrDefault());
+            if (!await SignerHoldsKeyAsync(caEntity, caKey, ct))
             {
-                _logger.LogWarning("OCSP: matched signer '{Subject}' but no private key handle available for CA-direct signing", caCert.SubjectDN);
+                _logger.LogWarning("OCSP: matched signer '{Subject}' but the signer holds no key for CA-direct signing", caCert.SubjectDN);
                 continue;
             }
             _logger.LogWarning(
@@ -556,7 +588,8 @@ public class OcspResponderService : IOcspService
             {
                 CaCert = caCert,
                 SignerCert = caCert,
-                SignerKey = keyHandle,
+                SignerKey = caKey,
+                SigningContext = ContextFor(caEntity),
                 CaEntity = caEntity,
                 CaCertificateId = caEntity.CertificateId,
                 IsOurIssuer = true,
@@ -654,10 +687,10 @@ public class OcspResponderService : IOcspService
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
-        var responderKeyHandle = _keystore.GetPrivateKeyFor(responderCert);
-        if (responderKeyHandle == null)
+        var responderKey = new KeyRef(caEntity.OcspResponderCertificateId.Value);
+        if (!await SignerHoldsKeyAsync(caEntity, responderKey, ct))
         {
-            _logger.LogWarning("OCSP: delegated responder cert '{Subject}' has no private key", responderCert.SubjectDN);
+            _logger.LogWarning("OCSP: delegated responder cert '{Subject}' has no private key in the signer", responderCert.SubjectDN);
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
@@ -666,7 +699,7 @@ public class OcspResponderService : IOcspService
         return new DelegatedResolveResult(DelegatedOutcome.Ok)
         {
             ResponderCert = responderCert,
-            ResponderKey = responderKeyHandle,
+            ResponderKey = responderKey,
         };
     }
 
@@ -757,7 +790,8 @@ public class OcspResponderService : IOcspService
         public ResolveOutcome Status { get; }
         public X509Certificate? CaCert { get; set; }
         public X509Certificate? SignerCert { get; set; }
-        public IPrivateKeyHandle? SignerKey { get; set; }
+        public KeyRef? SignerKey { get; set; }
+        public SigningContext? SigningContext { get; set; }
         public CertificateAuthorityEntity? CaEntity { get; set; }
         public Guid? CaCertificateId { get; set; }
         public bool IsOurIssuer { get; set; }
@@ -770,7 +804,7 @@ public class OcspResponderService : IOcspService
     {
         public DelegatedOutcome Outcome { get; }
         public X509Certificate? ResponderCert { get; set; }
-        public IPrivateKeyHandle? ResponderKey { get; set; }
+        public KeyRef? ResponderKey { get; set; }
         public DelegatedResolveResult(DelegatedOutcome outcome) { Outcome = outcome; }
     }
 }

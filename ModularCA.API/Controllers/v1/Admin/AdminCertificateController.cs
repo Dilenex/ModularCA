@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -18,6 +18,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
@@ -26,11 +27,11 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/certificates")]
 [Authorize(Policy = "CaAuditor")]
+[NodeRole(ProcessRole.Control)]
 public class AdminCertificateController(
     ICertificateStore certStore,
     ICurrentUserService currentUser,
     ICertificateAccessEvaluator certificateAccessEvaluator,
-    ICertificateExportService exportService,
     ModularCADbContext dbContext,
     IDistributedCache cache,
     ISecurityAlertService alertService,
@@ -565,29 +566,14 @@ public class AdminCertificateController(
         if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, target.CertificateId))
             return NotFound(new { error = "Certificate not found" });
 
+        // A stored private key leaves the signer as PKCS#12 under a password and in no other
+        // form; the clear-text PEM export this endpoint offered is gone with it. The holder
+        // exports PKCS#12 from the User Portal; keys generated since re-download ended were
+        // delivered once at request time and are not held at all.
         if (string.Equals(request.Format, "pem-key", StringComparison.OrdinalIgnoreCase))
-        {
-            var pem = await exportService.ExportPemWithKeyAsync(serial);
-            if (pem == null)
-                return NotFound(new { error = "Certificate not found or private key not available" });
+            return BadRequest(new { error = "Clear-text PEM export of a stored private key is no longer offered. The certificate holder exports it as PKCS#12 from the User Portal; a key generated since the CA stopped keeping keys was delivered once, with the request." });
 
-            _ = _alertService.RaiseAlertAsync("PrivateKeyExported", AlertSeverity.Critical, $"Private key exported (PEM) for certificate {serial} by {_currentUser.User?.Username}", new { serial, Format = "pem-key" });
-
-            // Audit log the PEM-key export
-            await _audit.LogAsync(
-                AuditActionType.CertificateExported,
-                _currentUser.User?.Id,
-                _currentUser.User?.Username,
-                "Certificate", serial,
-                new { Format = "pem-key" },
-                HttpContext.Connection.RemoteIpAddress?.ToString());
-
-            return File(System.Text.Encoding.UTF8.GetBytes(pem), "application/x-pem-file", $"{serial}.pem");
-        }
-        else
-        {
-            return BadRequest(new { error = "Unsupported format. Use 'pem-key'. PFX export is available via the User Portal." });
-        }
+        return BadRequest(new { error = "Unsupported format. PFX export is available via the User Portal." });
     }
 
     /// <summary>
@@ -662,11 +648,7 @@ public class AdminCertificateController(
             CertProfileId = certProfileId.Value,
             SigningProfileId = signingProfileId.Value,
             RequestorUserId = _currentUser.User.Id,
-            RenewalOfCertificateId = certEntity.CertificateId,
-            EncryptedPrivateKey = originalRequest?.EncryptedPrivateKey,
-            EncryptedAesForPrivateKey = originalRequest?.EncryptedAesForPrivateKey,
-            AesKeyEncryptionIv = originalRequest?.AesKeyEncryptionIv,
-            EncryptionCertSerialNumber = originalRequest?.EncryptionCertSerialNumber
+            RenewalOfCertificateId = certEntity.CertificateId
         };
 
         _dbContext.CertificateRequests.Add(renewalRequest);

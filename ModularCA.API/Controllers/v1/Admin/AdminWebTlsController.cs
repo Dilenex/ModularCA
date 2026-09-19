@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -15,6 +15,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -29,6 +30,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/webtls")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminWebTlsController(
     ModularCADbContext db,
     ICertificateIssuanceService issuance,

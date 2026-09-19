@@ -10,6 +10,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.RequestProfiles;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/request-profiles")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminRequestProfileController(
     RequestProfileService requestProfileService,
     IAuditService audit,

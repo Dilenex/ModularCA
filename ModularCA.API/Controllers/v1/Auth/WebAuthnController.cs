@@ -16,6 +16,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using Serilog;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -26,6 +27,7 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [ApiController]
 [Route("api/v1/auth/webauthn")]
 [Route("auth/webauthn")]
+[NodeRole(ProcessRole.Control)]
 public class WebAuthnController : ControllerBase
 {
     private readonly ModularCADbContext _db;

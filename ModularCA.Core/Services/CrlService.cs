@@ -2,11 +2,11 @@
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services.SchedulerJobs;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Scheduler;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using NCrontab;
 using Org.BouncyCastle.Asn1;
@@ -47,6 +47,15 @@ public class CrlService : ICrlService
     private readonly IAuditService _audit;
 
     /// <summary>
+    /// Signs every CRL. The service holds a <see cref="KeyRef"/> to the CA row and a context
+    /// naming the CA; the key stays with the signer.
+    /// </summary>
+    private readonly ISigningService _signer;
+
+    /// <summary>The caller identity CRL generation signs under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(CrlService);
+
+    /// <summary>
     /// Resolves the CA's published CDP URLs — the same ones <c>CertificateBuilderService</c>
     /// stamps into issued certificates — so the CRL's IssuingDistributionPoint can name the
     /// identical distribution point. See <see cref="AddIssuingDistributionPoint"/>.
@@ -68,7 +77,7 @@ public class CrlService : ICrlService
     /// scheduler's <c>CrlExported</c> dispatch event).
     /// </summary>
     public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
-        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector)
+        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer)
     {
         _dbContext = dbContext;
         _keystore = keystore;
@@ -76,6 +85,7 @@ public class CrlService : ICrlService
         _audit = audit;
         _caServiceUrls = caServiceUrls;
         _ldapSecretProtector = ldapSecretProtector;
+        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
 
     /// <summary>
@@ -101,7 +111,7 @@ public class CrlService : ICrlService
         if (ca == null)
             throw new InvalidOperationException($"CA certificate {caCertificateId} not found.");
 
-        var (caPubKey, caKeyHandle) = ResolveCaKey(ca);
+        var (caPubKey, caKey, signingContext) = await ResolveCaKeyAsync(ca, cancellationToken);
 
         // Look up the config by CaCertificateId — not SubjectDN — and
         // reject disabled configs.
@@ -205,7 +215,7 @@ public class CrlService : ICrlService
             // Sign with the CA's own public-key algorithm, not the SigAlgName
             // field that reflects how its parent signed this cert.
             var sigAlg = KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caPubKey.GetPublicKey());
-            var signer = new PrivateKeyHandleSignatureFactory(CertificateUtil.NormalizeSigAlgName(sigAlg), caKeyHandle);
+            var signer = new SigningServiceSignatureFactory(_signer, caKey, SignatureAlgorithm.FromName(sigAlg), signingContext);
             var crl = crlGen.Generate(signer);
             encoded = crl.GetEncoded();
 
@@ -319,7 +329,7 @@ public class CrlService : ICrlService
         if (ca == null)
             throw new InvalidOperationException($"CA certificate {caCertificateId} not found.");
 
-        var (caPubKey, caKeyHandle) = ResolveCaKey(ca);
+        var (caPubKey, caKey, signingContext) = await ResolveCaKeyAsync(ca, cancellationToken);
         var issuerDn = caPubKey.SubjectDN.ToString();
 
         // Find the latest full CRL — the delta is relative to this
@@ -460,7 +470,7 @@ public class CrlService : ICrlService
             AddIssuingDistributionPoint(crlGen, ca, lockedCounter, isDelta: true, deltaCdp);
 
             var sigAlg = KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caPubKey.GetPublicKey());
-            var signer = new PrivateKeyHandleSignatureFactory(CertificateUtil.NormalizeSigAlgName(sigAlg), caKeyHandle);
+            var signer = new SigningServiceSignatureFactory(_signer, caKey, SignatureAlgorithm.FromName(sigAlg), signingContext);
             var crl = crlGen.Generate(signer);
             encoded = crl.GetEncoded();
             pemString = BuildPemString(encoded);
@@ -563,12 +573,13 @@ public class CrlService : ICrlService
     }
 
     /// <summary>
-    /// Resolves the CA public cert + private key handle from the
-    /// database-backed <see cref="CertificateEntity"/> without round-tripping through the
-    /// <c>SubjectDN</c> string. Uses <c>RawCertificate</c> when present, otherwise falls back
-    /// to the pub-key stored in the keystore for legacy rows.
+    /// Resolves the CA public certificate from the database-backed <see cref="CertificateEntity"/>
+    /// without round-tripping through the <c>SubjectDN</c> string (<c>RawCertificate</c> when
+    /// present, the keystore's public copy for legacy rows), together with the reference the
+    /// signer knows the CA key by and the context naming the CA and its tenant. The key itself is
+    /// never resolved here.
     /// </summary>
-    private (X509Certificate Cert, IPrivateKeyHandle KeyHandle) ResolveCaKey(CertificateEntity ca)
+    private async Task<(X509Certificate Cert, KeyRef Key, SigningContext Context)> ResolveCaKeyAsync(CertificateEntity ca, CancellationToken cancellationToken)
     {
         X509Certificate? caCert = null;
         if (ca.RawCertificate != null && ca.RawCertificate.Length > 0)
@@ -587,10 +598,14 @@ public class CrlService : ICrlService
                 ?? throw new InvalidOperationException($"CA certificate {ca.CertificateId} not found in keystore.");
         }
 
-        var handle = _keystore.GetPrivateKeyFor(caCert)
-            ?? throw new InvalidOperationException($"Private key not found for CA: {caCert.SubjectDN}");
+        var owner = await _dbContext.CertificateAuthorities
+            .AsNoTracking()
+            .Where(c => c.CertificateId == ca.CertificateId)
+            .Select(c => new { c.Id, c.TenantId })
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new InvalidOperationException($"No certificate authority record names CA certificate {ca.CertificateId}; the signer cannot attribute its key.");
 
-        return (caCert, handle);
+        return (caCert, new KeyRef(ca.CertificateId), SigningContext.ForCa(SignerCaller, SigningPurpose.Crl, owner.Id, owner.TenantId));
     }
 
     /// <summary>

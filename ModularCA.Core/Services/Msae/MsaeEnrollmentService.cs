@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Services.Enrollment;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Core.Services.Msae.Kerberos;
@@ -65,13 +67,15 @@ public sealed class MsaeEnrollmentException(string message) : Exception(message)
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the same pipeline EST's simple enrollment runs, written for the Windows case rather
-/// than shared with it, because the two differ in what identifies the caller and in how the
-/// target profile is chosen. EST binds the CSR subject to the authenticated username; a Windows
-/// client enrolls for the machine or user it is running as and the credential it presents is
-/// an enrollment credential, not the subject's own, so no such binding is applied here. Naming
-/// policy is the request profile's job. Identity-derived subjects arrive with Kerberos
-/// authentication in a later phase.
+/// The middle of an enrollment - the CA, the protocol's enablement on it, the caller's
+/// authorization, the effective profiles, the names against the request profile, the request row,
+/// issuance or submission for approval, and the audit row - is
+/// <see cref="IEnrollmentPipeline"/>, and is the same sequence every protocol runs. What stays
+/// here is what is Windows own: reading the CMC and the PKCS#10, resolving the template a client
+/// named, building the subject from a Kerberos identity, proving renewal evidence, answering a
+/// status query, and rendering PKCS#7. EST binds the CSR subject to the authenticated username; a
+/// Windows client enrolls for the machine or user it is running as and the credential it presents
+/// is an enrollment credential, not the subject own, so no such binding is applied here.
 /// </para>
 /// <para>
 /// Profile selection follows the template the client named in its CSR, when it named one and a
@@ -91,17 +95,31 @@ public sealed class MsaeEnrollmentException(string message) : Exception(message)
 /// </remarks>
 public class MsaeEnrollmentService(
     ModularCADbContext db,
-    ICertificateIssuanceService issuance,
     ICaResolverService caResolver,
-    IEnrollmentAuthorizationService enrollmentAuth,
-    RequestProfileValidationService requestProfileValidation,
-    IProfileResolutionService profileResolution,
     IProtocolAuditService protocolAudit,
-    ILogger<MsaeEnrollmentService> logger,
-    INotificationService? notifications = null) : IMsaeEnrollmentService
+    IEnrollmentPipeline pipeline,
+    ILogger<MsaeEnrollmentService> logger) : IMsaeEnrollmentService, IEnrollmentProtocol
 {
     /// <summary>The protocol name as it appears in per-CA protocol configuration and audit rows.</summary>
     public const string Protocol = "MSAE";
+
+    /// <inheritdoc />
+    string IEnrollmentProtocol.Name => Protocol;
+
+    /// <summary>
+    /// What Windows autoenrollment offers here: enrollment, CMC renewal against the certificate
+    /// being replaced, and a status query a client asks after an approval-gated request with and
+    /// collects the certificate from.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="EnrollmentCapabilities.ReEnroll"/>: a Windows renewal is not a request
+    /// authenticated by the old certificate at the transport, it is a CMC wrapper signed by it, and
+    /// that distinction is what <see cref="EnrollmentCapabilities.Renew"/> names. Revocation and
+    /// server-side key generation are not offered by these two web services.
+    /// </remarks>
+    EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
+        EnrollmentCapabilities.Enroll | EnrollmentCapabilities.Renew
+        | EnrollmentCapabilities.Poll | EnrollmentCapabilities.Collect;
 
     /// <summary>Audit operation recorded for an issued certificate.</summary>
     public const string EnrollOperation = "Enroll";
@@ -130,6 +148,14 @@ public class MsaeEnrollmentService(
         => EnrollAsync(pkcs10Der, caller, sourceIp, caLabel, renewal: null);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The order of the refusals below is the order this service has always refused in, because a
+    /// client is told about the first thing wrong with its request and that is the answer an
+    /// operator reads. The template is resolved first, since it chooses the CA and the profiles;
+    /// the caller is then authorized against that CA by the pipeline; and the renewal evidence is
+    /// proven after that, from the pipeline post-authorization check, so that a caller who may not
+    /// enroll here learns only that.
+    /// </remarks>
     public async Task<MsaeEnrollmentResult> EnrollAsync(byte[] pkcs10Der, MsaeCaller caller, string? sourceIp, string? caLabel, MsaeRenewal? renewal)
     {
         ArgumentNullException.ThrowIfNull(pkcs10Der);
@@ -153,70 +179,34 @@ public class MsaeEnrollmentService(
             throw new MsaeEnrollmentException(reason);
         }
 
-        // Which CA and profiles: the named template if there is one, else the CA's MSAE defaults.
+        // Which CA and profiles: the named template if there is one, else the CA MSAE defaults.
+        // This is the one step of the middle a Windows request decides for itself, so it is made
+        // here and handed to the pipeline; see EnrollmentSubmission.ResolvedContext.
         var template = MsaeCsrTemplate.TryRead(pkcs10Der);
         var audit = new AuditContext(caller, sourceIp, parsedCsr, template?.Name ?? template?.Oid);
         var (context, resolvedTemplateName) = await ResolveContextAsync(template, caLabel, audit);
         if (resolvedTemplateName != null)
             audit = audit with { TemplateName = resolvedTemplateName };
 
-        // The membership check runs against the CA the request actually resolved to, which for a
-        // template request may differ from the route label; the two are reconciled above.
-        var (allowed, authError) = await enrollmentAuth.ValidateAsync(
-            Protocol, context.Ca.Label, csrPem, clientCert: null, isAuthenticated: true, caller.ActingAsUsername);
-        if (!allowed)
-            throw await RefuseAsync(audit, context.Ca, authError ?? "Enrollment not authorized.");
-
-        var (resolvedCertProfileId, certProfileError) = await requestProfileValidation
-            .ResolveCertProfileIdAsync(null, context.CertProfileId, context.RequestProfileId);
-        if (resolvedCertProfileId == null)
-            throw await RefuseAsync(audit, context.Ca, certProfileError ?? "No certificate profile is available for MSAE enrollment.");
-
-        var signingProfile = await db.SigningProfiles.FindAsync(context.SigningProfileId)
-            ?? throw new InvalidOperationException("Configured MSAE signing profile not found.");
-        var certProfile = await db.CertProfiles.FindAsync(resolvedCertProfileId.Value)
-            ?? throw new InvalidOperationException("Configured MSAE certificate profile not found.");
-
         // Windows matches a certificate to its template through this extension: without it the
         // autoenrollment pulse cannot see that it already holds one and enrolls again every time,
         // and renewal cannot tell which template to renew under. Stamped from the template as
         // stored, not from the CSR, so a client cannot claim a template it did not resolve to.
         var templateRow = await TemplateRowAsync(audit.TemplateName);
-
-        var renewed = renewal == null ? null : await ValidateRenewalAsync(renewal, context, templateRow?.Oid, audit);
-
-        var requireApproval = false;
-        var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
-        var subject = parsedCsr.SubjectName;
-
-        // A renewal's PKCS#10 has no subject of its own: the certificate being renewed names the
-        // new one, names and all, so a renewal can never drift to a subject the old one lacked.
-        if (renewed != null && string.IsNullOrWhiteSpace(subject))
-            (subject, sanJson) = RenewedSubject(renewed, renewal!.Certificate);
-
-        // A Kerberos caller's identity names the certificate; whatever the CSR carried is replaced.
-        // The request profile's naming rules still run below, so a profile can narrow, never widen.
-        if (caller.Kerberos is { } identity)
-            (subject, sanJson) = IdentitySubject(identity);
-
-        if (context.RequestProfileId != null)
-        {
-            var (isValid, error, modifiedSubject) = await requestProfileValidation
-                .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
-            if (!isValid)
-                throw await RefuseAsync(audit, context.Ca, error ?? "Request profile validation failed.");
-            if (modifiedSubject != null)
-                subject = modifiedSubject;
-
-            // Read from the resolved profile so an inheriting child cannot relax a parent's
-            // approval requirement, the same way EST does.
-            var effective = await profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
-            requireApproval = effective.RequireApproval;
-        }
-
         var requested = templateRow == null
             ? null
             : new[] { MsaeCsrTemplate.TemplateInfoExtension(templateRow.Oid, templateRow.Major, templateRow.Minor) };
+
+        var subject = parsedCsr.SubjectName;
+        IReadOnlyList<string> sans = parsedCsr.SubjectAlternativeNames;
+
+        // A Kerberos caller identity names the certificate; whatever the CSR carried is replaced.
+        // The request profile naming rules still run in the middle, so a profile can narrow, never
+        // widen. This is settled before the renewal below rather than after it, as it was, because
+        // a subject taken from the ticket wins over one taken from the certificate being renewed
+        // either way.
+        if (caller.Kerberos is { } identity)
+            (subject, sans) = IdentitySubject(identity);
 
         // The submitting identity owns the request: only it may collect the certificate later.
         var requestor = await db.Users.AsNoTracking()
@@ -224,76 +214,131 @@ public class MsaeEnrollmentService(
             .Select(u => (Guid?)u.Id)
             .FirstOrDefaultAsync();
 
-        var csrEntity = new CertRequestEntity
+        CertificateEntity? renewed = null;
+
+        var submission = new EnrollmentSubmission
         {
-            Subject = subject,
-            SubjectAlternativeNames = sanJson,
-            AdditionalExtensions = RequestedExtension.ToJson(requested),
-            RenewalOfCertificateId = renewed?.CertificateId,
+            Protocol = Protocol,
+            CaLabel = caLabel,
+            SourceIp = sourceIp,
+            ResolvedContext = context,
+            ProfileHint = audit.TemplateName,
             RequestorUserId = requestor,
-            CSR = csrPem,
-            KeyAlgorithm = parsedCsr.KeyAlgorithm,
-            KeySize = parsedCsr.KeySize,
-            SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
-            SubmittedAt = DateTime.UtcNow,
-            Status = requireApproval ? PendingApprovalStatus : "Pending",
-            CertProfileId = certProfile.Id,
-            CertProfile = certProfile,
-            SigningProfileId = signingProfile.Id,
-            SigningProfile = signingProfile,
+            RequestedExtensions = requested,
+            IssuanceRefusalIsRefusal = true,
+            Caller = new EnrollmentCaller(
+                Principal: caller.AuditPrincipal,
+                AuthMethod: caller.Kerberos != null ? EnrollmentAuthMethod.Kerberos : EnrollmentAuthMethod.HttpCredential,
+                IsVerified: true,
+                Username: caller.ActingAsUsername),
+            Request = new EnrollmentRequestMaterial
+            {
+                CsrPem = csrPem,
+                Subject = subject,
+                SubjectAlternativeNames = sans,
+                KeyAlgorithm = parsedCsr.KeyAlgorithm,
+                KeySize = parsedCsr.KeySize,
+                SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
+            },
+            AfterAuthorization = async authorized =>
+            {
+                if (renewal == null) return authorized;
+                renewed = await ValidateRenewalAsync(renewal, context, templateRow?.Oid, audit);
+
+                // A renewal PKCS#10 has no subject of its own: the certificate being renewed names
+                // the new one, names and all, so a renewal can never drift to a subject the old one
+                // lacked.
+                var material = authorized.Request;
+                if (string.IsNullOrWhiteSpace(material.Subject))
+                {
+                    material = material with
+                    {
+                        Subject = renewed.SubjectDN,
+                        SubjectAlternativeNames = RenewedNames(renewal.Certificate),
+                    };
+                }
+                return authorized with
+                {
+                    Request = material,
+                    Renewal = new EnrollmentRenewal(renewed.CertificateId, renewed.SerialNumber),
+                };
+            },
+            Audit = record => WriteMsaeAuditAsync(record, audit, renewed != null),
         };
-        db.CertificateRequests.Add(csrEntity);
-        await db.SaveChangesAsync();
 
-        if (requireApproval)
+        var outcome = await pipeline.SubmitAsync(submission);
+        switch (outcome)
         {
-            // Taken under submission: an approver owns the row now, and the client polls with
-            // the id. Audited as such, so the approval queue and the MSAE tab agree.
-            logger.LogInformation("MSAE request {RequestId} from {Caller} for {Template} at {Ca} awaits approval.",
-                csrEntity.Id, caller.AuditPrincipal, audit.TemplateName, context.Ca.Label);
-            await protocolAudit.LogMsaeAsync(PendingOperation, subject, null,
-                parsedCsr.KeyAlgorithm, parsedCsr.KeySize, audit.TemplateName, context.Ca.Label, sourceIp,
-                certificateAuthorityId: context.Ca.Id, tenantId: context.Ca.TenantId,
-                callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
-            if (notifications != null)
-                _ = notifications.NotifyCsrPendingApprovalAsync(subject, Protocol);
-            return MsaeEnrollmentResult.Pending(csrEntity.Id);
+            case EnrollmentOutcome.Issued issued:
+                if (renewed != null)
+                    logger.LogInformation("MSAE renewal: {Caller} renewed serial {OldSerial} as {NewSerial} under {Template} at {Ca}.",
+                        caller.AuditPrincipal, renewed.SerialNumber, issued.SerialNumber, audit.TemplateName, context.Ca!.Label);
+                return MsaeEnrollmentResult.Issued(Pkcs7(issued.CertificatePem, issued.ChainPem));
+
+            case EnrollmentOutcome.Pending pending:
+                // Taken under submission: an approver owns the row now, and the client polls with
+                // the id. Audited as such by the pipeline, so the approval queue and the MSAE tab
+                // agree.
+                logger.LogInformation("MSAE request {RequestId} from {Caller} for {Template} at {Ca} awaits approval.",
+                    pending.RequestId, caller.AuditPrincipal, audit.TemplateName, context.Ca!.Label);
+                return MsaeEnrollmentResult.Pending(pending.RequestId);
+
+            case EnrollmentOutcome.Refused refused:
+                // Already audited: every refusal the middle makes goes through the audit writer
+                // above, in the shape an MSAE rejection has always had.
+                throw new MsaeEnrollmentException(refused.Message);
+
+            // A CA with no certificate profile to issue from is something the client is told and
+            // the MSAE tab records, because an operator testing the endpoint needs to read it. The
+            // pipeline calls it a fault rather than a refusal - nothing about the request is wrong
+            // - and does not audit it, so the audit row is written here.
+            case EnrollmentOutcome.Failed failed when failed.Reason == EnrollmentFailureReason.NoCertificateProfileAvailable:
+                throw await RefuseAsync(audit, context.Ca, failed.Message);
+
+            // A profile row the configuration names and the database does not have is a broken
+            // installation: reported generically to the client, in the log, and nowhere else.
+            case EnrollmentOutcome.Failed failed:
+                throw new InvalidOperationException(failed.Message);
+
+            default:
+                throw new InvalidOperationException("Unrecognised enrollment outcome.");
         }
-
-        var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-        var notBefore = CertificateValidityUtil.DefaultNotBefore();
-        var notAfter = notBefore.Add(maxValidity);
-
-        IssuanceResult issued;
-        try
-        {
-            issued = await issuance.IssueCertificateAsync(csrEntity.Id, notBefore, notAfter);
-        }
-        catch (ModularCA.Shared.Errors.RequestValidationException ex)
-        {
-            // Issuance refused the request on its own rules, for example a validity window that
-            // resolves to nothing. That is a refusal the client should see, not a server fault.
-            csrEntity.Status = "Rejected";
-            await db.SaveChangesAsync();
-            throw await RefuseAsync(audit, context.Ca, ex.Message);
-        }
-
-        var serial = await db.CertificateRequests
-            .Where(c => c.Id == csrEntity.Id)
-            .Select(c => c.IssuedCertificate!.SerialNumber)
-            .FirstOrDefaultAsync();
-
-        if (renewed != null)
-            logger.LogInformation("MSAE renewal: {Caller} renewed serial {OldSerial} as {NewSerial} under {Template} at {Ca}.",
-                caller.AuditPrincipal, renewed.SerialNumber, serial, audit.TemplateName, context.Ca.Label);
-
-        await protocolAudit.LogMsaeAsync(renewed != null ? RenewOperation : EnrollOperation, subject, serial,
-            parsedCsr.KeyAlgorithm, parsedCsr.KeySize, audit.TemplateName, context.Ca.Label, sourceIp,
-            certificateAuthorityId: context.Ca.Id, tenantId: context.Ca.TenantId,
-            callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
-
-        return MsaeEnrollmentResult.Issued(await BuildChainPkcs7Async(issued.Pem, signingProfile));
     }
+
+    /// <summary>
+    /// Writes the shared audit fields the pipeline supplies as an MSAE row, in MSAE own operation
+    /// names and with the columns only it has: the template and the realm.
+    /// </summary>
+    /// <remarks>
+    /// A refusal is recorded against the request as it arrived - the CSR subject and key, not the
+    /// subject the middle would have issued - because that is the row this service has always
+    /// written and it is what an operator matches against the client log.
+    /// </remarks>
+    /// <param name="record">The shared fields; see <see cref="EnrollmentAuditRecord"/>.</param>
+    /// <param name="audit">What every row for this request has in common.</param>
+    /// <param name="renewed">Whether the request renewed a certificate, which names the operation.</param>
+    private Task WriteMsaeAuditAsync(EnrollmentAuditRecord record, AuditContext audit, bool renewed)
+        => record.Event switch
+        {
+            EnrollmentAuditEvent.Issued => protocolAudit.LogMsaeAsync(
+                renewed ? RenewOperation : EnrollOperation, record.Subject, record.SerialNumber,
+                record.KeyAlgorithm, record.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
+
+            EnrollmentAuditEvent.Pending => protocolAudit.LogMsaeAsync(
+                PendingOperation, record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
+
+            _ => protocolAudit.LogMsaeAsync(
+                RejectOperation, audit.Csr.SubjectName, null,
+                audit.Csr.KeyAlgorithm, audit.Csr.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
+                success: false, errorMessage: record.Message ?? "Enrollment refused.",
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
+        };
 
     /// <inheritdoc />
     public async Task<MsaeStatusResult> QueryStatusAsync(string requestId, MsaeCaller caller, string? sourceIp, string? caLabel)
@@ -398,8 +443,12 @@ public class MsaeEnrollmentService(
         return stored;
     }
 
-    /// <summary>The subject and names of the certificate being renewed, in the form the request row stores.</summary>
-    private static (string Subject, string SanJson) RenewedSubject(CertificateEntity stored, Org.BouncyCastle.X509.X509Certificate old)
+    /// <summary>
+    /// The alternative names of the certificate being renewed, in the <c>TYPE:value</c> form the
+    /// request row stores. The subject comes from the stored row rather than from here, so a
+    /// renewal is named by what this CA recorded and not by what the client presented.
+    /// </summary>
+    private static IReadOnlyList<string> RenewedNames(Org.BouncyCastle.X509.X509Certificate old)
     {
         var sans = new List<string>();
         var sanExt = old.GetExtensionValue(Org.BouncyCastle.Asn1.X509.X509Extensions.SubjectAlternativeName);
@@ -410,7 +459,7 @@ public class MsaeEnrollmentService(
             foreach (var name in names.GetNames())
                 sans.Add(UpnSanEncoding.Describe(name));
         }
-        return (stored.SubjectDN, JsonSerializer.Serialize(sans));
+        return sans;
     }
 
     /// <summary>What every audit row for one request has in common.</summary>
@@ -482,11 +531,11 @@ public class MsaeEnrollmentService(
     /// with a matching dNSName; a user is <c>CN=name</c> with a UPN. The policy service
     /// advertised exactly these through the template's subject name flags.
     /// </summary>
-    internal static (string Subject, string SanJson) IdentitySubject(KerberosCaller identity)
+    internal static (string Subject, IReadOnlyList<string> Sans) IdentitySubject(KerberosCaller identity)
     {
         if (identity.IsMachine)
-            return ($"CN={identity.DnsHostName}", JsonSerializer.Serialize(new[] { $"DNS:{identity.DnsHostName}" }));
-        return ($"CN={identity.Principal}", JsonSerializer.Serialize(new[] { $"{UpnSanEncoding.UpnPrefix}:{identity.Upn}" }));
+            return ($"CN={identity.DnsHostName}", new[] { $"DNS:{identity.DnsHostName}" });
+        return ($"CN={identity.Principal}", new[] { $"{UpnSanEncoding.UpnPrefix}:{identity.Upn}" });
     }
 
     /// <summary>
@@ -505,8 +554,22 @@ public class MsaeEnrollmentService(
     }
 
     /// <summary>
-    /// Wraps the issued leaf and its issuer chain, walked through the signing profile's issuer
-    /// links, as a certs-only PKCS#7.
+    /// Wraps an issued leaf and the chain the pipeline walked for it as a certs-only PKCS#7, which
+    /// is what a Windows client expects in a WS-Trust response.
+    /// </summary>
+    private static byte[] Pkcs7(string leafPem, IReadOnlyList<string> chainPem)
+    {
+        var certs = new List<X509Certificate> { CertificateUtil.ParseFromPem(leafPem) };
+        foreach (var issuerPem in chainPem)
+            certs.Add(CertificateUtil.ParseFromPem(issuerPem));
+        return Pkcs7Util.BuildCertsOnly(certs);
+    }
+
+    /// <summary>
+    /// Wraps a collected certificate and its issuer chain, walked through the signing profile's
+    /// issuer links, as a certs-only PKCS#7. The enrollment path takes the chain from the pipeline,
+    /// which walked the same links while it still had the profile in hand; a status query has only
+    /// the stored request, so it walks them here.
     /// </summary>
     private async Task<byte[]> BuildChainPkcs7Async(string leafPem, SigningProfileEntity signingProfile)
     {

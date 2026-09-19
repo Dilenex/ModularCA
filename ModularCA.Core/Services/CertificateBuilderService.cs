@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Logging;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Errors;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
@@ -20,34 +20,40 @@ namespace ModularCA.Core.Services
     /// <summary>
     /// Builds signed X.509 certificates using BouncyCastle. Takes validated issuance parameters,
     /// constructs the certificate with all required extensions (BasicConstraints, SKI, AKI,
-    /// KeyUsage, EKU, SANs, CDP, AIA, policies), and signs with the CA key.
+    /// KeyUsage, EKU, SANs, CDP, AIA, policies), and signs with the CA key through the signer:
+    /// the builder holds a <see cref="KeyRef"/> and a <see cref="SigningContext"/>, never a key.
     /// </summary>
     public class CertificateBuilderService
     {
         private readonly ICaServiceUrlService _caServiceUrlService;
+        private readonly ISigningService _signer;
         private readonly ILogger<CertificateBuilderService> _logger;
 
         /// <summary>
         /// Initializes a new instance of <see cref="CertificateBuilderService"/>.
         /// </summary>
         /// <param name="caServiceUrlService">Service for resolving AIA and CDP URLs per CA.</param>
+        /// <param name="signer">The signer that holds every CA key.</param>
         /// <param name="logger">Logger instance.</param>
-        public CertificateBuilderService(ICaServiceUrlService caServiceUrlService, ILogger<CertificateBuilderService> logger)
+        public CertificateBuilderService(ICaServiceUrlService caServiceUrlService, ISigningService signer, ILogger<CertificateBuilderService> logger)
         {
             _caServiceUrlService = caServiceUrlService;
+            _signer = signer ?? throw new ArgumentNullException(nameof(signer));
             _logger = logger;
         }
 
         /// <summary>
-        /// Builds and signs an X.509 certificate using the provided parameters.
+        /// Builds and signs an X.509 certificate using the provided parameters, signing with the
+        /// CA key <paramref name="caKey"/> through the signer under <paramref name="signingContext"/>.
         /// Adds all standard extensions: BasicConstraints (with path length from signing profile for CA certs),
         /// SKI, AKI, KeyUsage, EKU, SANs, CDP, AIA, and policies.
         /// </summary>
         /// <param name="serialNumber">The serial number for the new certificate.</param>
         /// <param name="issuerCert">The issuing CA certificate.</param>
-        /// <param name="caKeyHandle">The CA's private key handle (supports HSM).</param>
+        /// <param name="caKey">The reference to the issuing CA key; the signer resolves it from the same certificate row.</param>
+        /// <param name="signingContext">Who is asking and for which CA and tenant; the signer holds the key to it.</param>
         /// <param name="subjectDn">The subject distinguished name.</param>
-        /// <param name="subjectPublicKey">The subject's public key from the CSR.</param>
+        /// <param name="subjectPublicKey">The subject public key from the CSR.</param>
         /// <param name="validFrom">The NotBefore date.</param>
         /// <param name="validTo">The NotAfter date.</param>
         /// <param name="standardOids">Resolved standard key usage friendly names.</param>
@@ -57,10 +63,11 @@ namespace ModularCA.Core.Services
         /// <param name="signingProfile">The signing profile for policy extensions.</param>
         /// <param name="isCa">Whether the certificate being issued is a CA certificate (controls BasicConstraints and path length).</param>
         /// <returns>The signed <see cref="X509Certificate"/>.</returns>
-        public async Task<X509Certificate> BuildCertificateAsync(
+        public Task<X509Certificate> BuildCertificateAsync(
             BigInteger serialNumber,
             X509Certificate issuerCert,
-            IPrivateKeyHandle caKeyHandle,
+            KeyRef caKey,
+            SigningContext signingContext,
             X509Name subjectDn,
             AsymmetricKeyParameter subjectPublicKey,
             DateTime validFrom,
@@ -74,45 +81,56 @@ namespace ModularCA.Core.Services
             bool allowWildcardSans = false,
             IReadOnlyList<RequestedExtension>? additionalExtensions = null)
         {
-            // Defensive assertion — when the key handle is software-backed
-            // and exportable, derive the corresponding public key and compare against
-            // the issuer cert's public key. Mismatch means the caller wired the wrong
-            // (issuer cert, CA key) pair and the AKI we emit would point at a key that
-            // did not sign the certificate. HSM-backed (non-exportable) handles can't
-            // be cross-checked this way, so they're trusted — callers for HSM keys are
-            // expected to be thin resolvers that look both up from the same row.
+            ArgumentNullException.ThrowIfNull(caKey);
+            ArgumentNullException.ThrowIfNull(signingContext);
+            return BuildCertificateAsync(
+                serialNumber, issuerCert,
+                algorithm => new SigningServiceSignatureFactory(_signer, caKey, algorithm, signingContext),
+                subjectDn, subjectPublicKey, validFrom, validTo, standardOids, extendedOids,
+                subjectAlternativeNames, caCertificateId, signingProfile, isCa, allowWildcardSans, additionalExtensions);
+        }
+
+        /// <summary>
+        /// Builds and signs an X.509 certificate with whatever <paramref name="signerFor"/> returns
+        /// for the algorithm the issuer key signs with. This is the seam for a CA whose key the
+        /// signer does not hold yet: CA creation issues the infrastructure certificates of a new
+        /// root before the root is registered, and passes a factory over the key it just
+        /// generated. It goes away when CA creation generates keys inside the signer; every other
+        /// caller uses the <see cref="KeyRef"/> overload.
+        /// </summary>
+        /// <param name="serialNumber">The serial number for the new certificate.</param>
+        /// <param name="issuerCert">The issuing CA certificate.</param>
+        /// <param name="signerFor">Produces the signature factory for the algorithm the issuer key requires.</param>
+        /// <param name="subjectDn">The subject distinguished name.</param>
+        /// <param name="subjectPublicKey">The subject public key from the CSR.</param>
+        /// <param name="validFrom">The NotBefore date.</param>
+        /// <param name="validTo">The NotAfter date.</param>
+        /// <param name="standardOids">Resolved standard key usage friendly names.</param>
+        /// <param name="extendedOids">Resolved extended key usage OID strings.</param>
+        /// <param name="subjectAlternativeNames">JSON array of SANs (e.g. ["DNS:example.com"]).</param>
+        /// <param name="caCertificateId">The CA certificate ID for CDP/AIA lookup.</param>
+        /// <param name="signingProfile">The signing profile for policy extensions.</param>
+        /// <param name="isCa">Whether the certificate being issued is a CA certificate (controls BasicConstraints and path length).</param>
+        /// <returns>The signed <see cref="X509Certificate"/>.</returns>
+        public async Task<X509Certificate> BuildCertificateAsync(
+            BigInteger serialNumber,
+            X509Certificate issuerCert,
+            Func<SignatureAlgorithm, ISignatureFactory> signerFor,
+            X509Name subjectDn,
+            AsymmetricKeyParameter subjectPublicKey,
+            DateTime validFrom,
+            DateTime validTo,
+            List<string> standardOids,
+            List<string> extendedOids,
+            string? subjectAlternativeNames,
+            Guid caCertificateId,
+            SigningProfileEntity? signingProfile,
+            bool isCa = false,
+            bool allowWildcardSans = false,
+            IReadOnlyList<RequestedExtension>? additionalExtensions = null)
+        {
+            ArgumentNullException.ThrowIfNull(signerFor);
             var issuerPublicKey = issuerCert.GetPublicKey();
-            if (caKeyHandle.CanExport)
-            {
-                // Zero the DER transport buffer as soon as BC has consumed it.
-                // This assertion derives the CA public key from the exported private key to
-                // cross-check the caller-supplied issuer cert. For HSM handles the check is
-                // skipped (CanExport == false); the signing itself still goes through the
-                // handle's Sign(...) API via PrivateKeyHandleSignatureFactory below.
-                AsymmetricKeyParameter? derivedPub = null;
-                var derBytes = caKeyHandle.ExportPrivateKeyDer();
-                try
-                {
-                    var derivedPriv = Org.BouncyCastle.Security.PrivateKeyFactory.CreateKey(derBytes);
-                    derivedPub = DerivePublicKey(derivedPriv);
-                }
-                catch
-                {
-                    // Best-effort: if derivation fails for this key type, let the signer
-                    // catch any real mismatch downstream rather than blocking issuance.
-                }
-                finally
-                {
-                    if (derBytes != null)
-                        System.Security.Cryptography.CryptographicOperations.ZeroMemory(derBytes);
-                }
-                if (derivedPub != null && !issuerPublicKey.Equals(derivedPub))
-                {
-                    throw new InvalidOperationException(
-                        "Issuer certificate public key does not match CA key handle public key. " +
-                        "Refusing to sign to avoid producing a certificate whose AKI points at a key that did not sign it.");
-                }
-            }
 
             var certGen = new X509V3CertificateGenerator();
             certGen.SetSerialNumber(serialNumber);
@@ -308,9 +326,8 @@ namespace ModularCA.Core.Services
             // can never pre-empt the profile's say on an OID it governs.
             AddRequestedExtensions(certGen, additionalExtensions);
 
-            // === Sign cert (via key handle — supports HSM) ===
-            var sigAlgName = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(issuerCert.GetPublicKey()));
-            var signer = new PrivateKeyHandleSignatureFactory(sigAlgName, caKeyHandle);
+            // === Sign through the signer, with the algorithm the issuer key type requires ===
+            var signer = signerFor(SignatureAlgorithm.ForPublicKey(issuerCert.GetPublicKey()));
             return certGen.Generate(signer);
         }
 
@@ -636,56 +653,10 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Applies <see cref="DnComponentSanitizer"/> to every RDN component of a
-        /// comma-separated DN string, rebuilding it in canonical form. Used by
-        /// <see cref="ParseSubtrees"/> so NameConstraints subtrees can't carry
-        /// invisible / spoofing characters into a cert.
+        /// Applies <see cref="DnComponentSanitizer"/> to every component of a distinguished name.
+        /// Used by <see cref="ParseSubtrees"/> so name-constraint subtrees cannot carry invisible
+        /// or spoofing characters into a certificate.
         /// </summary>
-        private static string SanitizeDnString(string dn)
-        {
-            // Cheap pre-parser: split on commas that are not escaped. X509Name
-            // re-parses the result so we keep the same canonicalisation
-            // semantics for the final construct; we're just rejecting malicious
-            // characters up front.
-            var parts = dn.Split(',');
-            var rebuilt = new List<string>(parts.Length);
-            foreach (var raw in parts)
-            {
-                var eq = raw.IndexOf('=');
-                if (eq <= 0)
-                {
-                    throw new InvalidOperationException($"DN component '{raw}' is missing a '='.");
-                }
-                var field = raw[..eq].Trim();
-                var value = raw[(eq + 1)..];
-                var sanitized = DnComponentSanitizer.Sanitize(field, value, DnComponentSanitizer.GetMaxLength(field));
-                rebuilt.Add($"{field}={sanitized}");
-            }
-            return string.Join(",", rebuilt);
-        }
-
-        /// <summary>
-        /// Derives the matching <see cref="AsymmetricKeyParameter"/> public key for
-        /// a software-backed private key, supporting RSA, ECDSA, Ed25519/Ed448,
-        /// ML-DSA and SLH-DSA. Returns <c>null</c> for unknown key types — the
-        /// AKI assert treats that as "unable to verify, trust the caller".
-        /// </summary>
-        private static AsymmetricKeyParameter? DerivePublicKey(AsymmetricKeyParameter priv)
-        {
-            if (!priv.IsPrivate) return null;
-            return priv switch
-            {
-                Org.BouncyCastle.Crypto.Parameters.RsaPrivateCrtKeyParameters rsa =>
-                    new Org.BouncyCastle.Crypto.Parameters.RsaKeyParameters(false, rsa.Modulus, rsa.PublicExponent),
-                Org.BouncyCastle.Crypto.Parameters.ECPrivateKeyParameters ec =>
-                    new Org.BouncyCastle.Crypto.Parameters.ECPublicKeyParameters(
-                        ec.AlgorithmName, ec.Parameters.G.Multiply(ec.D), ec.Parameters),
-                Org.BouncyCastle.Crypto.Parameters.Ed25519PrivateKeyParameters ed25519 =>
-                    ed25519.GeneratePublicKey(),
-                Org.BouncyCastle.Crypto.Parameters.Ed448PrivateKeyParameters ed448 =>
-                    ed448.GeneratePublicKey(),
-                _ => null
-            };
-        }
+        private static string SanitizeDnString(string dn) => DnComponentSanitizer.SanitizeDistinguishedName(dn);
     }
 }

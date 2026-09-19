@@ -79,8 +79,14 @@ mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true
 # deploy/ is gitignored (operator-specific), so tolerate its absence on a clean clone.
 if [[ -d deploy ]]; then
-    cp deploy/modularca.service deploy/nginx-modularca.conf deploy/nftables-modularca.conf \
+    cp deploy/modularca.service deploy/modularca-signer.service \
+       deploy/nginx-modularca.conf deploy/nftables-modularca.conf \
        "$STAGE/deploy/" 2>/dev/null || true
+    # The per-role unit drop-ins for a split install; examples, applied by the operator.
+    if [[ -d deploy/dropins ]]; then
+        mkdir -p "$STAGE/deploy/dropins"
+        cp deploy/dropins/*.conf "$STAGE/deploy/dropins/" 2>/dev/null || true
+    fi
 fi
 # LICENSE and THIRD-PARTY-NOTICES.md are not optional extras. This archive is a binary
 # distribution of AGPL-3.0 software containing MIT, BSD and Apache-2.0 components, and every

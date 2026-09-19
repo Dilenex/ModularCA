@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Bootstrap.Crypto;
 using ModularCA.Core.Helpers;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using MySqlConnector;
 using System.IO.Compression;
@@ -40,19 +41,40 @@ internal static class BackupSecretDenylist
 /// Provides full backup and restore of ModularCA databases, keystores, and configuration,
 /// including schema version tracking to detect incompatible database changes.
 /// </summary>
+/// <remarks>
+/// The keystore material in a backup comes from the signer and goes back through it: a backup
+/// asks <see cref="ISigningService.ExportKeyAsync"/> for each keystore file under the backup
+/// wrap, which returns the file as the signer keeps it, encrypted under the keystore
+/// passphrases and signed by the pinned signer; a restore offers each file back through
+/// <see cref="ISigningService.ImportKeyAsync"/> under the restore context, and the signer
+/// verifies the signature against the pin before anything in place changes. Nothing here reads
+/// a keystore file or touches key material. The archive layout is unchanged: the files sit
+/// under <c>keystores/</c> by name, so an archive from before the signer restores the same way.
+/// </remarks>
 public static class BackupRestore
 {
+    /// <summary>The caller a backup names at the signer.</summary>
+    private const string BackupCaller = "backup";
+
+    /// <summary>The caller a restore names at the signer.</summary>
+    private const string RestoreCaller = "restore";
+
     /// <summary>
     /// Creates a compressed backup archive containing databases, keystores, and configuration files.
     /// The backup manifest includes a schema version derived from the current database table names.
     /// Validates that the output path and encryption key path do not escape the application directory.
     /// </summary>
     /// <param name="outputPath">Optional explicit path for the output archive. When null, defaults to the application base directory.</param>
+    /// <param name="signerForAppDatabase">
+    /// Resolves the signer the keystore files are exported through, given the application
+    /// database's connection string; the node passes its own signer and ignores the argument,
+    /// the command line builds a maintenance signer over it.
+    /// </param>
     /// <returns>0 on success, non-zero on failure.</returns>
-    public static async Task<int> Backup(string? outputPath)
+    public static async Task<int> Backup(string? outputPath, Func<string, ISigningService> signerForAppDatabase)
     {
+        ArgumentNullException.ThrowIfNull(signerForAppDatabase);
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
-        var keystoreDir = Path.Combine(AppContext.BaseDirectory, "keystores");
         var configPath = Path.Combine(configDir, "config.yaml");
 
         if (!File.Exists(configPath))
@@ -115,14 +137,18 @@ public static class BackupRestore
                 }
             }
 
-            // 2. Copy keystores
+            // 2. Keystores, through the signer. Each file arrives as the signer keeps it, already
+            // encrypted and signed, and is written under keystores/ by name as before.
             var backupKeystores = Path.Combine(backupDir, "keystores");
-            if (Directory.Exists(keystoreDir))
+            Console.Write("  Exporting keystores...");
+            var exported = await ExportKeystoresAsync(signerForAppDatabase(AppConnectionString(config)), BackupCaller);
+            if (exported.Count > 0)
             {
-                Console.Write("  Copying keystores...");
-                CopyDirectory(keystoreDir, backupKeystores);
-                Console.WriteLine(" ✓");
+                Directory.CreateDirectory(backupKeystores);
+                foreach (var (name, bytes) in exported)
+                    File.WriteAllBytes(Path.Combine(backupKeystores, name), bytes);
             }
+            Console.WriteLine($" ✓ ({exported.Count} file(s))");
 
             // 3. Copy config — explicit deny-list to keep KEKs and secret-bearing
             // files OUT of the archive that they protect. Anything matching the denylist is
@@ -147,8 +173,7 @@ public static class BackupRestore
             Console.WriteLine($" CAs={caCount}, Certs={certCount}, Users={userCount}");
 
             // 6. Check integrity indicators
-            var keystoreIntegrity = Directory.Exists(backupKeystores) &&
-                Directory.GetFiles(backupKeystores, "*", SearchOption.AllDirectories).Length > 0;
+            var keystoreIntegrity = exported.Count > 0;
             var dbIntegrity = File.Exists(appDumpPath) && new FileInfo(appDumpPath).Length > 0;
 
             // 7. Write manifest (includes schema version and extended metadata)
@@ -329,14 +354,20 @@ public static class BackupRestore
     /// when the local <c>backup-password.key</c> file is missing or mismatched. When non-null, this
     /// password is used to re-derive the KEK via scrypt using the parameters stored in the archive header.
     /// </param>
+    /// <param name="signerForAppDatabase">
+    /// Resolves the signer the keystore files are imported through, given the connection
+    /// string of the application database the archive is restored into; the node passes its
+    /// own signer and ignores the argument, the command line builds a maintenance signer over it.
+    /// </param>
     /// <param name="interactive">
     /// When true (CLI path), prompts on stdin for the literal "RESTORE" confirmation before any
     /// destructive action. When false (API path), the caller is expected to have enforced its own
     /// confirmation (step-up MFA + single-use restore token) and the prompt is skipped.
     /// </param>
     /// <returns>0 on success, non-zero on failure.</returns>
-    public static async Task<int> Restore(string archivePath, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true)
+    public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true)
     {
+        ArgumentNullException.ThrowIfNull(signerForAppDatabase);
         if (!File.Exists(archivePath))
         {
             Console.WriteLine($"❌ Backup archive not found: {archivePath}");
@@ -344,7 +375,6 @@ public static class BackupRestore
         }
 
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
-        var keystoreDir = Path.Combine(AppContext.BaseDirectory, "keystores");
         var restoreDir = Path.Combine(Path.GetTempPath(), $"modularca-restore-{Guid.NewGuid():N}");
         string? tempDecryptedZip = null;
 
@@ -548,24 +578,6 @@ public static class BackupRestore
                 Console.WriteLine("(i) Non-interactive restore — confirmation enforced upstream by API.");
             }
 
-            // Capture a pre-restore snapshot of the LIVE keystores + DB before any
-            // destructive write. If the snapshot fails, abort the restore — operators must not
-            // lose the only copy of the current state to a botched restore.
-            var snapshotPath = Path.Combine(
-                AppContext.BaseDirectory,
-                $"pre-restore-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
-            try
-            {
-                CreatePreRestoreSnapshot(snapshotPath, configDir, keystoreDir);
-                Console.WriteLine($"  ✓ Pre-restore snapshot saved to: {snapshotPath}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Pre-restore snapshot failed: {ex.Message}");
-                Console.WriteLine("   Aborting restore — refusing to destroy live state without a rollback safety net.");
-                return 1;
-            }
-
             // Load the backup's config to get DB credentials
             var backupConfigPath = Path.Combine(restoreDir, "config", "config.yaml");
             if (!File.Exists(backupConfigPath))
@@ -575,6 +587,32 @@ public static class BackupRestore
             }
             var backupConfig = YamlConfigLoader.Load(backupConfigPath);
             OverlayDbYaml(backupConfig, Path.GetDirectoryName(backupConfigPath)!);
+
+            // The signer the keystore files go back through, over the database the archive is
+            // restored into. It is also what takes the pre-restore snapshot of the live files.
+            var signer = signerForAppDatabase(AppConnectionString(backupConfig));
+
+            // Capture a pre-restore snapshot of the LIVE keystores + config before any
+            // destructive write. If the snapshot fails, abort the restore — operators must not
+            // lose the only copy of the current state to a botched restore. The live keystore
+            // files come from the signer; they are kept in memory too, to put back if the
+            // restore of the keystores fails part way.
+            var snapshotPath = Path.Combine(
+                AppContext.BaseDirectory,
+                $"pre-restore-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+            IReadOnlyList<(string Name, byte[] Bytes)> liveKeystores;
+            try
+            {
+                liveKeystores = await ExportKeystoresAsync(signer, RestoreCaller);
+                CreatePreRestoreSnapshot(snapshotPath, configDir, liveKeystores);
+                Console.WriteLine($"  ✓ Pre-restore snapshot saved to: {snapshotPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Pre-restore snapshot failed: {ex.Message}");
+                Console.WriteLine("   Aborting restore — refusing to destroy live state without a rollback safety net.");
+                return 1;
+            }
 
             // Validate database name identifiers before use in command args
             BootstrapDatabaseSetup.ValidateIdentifier(backupConfig.DB.App.Database, "app database name");
@@ -614,79 +652,60 @@ public static class BackupRestore
                 }
             }
 
-            // 2. Restore keystores
-            //
-            // The previous implementation unconditionally deleted the
-            // live keystore directory before any validation, so a corrupted or tampered
-            // archive could destroy the operator's only copy. We now:
-            //   (a) rename the live directory to keystoreDir.bak.<timestamp> BEFORE the
-            //       destructive copy, so a failure at any later step leaves the pre-image
-            //       in place for manual recovery;
-            //   (b) copy the archive's keystores into place;
-            //   (c) parse every restored *.keystore file and call
-            //       KeystoreService.VerifyKeystoreFileSignature against the (just-restored)
-            //       app database's pinned signing CA; if ANY restored keystore fails
-            //       verification we delete the new dir, rename the .bak back into place,
-            //       and abort the restore with a non-zero exit code.
-            //
-            // This closes the cases where restore overwrote without verifying and where there was no
-            // pre-restore rollback for the keystore dir itself (the snapshot covers
-            // the archive-level rollback but not in-place swap safety).
+            // 2. Restore keystores, through the signer. Each file from the archive is offered
+            // under the restore context; the signer verifies its signature against the pinned
+            // signer in the just-restored app database before it replaces the file in place, and
+            // keeps the previous file beside it. A file that does not verify is refused and
+            // nothing of it lands. If a later file fails after an earlier one was replaced, the
+            // earlier ones are put back from the pre-restore snapshot through the same door.
             var backupKeystores = Path.Combine(restoreDir, "keystores");
-            string? keystoreBakDir = null;
             if (Directory.Exists(backupKeystores))
             {
                 Console.Write("  Restoring keystores...");
-                if (Directory.Exists(keystoreDir))
+                var restoreContext = new SigningContext(RestoreCaller, SigningPurpose.Restore, null, null);
+                var restored = new List<string>();
+                string? failure = null;
+                foreach (var path in Directory.GetFiles(backupKeystores, "*.keystore", SearchOption.TopDirectoryOnly).OrderBy(p => p, StringComparer.Ordinal))
                 {
-                    keystoreBakDir = $"{keystoreDir}.bak.{DateTime.UtcNow:yyyyMMdd-HHmmss}";
-                    Directory.Move(keystoreDir, keystoreBakDir);
-                }
-                try
-                {
-                    CopyDirectory(backupKeystores, keystoreDir);
-                }
-                catch
-                {
-                    // Copy failed before we touched the live dir further — roll the .bak back into place.
-                    if (keystoreBakDir != null && Directory.Exists(keystoreBakDir))
+                    var name = Path.GetFileName(path);
+                    try
                     {
-                        try { if (Directory.Exists(keystoreDir)) Directory.Delete(keystoreDir, true); } catch { }
-                        Directory.Move(keystoreBakDir, keystoreDir);
+                        await signer.ImportKeyAsync(new KeyMaterial(File.ReadAllBytes(path), KeyMaterial.KeystoreFile, Guid.Empty, name), restoreContext);
+                        restored.Add(name);
                     }
-                    throw;
+                    catch (Exception ex)
+                    {
+                        failure = $"{name}: {ex.Message}";
+                        break;
+                    }
                 }
-                Console.WriteLine(" ✓");
 
-                // Verify every restored keystore file against the just-restored
-                // app database's pinned signing CA before completing the restore. We open a
-                // short-lived DbContext directly against backupConfig's app DB credentials
-                // (since config hasn't been copied into place yet). Any failure triggers the
-                // rollback of the keystore directory.
-                try
+                if (failure == null)
                 {
-                    VerifyRestoredKeystoresOrThrow(keystoreDir, backupConfig);
-                    Console.WriteLine("  ✓ Restored keystores passed signature verification.");
+                    Console.WriteLine($" ✓ ({restored.Count} file(s) verified and in place)");
                 }
-                catch (Exception verifyEx)
+                else
                 {
-                    Console.WriteLine($"  ❌ Restored keystore signature verification failed: {verifyEx.Message}");
-                    // Roll the .bak directory back into place so the operator still has the
-                    // previous keystore state on disk.
-                    try { if (Directory.Exists(keystoreDir)) Directory.Delete(keystoreDir, true); } catch { }
-                    if (keystoreBakDir != null && Directory.Exists(keystoreBakDir))
+                    Console.WriteLine();
+                    Console.WriteLine($"  ❌ Restored keystore refused by the signer: {failure}");
+                    foreach (var name in restored)
                     {
-                        Directory.Move(keystoreBakDir, keystoreDir);
-                        keystoreBakDir = null;
+                        var live = liveKeystores.FirstOrDefault(k => k.Name == name);
+                        if (live.Bytes == null)
+                            continue;
+                        try
+                        {
+                            await signer.ImportKeyAsync(new KeyMaterial(live.Bytes, KeyMaterial.KeystoreFile, Guid.Empty, name), restoreContext);
+                            Console.WriteLine($"     {name}: previous file put back.");
+                        }
+                        catch (Exception rollbackEx)
+                        {
+                            Console.WriteLine($"     {name}: the previous file could not be put back ({rollbackEx.Message}); " +
+                                              $"it is kept beside the live file as {name}.bak.<timestamp>, and the pre-restore snapshot holds a copy.");
+                        }
                     }
-                    Console.WriteLine("     Pre-restore keystore directory rolled back.");
+                    Console.WriteLine("     Pre-restore keystore state restored where possible; the restore is aborted.");
                     return 1;
-                }
-
-                // Verification succeeded — drop the .bak dir now that the new files are proven.
-                if (keystoreBakDir != null && Directory.Exists(keystoreBakDir))
-                {
-                    try { Directory.Delete(keystoreBakDir, true); } catch { }
                 }
             }
 
@@ -804,124 +823,6 @@ public static class BackupRestore
         var migHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(migJoined)))[..16].ToLowerInvariant();
 
         return $"tables:{tableCount}:{tableHash}:migrations:{migCount}:{migHash}";
-    }
-
-    /// <summary>
-    /// Verifies every <c>*.keystore</c> file under <paramref name="keystoreDir"/>
-    /// against the just-restored app database's pinned signing CA. Opens a short-lived
-    /// <see cref="ModularCA.Database.ModularCADbContext"/> from the backup's own config
-    /// (since the live config hasn't been written yet at this point in the restore flow)
-    /// and calls <see cref="ModularCA.Keystore.Services.KeystoreService.VerifyKeystoreFileSignature"/>
-    /// for each file. Throws on any verification failure so the caller can roll back the
-    /// restore before the operator reboots into a tamper-signed keystore.
-    /// <para>
-    /// The pin itself is authenticated first via
-    /// <see cref="ModularCA.Keystore.Services.KeystoreService.LoadVerifiedPinnedSpki"/>. Verifying
-    /// a file signature against a pin nobody checked only proves the file matches whatever the DB
-    /// says — which is worthless if the DB is what the attacker wrote to, and the DB here has just
-    /// been restored from an archive. When the secondary passphrase cannot be resolved the check
-    /// degrades to a warning rather than failing the restore; see
-    /// <see cref="TryLoadSecondaryPassphrase"/>.
-    /// </para>
-    /// </summary>
-    private static void VerifyRestoredKeystoresOrThrow(
-        string keystoreDir,
-        ModularCA.Shared.Models.Config.SystemConfig backupConfig)
-    {
-        var files = Directory.GetFiles(keystoreDir, "*.keystore", SearchOption.TopDirectoryOnly);
-        if (files.Length == 0)
-            return;
-
-        // Opened against the backup's own config (not the live
-        // config.yaml), so use the SslMode that was stamped into the backup. Default to
-        // Required on parse failure.
-        var restoreSslMode = Enum.TryParse<MySqlSslMode>(backupConfig.DB.App.SslMode, ignoreCase: true, out var _restoreSsl)
-            ? _restoreSsl : MySqlSslMode.Required;
-        var appCsb = new MySqlConnectionStringBuilder
-        {
-            Server = backupConfig.DB.App.Host,
-            Port = (uint)backupConfig.DB.App.Port,
-            Database = backupConfig.DB.App.Database,
-            UserID = backupConfig.DB.App.Username,
-            Password = backupConfig.DB.App.Password,
-            SslMode = restoreSslMode,
-        };
-        var options = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>()
-            .UseMySql(appCsb.ConnectionString, Microsoft.EntityFrameworkCore.ServerVersion.AutoDetect(appCsb.ConnectionString))
-            .Options;
-        using var db = new ModularCA.Database.ModularCADbContext(options);
-
-        foreach (var path in files)
-        {
-            var name = Path.GetFileName(path);
-
-            // Authenticate the pin before verifying anything against it. GetPinnedSignerSpki,
-            // used here previously, returns the pin WITHOUT checking the MAC that protects it —
-            // so an attacker who could write to the app DB could swap the pin and have their own
-            // CA accepted as the keystore signer, which is precisely what this step exists to
-            // catch. The runtime loader (KeystoreService.LoadCertKeysInner) has always done the
-            // MAC check; this was the sibling that missed it.
-            var secondary = TryLoadSecondaryPassphrase(name, out var whyNot);
-            string? pinned;
-            if (secondary != null)
-            {
-                // Throws on a MAC mismatch, which the caller turns into a rollback. A mismatch
-                // means either the pin was tampered with or the secondary passphrase changed
-                // since the backup — and in the latter case the restored keystores could not
-                // have been decrypted at first boot anyway, so failing here surfaces the problem
-                // while the rollback is still available.
-                pinned = ModularCA.Keystore.Services.KeystoreService.LoadVerifiedPinnedSpki(db, name, secondary);
-            }
-            else
-            {
-                Console.WriteLine(
-                    $"  [WARNING] Could not resolve the secondary passphrase for '{name}' ({whyNot}), " +
-                    "so its SPKI pin could not be authenticated. Signature verification proceeds " +
-                    "against an UNVERIFIED pin. Set MODULARCA_KEYSTORE_SECONDARY_PASSPHRASE or " +
-                    "restore config/keystore.yaml before re-running to close this gap.");
-                pinned = ModularCA.Keystore.Services.KeystoreService.GetPinnedSignerSpki(db, name);
-            }
-
-            // If the row has no pin at all, the legacy fallback in KeystoreService.FindValidSigner
-            // still runs but emits a warning. After restoring from an install with signer pinning the
-            // pin should always be present.
-            ModularCA.Keystore.Services.KeystoreService.VerifyKeystoreFileSignature(path, db, pinned);
-        }
-    }
-
-    /// <summary>
-    /// Resolves the secondary keystore passphrase for pin authentication during a restore, or
-    /// null when no source has it.
-    /// <para>
-    /// Deliberately reads the LIVE <c>config/keystore.yaml</c> rather than the archive's copy:
-    /// <see cref="BackupSecretDenylist"/> keeps <c>keystore.yaml</c> out of every backup, so the
-    /// archive has no copy to read and the on-disk file is untouched by the restore. That is also
-    /// the correct secret — the restored keystore files can only be opened with the secondary
-    /// passphrase currently in effect on this host.
-    /// </para>
-    /// <para>
-    /// Returns null rather than throwing for ANY resolution failure — absent file, missing entry,
-    /// blank value, malformed YAML. A missing file is a legitimate state part-way through a
-    /// disaster recovery, and the rest are operator problems that should not abort a restore that
-    /// would otherwise succeed. Failing open here is safe precisely because the caller falls back
-    /// to the behaviour that shipped before this check existed, and says so loudly;
-    /// <paramref name="reason"/> carries the detail into that warning.
-    /// </para>
-    /// </summary>
-    private static string? TryLoadSecondaryPassphrase(string keystoreName, out string reason)
-    {
-        try
-        {
-            var yamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-            var value = ModularCA.Keystore.Config.KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
-            reason = string.Empty;
-            return value;
-        }
-        catch (Exception ex)
-        {
-            reason = ex.Message;
-            return null;
-        }
     }
 
     /// <summary>
@@ -1223,16 +1124,16 @@ public static class BackupRestore
     }
 
     /// <summary>
-    /// Captures a pre-restore snapshot of the live keystores and config directories into a
-    /// timestamped ZIP file, providing a manual rollback path if the restore corrupts state.
-    /// The snapshot intentionally includes the secret-bearing files (it is local-only,
-    /// is owned by the operator, and is never uploaded). The snapshot is the operator's last line
-    /// of defense and must not be sanitised.
+    /// Captures a pre-restore snapshot of the live config directory and the live keystore
+    /// files, as the signer exported them, into a timestamped ZIP file, providing a manual
+    /// rollback path if the restore corrupts state. The snapshot intentionally includes the
+    /// secret-bearing config files (it is local-only, is owned by the operator, and is never
+    /// uploaded). The snapshot is the operator's last line of defense and must not be sanitised.
     /// </summary>
     /// <param name="destinationZip">Absolute path where the snapshot ZIP is written.</param>
     /// <param name="configDir">Absolute path to the live <c>config/</c> directory.</param>
-    /// <param name="keystoreDir">Absolute path to the live <c>keystores/</c> directory.</param>
-    private static void CreatePreRestoreSnapshot(string destinationZip, string configDir, string keystoreDir)
+    /// <param name="keystores">The live keystore files by name, as the signer exported them.</param>
+    private static void CreatePreRestoreSnapshot(string destinationZip, string configDir, IReadOnlyList<(string Name, byte[] Bytes)> keystores)
     {
         var stagingDir = Path.Combine(Path.GetTempPath(), $"modularca-pre-restore-{Guid.NewGuid():N}");
         try
@@ -1241,8 +1142,13 @@ public static class BackupRestore
             FileSecurityUtil.SetDirectoryOwnerOnly(stagingDir);
             if (Directory.Exists(configDir))
                 CopyDirectory(configDir, Path.Combine(stagingDir, "config"));
-            if (Directory.Exists(keystoreDir))
-                CopyDirectory(keystoreDir, Path.Combine(stagingDir, "keystores"));
+            if (keystores.Count > 0)
+            {
+                var keystoreStaging = Path.Combine(stagingDir, "keystores");
+                Directory.CreateDirectory(keystoreStaging);
+                foreach (var (name, bytes) in keystores)
+                    File.WriteAllBytes(Path.Combine(keystoreStaging, name), bytes);
+            }
 
             if (File.Exists(destinationZip))
                 throw new InvalidOperationException($"Snapshot path '{destinationZip}' already exists.");
@@ -1253,6 +1159,49 @@ public static class BackupRestore
         {
             try { Directory.Delete(stagingDir, true); } catch { }
         }
+    }
+
+    /// <summary>
+    /// Exports every keystore file a backup carries through the signer under the backup wrap,
+    /// by name. A keystore the signer does not keep is skipped, since a node that has never
+    /// been bootstrapped has none; any other refusal propagates, because a backup that silently
+    /// lacks its keystores is worse than none.
+    /// </summary>
+    private static async Task<IReadOnlyList<(string Name, byte[] Bytes)>> ExportKeystoresAsync(ISigningService signer, string caller)
+    {
+        var context = new SigningContext(caller, SigningPurpose.Backup, null, null);
+        var files = new List<(string, byte[])>();
+        foreach (var name in KeyRef.BackupKeystores)
+        {
+            try
+            {
+                files.Add((name, await signer.ExportKeyAsync(KeyRef.ForKeystore(name), ExportWrap.ForKeystoreFile(), context)));
+            }
+            catch (SigningRefusedException ex) when (ex.Reason == SigningRefusalReason.UnknownKey)
+            {
+                // Not kept: nothing to carry.
+            }
+        }
+        return files;
+    }
+
+    /// <summary>
+    /// The application database's connection string as the configuration names it, honouring
+    /// the configured SSL mode. Used for the signer and the schema probes alike.
+    /// </summary>
+    private static string AppConnectionString(ModularCA.Shared.Models.Config.SystemConfig config)
+    {
+        var sslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var parsed)
+            ? parsed : MySqlSslMode.Required;
+        return new MySqlConnectionStringBuilder
+        {
+            Server = config.DB.App.Host,
+            Port = (uint)config.DB.App.Port,
+            UserID = config.DB.App.Username,
+            Password = config.DB.App.Password,
+            Database = config.DB.App.Database,
+            SslMode = sslMode,
+        }.ConnectionString;
     }
 
     /// <summary>

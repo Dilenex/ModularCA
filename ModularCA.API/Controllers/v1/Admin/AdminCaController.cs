@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -15,6 +15,7 @@ using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.ComponentModel.DataAnnotations;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin
 {
@@ -29,7 +30,8 @@ namespace ModularCA.API.Controllers.v1.Admin
     [ApiController]
     [Route("api/v1/admin/authorities")]
     [Authorize]
-    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc) : ControllerBase
+    [NodeRole(ProcessRole.Control)]
+    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc, IFeatureFlagService featureFlags) : ControllerBase
     {
         private readonly ICertificateStore _certService = certService;
         private readonly ICurrentUserService _currentUser = currentUser;
@@ -40,6 +42,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly ISecurityAlertService _alertService = alertService;
         private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
         private readonly IKeyCeremonyService _ceremonySvc = ceremonySvc;
+        private readonly IFeatureFlagService _featureFlags = featureFlags;
 
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
@@ -244,8 +247,12 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 visited.Add(ca.Id);
 
+                // Protocols disabled system-wide are left out here as they are on the protocol
+                // configuration page: the row stays in the table, but a protocol this deployment
+                // does not serve is not listed as configured on the CA.
                 var caProtocols = protocolConfigs
-                    .Where(pc => pc.CaId == ca.Id)
+                    .Where(pc => pc.CaId == ca.Id
+                        && _featureFlags.IsEnabled(ModularCA.Shared.Enrollment.ProtocolCompatibility.FeatureFlagName(pc.Protocol)))
                     .Select(pc => new
                     {
                         pc.Protocol,
@@ -288,6 +295,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                         ca.Certificate.ExtendedKeyUsagesJson,
                         ca.Certificate.Pem,
                     } : null,
+                    // The key algorithm the CA actually has, read from its certificate. The console
+                    // needs it to say, before anything is saved, that SCEP cannot run here.
+                    KeyAlgorithm = ModularCA.Shared.Enrollment.ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate),
                     ProtocolConfigs = caProtocols,
                     ServiceUrls = urls != null ? new
                     {

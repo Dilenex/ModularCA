@@ -1,0 +1,22 @@
+# The node's signer, a second container in the same pod running the same image with
+# --role signer. It alone mounts the keystores; the node container never sees a key. The two
+# talk over the pod's loopback with mutual TLS pinned both ways (see README, "Split the signer").
+[Unit]
+Description=ModularCA node signer
+After=modularca-node-db.service
+Requires=modularca-node-db.service
+
+[Container]
+Image=localhost/modularca-node:0.3.0-dev
+Pod=modularca-node.pod
+Exec=--role signer
+Volume=modularca-node-config:/opt/modularca/config:Z
+Volume=modularca-node-keystores:/opt/modularca/keystores:Z
+Volume=modularca-node-data:/var/lib/modularca:Z
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

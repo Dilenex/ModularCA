@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Enrollment;
 using ModularCA.Database;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
@@ -27,18 +29,35 @@ public class EstPendingApprovalException : Exception
 /// <summary>
 /// Implements the EST (Enrollment over Secure Transport) protocol for certificate enrollment and renewal.
 /// </summary>
-public class EstService : IEstService
+public class EstService : IEstService, IEnrollmentProtocol
 {
+    /// <summary>The protocol name as per-CA protocol configuration and audit rows record it.</summary>
+    public const string Protocol = "EST";
+
+    /// <inheritdoc />
+    string IEnrollmentProtocol.Name => Protocol;
+
+    /// <summary>
+    /// What EST offers here: first issuance, and re-enrollment on the certificate the client
+    /// already holds (RFC 7030 4.2.1 and 4.2.2).
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="EnrollmentCapabilities.Poll"/> or <see cref="EnrollmentCapabilities.Collect"/>:
+    /// an approval-gated EST request is answered 202 and RFC 7030 has the client retry the whole
+    /// enrollment rather than ask after the one it made. Not
+    /// <see cref="EnrollmentCapabilities.ServerKeyGeneration"/> either; <c>/serverkeygen</c> is not
+    /// implemented.
+    /// </remarks>
+    EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
+        EnrollmentCapabilities.Enroll | EnrollmentCapabilities.ReEnroll;
+
     private readonly ModularCADbContext _db;
     private readonly IKeystoreCertificates _keystore;
-    private readonly ICertificateIssuanceService _issuanceService;
     private readonly ICaResolverService _caResolver;
     private readonly IProtocolAuditService _protocolAudit;
-    private readonly IEnrollmentAuthorizationService _enrollmentAuth;
     private readonly RequestProfileValidationService _requestProfileValidation;
-    private readonly INotificationService _notifications;
     private readonly ISecurityPolicyService _securityPolicy;
-    private readonly IProfileResolutionService _profileResolution;
+    private readonly IEnrollmentPipeline _pipeline;
     private readonly ILogger<EstService> _logger;
 
     /// <summary>
@@ -46,30 +65,30 @@ public class EstService : IEstService
     /// re-enrollment's client-certificate chain build honours the same
     /// <see cref="ModularCA.Shared.Entities.SecurityPolicyEntity.RequireMtlsOcspCheck"/> switch
     /// the mTLS login path uses, instead of EST having its own implicit revocation policy.
+    /// <para>
+    /// Takes <see cref="IEnrollmentPipeline"/> rather than issuance, authorization and profile
+    /// resolution separately: the middle of an enrollment is the same work in every protocol, and
+    /// this service now supplies only what is EST's own — decoding the request, binding it to the
+    /// credential that was presented, and rendering PKCS#7.
+    /// </para>
     /// </summary>
     public EstService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
-        ICertificateIssuanceService issuanceService,
         ICaResolverService caResolver,
         IProtocolAuditService protocolAudit,
-        IEnrollmentAuthorizationService enrollmentAuth,
         RequestProfileValidationService requestProfileValidation,
-        INotificationService notifications,
         ISecurityPolicyService securityPolicy,
-        IProfileResolutionService profileResolution,
+        IEnrollmentPipeline pipeline,
         ILogger<EstService> logger)
     {
         _db = db;
         _keystore = keystore;
-        _issuanceService = issuanceService;
         _caResolver = caResolver;
         _protocolAudit = protocolAudit;
-        _enrollmentAuth = enrollmentAuth;
         _requestProfileValidation = requestProfileValidation;
-        _notifications = notifications;
         _securityPolicy = securityPolicy;
-        _profileResolution = profileResolution;
+        _pipeline = pipeline;
         _logger = logger;
     }
 
@@ -118,9 +137,26 @@ public class EstService : IEstService
             presentedCertVerified: false);
 
     /// <summary>
-    /// The enrollment pipeline shared by <see cref="SimpleEnrollAsync"/> and
-    /// <see cref="SimpleReenrollAsync"/>.
+    /// The EST half of an enrollment, shared by <see cref="SimpleEnrollAsync"/> and
+    /// <see cref="SimpleReenrollAsync"/>: decode the request, bind it to the credential that was
+    /// presented, hand it to <see cref="IEnrollmentPipeline"/>, and render what comes back.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Everything between authorization and issuance — resolving the CA, refusing a disabled
+    /// protocol, authorizing the caller, resolving the profiles, validating the names, recording
+    /// the request, issuing it or taking it under submission, and auditing the outcome — is the
+    /// pipeline's, and is the same sequence every protocol runs. What stays here is what is EST's
+    /// own: base64 and PKCS#10 decoding, the identity binding below, the SAN binding once the
+    /// profile is known, the EST audit shape, and PKCS#7 rendering.
+    /// </para>
+    /// <para>
+    /// The CSR is parsed before the submission is built, but a parse failure is held and raised
+    /// from the post-authorization check rather than thrown here. EST has always authorized before
+    /// it read the request, so an unauthorized caller is told they are unauthorized whatever their
+    /// CSR contains — and that refusal is the one that reaches the EST audit tab.
+    /// </para>
+    /// </remarks>
     /// <param name="presentedCertVerified">
     /// True when the caller has already proven that <paramref name="clientCert"/> chains to the
     /// target CA and is unrevoked, as re-enrollment does before it gets here. False for a direct
@@ -136,28 +172,92 @@ public class EstService : IEstService
     {
         var csrPem = DecodeCsrFromBase64(base64Csr);
 
-        // Enrollment authorization check
-        var (allowed, authError) = await _enrollmentAuth.ValidateAsync("EST", caLabel, csrPem, clientCert, isAuthenticated, callerUsername);
-        if (!allowed)
+        var parsedCsr = new CertificateUtil.ParsedCsrInfo();
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? parseFailure = null;
+        try
         {
-            // Surface authorization denials on the EST audit tab — previously these threw
-            // without any protocol audit row, leaving rejected enrollments invisible.
-            await _protocolAudit.LogEstAsync("EstEnrollRejected", null, null,
-                null, null, caLabel, sourceIp,
-                success: false, errorMessage: authError ?? "Enrollment not authorized",
-                callerPrincipal: clientCert != null ? $"mtls:{clientCert.Subject}"
-                    : (!string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null));
-            throw new InvalidOperationException(authError ?? "Enrollment not authorized");
+            parsedCsr = CertificateUtil.ParseCsr(csrPem);
+        }
+        catch (Exception ex)
+        {
+            parseFailure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
         }
 
-        var parsedCsr = CertificateUtil.ParseCsr(csrPem);
-
-        // Cross-check CSR subject/SAN against caller identity. A client
-        // authenticated as "alice" must NOT be able to submit a CSR with subject
-        // CN=root-admin and receive it. The request profile can still override patterns
-        // downstream, but the caller-identity binding is enforced here so privilege
-        // escalation via EST is closed by default.
+        // Set by the identity binding when the caller authenticated with a username; the SAN
+        // binding below needs it, and it is only known once the binding has run.
         string? basicBoundUsername = null;
+
+        var submission = new EnrollmentSubmission
+        {
+            Protocol = Protocol,
+            CaLabel = caLabel,
+            SourceIp = sourceIp,
+            Caller = new EnrollmentCaller(
+                Principal: AuditPrincipal(clientCert, callerUsername),
+                AuthMethod: clientCert != null
+                    ? EnrollmentAuthMethod.ClientCertificate
+                    : isAuthenticated ? EnrollmentAuthMethod.HttpCredential : EnrollmentAuthMethod.None,
+                IsVerified: isAuthenticated,
+                Username: callerUsername,
+                ClientCertificate: clientCert),
+            Request = new EnrollmentRequestMaterial
+            {
+                CsrPem = csrPem,
+                Subject = parsedCsr.SubjectName,
+                SubjectAlternativeNames = parsedCsr.SubjectAlternativeNames,
+                KeyAlgorithm = parsedCsr.KeyAlgorithm,
+                KeySize = parsedCsr.KeySize,
+                SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
+            },
+            AfterAuthorization = async authorized =>
+            {
+                parseFailure?.Throw();
+                basicBoundUsername = await BindCallerIdentityAsync(
+                    parsedCsr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername, presentedCertVerified);
+                // EST binds the request to the credential; it never replaces what the request says,
+                // so what it was given is what the middle goes on with.
+                return authorized;
+            },
+            AfterProfileValidation = async policy =>
+            {
+                if (basicBoundUsername != null)
+                {
+                    await EnforceBasicAuthSanBindingAsync(
+                        parsedCsr, basicBoundUsername, policy.RequestProfileId, caLabel, sourceIp);
+                }
+            },
+            Audit = record => WriteEstAuditAsync(record, caLabel, sourceIp, clientCert, callerUsername),
+        };
+
+        var outcome = await _pipeline.SubmitAsync(submission);
+        return outcome switch
+        {
+            EnrollmentOutcome.Issued issued => BuildCertResponsePkcs7(issued),
+            // RFC 7030 4.2.3: the controller turns this into 202 Accepted.
+            EnrollmentOutcome.Pending => throw new EstPendingApprovalException("Certificate request requires approval"),
+            EnrollmentOutcome.Refused refused => throw new InvalidOperationException(refused.Message),
+            EnrollmentOutcome.Failed failed => throw new InvalidOperationException(failed.Message),
+            _ => throw new InvalidOperationException("Unrecognised enrollment outcome."),
+        };
+    }
+
+    /// <summary>
+    /// Cross-checks the CSR's subject and SANs against the identity the caller authenticated as,
+    /// and returns the username the SAN binding should later hold the request to, or null when the
+    /// caller authenticated with a certificate instead.
+    /// </summary>
+    /// <remarks>
+    /// A client authenticated as "alice" must NOT be able to submit a CSR with subject
+    /// CN=root-admin and receive it. The request profile can still override patterns downstream,
+    /// but the caller-identity binding is enforced here so privilege escalation via EST is closed
+    /// by default. Every refusal writes its own EST audit row before throwing, which is why this
+    /// runs as the protocol's own check rather than as part of the shared middle.
+    /// </remarks>
+    private async Task<string?> BindCallerIdentityAsync(
+        CertificateUtil.ParsedCsrInfo parsedCsr, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert,
+        bool isAuthenticated, string? callerUsername, bool presentedCertVerified)
+    {
         if (clientCert != null)
         {
             // The identity binding below trusts this certificate's CN and SANs. That trust is only
@@ -213,12 +313,14 @@ public class EstService : IEstService
                 throw new InvalidOperationException(
                     "CSR subject or SANs do not match the authenticated mTLS client identity.");
             }
+
+            return null;
         }
-        else if (isAuthenticated && !string.IsNullOrEmpty(callerUsername))
+
+        if (isAuthenticated && !string.IsNullOrEmpty(callerUsername))
         {
             // HTTP Basic / bearer path: CSR CN must match the authenticated username.
             // The SANs are bound further down, once the request profile is known.
-            basicBoundUsername = callerUsername;
             string? csrCn;
             try
             {
@@ -242,8 +344,10 @@ public class EstService : IEstService
                 throw new InvalidOperationException(
                     "CSR CN does not match the authenticated caller username.");
             }
+            return callerUsername;
         }
-        else if (isAuthenticated)
+
+        if (isAuthenticated)
         {
             // Authenticated, no client certificate, and no username could be resolved. There is
             // nothing to bind the CSR to, so the subject and SAN checks above would be skipped
@@ -261,104 +365,59 @@ public class EstService : IEstService
                 "Authenticated EST caller could not be identified; enrollment refused.");
         }
 
-        var context = await _caResolver.ResolveAsync(caLabel, "EST");
-        var signingProfileId = context.SigningProfileId;
+        return null;
+    }
 
-        // Resolve cert profile: requester's choice (EST doesn't support this) → protocol default → request profile default
-        var (resolvedCertProfileId, certProfileError) = await _requestProfileValidation
-            .ResolveCertProfileIdAsync(null, context.CertProfileId, context.RequestProfileId);
-        if (resolvedCertProfileId == null)
-            throw new InvalidOperationException(certProfileError ?? "No certificate profile available for EST");
-        var certProfileId = resolvedCertProfileId.Value;
+    /// <summary>
+    /// How the EST audit tab names the caller: the mTLS subject when a certificate was presented,
+    /// otherwise the authenticated username, otherwise nothing.
+    /// </summary>
+    private static string? AuditPrincipal(
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, string? callerUsername)
+        => clientCert != null ? $"mtls:{clientCert.Subject}"
+            : !string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null;
 
-        var signingProfile = await _db.SigningProfiles.FindAsync(signingProfileId)
-            ?? throw new InvalidOperationException("Configured EST signing profile not found.");
-        var certProfile = await _db.CertProfiles.FindAsync(certProfileId)
-            ?? throw new InvalidOperationException("Configured EST certificate profile not found.");
-
-        var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
-        var subject = parsedCsr.SubjectName;
-
-        // Validate against request profile if one is configured for this protocol
-        bool requireApproval = false;
-        if (context.RequestProfileId != null)
+    /// <summary>
+    /// Writes the pipeline's shared audit fields as an EST row, in EST's own operation names.
+    /// </summary>
+    /// <remarks>
+    /// The audit tables are per protocol, so the pipeline supplies the facts and this decides the
+    /// shape. A refusal reached before the request was read — an unknown CA, a disabled protocol,
+    /// an unauthorized caller — carries no subject or key detail, because EST authorizes before it
+    /// parses and has never claimed to know what such a request asked for. A refusal after that
+    /// carries the request's own details and no principal, which is the row a rejected enrollment
+    /// has always produced.
+    /// </remarks>
+    private Task WriteEstAuditAsync(EnrollmentAuditRecord record, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, string? callerUsername)
+        => record.Event switch
         {
-            var (isValid, error, modifiedSubject) = await _requestProfileValidation
-                .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
-            if (!isValid)
-            {
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", subject, null,
-                    parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
-                    success: false, errorMessage: error ?? "Request profile validation failed");
-                throw new InvalidOperationException(error ?? "Request profile validation failed");
-            }
-            if (modifiedSubject != null)
-                subject = modifiedSubject;
+            EnrollmentAuditEvent.Issued => _protocolAudit.LogEstAsync("SimpleEnroll", record.Subject,
+                record.SerialNumber, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
-            // Check if the request profile requires manual approval. Read from the RESOLVED
-            // profile, not the raw row: a CA-scoped child can otherwise set RequireApproval=false
-            // against a parent that requires it, and the inheritance clamp never runs.
-            var requestProfile = await _profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
-            if (requestProfile.RequireApproval)
-                requireApproval = true;
-        }
+            EnrollmentAuditEvent.Pending => _protocolAudit.LogEstAsync("SimpleEnroll-PendingApproval",
+                record.Subject, null, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
-        if (basicBoundUsername != null)
-        {
-            await EnforceBasicAuthSanBindingAsync(
-                parsedCsr, basicBoundUsername, context.RequestProfileId, caLabel, sourceIp);
-        }
+            _ when RefusedBeforeTheRequestWasRead(record.Reason) => _protocolAudit.LogEstAsync(
+                "EstEnrollRejected", null, null, null, null, caLabel, sourceIp,
+                success: false, errorMessage: record.Message ?? "Enrollment not authorized",
+                callerPrincipal: AuditPrincipal(clientCert, callerUsername)),
 
-        var csrEntity = new CertRequestEntity
-        {
-            Subject = subject,
-            SubjectAlternativeNames = sanJson,
-            CSR = csrPem,
-            KeyAlgorithm = parsedCsr.KeyAlgorithm,
-            KeySize = parsedCsr.KeySize,
-            SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
-            SubmittedAt = DateTime.UtcNow,
-            Status = requireApproval ? "PendingApproval" : "Pending",
-            CertProfileId = certProfileId,
-            CertProfile = certProfile,
-            SigningProfileId = signingProfileId,
-            SigningProfile = signingProfile
+            _ => _protocolAudit.LogEstAsync("EstEnrollRejected", record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, caLabel, sourceIp,
+                success: false, errorMessage: record.Message ?? "Enrollment refused"),
         };
 
-        _db.CertificateRequests.Add(csrEntity);
-        await _db.SaveChangesAsync();
-
-        // If approval is required, skip issuance and return 202 Accepted
-        if (requireApproval)
-        {
-            await _protocolAudit.LogEstAsync("SimpleEnroll-PendingApproval", subject,
-                null, parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp);
-
-            // Notify administrators that a CSR requires manual approval
-            _ = _notifications.NotifyCsrPendingApprovalAsync(subject, "EST");
-
-            throw new EstPendingApprovalException("Certificate request requires approval");
-        }
-
-        var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-        var notBefore = CertificateValidityUtil.DefaultNotBefore();
-        var notAfter = notBefore.Add(maxValidity);
-
-        var issuanceResult = await _issuanceService.IssueCertificateAsync(
-            csrEntity.Id, notBefore, notAfter);
-        var certPem = issuanceResult.Pem;
-
-        // Audit the enrollment
-        var issuedCert = await _db.CertificateRequests
-            .Where(c => c.Id == csrEntity.Id)
-            .Select(c => c.IssuedCertificate)
-            .FirstOrDefaultAsync();
-        await _protocolAudit.LogEstAsync("SimpleEnroll", subject,
-            issuedCert?.SerialNumber, parsedCsr.KeyAlgorithm, parsedCsr.KeySize,
-            caLabel, sourceIp);
-
-        return await BuildCertResponsePkcs7(certPem, csrEntity);
-    }
+    /// <summary>
+    /// Whether a refusal reason is one the pipeline reaches before the request itself is looked
+    /// at, and whose audit row therefore names the caller rather than the request.
+    /// </summary>
+    private static bool RefusedBeforeTheRequestWasRead(EnrollmentRefusalReason? reason)
+        => reason is EnrollmentRefusalReason.CaNotFound
+            or EnrollmentRefusalReason.ProtocolDisabledOnCa
+            or EnrollmentRefusalReason.CredentialMissing
+            or EnrollmentRefusalReason.CredentialInvalid
+            or EnrollmentRefusalReason.CallerNotAuthorized;
 
     /// <summary>
     /// Performs EST simple re-enrollment (RFC 7030 4.2.2). The presenting mTLS client
@@ -822,39 +881,20 @@ public class EstService : IEstService
         return CertificateUtil.ConvertDerToPem(derBytes, "CERTIFICATE REQUEST");
     }
 
-    private async Task<byte[]> BuildCertResponsePkcs7(string certPem, CertRequestEntity csrEntity)
+    /// <summary>
+    /// Renders an issued certificate and its issuer chain as a certs-only PKCS#7, which is what
+    /// an EST client expects in answer to /simpleenroll and /simplereenroll.
+    /// </summary>
+    /// <remarks>
+    /// The chain comes from the pipeline, which walked the signing profile's issuer links while it
+    /// still had the profile in hand; this used to be a second walk of the same links from a
+    /// reloaded request row.
+    /// </remarks>
+    private static byte[] BuildCertResponsePkcs7(EnrollmentOutcome.Issued issued)
     {
-        // Reload the CSR to get the issued certificate reference
-        var csr = await _db.CertificateRequests
-            .Include(c => c.IssuedCertificate)
-            .Include(c => c.SigningProfile)
-            .FirstOrDefaultAsync(c => c.Id == csrEntity.Id)
-            ?? throw new InvalidOperationException("CSR entity not found after issuance.");
-
-        var certs = new List<X509Certificate>();
-
-        // Parse the issued leaf certificate
-        var leafCert = CertificateUtil.ParseFromPem(certPem);
-        certs.Add(leafCert);
-
-        // Walk the issuer chain to include intermediates + root
-        if (csr.SigningProfile?.IssuerId != null)
-        {
-            var visited = new HashSet<Guid>();
-            var issuerId = csr.SigningProfile.IssuerId;
-            while (issuerId.HasValue && visited.Add(issuerId.Value))
-            {
-                var issuerEntity = await _db.Certificates
-                    .Include(c => c.SigningProfile)
-                    .FirstOrDefaultAsync(c => c.CertificateId == issuerId.Value);
-                if (issuerEntity == null) break;
-
-                var issuerCert = CertificateUtil.ParseFromPem(issuerEntity.Pem);
-                certs.Add(issuerCert);
-                issuerId = issuerEntity.SigningProfile?.IssuerId;
-            }
-        }
-
+        var certs = new List<X509Certificate> { CertificateUtil.ParseFromPem(issued.CertificatePem) };
+        foreach (var issuerPem in issued.ChainPem)
+            certs.Add(CertificateUtil.ParseFromPem(issuerPem));
         return Pkcs7Util.BuildCertsOnly(certs);
     }
 

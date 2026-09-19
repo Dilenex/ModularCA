@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -9,6 +9,7 @@ using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Errors;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
@@ -20,6 +21,8 @@ namespace ModularCA.API.Controllers.v1.Acme;
 [Route("api/v1/acme/{caLabel}")]
 [Route("acme/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class AcmeOrderController(
     IAcmeOrderService orderService,
     IAcmeAuthorizationService authzService,

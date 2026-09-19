@@ -12,6 +12,7 @@ using ModularCA.Shared.Utils;
 using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
 using System.Text.RegularExpressions;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Integration;
 
@@ -24,6 +25,7 @@ namespace ModularCA.API.Controllers.v1.Integration;
 [Route("api/v1/integration/cert-manager")]
 [AllowAnonymous]
 [ServiceFilter(typeof(CertManagerApiKeyFilter))]
+[NodeRole(ProcessRole.Enrollment)]
 public class CertManagerController : ControllerBase
 {
     private readonly ModularCADbContext _db;

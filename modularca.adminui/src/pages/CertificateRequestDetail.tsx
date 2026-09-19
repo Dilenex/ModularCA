@@ -9,6 +9,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import ConfirmModal from '../components/ConfirmModal';
+import { HeldKeyDownload } from '../components/HeldKeyDownload';
 import { FieldHint } from '@shared/components/forms';
 import {
     type ApprovalRecord, csrId, csrStatus, csrStatusLabel, decisionBadgeStatus,
@@ -287,6 +288,27 @@ const CertificateRequestDetail: React.FC = () => {
                     {csr.signingProfileId && <DetailField label="Signing Profile ID" value={csr.signingProfileId} mono />}
                     <DetailField label="Request ID" value={csrId(csr)} mono />
                 </DetailSection>
+
+                {/* The key the CA generated for this request, if any: held until the certificate
+                    is issued and downloaded as one .pfx, then deleted. */}
+                {(csr.keyHeld || csr.heldKeyDeliveredAt) && (
+                    <DetailSection title="Private Key">
+                        {csr.keyHeld && !csr.issuedCertificateId && (
+                            <p className="text-xs text-yellow-800 dark:text-yellow-400">
+                                The CA holds the private key it generated for this request until the certificate is issued; the .pfx download appears here then.
+                            </p>
+                        )}
+                        <HeldKeyDownload
+                            endpoint={`/api/v1/admin/requests/${encodeURIComponent(csrId(csr))}/pkcs12`}
+                            requestId={csrId(csr)}
+                            fileName={(csr.subjectName || csr.subject || 'certificate').replace(/^CN=/i, '').split(',')[0]}
+                            keyHeld={!!csr.keyHeld}
+                            deliveredAt={csr.heldKeyDeliveredAt}
+                            issued={!!csr.issuedCertificateId}
+                            onDelivered={() => setRefresh((r) => r + 1)}
+                        />
+                    </DetailSection>
+                )}
 
                 <DetailSection title="Action History">
                     {/* Workflow actions live here: approve (+comment) / reject when pending, issue when approved. */}

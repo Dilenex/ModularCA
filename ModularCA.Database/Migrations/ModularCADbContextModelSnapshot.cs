@@ -772,6 +772,16 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("EncryptionCertSerialNumber")
                         .HasColumnType("longtext");
 
+                    b.Property<DateTime?>("HeldKeyDeliveredAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<byte[]>("HeldPrivateKey")
+                        .HasColumnType("longblob");
+
+                    b.Property<string>("HeldPrivateKeyAlgorithm")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
                     b.Property<bool>("IsInfrastructureCert")
                         .HasColumnType("tinyint(1)");
 
@@ -1157,8 +1167,8 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("MsaeTemplateOid")
-                        .HasMaxLength(64)
-                        .HasColumnType("varchar(64)");
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -2402,6 +2412,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("CaId")
                         .HasColumnType("char(36)");
 
+                    b.Property<Guid?>("CertRequestId")
+                        .HasColumnType("char(36)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -2431,6 +2444,8 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("varchar(255)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CertRequestId");
 
                     b.HasIndex("CreatedAt");
 
@@ -2590,6 +2605,78 @@ namespace ModularCA.Database.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("SecurityPolicy");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SignerAuditEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Algorithm")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime>("At")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("CaId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Caller")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid?>("CeremonyId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("DataHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<Guid?>("KeyCertificateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Keystore")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<string>("PeerIdentity")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)");
+
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("At");
+
+                    b.HasIndex("CaId");
+
+                    b.HasIndex("KeyCertificateId");
+
+                    b.ToTable("SignerAudit");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SigningProfileEntity", b =>
@@ -3053,6 +3140,51 @@ namespace ModularCA.Database.Migrations
                         .IsUnique();
 
                     b.ToTable("Tenants");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.TenantHostnameEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("CertificateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Hostname")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<Guid>("IssuingCaId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("NodeUpstream")
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CertificateId");
+
+                    b.HasIndex("Hostname")
+                        .IsUnique();
+
+                    b.HasIndex("IssuingCaId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("TenantHostnames");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>
@@ -4022,6 +4154,16 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("Tenant");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.ScepTransactionEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertRequestEntity", "CertRequest")
+                        .WithMany()
+                        .HasForeignKey("CertRequestId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("CertRequest");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.SigningProfileEntity", b =>
                 {
                     b.HasOne("ModularCA.Shared.Entities.SigningProfileEntity", "InheritsFrom")
@@ -4103,6 +4245,32 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("SshCaKey");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.TenantHostnameEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "Certificate")
+                        .WithMany()
+                        .HasForeignKey("CertificateId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", "IssuingCa")
+                        .WithMany()
+                        .HasForeignKey("IssuingCaId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Certificate");
+
+                    b.Navigation("IssuingCa");
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>

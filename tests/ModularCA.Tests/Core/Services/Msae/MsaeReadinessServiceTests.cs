@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Models;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Core.Services.Msae;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -9,6 +10,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Models.Msae;
 using ModularCA.Tests.TestUtils;
+using ModularCA.Shared.Signing;
 using Xunit;
 
 namespace ModularCA.Tests.Core.Services.Msae;
@@ -42,6 +44,22 @@ public class MsaeReadinessServiceTests
             => Task.FromResult(Canonical.TryGetValue(host, out var c) ? c : null);
     }
 
+    /// <summary>A signer that answers only for its health: unlocked with two keys unless a test locks it.</summary>
+    private sealed class StubSigner : ISigningService
+    {
+        public bool Unlocked { get; set; } = true;
+        public Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new SignerHealth(Unlocked, Unlocked ? 2 : 0, SignerHealth.SoftwareBackend));
+        public Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task RetireKeyAsync(KeyRef key, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
     private sealed class Harness
     {
         public ModularCADbContext Db { get; } = InMemoryDbContextFactory.Create();
@@ -61,7 +79,28 @@ public class MsaeReadinessServiceTests
             Names.Canonical["ca4.example.test"] = "ca4.example.test";
         }
 
-        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names);
+        public StubSigner Signer { get; } = new();
+
+        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names, new PublicNameResolver(Db, Config), Signer);
+
+        public TenantHostnameEntity AddHostname(string host, DateTime? notAfter = null, bool withCert = true, Guid? tenantId = null, bool revoked = false)
+        {
+            CertificateEntity? cert = null;
+            if (withCert)
+            {
+                cert = new CertificateEntity
+                {
+                    CertificateId = Guid.NewGuid(), SerialNumber = "0A", Pem = "x", SubjectDN = $"CN={host}", Issuer = "CN=Staging",
+                    NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = notAfter ?? DateTime.UtcNow.AddDays(200), Revoked = revoked,
+                };
+                Db.Certificates.Add(cert);
+            }
+            var row = new TenantHostnameEntity { Id = Guid.NewGuid(), TenantId = tenantId ?? TenantId, Hostname = host, IssuingCaId = Ca.Id, CertificateId = cert?.CertificateId };
+            Db.TenantHostnames.Add(row);
+            Db.SaveChanges();
+            Names.Canonical[host] = host;
+            return row;
+        }
 
         public CaProtocolConfigEntity EnableMsae(bool kerberos = true, bool profiles = true)
         {
@@ -95,6 +134,20 @@ public class MsaeReadinessServiceTests
     }
 
     private static MsaeReadinessStep Step(MsaeReadiness r, string key) => Assert.Single(r.Steps, s => s.Key == key);
+
+    [Fact]
+    public async Task A_locked_signer_fails_the_signer_step_and_an_unlocked_one_passes_it()
+    {
+        var h = new Harness();
+        Assert.Equal(MsaeReadinessState.Pass, Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "signer").State);
+
+        h.Signer.Unlocked = false;
+        var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+        var s = Step(r, "signer");
+        Assert.Equal(MsaeReadinessState.Fail, s.State);
+        Assert.Contains("503", s.Detail);
+        Assert.False(r.Ready);
+    }
 
     [Fact]
     public async Task A_bare_ca_fails_every_precondition_and_each_failure_points_somewhere()
@@ -163,6 +216,87 @@ public class MsaeReadinessServiceTests
         var none = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
         Assert.Equal(MsaeReadinessState.Fail, none.State);
         Assert.Equal("/settings?tab=General", none.Fix!.Path);
+    }
+
+    [Fact]
+    public async Task A_service_principal_may_name_a_hostname_of_the_tenant_and_the_urls_follow_it()
+    {
+        var h = new Harness();
+        h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
+        h.AddHostname("ca.customer-a.example");
+        h.BindRealm(spn: "HTTP/ca.customer-a.example");
+        var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+
+        Assert.True(r.Ready, string.Join(" | ", r.Steps.Where(s => s.State == MsaeReadinessState.Fail).Select(s => $"{s.Key}: {string.Join("; ", s.Items)}")));
+        var host = Step(r, "hostname");
+        Assert.Equal(MsaeReadinessState.Pass, host.State);
+        Assert.Contains(host.Items, i => i.Contains("HTTP/ca.customer-a.example") && i.Contains("valid until"));
+        Assert.Contains(host.Items, i => i.StartsWith("ca.customer-a.example resolves as a canonical name"));
+        Assert.DoesNotContain(host.Items, i => i.Contains("ca4.example.test"));
+        Assert.Equal("https://ca.customer-a.example/msae/staging/cep", r.CepUrl);
+        Assert.Contains(Step(r, "client-policy").Items, i => i == $"Policy server URL: {r.CepUrl}");
+
+        // A second forest on the public name. Bindings are listed by realm, so B.TEST is now the
+        // headline and the tenant-hostname forest's URL, which differs, is listed on its own line.
+        h.BindRealm("B.TEST", spn: "HTTP/ca4.example.test");
+        var two = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+        Assert.Equal(MsaeReadinessState.Pass, Step(two, "hostname").State);
+        Assert.Equal("https://ca4.example.test/msae/staging/cep", two.CepUrl);
+        Assert.Contains(Step(two, "client-policy").Items, i => i == "Policy server URL for LAB.MSAE.TEST: https://ca.customer-a.example/msae/staging/cep");
+    }
+
+    [Fact]
+    public async Task A_tenant_hostname_without_a_live_certificate_fails_and_points_at_the_hostnames_tab()
+    {
+        var h = new Harness();
+        h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
+        var row = h.AddHostname("ca.customer-a.example", notAfter: DateTime.UtcNow.AddDays(-1));
+        h.BindRealm(spn: "HTTP/ca.customer-a.example");
+
+        var expired = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
+        Assert.Equal(MsaeReadinessState.Fail, expired.State);
+        Assert.Contains(expired.Items, i => i.Contains("expired") && i.Contains("ca.customer-a.example"));
+        Assert.Equal($"/tenants/{h.TenantId}?tab=hostnames", expired.Fix!.Path);
+
+        var tracked = await h.Db.TenantHostnames.SingleAsync();
+        tracked.CertificateId = null;
+        await h.Db.SaveChangesAsync();
+        var missing = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
+        Assert.Equal(MsaeReadinessState.Fail, missing.State);
+        Assert.Contains(missing.Items, i => i.Contains("no endpoint certificate"));
+        Assert.Equal($"/tenants/{h.TenantId}?tab=hostnames", missing.Fix!.Path);
+
+        var fresh = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "0B", Pem = "x", SubjectDN = "CN=x", Issuer = "CN=Staging", NotBefore = DateTime.UtcNow, NotAfter = DateTime.UtcNow.AddDays(100), Revoked = true };
+        h.Db.Certificates.Add(fresh);
+        tracked.CertificateId = fresh.CertificateId;
+        await h.Db.SaveChangesAsync();
+        var revoked = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
+        Assert.Equal(MsaeReadinessState.Fail, revoked.State);
+        Assert.Contains(revoked.Items, i => i.Contains("revoked"));
+
+        // The tenant hostname itself can be an alias, with the same NTLM warning as the public name.
+        fresh.Revoked = false;
+        await h.Db.SaveChangesAsync();
+        h.Names.Canonical["ca.customer-a.example"] = "host-07.customer-a.example";
+        var alias = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
+        Assert.Equal(MsaeReadinessState.Fail, alias.State);
+        Assert.Contains(alias.Items, i => i.Contains("HTTP/host-07.customer-a.example") && i.Contains("NTLM"));
+        _ = row;
+    }
+
+    [Fact]
+    public async Task Another_tenants_hostname_in_the_service_principal_is_a_mismatch_not_a_known_name()
+    {
+        var h = new Harness();
+        h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
+        h.AddHostname("ca.customer-b.example", tenantId: Guid.NewGuid());
+        h.BindRealm(spn: "HTTP/ca.customer-b.example");
+        var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+        var host = Step(r, "hostname");
+        Assert.Equal(MsaeReadinessState.Fail, host.State);
+        Assert.Contains(host.Items, i => i.Contains("ca.customer-b.example") && i.Contains("neither the public hostname ca4.example.test nor a hostname of this tenant"));
+        Assert.Equal("https://ca4.example.test/msae/staging/cep", r.CepUrl);   // the URL never follows an unknown name
+        Assert.False(r.Ready);
     }
 
     [Fact]

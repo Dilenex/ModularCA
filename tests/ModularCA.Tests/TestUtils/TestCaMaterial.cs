@@ -88,24 +88,29 @@ internal sealed class TestCaMaterial
     /// the case OCSP status answers used to get wrong.
     /// </summary>
     public X509Certificate Issue(BigInteger serial, string subjectDn, bool isCa = false)
-    {
-        var subjectKey = GenerateRsa();
+        => Issue(serial, subjectDn, GenerateRsa().Public, isCa);
 
+    /// <summary>
+    /// Issues a certificate from this CA over <paramref name="subjectPublicKey"/>, for tests
+    /// that hold the matching private key themselves, such as the held-key delivery.
+    /// </summary>
+    public X509Certificate Issue(BigInteger serial, string subjectDn, AsymmetricKeyParameter subjectPublicKey, bool isCa = false)
+    {
         var gen = new X509V3CertificateGenerator();
         gen.SetSerialNumber(serial);
         gen.SetIssuerDN(new X509Name(SubjectDn));
         gen.SetSubjectDN(new X509Name(subjectDn));
         gen.SetNotBefore(NotBefore);
         gen.SetNotAfter(NotAfter);
-        gen.SetPublicKey(subjectKey.Public);
+        gen.SetPublicKey(subjectPublicKey);
         gen.AddExtension(X509Extensions.BasicConstraints, true, new BasicConstraints(isCa));
 
         return gen.Generate(new Asn1SignatureFactory("SHA256WITHRSA", KeyPair.Private, new SecureRandom()));
     }
 
     /// <summary>Wraps this CA as the signer the responder will find in the keystore.</summary>
-    public CertificateAuthorityIdentity AsSigner() =>
-        new(Certificate, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(KeyPair.Private));
+    public (Org.BouncyCastle.X509.X509Certificate Certificate, ModularCA.Keystore.IPrivateKeyHandle Handle) AsSigner() =>
+        (Certificate, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(KeyPair.Private));
 
     /// <summary>
     /// Builds a DER-encoded OCSPRequest asking this CA about <paramref name="serial"/>.

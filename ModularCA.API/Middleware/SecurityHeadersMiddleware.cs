@@ -1,3 +1,4 @@
+using ModularCA.API.Startup;
 using ModularCA.Shared.Models.Config;
 
 namespace ModularCA.API.Middleware;
@@ -22,6 +23,11 @@ namespace ModularCA.API.Middleware;
 /// <see cref="HstsConfig"/>.
 /// </para>
 /// <para>
+/// The Content-Security-Policy is the console's: it governs the HTML the control role serves
+/// and reports to the control role's endpoint. A process without the control role serves no
+/// document a CSP could govern, so it emits none; the other headers apply to every response.
+/// </para>
+/// <para>
 /// Sensitive auth/admin/user/setup paths get
 /// <c>Cache-Control: no-store, no-cache, must-revalidate</c> plus legacy
 /// <c>Pragma: no-cache</c>. Static hashed assets under <c>/admin/assets/</c>
@@ -32,6 +38,7 @@ public class SecurityHeadersMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly SystemConfig _config;
+    private readonly bool _consoleCsp;
 
     private static readonly string[] NoStorePrefixes = new[]
     {
@@ -59,10 +66,12 @@ public class SecurityHeadersMiddleware
     /// </summary>
     /// <param name="next">The next delegate in the pipeline.</param>
     /// <param name="config">System configuration used for HSTS tuning.</param>
-    public SecurityHeadersMiddleware(RequestDelegate next, SystemConfig config)
+    /// <param name="roles">The roles this process runs; the CSP is emitted only when the control role is among them.</param>
+    public SecurityHeadersMiddleware(RequestDelegate next, SystemConfig config, ActiveRoles roles)
     {
         _next = next;
         _config = config;
+        _consoleCsp = roles.Has(ProcessRole.Control);
     }
 
     /// <summary>
@@ -83,19 +92,21 @@ public class SecurityHeadersMiddleware
             // CSP with frame-ancestors/base-uri/form-action/object-src
             // and a report-uri pointing at the public CSP-report stub
             // (/api/v1/public/csp-report, added in PublicController). style-src
-            // keeps 'unsafe-inline' until the admin SPA migrates to nonce/hash.
-            headers.TryAdd(
-                "Content-Security-Policy",
-                "default-src 'self'; " +
-                "script-src 'self'; " +
-                "style-src 'self' 'unsafe-inline'; " +
-                "img-src 'self' data:; " +
-                "connect-src 'self'; " +
-                "frame-ancestors 'none'; " +
-                "base-uri 'self'; " +
-                "form-action 'self'; " +
-                "object-src 'none'; " +
-                "report-uri /api/v1/public/csp-report");
+            // keeps 'unsafe-inline' until the admin SPA migrates to nonce/hash. Only where the
+            // console is served: elsewhere there is no document and no report endpoint.
+            if (_consoleCsp)
+                headers.TryAdd(
+                    "Content-Security-Policy",
+                    "default-src 'self'; " +
+                    "script-src 'self'; " +
+                    "style-src 'self' 'unsafe-inline'; " +
+                    "img-src 'self' data:; " +
+                    "connect-src 'self'; " +
+                    "frame-ancestors 'none'; " +
+                    "base-uri 'self'; " +
+                    "form-action 'self'; " +
+                    "object-src 'none'; " +
+                    "report-uri /api/v1/public/csp-report");
 
             // HSTS only on HTTPS. RFC 6797 §7.2 says UAs MUST
             // ignore HSTS over plain HTTP, so emitting it on the CRL/OCSP listener

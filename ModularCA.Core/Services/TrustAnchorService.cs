@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using ModularCA.Core.Implementations;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -48,7 +47,7 @@ public class TrustAnchorService(
     /// <summary>
     /// Imports an external CA certificate as a trust anchor. The certificate is parsed from
     /// PEM or base64-encoded DER, validated to have BasicConstraints CA=true, persisted to the
-    /// database, and registered in the runtime MultiCARegistry trusted list.
+    /// database, and registered in the runtime trusted list.
     /// </summary>
     /// <param name="pemOrBase64">PEM-encoded certificate or base64-encoded DER bytes.</param>
     /// <param name="label">Optional human-readable label.</param>
@@ -118,11 +117,8 @@ public class TrustAnchorService(
         await db.SaveChangesAsync();
 
         // Add to runtime trusted list
-        if (keystore is MultiCARegistry registry)
-        {
-            registry.RegisterTrustedCert(cert);
-            logger.LogInformation("Trust anchor registered at runtime: {Subject} (serial {Serial})", entity.SubjectDN, serialNumber);
-        }
+        keystore.RegisterTrustedCert(cert);
+        logger.LogInformation("Trust anchor registered at runtime: {Subject} (serial {Serial})", entity.SubjectDN, serialNumber);
 
         return MapToDto(entity);
     }

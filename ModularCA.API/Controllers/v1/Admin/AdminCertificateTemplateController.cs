@@ -6,6 +6,7 @@ using ModularCA.Core.Services;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.CertificateTemplates;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -17,6 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/templates")]
 [Authorize(Policy = "SystemOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminCertificateTemplateController(
     CertificateTemplateService templateService,
     IAuditService audit,

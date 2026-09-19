@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -19,10 +20,12 @@ public interface IXcepPolicyService
 {
     /// <summary>
     /// Builds the policy set for <paramref name="caLabel"/> (or the default CA) as seen by
-    /// <paramref name="caller"/>, whose enrollment permission is reported in the result.
+    /// <paramref name="caller"/>, whose enrollment permission is reported in the result. The
+    /// enrollment URL names <paramref name="requestHost"/> when that is a name this service is
+    /// known by for the CA's tenant, else the public domain.
     /// </summary>
     /// <exception cref="MsaeEnrollmentException">MSAE is not enabled on the CA.</exception>
-    Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller);
+    Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller, string? requestHost = null);
 
     /// <summary>The policy set as seen by a caller that signed in with a username.</summary>
     Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, string callerUsername)
@@ -61,6 +64,7 @@ public class XcepPolicyService(
     IProfileResolutionService profileResolution,
     IssuanceValidationService validation,
     SystemConfig config,
+    IPublicNameResolver names,
     ILogger<XcepPolicyService> logger) : IXcepPolicyService
 {
     /// <summary>How long a client keeps the policy before asking again. Matches the AD CS default.</summary>
@@ -80,7 +84,7 @@ public class XcepPolicyService(
         => GetPoliciesAsync(caLabel, MsaeCaller.Credential(callerUsername));
 
     /// <inheritdoc />
-    public async Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller)
+    public async Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller, string? requestHost = null)
     {
         ArgumentNullException.ThrowIfNull(caller);
 
@@ -101,7 +105,9 @@ public class XcepPolicyService(
         var caDer = CertificateUtil.ParseFromPem(caCertificate.Pem).GetEncoded();
 
         var mayEnroll = await principalAuthorizer.MayEnrollAsync(caller.ActingAsUsername, ca.Id);
-        var cesUri = $"{config.Https.GetPublicHttpsBaseUrl()}/msae/{ca.Label}/ces";
+        // The client enrolls at the name it reached the policy service by, provided that name is
+        // one of ours for this tenant; any other Host header falls back to the public domain.
+        var cesUri = $"{await names.BaseUrlForRequestAsync(requestHost, ca.TenantId)}/msae/{ca.Label}/ces";
         const int caReference = 0;
         // The engine authenticates to CES the way the policy tells it to. A caller that arrived
         // with a ticket keeps using it; a username caller is told to send its UsernameToken.

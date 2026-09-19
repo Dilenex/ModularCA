@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Core.Services.Msae.Kerberos;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
@@ -19,7 +20,7 @@ namespace ModularCA.Core.Services.Msae;
 /// exactly what a hand registration would have produced. No secret is in the kit: the account
 /// password, when ModularCA generated one, was shown once at import and is not stored.
 /// </remarks>
-public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig config)
+public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig config, IPublicNameResolver names)
 {
     /// <summary>One file in the kit.</summary>
     public sealed record KitFile(string Name, string Content);
@@ -50,12 +51,16 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
         var realm = await db.KerberosRealms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == realmId, cancellation);
         if (ca == null || realm == null || realm.TenantId != ca.TenantId) return null;
 
-        var baseUrl = config.Https.GetPublicHttpsBaseUrl();
+        // The name in the kit is the one the forest issues tickets for, taken from the binding's
+        // service principal, when it is a name this service is known by for the tenant; otherwise
+        // the public domain, and the readiness check says why.
+        var known = await names.ResolveAsync(PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal), ca.TenantId, cancellation);
+        var host = known?.Host ?? config.Https.PublicDomain;
+        var baseUrl = names.BaseUrl(known?.Host);
         var cepUrl = $"{baseUrl}/msae/{ca.Label}/cep";
         var policyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}";
         var friendlyName = $"{ca.Name} (ModularCA)";
         var tenantName = ca.Tenant?.Name ?? "tenant";
-        var host = config.Https.PublicDomain;
 
         var files = new List<KitFile>
         {

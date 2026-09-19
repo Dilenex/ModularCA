@@ -11,12 +11,12 @@ using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
 using ModularCA.Core.Services;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Models;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
@@ -29,6 +29,7 @@ using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.X509;
 using Org.BouncyCastle.X509.Extension;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -40,14 +41,18 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [ApiController]
 [Route("api/v1/auth/mtls")]
 [Route("auth/mtls")]
+[NodeRole(ProcessRole.Control)]
 public class MtlsController : ControllerBase
 {
+    /// <summary>The caller identity mTLS enrollment signs under at the signer.</summary>
+    private const string SignerCaller = "mtls-enrollment";
+
     private readonly ModularCADbContext _db;
     private readonly IDistributedCache _cache;
     private readonly IJwtTokenService _jwt;
     private readonly ICurrentUserService _currentUser;
     private readonly IAuditService _audit;
-    private readonly IKeystoreCertificates _keystore;
+    private readonly ISigningService _signer;
     private readonly SystemConfig _config;
     private readonly ISecurityPolicyService _securityPolicy;
 
@@ -60,7 +65,7 @@ public class MtlsController : ControllerBase
         IJwtTokenService jwt,
         ICurrentUserService currentUser,
         IAuditService audit,
-        IKeystoreCertificates keystore,
+        ISigningService signer,
         SystemConfig config,
         ISecurityPolicyService securityPolicy)
     {
@@ -69,7 +74,7 @@ public class MtlsController : ControllerBase
         _jwt = jwt;
         _currentUser = currentUser;
         _audit = audit;
-        _keystore = keystore;
+        _signer = signer;
         _config = config;
         _securityPolicy = securityPolicy;
     }
@@ -177,10 +182,11 @@ public class MtlsController : ControllerBase
         var caCertParser = new X509CertificateParser();
         var caCert = caCertParser.ReadCertificate(caCertEntity.RawCertificate);
 
-        // Resolve CA private key
-        var caKeyHandle = _keystore.GetPrivateKeyFor(caCert);
-        if (caKeyHandle == null)
-            return Conflict(new { error = "CA private key is not currently available for signing" });
+        // The CA key is the signer's. The controller holds a reference and a context; the
+        // signer judges whether this CA's key signs a certificate for this CA and tenant, and
+        // records the decision, before any bytes are signed.
+        var caKey = new KeyRef(caCertEntity.CertificateId);
+        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.TenantId);
 
         // Generate RSA-2048 keypair for the client cert
         var keyGenParams = new Org.BouncyCastle.Crypto.Parameters.RsaKeyGenerationParameters(
@@ -227,10 +233,20 @@ public class MtlsController : ControllerBase
         certGen.AddExtension(X509Extensions.ExtendedKeyUsage, false,
             new ExtendedKeyUsage(new[] { new DerObjectIdentifier("1.3.6.1.5.5.7.3.2") }));
 
-        // Sign the certificate
-        var sigAlgName = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caCert.GetPublicKey()));
-        var signer = new PrivateKeyHandleSignatureFactory(sigAlgName, caKeyHandle);
-        var clientCert = certGen.Generate(signer);
+        // Sign the certificate through the signer. A refusal (the CA's key is not held, or
+        // policy will not sign for this CA) surfaces as a conflict the user can report, not as
+        // a certificate signed by something else.
+        var algorithm = SignatureAlgorithm.ForPublicKey(caCert.GetPublicKey());
+        X509Certificate clientCert;
+        try
+        {
+            clientCert = certGen.Generate(new SigningServiceSignatureFactory(_signer, caKey, algorithm, signingContext));
+        }
+        catch (SigningRefusedException ex)
+        {
+            Serilog.Log.Warning(ex, "mTLS enrollment: the signer refused to sign with CA {CaId} ({Reason})", targetCa.Id, ex.Reason);
+            return Conflict(new { error = "CA private key is not currently available for signing" });
+        }
 
         // Compute thumbprint
         var sha256Hash = SHA256.HashData(clientCert.GetEncoded());

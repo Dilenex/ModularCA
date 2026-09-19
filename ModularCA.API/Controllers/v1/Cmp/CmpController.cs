@@ -5,6 +5,9 @@ using ModularCA.Shared.Interfaces;
 using Serilog;
 using ModularCA.Shared.Errors;
 
+using ModularCA.API.Filters;
+using ModularCA.API.Startup;
+
 namespace ModularCA.API.Controllers.v1.Cmp;
 
 /// <summary>
@@ -17,6 +20,8 @@ namespace ModularCA.API.Controllers.v1.Cmp;
 [Route("api/v1/cmp/{caLabel}")]
 [Route("cmp/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class CmpController(ICmpService cmpService) : ControllerBase
 {
     private const string CmpContentType = "application/pkixcmp";

@@ -52,6 +52,10 @@ public class ModuleBoundaryTests
     private static readonly string[] LayerOrder =
     [
         "ModularCA.Shared",
+        // The signer's wire: the gRPC contract, the remote client and the signer role's host.
+        // It references Shared alone, so the node's client holds no keystore type; the API
+        // composes it with the keystore project, which is why it sits below Keystore.
+        "ModularCA.Signer",
         "ModularCA.Database",
         "ModularCA.Keystore",
         "ModularCA.Core",

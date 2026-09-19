@@ -10,6 +10,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Management;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin.Management
 {
@@ -19,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
     [ApiController]
     [Route("api/v1/admin/manage/cert-permissions")]
     [Authorize]
+    [NodeRole(ProcessRole.Control)]
     public class AdminCertPermissionManagerController(ICertificateStore certStore, ICurrentUserService currentUser, ICertificateAccessAssignment accessAssignment, IAuditService audit, ModularCADbContext db) : ControllerBase
     {
         private readonly ICertificateStore _certStore = certStore;

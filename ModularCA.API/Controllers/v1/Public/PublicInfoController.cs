@@ -1,7 +1,8 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [ApiController]
 [Route("api/v1/public/info")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Control)]
 public class PublicInfoController(SystemConfig config, IFeatureFlagService featureFlags) : ControllerBase
 {
     private readonly SystemConfig _config = config;

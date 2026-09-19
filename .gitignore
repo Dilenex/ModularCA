@@ -367,6 +367,8 @@ FodyWeavers.xsd
 # runtime under config/ and keystores/. Ignored broadly so an accidental `git add` on a public
 # repo cannot expose a key. *.yaml below already covers config.yaml, db.yaml and keystore.yaml.
 *.keystore
+# The rule above also matches the ModularCA.Keystore project directory; keep its sources.
+!/ModularCA.Keystore/
 *.key
 config/backup.key
 config/backup-password.key

@@ -1,0 +1,34 @@
+# The ModularCA node as an OCI image: the linux dist, unchanged, with the same binary, the same
+# layout under /opt/modularca and the same config directory. The release workflow builds it from
+# the tarball it has just built and publishes it as ghcr.io/dilenex/modularca:<version>; the
+# same image runs under Podman and Docker. To build by hand, from the repository root with the
+# tarball in dist/:
+#
+#   podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.3.0-linux-x64.tar.gz -t modularca:0.3.0 .
+#
+# The image carries no configuration and no data. /opt/modularca/config and /var/lib/modularca
+# are volumes; the entrypoint bootstraps the node headlessly the first time it starts with a
+# bootstrap.yaml and a setup-database.yaml in the config volume, and just starts it afterwards.
+FROM docker.io/library/debian:12-slim
+
+ARG DIST
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system modularca && useradd --system --gid modularca --home-dir /opt/modularca --shell /usr/sbin/nologin modularca
+
+COPY ${DIST} /tmp/dist.tar.gz
+RUN mkdir -p /opt/modularca /var/lib/modularca \
+ && tar -xzf /tmp/dist.tar.gz --strip-components=1 -C /opt/modularca \
+ && rm /tmp/dist.tar.gz \
+ && chown -R modularca:modularca /opt/modularca /var/lib/modularca
+
+COPY deploy/container/entrypoint.sh /usr/local/bin/modularca-entrypoint
+RUN chmod +x /usr/local/bin/modularca-entrypoint
+
+USER modularca
+WORKDIR /opt/modularca
+ENV DOTNET_ENVIRONMENT=Production DOTNET_CONSOLE_ANSI_COLOR=false
+VOLUME ["/opt/modularca/config", "/var/lib/modularca"]
+EXPOSE 8443 8080
+ENTRYPOINT ["/usr/local/bin/modularca-entrypoint"]

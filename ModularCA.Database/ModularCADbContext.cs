@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
@@ -129,6 +129,7 @@ public class ModularCADbContext : DbContext
     /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
     public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
     public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
+    public DbSet<TenantHostnameEntity> TenantHostnames { get; set; }
 
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
@@ -226,6 +227,12 @@ public class ModularCADbContext : DbContext
     /// <summary>Per-user UI preferences (table column layouts, etc.), keyed by user + namespaced key.</summary>
     public DbSet<UserPreferenceEntity> UserPreferences { get; set; }
 
+    /// <summary>
+    /// The signer's own record of every decision about a private key, allowed or refused. Kept
+    /// apart from the node's audit so a lost node audit still leaves the signer's account.
+    /// </summary>
+    public DbSet<SignerAuditEntity> SignerAudit { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -233,6 +240,15 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CrlEntity>().HasIndex(c => new { c.IssuerName, c.CrlNumber }).IsUnique();
         // One preference row per (user, key); ValueJson holds an opaque client-owned blob.
         modelBuilder.Entity<UserPreferenceEntity>().HasIndex(p => new { p.UserId, p.Key }).IsUnique();
+
+        // The signer's audit is queried by time, by key and by CA; it carries no foreign keys so a
+        // row outlives whatever it names.
+        modelBuilder.Entity<SignerAuditEntity>(entity =>
+        {
+            entity.HasIndex(e => e.At);
+            entity.HasIndex(e => e.KeyCertificateId);
+            entity.HasIndex(e => e.CaId);
+        });
         modelBuilder.Entity<LdapConfigurationEntity>(entity =>
         {
             entity.HasIndex(s => s.Name).IsUnique();
@@ -822,6 +838,24 @@ public class ModularCADbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<TenantHostnameEntity>(entity =>
+        {
+            entity.HasIndex(e => e.Hostname).IsUnique();
+            entity.HasIndex(e => e.TenantId);
+            entity.HasOne(e => e.Tenant)
+                  .WithMany()
+                  .HasForeignKey(e => e.TenantId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.IssuingCa)
+                  .WithMany()
+                  .HasForeignKey(e => e.IssuingCaId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Certificate)
+                  .WithMany()
+                  .HasForeignKey(e => e.CertificateId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.Capability });
@@ -1073,6 +1107,15 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(e => new { e.CaId, e.TransactionId }).IsUnique();
             entity.HasIndex(e => e.ExpiresAt);
             entity.HasIndex(e => e.CreatedAt);
+
+            // The request row an approval-gated PKCSReq created, so GetCertInitial can follow the
+            // approval to its certificate. SetNull like the ACME order's FinalizedCsr, the same
+            // kind of optional link onto the same table: a request row removed under a transaction
+            // leaves the transaction to expire on its TTL rather than taking it with it.
+            entity.HasOne(e => e.CertRequest)
+                  .WithMany()
+                  .HasForeignKey(e => e.CertRequestId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         // CMP transaction state. Unique (CaId, TransactionId) rejects

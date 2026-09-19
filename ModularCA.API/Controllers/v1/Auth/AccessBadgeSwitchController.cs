@@ -9,6 +9,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.AccessBadges;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -25,6 +26,7 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [ApiController]
 [Route("api/v1/auth/badge")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AccessBadgeSwitchController(
     ICurrentUserService currentUser,
     ModularCADbContext db,

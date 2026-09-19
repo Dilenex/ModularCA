@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -7,19 +7,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
     <PackageReference Include="Kerberos.NET" Version="4.6.168" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.Abstractions" Version="10.0.12" />
-    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog" Version="4.4.0" />
     <PackageReference Include="DnsClient" Version="1.8.0" />
     <PackageReference Include="MailKit" Version="4.16.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.20" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
     <PackageReference Include="NCrontab.Signed" Version="3.4.0" />
     <PackageReference Include="prometheus-net" Version="8.2.1" />
-    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.5" />
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.12" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <ProjectReference Include="..\ModularCA.Database\ModularCA.Database.csproj" />
     <ProjectReference Include="..\ModularCA.Keystore\ModularCA.Keystore.csproj" />

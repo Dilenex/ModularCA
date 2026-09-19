@@ -445,6 +445,8 @@ export interface CertRequestDto {
     issuedCertificateId?: string | null;
     requestedNotBefore?: string | null;
     requestedNotAfter?: string | null;
+    keyHeld: boolean;
+    heldKeyDeliveredAt?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -695,6 +697,13 @@ export interface FinalizeAcmeOrderRequest {
     csr: string;
 }
 
+/** From `ModularCA.Shared/Models/Csr/GeneratedCsr.cs`. */
+export interface GeneratedCsr {
+    csrPem: string;
+    requestId: string;
+    keyHeld: boolean;
+}
+
 /** From `ModularCA.Shared/Models/Management/UserEntityDto.cs`. */
 export interface GroupMembershipDto {
     groupId: string;
@@ -703,6 +712,11 @@ export interface GroupMembershipDto {
     templateName: string;
     certificateAuthorityId?: string | null;
     isSystemGroup: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Csr/HeldKeyPkcs12Request.cs`. */
+export interface HeldKeyPkcs12Request {
+    password: string;
 }
 
 /** From `ModularCA.Shared/Models/Revocation/RevokeCertificateRequest.cs`. */
@@ -773,6 +787,25 @@ export interface ImportTrustAnchorRequest {
     certificate: string;
     label?: string | null;
     description?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Config/IngressConfig.cs`. */
+export interface IngressConfig {
+    routes: IngressRouteConfig[];
+    healthCheckIntervalSeconds: number;
+    healthCheckTimeoutSeconds: number;
+    healthCheckPath: string;
+    routeRefreshSeconds: number;
+    upstreamCaCertificatePath: string;
+    dangerousAcceptAnyUpstreamCertificate: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Config/IngressConfig.cs`. */
+export interface IngressRouteConfig {
+    host: string;
+    upstream: string;
+    plainHttpUpstream?: string | null;
+    pinnedSpki?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1277,6 +1310,21 @@ export interface SetupWebTlsCertificate {
     validityDays: number;
 }
 
+/** From `ModularCA.Shared/Models/Config/SignerConfig.cs`. */
+export interface SignerConfig {
+    mode: string;
+    endpoint: string;
+    clientCertificate: string;
+    clientCertificatePassword: string;
+    pinnedServerSpki: string;
+    listen: string;
+    serverCertificate: string;
+    serverCertificatePassword: string;
+    pinnedClientSpki: string;
+    identityCa: string;
+    identityCaPassword: string;
+}
+
 /** From `ModularCA.Shared/Models/SigningProfile.cs`. */
 export interface SigningProfile {
     name: string;
@@ -1372,6 +1420,9 @@ export interface SystemConfig {
     email: EmailConfig;
     https: HttpsConfig;
     hsm: HsmConfig;
+    signer: SignerConfig;
+    ingress: IngressConfig;
+    roles: string;
     ipWhitelist: IpWhitelistConfig;
     networkAudit: NetworkAuditConfig;
     webhook: WebhookConfig;

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -12,6 +13,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [ApiController]
 [Route("api/v1/public/templates")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Enrollment)]
 public class PublicTemplateController(ModularCADbContext db) : ControllerBase
 {
     /// <summary>

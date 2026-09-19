@@ -12,7 +12,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `ModularCA.Keystore.Unlocker` | Break-glass keystore CLI. Separate binary on purpose — it exists for when the service will not start, so it must not depend on the service's hosting or configuration. |
 | `wwwroot/` | The five built SPAs: admin, user, public, setup, docs. |
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
-| `deploy/` | systemd unit, plus nginx and nftables templates. |
+| `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. |
 
 ## Permissions are set by the installer, not the archive
 
@@ -92,6 +92,236 @@ generated rather than chosen, it is printed once to the service log and the acco
 **Privileged ports** are granted by `AmbientCapabilities=CAP_NET_BIND_SERVICE` in the unit. Do
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
 upgrades in ways the unit does not.
+
+## Two units: the signer apart from the node
+
+By default one process holds everything, keys included. The hardened shape runs the keys in a
+second unit, `modularca-signer.service`, under its own user: it holds `keystores/`, the keystore
+passwords and any PKCS#11 session, and answers the node over gRPC with mutual TLS on loopback.
+The node (`modularca.service` with `--role node`) then holds no key and no keystore password;
+each side pins the other's public key, and there is no trust-store lookup.
+
+Do this after the first install has completed its wizard as a single process, so the keystores
+and `config/keystore.yaml` exist.
+
+1. Create the signer's user and give it the keys. The node keeps everything else.
+
+       sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
+       sudo systemctl stop modularca
+       sudo chown -R modularca-signer:modularca-signer /opt/modularca/keystores
+       sudo chown modularca-signer:modularca-signer /opt/modularca/config/keystore.yaml
+       sudo chmod 0700 /opt/modularca/keystores
+       sudo chmod 0640 /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
+       sudo chgrp modularca-signer /opt/modularca/config /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
+       sudo chmod 0750 /opt/modularca/config
+
+   Both units read `config/config.yaml` and `config/db.yaml`; only the signer reads
+   `keystore.yaml`. The node no longer needs `keystore.yaml` or `keystores/` at all, and on two
+   hosts they are simply not copied to the node.
+
+2. On the signer, create the identity CA and the signer's server certificate, then issue the
+   node its client certificate:
+
+       cd /opt/modularca
+       sudo -u modularca-signer ./ModularCA.API --role signer --init-identity
+       sudo -u modularca-signer ./ModularCA.API --role signer --issue-node-identity /tmp/node-identity
+
+   The first writes `config/signer-identity-ca.pfx` and `config/signer-server.pfx`
+   (owner-only). The second writes `/tmp/node-identity/signer-client.pfx` and
+   `signer-pin.txt` and prints two things: the `PinnedClientSpki` for the signer, and the
+   `Signer:` section for the node.
+
+3. Configure both sides in `config/config.yaml`. The signer side:
+
+       Signer:
+         Listen: "127.0.0.1:8446"
+         ServerCertificate: "config/signer-server.pfx"
+         PinnedClientSpki: "<printed by --issue-node-identity>"
+
+   The node side, after moving `/tmp/node-identity/signer-client.pfx` to
+   `/opt/modularca/config/` (owned by `modularca`, mode 0600):
+
+       Signer:
+         Mode: "Remote"
+         Endpoint: "https://127.0.0.1:8446"
+         ClientCertificate: "config/signer-client.pfx"
+         PinnedServerSpki: "<the contents of signer-pin.txt>"
+
+   On one host both sections live in the same file; each process reads the keys for its role.
+
+4. Point the node's unit at the node role and start the signer first, then the node:
+
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role node\n' \
+           | sudo tee /etc/systemd/system/modularca.service.d/role.conf
+       sudo cp /opt/modularca/deploy/modularca-signer.service /etc/systemd/system/
+       sudo systemctl daemon-reload
+       sudo systemctl enable --now modularca-signer
+       sudo systemctl start modularca
+
+   `journalctl -u modularca-signer` shows the listener and the pins it holds; `/health/ready`
+   on the node shows the signer as a step. While the signer is down the node answers 503 on
+   every enrollment endpoint with "The signer is unreachable" and reconnects on its own.
+
+Backups taken by the node's scheduled job go through the signer and keep working. The
+command-line `--backup` and `--restore` read the keystore files directly, so on a split
+install run them on the signer host as the signer's user. The node's client certificate lives
+one year; reissue it with `--issue-node-identity` and replace the file and the pin.
+
+## Three processes: signer, control, enrollment and validation
+
+The node itself splits into roles, and a process runs any subset: `--role control`,
+`--role enrollment,validation`, `--role node` (the three together, the two-unit shape above).
+Each role hosts only its own controllers, so an inactive role's paths do not exist on that
+process (404, no sign-in prompt), and only its own background work:
+
+| Role | Serves | Runs |
+|---|---|---|
+| `control` | the console and setup wizard, the admin, auth, user and account API, `/health` | every scheduled job that mutates (CRL publishing, LDAP, renewals, backups, audit retention, TLS renewal) and every startup write (migrations, repairs, policy sync) |
+| `enrollment` | ACME, EST, SCEP, CMP, MSAE, token and integration enrollment, the TSA, `/health` | the protocol cleanup jobs, under their own scheduler lease |
+| `validation` | CRL, OCSP, AIA and CA certificates on HTTPS and on the plain-HTTP port, `/health` | nothing scheduled; OCSP is signed through the signer |
+
+The layout this is for is three processes: the signer, the control plane, and one process
+running enrollment and validation. Why one would do it: the enrollment process parses five
+protocols, CMS and Kerberos from the network, and is the one most likely to be reached by an
+attacker; on its own it holds no console, no admin API and no key, and a compromise there
+cannot reach the ceremonies, the backups or the user database except through the database
+permissions it has. The control plane can then sit on the admin network only, be restarted
+for maintenance without interrupting issuance or OCSP, and be the one place migrations and
+scheduled writes happen. Validation can be scaled on its own for CRL and OCSP load, since it
+needs only the database and the signer.
+
+Every node process reads the same `config.yaml` shape, so each host gets its own install with
+the same database, the same `JWT.Secret` (a token the console issued must verify on every
+host's `/health/ready`), and a `Signer:` section pointing at the signer. Two
+node processes cannot share one install directory on one host: they would bind the same
+ports. The signer's `Signer.Listen` must then be reachable from the enrollment and validation
+hosts (not loopback), and each of them needs its own client certificate from
+`--issue-node-identity`; the pinning works the same.
+
+1. Complete the first install as a single process and split the signer out as above.
+
+2. On each node host, select the role with a unit drop-in. The examples are in
+   `/opt/modularca/deploy/dropins/`; `--role` on the command line wins over `Roles:` in
+   `config.yaml`, so the config file can be shared across hosts unchanged.
+
+       # control host
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       sudo cp /opt/modularca/deploy/dropins/role-control.conf /etc/systemd/system/modularca.service.d/role.conf
+
+       # enrollment + validation host
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role enrollment,validation\n' \
+           | sudo tee /etc/systemd/system/modularca.service.d/role.conf
+
+       sudo systemctl daemon-reload && sudo systemctl restart modularca
+
+   `role-enrollment.conf` and `role-validation.conf` are there for a host that runs one of
+   the two alone.
+
+3. Route by path in front of them, or by name with the ingress role (next section): `/admin`, `/user`, `/login`,
+   `/setup`, `/docs`, `/public`, `/api/v1/admin`, `/api/v1/auth`, `/api/v1/user`,
+   `/api/v1/account`, `/api/v1/me`, `/api/v1/setup`, `/api/v1/version`,
+   `/api/v1/public/info`, `/api/v1/public/csp-report` to the control host;
+   `/acme`, `/.well-known/est`, `/scep`, `/cmp`, `/msae`, `/tsa`, `/api/v1/acme`,
+   `/api/v1/scep`, `/api/v1/cmp`, `/api/v1/msae`, `/api/v1/public/enroll`,
+   `/api/v1/public/templates`, `/api/v1/public/tsa`, `/api/v1/integration` to the enrollment
+   host; `/ca`, `/crl`, `/ocsp`, `/ssh`, `/api/v1/public/ca`, `/api/v1/public/crl`,
+   `/api/v1/public/ocsp`, `/api/v1/public/ssh` to the validation host. The CDP and AIA URLs
+   already in issued certificates point at the public domain, so the validation host is the
+   one that must answer there on plain HTTP.
+
+`/health` on any process lists the roles it runs; `/health/ready` reports, per role, what it
+needs and whether it has it: validation the signer reachable, enrollment the signer unlocked,
+control the database. A process without the control role refuses to start an unconfigured
+install, because the wizard is the control plane's.
+
+## The ingress in front of tenant nodes
+
+The ingress role is what makes a split install reachable under its names: one process
+terminates TLS for every hostname the system knows (the public domain with the web TLS
+certificate, each tenant hostname with its own, chosen by SNI from the same table the node
+uses) and forwards each name to the node that serves it. Plain HTTP on port 80 is routed by
+Host as well, so a tenant's CRL and OCSP URLs reach that tenant's node without a redirect.
+The route table is `Ingress.Routes` in `config.yaml` merged with the tenant hostnames whose
+`NodeUpstream` is set (a configured route wins for the same host); a name with no upstream
+anywhere is served by the ingress process's own roles, which is why a single process with
+every role and no route behaves exactly as before the role existed.
+
+The layout this is for is one node per tenant: the ingress on 443 and 80, each tenant's node
+on a loopback port of its own with `--role node`, the signer as a separate unit, and each
+tenant hostname carrying the address of its node.
+
+    ingress (--role ingress)         443, 80          Ingress.Routes + TenantHostnames.NodeUpstream
+    node A (--role node)             127.0.0.1:8443   Https.Port 8443, Http.Port 8080, Signer: Remote
+    node B (--role node)             127.0.0.1:8453   Https.Port 8453, Http.Port 8090, Signer: Remote
+    signer (--role signer)           127.0.0.1:8446   one client certificate per node
+
+Every node is its own install directory (two node processes cannot share one: they would
+bind the same ports), each with the same database, the same `JWT.Secret`, and a `Signer:`
+section naming the signer with its own client certificate from `--issue-node-identity`. The
+ingress is one more install directory on the same or another host; it needs the database
+(to read the hostnames and their certificates), `Https.CertificatePath` for the public
+domain, and the tenant hostname PKCS#12 files under `Https.CertificatePassword`, but no
+keystore, no keystore password and no signer client certificate.
+
+1. Complete the first install as a single process and split the signer out as above. Give
+   each tenant its hostname in the console (Tenants, Hostnames) so its certificate exists.
+
+2. Install each tenant's node in its own directory with its own ports, `--role node` in the
+   unit drop-in, and `Signer.Mode: Remote`. The node trusts forwarded headers from loopback
+   by default; an ingress on another host must be listed in `Http.TrustedProxyCidrs` on the
+   node, or the node records the ingress as the client.
+
+3. Tell the ingress where each name goes, by either source:
+
+   - in the ingress's `config.yaml`, for a spike or for nodes on other hosts:
+
+         Ingress:
+           Routes:
+             - Host: "ca.customer-a.example"
+               Upstream: "https://127.0.0.1:8443"
+               PlainHttpUpstream: "http://127.0.0.1:8080"
+             - Host: "ca.customer-b.example"
+               Upstream: "https://127.0.0.1:8453"
+               PlainHttpUpstream: "http://127.0.0.1:8090"
+           DangerousAcceptAnyUpstreamCertificate: true   # loopback upstreams only; refused otherwise
+
+   - or on the hostname row, through the tenant hostnames API (no console change is needed):
+
+         PUT /api/v1/admin/tenants/{tenantId}/hostnames/{id}/upstream
+         { "nodeUpstream": "https://127.0.0.1:8443" }
+
+     The ingress re-reads the table every `Ingress.RouteRefreshSeconds` (30 by default).
+
+   Upstream TLS: a node reached by address presents a certificate for its public name, so
+   the ingress cannot validate it as a browser would. Pin it (`PinnedSpki` on the route: the
+   SHA-256 of the node's web TLS certificate SubjectPublicKeyInfo, hex, which changes when
+   that certificate is reissued), or name the CA that issued every node's web TLS certificate
+   in `Ingress.UpstreamCaCertificatePath`, or, for loopback upstreams only, accept any
+   certificate with `DangerousAcceptAnyUpstreamCertificate`. A non-loopback `https://`
+   upstream under that flag stops the ingress at startup. A plain `http://` upstream on
+   loopback needs none of this.
+
+4. Point the ingress unit at the role and start it:
+
+       sudo mkdir -p /etc/systemd/system/modularca.service.d
+       sudo cp /opt/modularca/deploy/dropins/role-ingress.conf /etc/systemd/system/modularca.service.d/role.conf
+       sudo systemctl daemon-reload && sudo systemctl restart modularca
+
+   The startup log lists every route (`[INGRESS] 2 route(s): ...`). `/health/ready` on the
+   ingress carries an `ingress` entry: whether the table is built, whether the database
+   answered, the routes by source, and per upstream what the active probe (`/health/live`
+   every `HealthCheckIntervalSeconds`) last found. A node that stops answering is marked down
+   and every request for its hostname is answered 503 with a body naming the host until it
+   is back; the other hostnames are unaffected.
+
+What the ingress does not do: it terminates TLS, so a client certificate presented to it is
+not forwarded. The mTLS sign-in name and the EST client-certificate name are answered by
+the process that hosts control and enrollment, so those names must stay on that process (no
+upstream for them, and the ingress running in the same process as control), or that
+process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
+way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
 
 ## Break-glass
 

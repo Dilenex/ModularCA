@@ -44,7 +44,25 @@ public class ScepTransactionEntity
     /// <summary>Certificate issued in response to this transaction, when the enrollment succeeded.</summary>
     public Guid? IssuedCertificateId { get; set; }
 
-    /// <summary>Status — "Pending", "Issued", "Failed".</summary>
+    /// <summary>
+    /// The certificate request row this transaction created, when the PKCSReq was taken under
+    /// submission rather than issued outright.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IssuedCertificateId"/> only exists once a certificate does, so an approval-gated
+    /// PKCSReq left nothing here for <c>GetCertInitial</c> to follow: the client was answered
+    /// PENDING, an approver issued the certificate, and the poll still had no way to find it. This
+    /// is that link, written in the same save that marks the row <c>PendingApproval</c>, and it is
+    /// what the poll resolves the approval's outcome through. Null for a transaction that was
+    /// issued outright, and for every row written before this column existed.
+    /// </remarks>
+    public Guid? CertRequestId { get; set; }
+
+    /// <summary>Navigation to the request row named by <see cref="CertRequestId"/>.</summary>
+    [ForeignKey(nameof(CertRequestId))]
+    public CertRequestEntity? CertRequest { get; set; }
+
+    /// <summary>Status — "Pending", "PendingApproval", "Issued", "Failed".</summary>
     [Required]
     [MaxLength(20)]
     public string Status { get; set; } = "Pending";

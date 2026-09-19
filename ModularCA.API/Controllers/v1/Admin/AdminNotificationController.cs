@@ -5,6 +5,7 @@ using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
 using Serilog;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/notifications")]
 [Authorize(Policy = "SystemOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminNotificationController(ModularCADbContext db, IEmailService emailService, IWebhookService webhookService, SystemConfig config) : ControllerBase
 {
     [HttpGet]

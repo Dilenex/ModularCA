@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Database;
 using ModularCA.Keystore.Adapters;
 using ModularCA.Shared.Entities;
@@ -29,7 +30,8 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
 /// Scheduled job that automatically renews the management UI / API server's Web TLS
-/// certificate before expiration.
+/// certificate before expiration, and, on the same tick and window, the endpoint certificate
+/// of every tenant hostname.
 ///
 /// Inherits <see cref="SingletonCronJob"/> so the base class owns past-due math,
 /// missed-run policy, timeout enforcement, metrics, and <c>SchedulerJobStates</c>
@@ -67,6 +69,7 @@ public class TlsRenewalJob : SingletonCronJob
     private readonly INotificationService _notifications;
     private readonly ICsrService _csrService;
     private readonly ICertificateIssuanceService _issuanceService;
+    private readonly ITenantHostnameCertificateIssuer _hostnameCerts;
 
     /// <summary>
     /// Initializes a new instance of <see cref="TlsRenewalJob"/>. The
@@ -85,9 +88,11 @@ public class TlsRenewalJob : SingletonCronJob
         INotificationService notifications,
         ICsrService csrService,
         ICertificateIssuanceService issuanceService,
+        ITenantHostnameCertificateIssuer hostnameCerts,
         SchedulerJobRunner runner)
         : base(serviceProvider, logger, config, runner)
     {
+        _hostnameCerts = hostnameCerts;
         _logger = logger;
         _db = db;
         _keystore = keystore;
@@ -120,11 +125,67 @@ public class TlsRenewalJob : SingletonCronJob
     public Task RunAsync(CancellationToken cancellationToken) => ExecuteAsync(cancellationToken);
 
     /// <summary>
-    /// Checks whether the current Web TLS certificate is within its renewal window and,
-    /// if so, triggers an automatic renewal. Failures are logged and a notification is sent
-    /// to administrators via <see cref="INotificationService"/>.
+    /// Renews the Web TLS certificate when it is inside its renewal window, then every tenant
+    /// hostname certificate that is inside the same window or missing. Each part is independent:
+    /// a console certificate the operator supplied (<c>Custom</c> mode) is left alone while the
+    /// tenant names still renew. Failures are logged and a notification is sent to
+    /// administrators via <see cref="INotificationService"/>.
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
+    {
+        await RenewWebTlsIfDueAsync(cancellationToken);
+        await RenewTenantHostnamesIfDueAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Renews every tenant hostname whose certificate is missing, or inside
+    /// <c>Https.RenewalWindow</c> of expiry, through <see cref="ITenantHostnameCertificateIssuer"/>.
+    /// A hostname whose issuance fails is reported and retried on the next tick; the others
+    /// still renew.
+    /// </summary>
+    private async Task RenewTenantHostnamesIfDueAsync(CancellationToken cancellationToken)
+    {
+        var renewalWindow = Iso8601ParserUtil.ParseIso8601(_config.Https.RenewalWindow);
+        var now = TimeProvider.GetUtcNow().UtcDateTime;
+        var hostnames = await _db.TenantHostnames.AsNoTracking().Include(h => h.Certificate)
+            .OrderBy(h => h.Hostname).ToListAsync(cancellationToken);
+
+        foreach (var hostname in hostnames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var expiry = hostname.Certificate?.NotAfter.ToUniversalTime();
+            var due = expiry == null || expiry.Value - now <= renewalWindow;
+            if (!due) continue;
+
+            _logger.LogInformation("Tenant hostname {Host}: certificate {State}; renewing.",
+                hostname.Hostname, expiry == null ? "missing" : $"expires in {expiry.Value - now}");
+            try
+            {
+                var previous = hostname.Certificate?.SerialNumber;
+                var issued = await _hostnameCerts.IssueAsync(hostname, cancellationToken);
+                await _audit.LogAsync(AuditActionType.TenantHostnameCertificateIssued, null, "Scheduler",
+                    "TenantHostname", hostname.Id.ToString(),
+                    new { hostname.Hostname, OldSerial = previous, NewSerial = issued.SerialNumber, issued.NotAfter },
+                    tenantId: hostname.TenantId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Tenant hostname {Host}: renewal failed", hostname.Hostname);
+                try
+                {
+                    await _notifications.NotifyAsync("TlsRenewalFailed",
+                        $"TLS certificate renewal for tenant hostname {hostname.Hostname} failed: {ex.Message}");
+                }
+                catch (Exception notifyEx) { Serilog.Log.Warning(notifyEx, "Failed to send TLS renewal failure notification"); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the current Web TLS certificate is within its renewal window and,
+    /// if so, triggers an automatic renewal. Only a self-issued console certificate is renewed.
+    /// </summary>
+    private async Task RenewWebTlsIfDueAsync(CancellationToken cancellationToken)
     {
         // Only auto-renew self-issued certs
         if (!string.Equals(_config.Https.Mode, "SelfIssued", StringComparison.OrdinalIgnoreCase))

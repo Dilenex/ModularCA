@@ -15,7 +15,7 @@
          example we'll write here assumes (Fact / Theory / fixtures). xunit.runner.visualstudio
          is what makes `dotnet test` actually discover the tests. -->
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
-    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
@@ -27,23 +27,33 @@
          migrations, JSON columns) belong in a separate ModularCA.IntegrationTests project later.
          Explicit Relational pin matches what the production csproj uses so MSBuild doesn't
          flag a 9.0.0 vs 9.0.14 transitive conflict from Pomelo's older transitive reference. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.20" />
     <!-- Relational provider for tests of code paths the InMemory provider cannot execute:
          ExecuteUpdate/ExecuteUpdateAsync (used in 20+ places for atomic counter updates) is
          unsupported there, so lockout and similar logic was untestable without it. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
     <!-- EF Core 9.0.14 resolves SQLitePCLRaw 2.1.10, which carries GHSA-2m69-gcr7-jv3q.
          Pinned forward to the patched 2.1.13 rather than suppressing NU1903. -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.20" />
 
     <!-- Microsoft.Extensions.* doubles. Used to inject a NullLogger or fake TimeProvider into
          services under test. The TimeProvider sweep we just finished pays off here. -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+
+    <!-- The ingress tests host the real proxy wiring (loaded from the API by reflection) in
+         front of a stub node and assert on the route and cluster shape it produces. -->
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
 
     <!-- coverlet.collector is intentionally NOT added yet. Coverage reports become useful once
          we have a meaningful test surface; adding it before that produces noisy 0% reports. -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The signer seam test loads ModularCA.API from its build output by reflection; its
+         controllers need the ASP.NET shared framework present at test time to be inspected. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
@@ -57,6 +67,7 @@
     <ProjectReference Include="..\..\ModularCA.Core\ModularCA.Core.csproj" />
     <ProjectReference Include="..\..\ModularCA.Auth\ModularCA.Auth.csproj" />
     <ProjectReference Include="..\..\ModularCA.Bootstrap\ModularCA.Bootstrap.csproj" />
+    <ProjectReference Include="..\..\ModularCA.Signer\ModularCA.Signer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,6 +5,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -18,6 +19,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/user-quorum")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminUserQuorumController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

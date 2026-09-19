@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      The signer's wire: the gRPC contract that mirrors ISigningService, the client the node
+      uses to reach a signer in another process (RemoteSigningService), the server adapter the
+      signer role hosts (SignerGrpcService), the Kestrel host that serves it behind mutual TLS,
+      and the identity material both sides pin each other by. It references ModularCA.Shared
+      only: nothing here holds a key or names a keystore type, so the architecture test seals
+      it like the node's own assemblies.
+    -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kestrel, for the signer role's listener; the node side needs only the client. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.1" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.84.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Protos\signer.proto" GrpcServices="Both" />
+  </ItemGroup>
+
+</Project>

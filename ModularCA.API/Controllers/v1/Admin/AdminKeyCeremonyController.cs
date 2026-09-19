@@ -15,6 +15,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using ModularCA.Shared.Models.Revocation;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -27,6 +28,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/ceremonies")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminKeyCeremonyController : ControllerBase
 {
     private readonly IKeyCeremonyService _ceremonySvc;
@@ -529,7 +531,8 @@ public class AdminKeyCeremonyController : ControllerBase
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
                         ? JsonSerializer.Serialize(parameters.NameConstraintsPermitted) : null,
                     nameConstraintsExcludedJson: parameters.NameConstraintsExcluded is { Count: > 0 }
-                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null);
+                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null,
+                    ceremonyId: ceremony.Id);
             }
             else if (ceremony.OperationType == "CreateIntermediateCA")
             {
@@ -555,7 +558,8 @@ public class AdminKeyCeremonyController : ControllerBase
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
                         ? JsonSerializer.Serialize(parameters.NameConstraintsPermitted) : null,
                     nameConstraintsExcludedJson: parameters.NameConstraintsExcluded is { Count: > 0 }
-                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null);
+                        ? JsonSerializer.Serialize(parameters.NameConstraintsExcluded) : null,
+                    ceremonyId: ceremony.Id);
             }
             else if (ceremony.OperationType == "CreateSshCa")
             {

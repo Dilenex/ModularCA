@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -9,6 +9,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Models.Setup;
 using ModularCA.Shared.Utils;
 using Serilog;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1;
 
@@ -21,6 +22,7 @@ namespace ModularCA.API.Controllers.v1;
 [ApiController]
 [Route("api/v1/setup")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Control)]
 public class SetupController(ModularCADbContext db, IHostApplicationLifetime appLifetime, IServiceProvider serviceProvider) : ControllerBase
 {
     /// <summary>

@@ -3,6 +3,11 @@ using Org.BouncyCastle.X509;
 
 namespace ModularCA.Shared.Interfaces;
 
+/// <summary>
+/// The certificates the node loaded from its keystores: the trusted CA certificates and the
+/// CAs it can sign for. Private keys are not reachable through this interface; they are the
+/// signer's, behind <see cref="ModularCA.Shared.Signing.ISigningService"/>.
+/// </summary>
 public interface IKeystoreCertificates
 {
     /// <summary>
@@ -11,13 +16,14 @@ public interface IKeystoreCertificates
     List<X509Certificate> GetTrustedAuthorities();
 
     /// <summary>
-    /// Returns all signing-capable CA identities (must include private key).
+    /// Returns the CAs the signer holds a private key for, as their public certificates.
     /// </summary>
     List<CertificateAuthorityIdentity> GetSigners();
 
     /// <summary>
-    /// Attempts to retrieve the private key for the specified certificate.
-    /// Returns null if not available.
+    /// Registers an external CA certificate as a trusted authority at runtime, for
+    /// cross-certification. The certificate joins the trusted list without a private key;
+    /// one already present by serial is not added twice.
     /// </summary>
-    IPrivateKeyHandle? GetPrivateKeyFor(X509Certificate cert);
+    void RegisterTrustedCert(X509Certificate cert);
 }

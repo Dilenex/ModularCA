@@ -15,6 +15,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -26,14 +27,18 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/backup")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminBackupController(
     SystemConfig config,
     IAuditService audit,
     ICurrentUserService currentUser,
     IDistributedCache cache,
-    ISecurityAlertService alertService) : ControllerBase
+    ISecurityAlertService alertService,
+    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
 {
     private readonly SystemConfig _config = config;
+    /// <summary>The node's signer, which exports and imports the keystore files a backup carries.</summary>
+    private readonly ModularCA.Shared.Signing.ISigningService _signer = signer;
     private readonly IAuditService _audit = audit;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IDistributedCache _cache = cache;
@@ -62,7 +67,7 @@ public class AdminBackupController(
         var fileName = $"modularca-backup-{timestamp}-{suffix}.zip";
         var outputPath = Path.Combine(backupDir, fileName);
 
-        var exitCode = await BackupRestore.Backup(outputPath);
+        var exitCode = await BackupRestore.Backup(outputPath, _ => _signer);
 
         if (exitCode != 0)
         {
@@ -254,6 +259,7 @@ public class AdminBackupController(
         // and the on-disk password file can't decrypt it.
         var exitCode = await BackupRestore.Restore(
             archivePath,
+            _ => _signer,
             skipSchemaCheck: false,
             providedPassword: string.IsNullOrEmpty(request.Password) ? null : request.Password,
             interactive: false);

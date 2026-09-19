@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -7,8 +7,11 @@ using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
+using Org.BouncyCastle.Security;
 using Org.BouncyCastle.X509;
 using System.Text.Json;
 using ModularCA.Shared.Errors;
@@ -21,24 +24,24 @@ namespace ModularCA.Core.Services;
 public class CsrService : ICsrService
 {
     private readonly ModularCADbContext _dbContext;
-    private readonly IKeystoreCertificates _keystore;
-    private readonly IKeyWrappingPassphraseProvider _passphraseProvider;
+    private readonly IHeldKeyService _heldKeys;
 
     /// <summary>
     /// Initializes a new instance of <see cref="CsrService"/>.
     /// </summary>
-    public CsrService(ModularCADbContext dbContext, IKeystoreCertificates keystore, IKeyWrappingPassphraseProvider passphraseProvider)
+    public CsrService(ModularCADbContext dbContext, IHeldKeyService heldKeys)
     {
         _dbContext = dbContext;
-        _keystore = keystore;
-        _passphraseProvider = passphraseProvider;
+        _heldKeys = heldKeys;
     }
 
     /// <summary>
     /// Generates a new CSR with a fresh key pair based on the requested parameters, validates the key
-    /// parameters against the signing and certificate profiles, and stores the CSR entity in the database.
+    /// parameters against the signing and certificate profiles, and stores the CSR entity in the
+    /// database with the private key held on it under Data Protection, for delivery as PKCS#12
+    /// once the certificate is issued.
     /// </summary>
-    public async Task<List<string>> GenerateCsrAsync(CreateCsrRequest request, Guid userId)
+    public async Task<GeneratedCsr> GenerateCsrAsync(CreateCsrRequest request, Guid userId)
     {
         // Load cert and signing profiles
         var certProfile = await _dbContext.CertProfiles.FindAsync(request.CertificateProfileId);
@@ -125,18 +128,6 @@ public class CsrService : ICsrService
             csrPem = sw.ToString();
         }
 
-        // Encrypt private key with system encryption cert
-        var encryptionCert = _keystore.GetTrustedAuthorities()
-            .FirstOrDefault(ca => ca.SubjectDN.ToString()
-            .Contains("ModularCA System Signing CA", StringComparison.OrdinalIgnoreCase));
-
-        if (encryptionCert == null)
-            throw new Exception("System encryption certificate not found.");
-
-        var encryptedPrivKey = KeyEncryptionUtil.EncryptPrivateKey(
-            encryptionCert.GetPublicKey(), keyPair.Private, _passphraseProvider.GetPassphrase()
-        );
-
         // Convert SAN dictionary to JSON
         var sanJson = JsonSerializer.Serialize(request.SubjectAlternativeNames);
 
@@ -150,10 +141,6 @@ public class CsrService : ICsrService
             KeyAlgorithm = request.KeyAlgorithm,
             KeySize = request.KeySize,
             SignatureAlgorithm = signatureAlgorithm,
-            EncryptedPrivateKey = encryptedPrivKey.encryptedPrivateKey,
-            EncryptedAesForPrivateKey = encryptedPrivKey.aesKeyEncrypted,
-            AesKeyEncryptionIv = encryptedPrivKey.iv,
-            EncryptionCertSerialNumber = CertificateUtil.FormatSerialNumber(encryptionCert.SerialNumber),
             SubmittedAt = DateTime.UtcNow,
             CertProfileId = certProfile.Id,
             CertProfile = certProfile,
@@ -162,6 +149,11 @@ public class CsrService : ICsrService
             RequestorUserId = user.Id,
             RequestorUser = user
         };
+
+        // The key is held on the row, wrapped, until the certificate is issued and the holder
+        // downloads the PKCS#12; it is deleted then. It is never returned in clear and never
+        // stored anywhere else.
+        _heldKeys.Hold(entity, keyPair.Private, request.KeyAlgorithm);
 
         _dbContext.CertificateRequests.Add(entity);
         await _dbContext.SaveChangesAsync();
@@ -174,7 +166,7 @@ public class CsrService : ICsrService
         // .Result — which stalled a thread-pool thread inside an async method, evaluated the task
         // twice, and, because the same PEM can legitimately appear on more than one row, could
         // return the id of a different request than the one just written.
-        return new List<string> { csrPem, entity.Id.ToString() };
+        return new GeneratedCsr(csrPem, entity.Id, KeyHeld: true);
     }
 
     /// <summary>
@@ -188,6 +180,40 @@ public class CsrService : ICsrService
         List<string>? sans = null,
         bool isInfrastructure = true,
         Guid? requestorUserId = null)
+    {
+        var (certProfile, signingProfile, signatureAlgorithm, keySizeStr) =
+            await ValidateInfrastructureKeyParametersAsync(keyAlgorithm, keySizeOrCurve, certProfileId, signingProfileId);
+
+        var keyPair = KeyAlgorithmPolicy.GenerateKeyPair(keyAlgorithm, keySizeOrCurve);
+        var csrSigner = new Asn1SignatureFactory(signatureAlgorithm, keyPair.Private, new SecureRandom());
+        var csrId = await StoreInfrastructureCsrAsync(subjectDn, keyAlgorithm, keySizeStr, signatureAlgorithm,
+            certProfile, signingProfile, keyPair.Public, csrSigner, sans, isInfrastructure, requestorUserId);
+        return (csrId, keyPair);
+    }
+
+    /// <inheritdoc />
+    public async Task<Guid> GenerateInfrastructureCsrAsync(
+        string subjectDn, string keyAlgorithm, int keySizeOrCurve,
+        Guid certProfileId, Guid signingProfileId,
+        AsymmetricKeyParameter publicKey, ISignatureFactory csrSigner,
+        List<string>? sans = null,
+        bool isInfrastructure = true,
+        Guid? requestorUserId = null)
+    {
+        ArgumentNullException.ThrowIfNull(publicKey);
+        ArgumentNullException.ThrowIfNull(csrSigner);
+        var (certProfile, signingProfile, signatureAlgorithm, keySizeStr) =
+            await ValidateInfrastructureKeyParametersAsync(keyAlgorithm, keySizeOrCurve, certProfileId, signingProfileId);
+        return await StoreInfrastructureCsrAsync(subjectDn, keyAlgorithm, keySizeStr, signatureAlgorithm,
+            certProfile, signingProfile, publicKey, csrSigner, sans, isInfrastructure, requestorUserId);
+    }
+
+    /// <summary>
+    /// Resolves the profiles an infrastructure CSR is issued under and checks the key algorithm
+    /// and size against the key policy and both profiles, as the CSR generators share it.
+    /// </summary>
+    private async Task<(CertProfileEntity CertProfile, SigningProfileEntity SigningProfile, string SignatureAlgorithm, string KeySizeStr)>
+        ValidateInfrastructureKeyParametersAsync(string keyAlgorithm, int keySizeOrCurve, Guid certProfileId, Guid signingProfileId)
     {
         var certProfile = await _dbContext.CertProfiles.FindAsync(certProfileId)
             ?? throw new InvalidOperationException("Infrastructure cert profile not found.");
@@ -205,8 +231,20 @@ public class CsrService : ICsrService
         if (!IsValidKeyParameters(keyAlgorithm, keySizeStr, signatureAlgorithm, signingProfile, certProfile))
             throw new InvalidOperationException($"Key parameters ({keyAlgorithm}/{keySizeStr}) not allowed by profiles.");
 
-        var keyPair = KeyAlgorithmPolicy.GenerateKeyPair(keyAlgorithm, keySizeOrCurve);
+        return (certProfile, signingProfile, signatureAlgorithm, keySizeStr);
+    }
 
+    /// <summary>
+    /// Builds the PKCS#10 request for <paramref name="publicKey"/> with the cert profile's
+    /// extensions and the SANs, signs it with <paramref name="csrSigner"/>, and stores it
+    /// approved. Shared by the key-generating and signer-backed generators.
+    /// </summary>
+    private async Task<Guid> StoreInfrastructureCsrAsync(
+        string subjectDn, string keyAlgorithm, string keySizeStr, string signatureAlgorithm,
+        CertProfileEntity certProfile, SigningProfileEntity signingProfile,
+        AsymmetricKeyParameter publicKey, ISignatureFactory csrSigner,
+        List<string>? sans, bool isInfrastructure, Guid? requestorUserId)
+    {
         // Build PKCS#10 CSR with extensions from the cert profile
         var subject = new X509Name(subjectDn);
         var extGen = new X509ExtensionsGenerator();
@@ -258,7 +296,7 @@ public class CsrService : ICsrService
         var attr = new AttributePkcs(PkcsObjectIdentifiers.Pkcs9AtExtensionRequest, new DerSet(extensions));
         var attributes = new DerSet(attr);
 
-        var csr = new Pkcs10CertificationRequest(signatureAlgorithm, subject, keyPair.Public, attributes, keyPair.Private);
+        var csr = new Pkcs10CertificationRequest(csrSigner, subject, publicKey, attributes);
 
         string csrPem;
         using (var sw = new StringWriter())
@@ -297,7 +335,7 @@ public class CsrService : ICsrService
         _dbContext.CertificateRequests.Add(entity);
         await _dbContext.SaveChangesAsync();
 
-        return (entity.Id, keyPair);
+        return entity.Id;
     }
 
     /// <summary>
@@ -555,6 +593,8 @@ public class CsrService : ICsrService
                 RequestorUsername = pendingRequest.RequestorUser?.Username,
                 RejectionReason = pendingRequest.RejectionReason,
                 IssuedCertificateId = pendingRequest.IssuedCertificateId,
+                KeyHeld = pendingRequest.HeldPrivateKey != null,
+                HeldKeyDeliveredAt = pendingRequest.HeldKeyDeliveredAt,
             };
 
             results.Add(request);

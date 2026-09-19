@@ -51,6 +51,10 @@ public static class AuditActionType
     public const string CsrSubmitted = "CsrSubmitted";
     public const string CsrApproved = "CsrApproved";
     public const string CsrRejected = "CsrRejected";
+    /// <summary>A private key the CA held for a request left as PKCS#12 with its certificate, and was deleted.</summary>
+    public const string HeldKeyDelivered = "HeldKeyDelivered";
+    /// <summary>A held private key was deleted undelivered: the request ended or its certificate is no longer usable.</summary>
+    public const string HeldKeyDiscarded = "HeldKeyDiscarded";
 
     // CRL operations
     public const string CrlGenerated = "CrlGenerated";
@@ -288,6 +292,15 @@ public static class AuditActionType
     /// <summary>A key version was imported or derived. Details carry the version and types, never the key.</summary>
     public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
     public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
+
+    // Tenant hostnames (names a tenant's enrollment endpoints are reached by, each under its own certificate)
+    /// <summary>A hostname was added to a tenant. Details name the host and the issuing CA.</summary>
+    public const string TenantHostnameCreated = "TenantHostnameCreated";
+    public const string TenantHostnameDeleted = "TenantHostnameDeleted";
+    /// <summary>An endpoint certificate was issued or renewed for a tenant hostname. Details carry the serials.</summary>
+    public const string TenantHostnameCertificateIssued = "TenantHostnameCertificateIssued";
+    /// <summary>The node a tenant hostname is routed to by the ingress was set or cleared. Details carry the old and new upstream.</summary>
+    public const string TenantHostnameUpstreamChanged = "TenantHostnameUpstreamChanged";
 
     // Service identities (permission-only accounts that cannot sign in)
     public const string ServiceIdentityCreated = "ServiceIdentityCreated";

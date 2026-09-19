@@ -21,6 +21,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth
 {
@@ -33,6 +34,7 @@ namespace ModularCA.API.Controllers.v1.Auth
     [ApiController]
     [Route("api/v1/auth")]
     [Route("auth")]
+    [NodeRole(ProcessRole.Control)]
     public class AuthController : ControllerBase
     {
         private readonly ModularCADbContext _db;

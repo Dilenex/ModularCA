@@ -12,6 +12,9 @@ using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using Serilog;
 
+using ModularCA.API.Filters;
+using ModularCA.API.Startup;
+
 namespace ModularCA.API.Controllers.v1.Msae;
 
 /// <summary>
@@ -51,6 +54,8 @@ namespace ModularCA.API.Controllers.v1.Msae;
 [Route("api/v1/msae/{caLabel}")]
 [Route("msae/{caLabel}")]
 [AllowAnonymous]
+[RequireUnlockedSigner]
+[NodeRole(ProcessRole.Enrollment)]
 public class MsaeController(
     IMsaeEnrollmentService enrollment,
     IXcepPolicyService policy,
@@ -91,7 +96,7 @@ public class MsaeController(
 
         try
         {
-            var policies = await policy.GetPoliciesAsync(caLabel, caller!);
+            var policies = await policy.GetPoliciesAsync(caLabel, caller!, Request.Host.Host);
             RecordSuccess(stopwatch);
             MutualAuth(caller!);
             return Content(XcepMessages.BuildGetPoliciesResponse(policies, request.MessageId), SoapContentType);

@@ -133,6 +133,7 @@ const HealthCheckCard: React.FC = () => {
                     {health.checks?.database && renderCheckRow('Database', health.checks.database)}
                     {health.checks?.auditDatabase && renderCheckRow('Audit Database', health.checks.auditDatabase)}
                     {health.checks?.keystore && renderCheckRow('Keystore', health.checks.keystore)}
+                    {health.checks?.signer && renderCheckRow('Signer', health.checks.signer)}
                     {health.checks?.tlsCertificate && renderCheckRow('TLS Certificate', health.checks.tlsCertificate)}
                     {health.checks?.diskSpace && renderCheckRow('Disk Space', health.checks.diskSpace)}
 
@@ -144,6 +145,20 @@ const HealthCheckCard: React.FC = () => {
                                 {formatDate(health.checks.tlsCertificate.expiresAt)}
                                 {health.checks.tlsCertificate.daysRemaining <= 30 && ' -- Renew soon!'}
                             </span>
+                        </div>
+                    )}
+
+                    {/* Signer details: the signer's own account of its state. Locked means nothing can be issued. */}
+                    {health.checks?.signer?.unlocked !== undefined && (
+                        <div className="mt-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded text-xs space-y-1">
+                            <div>
+                                <span className="text-gray-600 dark:text-gray-400">Signer: </span>
+                                <span className={health.checks.signer.unlocked ? 'text-gray-700 dark:text-gray-300' : 'text-red-800 dark:text-red-400 font-semibold'}>
+                                    {health.checks.signer.unlocked
+                                        ? `unlocked, ${health.checks.signer.keyCount} key(s) on the ${health.checks.signer.backend} backend`
+                                        : 'locked -- the keystore did not unlock; enrollment answers 503 until it does'}
+                                </span>
+                            </div>
                         </div>
                     )}
 

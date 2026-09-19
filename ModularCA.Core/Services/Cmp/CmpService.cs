@@ -1,10 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Enrollment;
 using ModularCA.Database;
-using ModularCA.Keystore.Adapters;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Cmp;
@@ -26,8 +28,58 @@ namespace ModularCA.Core.Services.Cmp;
 /// rr (revocation), certConf (certificate confirm), and genm (general message).
 /// Transport per RFC 6712 (CMP over HTTP).
 /// </summary>
-public class CmpService : ICmpService
+/// <remarks>
+/// <para>
+/// The middle of a certificate-issuing exchange — the CA, CMP's enablement on it, the caller's
+/// authorization, the effective profiles, the names against the request profile, the request row,
+/// issuance or submission for approval, and the audit row — is <see cref="IEnrollmentPipeline"/>,
+/// the same sequence every protocol runs. What stays here is CMP's own: the ASN.1 and the
+/// PKIMessage, both kinds of protection, proof of possession, the transaction and nonce handling,
+/// the signer-name binding, revocation, confirmation, general messages, and the rendering of every
+/// answer as a PKIMessage.
+/// </para>
+/// <para>
+/// Only <c>ir</c>, <c>cr</c> and <c>kur</c> go through the pipeline, because only they issue.
+/// <c>rr</c> revokes, <c>certConf</c> acknowledges and <c>genm</c> answers a question; none of them
+/// produces a certificate, so none of them has a middle to share.
+/// </para>
+/// </remarks>
+public class CmpService : ICmpService, IEnrollmentProtocol
 {
+    /// <summary>The protocol name as per-CA protocol configuration and audit rows record it.</summary>
+    public const string Protocol = "CMP";
+
+    /// <inheritdoc />
+    string IEnrollmentProtocol.Name => Protocol;
+
+    /// <summary>
+    /// What CMP offers here: enrollment (<c>ir</c>, <c>cr</c>), key update as a renewal carrying
+    /// the certificate it replaces (<c>kur</c>), and revocation (<c>rr</c>).
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="EnrollmentCapabilities.ReEnroll"/>: a signature-protected <c>cr</c> is
+    /// credentialed by an existing certificate, but CMP has no operation that means "replace the
+    /// certificate that authenticated me" other than <c>kur</c>, which is
+    /// <see cref="EnrollmentCapabilities.Renew"/>. Not
+    /// <see cref="EnrollmentCapabilities.Poll"/> or <see cref="EnrollmentCapabilities.Collect"/>:
+    /// RFC 4210's <c>pollReq</c>/<c>pollRep</c> are not implemented, and <c>certConf</c> is the
+    /// client acknowledging a certificate it already holds, not collecting one. No server-side key
+    /// generation — encryption-only proof of possession is refused with a reason saying so.
+    /// </remarks>
+    EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
+        EnrollmentCapabilities.Enroll | EnrollmentCapabilities.Renew | EnrollmentCapabilities.Revoke;
+
+    /// <summary>Audit message type recorded for an issued certificate.</summary>
+    private const string IssueOperation = "IR";
+
+    /// <summary>
+    /// Audit message type recorded for a request the middle refused. CMP wrote no audit row at
+    /// all for a refused enrollment before the migration: every policy refusal was thrown, scrubbed
+    /// into a system-failure response and recorded nowhere, so the CMP tab showed issuance and
+    /// revocation and never a rejection.
+    /// </summary>
+    private const string RejectOperation = "IRRejected";
+
     // PKIBody type tags per RFC 4210 §5.1.2
     private const int TypeIr = 0;   // Initialization Request
     private const int TypeIp = 1;   // Initialization Response
@@ -60,14 +112,30 @@ public class CmpService : ICmpService
 
     private readonly ModularCADbContext _db;
     private readonly IKeystoreCertificates _keystore;
-    private readonly ICertificateIssuanceService _issuanceService;
     private readonly ICertificateRevocationService _revocationService;
     private readonly ICaResolverService _caResolver;
     private readonly IProtocolAuditService _protocolAudit;
-    private readonly IEnrollmentAuthorizationService _enrollmentAuth;
-    private readonly RequestProfileValidationService _requestProfileValidation;
     private readonly IEnrollmentTokenService _enrollmentTokens;
+
+    /// <summary>The shared middle every issuing exchange runs; see <see cref="IEnrollmentPipeline"/>.</summary>
+    private readonly IEnrollmentPipeline _pipeline;
     private readonly Microsoft.Extensions.Logging.ILogger<CmpService> _logger;
+
+    /// <summary>
+    /// Signs every signature-protected response. The service holds a <see cref="KeyRef"/> to
+    /// the CMP signer certificate, or to the CA certificate when the CA has no dedicated
+    /// signer, and a context naming the CA; the key stays with the signer.
+    /// </summary>
+    private readonly ISigningService _signer;
+
+    /// <summary>The caller identity CMP signs under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(CmpService);
+
+    /// <summary>
+    /// The key a CMP exchange signs its responses with, as the signer knows it: the reference
+    /// to the signing certificate and the context holding the key to the CA the exchange is for.
+    /// </summary>
+    private sealed record CmpSignerKey(KeyRef Key, SigningContext Context);
 
     /// <summary>
     /// Initializes a new instance. Per-request state (source IP, CA label, protection mode,
@@ -78,25 +146,23 @@ public class CmpService : ICmpService
     public CmpService(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
-        ICertificateIssuanceService issuanceService,
         ICertificateRevocationService revocationService,
         ICaResolverService caResolver,
         IProtocolAuditService protocolAudit,
-        IEnrollmentAuthorizationService enrollmentAuth,
-        RequestProfileValidationService requestProfileValidation,
+        IEnrollmentPipeline pipeline,
         IEnrollmentTokenService enrollmentTokens,
-        Microsoft.Extensions.Logging.ILogger<CmpService> logger)
+        Microsoft.Extensions.Logging.ILogger<CmpService> logger,
+        ISigningService signer)
     {
         _db = db;
         _keystore = keystore;
-        _issuanceService = issuanceService;
         _revocationService = revocationService;
         _caResolver = caResolver;
         _protocolAudit = protocolAudit;
-        _enrollmentAuth = enrollmentAuth;
-        _requestProfileValidation = requestProfileValidation;
+        _pipeline = pipeline;
         _enrollmentTokens = enrollmentTokens;
         _logger = logger;
+        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
 
     /// <summary>
@@ -109,6 +175,12 @@ public class CmpService : ICmpService
     {
         public string? SourceIp { get; init; }
         public string? CaLabel { get; init; }
+
+        /// <summary>
+        /// The message's transactionID, hex. Carried into the audit row as CMP's own correlation
+        /// value, which the CMP tab has a column for and nothing ever filled.
+        /// </summary>
+        public string? TransactionIdHex { get; set; }
         public CmpProtectionMode ProtectionMode { get; set; } = CmpProtectionMode.None;
 
         /// <summary>
@@ -193,7 +265,7 @@ public class CmpService : ICmpService
     {
         var reqCtx = new CmpRequestContext { SourceIp = sourceIp, CaLabel = caLabel };
         var context = await _caResolver.ResolveAsync(caLabel, "CMP");
-        var (caCert, caKeyHandle, signerIssuer) = await ResolveSignerForCaAsync(context)
+        var (caCert, caKey, signerIssuer) = await ResolveSignerForCaAsync(context)
             ?? throw new InvalidOperationException("No CA signer available for CMP.");
         reqCtx.SignerIssuerCert = signerIssuer;
 
@@ -204,7 +276,7 @@ public class CmpService : ICmpService
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, null, reqCtx, StatusRejection, FailBadDataFormat,
+            return BuildErrorResponse(caCert, caKey, null, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid CMP PKIMessage encoding.");
         }
 
@@ -222,13 +294,13 @@ public class CmpService : ICmpService
                 var skew = Math.Abs((DateTime.UtcNow - clientTime).TotalSeconds);
                 if (skew > 300)
                 {
-                    return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                    return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                         "messageTime outside the acceptable freshness window.");
                 }
             }
             catch
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                     "messageTime could not be parsed.");
             }
         }
@@ -240,21 +312,23 @@ public class CmpService : ICmpService
         // both out replayed indefinitely. They are required here for every request.
         if (header.MessageTime == null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadTime,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                 "messageTime is required (RFC 9483 section 3.1).");
         }
         if (header.TransactionID == null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 "transactionID is required (RFC 9483 section 3.1).");
         }
+
+        reqCtx.TransactionIdHex = Convert.ToHexString(header.TransactionID.GetOctets());
 
         // Sender/transaction nonce length minimums (RFC 4210 §5.1.1; the same
         // invariant is carried into SCEP). Reject absurdly short
         // nonces outright.
         if (header.SenderNonce != null && header.SenderNonce.GetOctets().Length < 16)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "senderNonce must be at least 16 octets.");
         }
 
@@ -269,7 +343,7 @@ public class CmpService : ICmpService
             var pbmVerified = await TryVerifyPbmAsync(header, request, body, context.Ca?.Id, caLabel, reqCtx);
             if (!pbmVerified)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     "PBMAC verification failed — unknown reference value or invalid shared secret.");
             }
         }
@@ -285,13 +359,13 @@ public class CmpService : ICmpService
             var sigError = await VerifySignatureProtectionAsync(request, header, body, verificationCaCert, reqCtx);
             if (sigError != null)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                     sigError);
             }
         }
         else if (header.ProtectionAlg != null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "Message protection is required but verification failed.");
         }
         else
@@ -304,7 +378,7 @@ public class CmpService : ICmpService
             // remaining gate, which an attacker satisfies by signing the CertRequest with their own
             // key. The result was that an unauthenticated remote could POST an unprotected `ir` and
             // receive a certificate. RFC 4210 §5.1.3 requires protection; reject outright.
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "CMP messages must carry signature-based or password-based MAC protection (RFC 4210 5.1.3).");
         }
 
@@ -322,7 +396,7 @@ public class CmpService : ICmpService
 
             if (sigRequired)
             {
-                return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                     "This CA requires signature-based CMP protection; PBMAC is not accepted.");
             }
         }
@@ -332,7 +406,7 @@ public class CmpService : ICmpService
         var replayCheck = await PersistOrCheckTransactionAsync(header, body.Type, context.Ca?.Id, reqCtx);
         if (replayCheck != null)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 replayCheck);
         }
 
@@ -340,13 +414,13 @@ public class CmpService : ICmpService
         {
             return body.Type switch
             {
-                TypeIr => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeIp, context, reqCtx),
-                TypeCr => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeCp, context, reqCtx),
-                TypeKur => await HandleCertRequestAsync(body, header, caCert, caKeyHandle, TypeKup, context, reqCtx),
-                TypeRr => await HandleRevocationRequestAsync(body, header, caCert, caKeyHandle, reqCtx),
-                TypeCertConf => HandleCertConfirm(body, header, caCert, caKeyHandle, reqCtx),
-                TypeGenm => HandleGeneralMessage(header, caCert, caKeyHandle, reqCtx),
-                _ => BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailBadRequest,
+                TypeIr => await HandleCertRequestAsync(body, header, caCert, caKey, TypeIp, context, reqCtx),
+                TypeCr => await HandleCertRequestAsync(body, header, caCert, caKey, TypeCp, context, reqCtx),
+                TypeKur => await HandleCertRequestAsync(body, header, caCert, caKey, TypeKup, context, reqCtx),
+                TypeRr => await HandleRevocationRequestAsync(body, header, caCert, caKey, reqCtx),
+                TypeCertConf => HandleCertConfirm(body, header, caCert, caKey, reqCtx),
+                TypeGenm => HandleGeneralMessage(header, caCert, caKey, reqCtx),
+                _ => BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     $"Unsupported PKIBody type: {body.Type}.")
             };
         }
@@ -355,7 +429,7 @@ public class CmpService : ICmpService
             // Never leak exception text to unauthenticated remotes.
             var correlationId = Guid.NewGuid().ToString("N")[..12];
             _logger.LogError(ex, "CMP processing failure [{CorrelationId}] caLabel={CaLabel}", correlationId, caLabel);
-            return BuildErrorResponse(caCert, caKeyHandle, header, reqCtx, StatusRejection, FailSystemFailure,
+            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailSystemFailure,
                 $"Certificate issuance failed; contact administrator (ref {correlationId})");
         }
         finally
@@ -915,7 +989,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         int responseType,
         ResolvedCaContext context,
         CmpRequestContext reqCtx)
@@ -926,9 +1000,14 @@ public class CmpService : ICmpService
 
         if (reqMsgs.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "No certificate request messages in PKIBody.");
         }
+
+        // A key update renews the certificate that signed the message; see
+        // ResolveKeyUpdateRenewalAsync. Resolved once for the message rather than once per
+        // CertReqMsg, because the protection is the message's and not the request's.
+        var renewal = RenewsExistingCertificate(responseType) ? await ResolveKeyUpdateRenewalAsync(reqCtx) : null;
 
         var responses = new List<CertResponse>();
 
@@ -954,7 +1033,7 @@ public class CmpService : ICmpService
                     continue;
                 }
 
-                var certResponse = await ProcessSingleCertRequestAsync(certReq, caCert, context, reqCtx);
+                var certResponse = await ProcessSingleCertRequestAsync(certReq, context, reqCtx, renewal);
                 responses.Add(certResponse);
             }
             catch (Exception ex)
@@ -981,29 +1060,135 @@ public class CmpService : ICmpService
             responses.ToArray());
 
         var responseBody = new PkiBody(responseType, certRepMessage);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
-    /// Processes a single CMP certificate request by extracting subject and SAN information from the
-    /// cert template, creating a CSR entity, and issuing the certificate using the resolved cert and signing profiles.
+    /// Which of the three issuing bodies renews a certificate rather than enrolling a new one:
+    /// <c>kur</c> alone, answered with <c>kup</c>.
     /// </summary>
+    /// <remarks>
+    /// <c>ir</c> and <c>cr</c> differ in what a client means by them — a first certificate against
+    /// a bootstrap credential, and a further one — and neither names a certificate it replaces.
+    /// RFC 4210 §5.3.5 gives that meaning to <c>kur</c> only, and it is the signature over the
+    /// protected part that says which certificate: see <see cref="ResolveKeyUpdateRenewalAsync"/>.
+    /// Named rather than compared inline so the rule is one a test can state.
+    /// </remarks>
+    /// <param name="responseType">The PKIBody type of the response being built.</param>
+    internal static bool RenewsExistingCertificate(int responseType) => responseType == TypeKup;
+
+    /// <summary>
+    /// Runs one CertReqMsg's certification request through the shared middle and renders what it
+    /// became as a <see cref="CertResponse"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What is CMP's own and stays here: reading the subject, the alternative names, the public key
+    /// and the requested window out of the CertTemplate; holding the requested names to the
+    /// credential that carried the message, which runs from the pipeline's post-authorization hook
+    /// so it keeps the place in the order it has always had; and turning the answer into a
+    /// CertResponse.
+    /// </para>
+    /// <para>
+    /// A refusal is thrown rather than rendered here, because that is how this method has always
+    /// refused: the caller catches it, logs it against a correlation reference and answers with a
+    /// scrubbed system-failure status. Rendering the middle's sentence instead would tell a remote
+    /// which policy it failed.
+    /// </para>
+    /// </remarks>
+    /// <param name="certReq">The certification request carried by the CertReqMsg.</param>
+    /// <param name="context">The CA and profiles this exchange resolved before dispatching.</param>
+    /// <param name="reqCtx">Per-request CMP state: the protection, the credential, the transaction.</param>
+    /// <param name="renewal">
+    /// The certificate a key update renews, or null; see <see cref="ResolveKeyUpdateRenewalAsync"/>.
+    /// </param>
     private async Task<CertResponse> ProcessSingleCertRequestAsync(
         CertRequest certReq,
-        X509Certificate caCert,
         ResolvedCaContext context,
-        CmpRequestContext reqCtx)
+        CmpRequestContext reqCtx,
+        EnrollmentRenewal? renewal)
     {
         var certReqId = certReq.CertReqID;
-        var certTemplate = certReq.CertTemplate;
 
-        // Enrollment authorization check (CMP has no PKCS#10 CSR for challenge password).
-        // When the request arrived with signature or PBMAC protection we already validated
-        // the caller — pass isAuthenticated=true so CmpRequireSignature gates correctly.
-        var alreadyAuthenticated = reqCtx.ProtectionMode != CmpProtectionMode.None;
-        var (authAllowed, authError) = await _enrollmentAuth.ValidateAsync("CMP", reqCtx.CaLabel, null, null, alreadyAuthenticated);
-        if (!authAllowed)
-            throw new InvalidOperationException(authError ?? "Enrollment not authorized");
+        var submission = BuildSubmission(certReq, context, reqCtx, renewal, out var notBeforeRaised, _logger);
+        if (notBeforeRaised)
+            _logger.LogInformation("CMP requested a notBefore in the past; raised to the issuance floor.");
+
+        // The audit writer is the one part of the submission that needs this instance, so it is
+        // attached here rather than built with the rest.
+        var outcome = await _pipeline.SubmitAsync(
+            submission with { Audit = record => WriteCmpAuditAsync(record, reqCtx) });
+        switch (outcome)
+        {
+            case EnrollmentOutcome.Issued issued:
+            {
+                var issuedCert = CertificateUtil.ParseFromPem(issued.CertificatePem);
+                var issuedCertStructure = Org.BouncyCastle.Asn1.X509.X509CertificateStructure.GetInstance(
+                    Asn1Object.FromByteArray(issuedCert.GetEncoded()));
+
+                var status = new PkiStatusInfo(StatusGranted);
+                var certifiedKeyPair = new CertifiedKeyPair(
+                    new CertOrEncCert(new CmpCertificate(issuedCertStructure)));
+
+                return new CertResponse(certReqId, status, certifiedKeyPair, null);
+            }
+
+            // There is no pollReq/pollRep here, so a request an approver owns is a request this
+            // client can never collect: it has no message to ask after it with. ACME's finalize
+            // reached the same wall and answered it the same way — close the row so the approval
+            // queue does not fill with requests nobody will come back for, and refuse. Issuing
+            // anyway, which is what CMP did while nothing on this path read RequireApproval at all,
+            // is the one answer that is certainly wrong.
+            case EnrollmentOutcome.Pending pending:
+                await CloseUncollectableRequestAsync(pending.RequestId);
+                throw new InvalidOperationException(ApprovalUnsupported);
+
+            // Already audited, by the writer above. The sentence reaches the log and never the
+            // client: the caller scrubs it into a system-failure status with a correlation
+            // reference, which is what every refusal on this path has always looked like on the
+            // wire.
+            case EnrollmentOutcome.Refused refused:
+                throw new InvalidOperationException(refused.Message);
+
+            case EnrollmentOutcome.Failed failed:
+                throw new InvalidOperationException(failed.Message);
+
+            default:
+                throw new InvalidOperationException("Unrecognised enrollment outcome.");
+        }
+    }
+
+    /// <summary>
+    /// Turns one CertReqMsg's certification request into the normalized submission the shared
+    /// middle takes: what the CertTemplate asks for, which credential is asking, and which
+    /// certificate a key update replaces.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="ProcessSingleCertRequestAsync"/>, and static, because everything a
+    /// CMP request becomes on its way into the middle is decided here — the CA and profiles this
+    /// exchange resolved, the window, the clamp CMP has always applied to it, the credential the
+    /// protection proved, the placeholder that stands in for a PKCS#10 CMP never carries — and none
+    /// of it was reachable in a test while it sat inside a method that also issued. Only the audit
+    /// writer is left to the caller, being the one part that needs the service.
+    /// </remarks>
+    /// <param name="certReq">The certification request carried by the CertReqMsg.</param>
+    /// <param name="context">The CA and profiles this exchange resolved before dispatching.</param>
+    /// <param name="reqCtx">Per-request CMP state: the protection, the credential, the transaction.</param>
+    /// <param name="renewal">The certificate a key update renews, or null.</param>
+    /// <param name="notBeforeRaised">
+    /// Whether the start the client asked for was in the past and the middle will raise it, for the
+    /// caller to log.
+    /// </param>
+    /// <param name="logger">Where a key that cannot be read is reported, when there is one.</param>
+    internal static EnrollmentSubmission BuildSubmission(
+        CertRequest certReq,
+        ResolvedCaContext context,
+        CmpRequestContext reqCtx,
+        EnrollmentRenewal? renewal,
+        out bool notBeforeRaised,
+        Microsoft.Extensions.Logging.ILogger? logger = null)
+    {
+        var certTemplate = certReq.CertTemplate;
 
         // Extract subject from the template
         var subject = certTemplate.Subject?.ToString() ?? string.Empty;
@@ -1020,27 +1205,128 @@ public class CmpService : ICmpService
         if (publicKeyInfo != null)
         {
             var algOid = publicKeyInfo.Algorithm.Algorithm.Id;
-            (keyAlgorithm, keySize) = MapKeyAlgorithm(algOid, publicKeyInfo);
+            (keyAlgorithm, keySize) = MapKeyAlgorithm(algOid, publicKeyInfo, logger);
         }
-
-        var signingProfileId = context.SigningProfileId;
-
-        // Resolve cert profile: CMP doesn't support requester choice → protocol default → request profile default
-        var (resolvedCertProfileId, certProfileError) = await _requestProfileValidation
-            .ResolveCertProfileIdAsync(null, context.CertProfileId, context.RequestProfileId);
-        if (resolvedCertProfileId == null)
-            throw new InvalidOperationException(certProfileError ?? "No certificate profile available for CMP");
-        var certProfileId = resolvedCertProfileId.Value;
-
-        var signingProfile = await _db.SigningProfiles.FindAsync(signingProfileId)
-            ?? throw new InvalidOperationException("Configured CMP signing profile not found.");
-        var certProfile = await _db.CertProfiles.FindAsync(certProfileId)
-            ?? throw new InvalidOperationException("Configured CMP certificate profile not found.");
 
         // CMP uses CertTemplate (not PKCS#10 CSR). Store the public key as a
         // base64-encoded SubjectPublicKeyInfo DER so the issuance pipeline can
         // extract it without needing a real CSR signature.
-        var sanJson = JsonSerializer.Serialize(sans);
+        var pubKeyDer = publicKeyInfo?.GetDerEncoded() ?? Array.Empty<byte>();
+        var csrPlaceholder = $"-----CMP-PUBKEY-----\n{Convert.ToBase64String(pubKeyDer)}\n-----END CMP-PUBKEY-----";
+
+        // Pick the appropriate signature algorithm based on key algorithm + curve (centralised
+        // in KeyAlgorithmPolicy so ECDSA curves are paired with NIST-recommended hashes).
+        var sigAlgorithm = KeyAlgorithmPolicy.ResolveSignatureAlgorithm(keyAlgorithm, keySize);
+
+        var (requestedNotBefore, requestedNotAfter) = RequestedWindow(certTemplate, out notBeforeRaised);
+
+        // The middle: this CA's CMP configuration, the caller's authorization against it, the
+        // effective profiles, the names against the request profile, the request row, the issuance
+        // and the audit row.
+        return new EnrollmentSubmission
+        {
+            Protocol = Protocol,
+            CaLabel = reqCtx.CaLabel,
+            SourceIp = reqCtx.SourceIp,
+            Correlation = reqCtx.TransactionIdHex,
+            ResolvedContext = context,
+            Renewal = renewal,
+            RequestedNotBefore = requestedNotBefore,
+            RequestedNotAfter = requestedNotAfter,
+            // CMP has always shortened an over-long OptionalValidity rather than refusing it; see
+            // EnrollmentSubmission.ClampRequestedNotAfterToProfileMax.
+            ClampRequestedNotAfterToProfileMax = true,
+            Caller = new EnrollmentCaller(
+                Principal: reqCtx.CallerPrincipal,
+                AuthMethod: reqCtx.ProtectionMode switch
+                {
+                    CmpProtectionMode.PbMac => EnrollmentAuthMethod.SharedSecret,
+                    CmpProtectionMode.Signature => EnrollmentAuthMethod.MessageSignature,
+                    _ => EnrollmentAuthMethod.None,
+                },
+                // CMP carries its identity inside the PKIMessage protection, which is verified
+                // before anything is dispatched; an unprotected message never reaches here.
+                IsVerified: reqCtx.ProtectionMode != CmpProtectionMode.None),
+            Request = new EnrollmentRequestMaterial
+            {
+                CsrPem = csrPlaceholder,
+                Subject = subject,
+                SubjectAlternativeNames = sans,
+                KeyAlgorithm = keyAlgorithm,
+                KeySize = keySize,
+                SignatureAlgorithm = sigAlgorithm,
+            },
+            AfterAuthorization = authorized =>
+            {
+                BindNamesToCredential(authorized.Request, reqCtx);
+                return Task.FromResult(authorized);
+            },
+        };
+    }
+
+    /// <summary>
+    /// What a request gated behind an approver is refused with, and recorded as: CMP has no way to
+    /// hand the client a certificate an operator approves later.
+    /// </summary>
+    private const string ApprovalUnsupported =
+        "The request profile for this CA requires approval, which CMP cannot wait for.";
+
+    /// <summary>
+    /// The validity window the CertTemplate asked for: each end as the client named it, or null
+    /// for the default. The floor under the start and the ceiling of the certificate profile's
+    /// maximum are applied by the middle; see
+    /// <see cref="EnrollmentSubmission.ClampRequestedNotAfterToProfileMax"/>.
+    /// </summary>
+    /// <param name="certTemplate">The CertTemplate, whose OptionalValidity is read.</param>
+    /// <param name="notBeforeRaised">
+    /// Whether the start the client asked for was in the past and the middle will raise it. Reported
+    /// rather than logged here so this stays a reading of the template and nothing else, which is
+    /// what lets it be tested without a service.
+    /// </param>
+    internal static (DateTime? NotBefore, DateTime? NotAfter) RequestedWindow(
+        CertTemplate certTemplate, out bool notBeforeRaised)
+    {
+        notBeforeRaised = false;
+        var validity = certTemplate.Validity;
+        if (validity == null)
+            return (null, null);
+
+        DateTime? notBefore = null;
+        if (validity.NotBefore != null)
+        {
+            notBefore = validity.NotBefore.ToDateTime();
+            CertificateValidityUtil.ClampRequestedNotBefore(notBefore, out notBeforeRaised);
+        }
+
+        return (notBefore, validity.NotAfter?.ToDateTime());
+    }
+
+    /// <summary>
+    /// Holds the requested names to what the credential that carried the message vouches for: a
+    /// PBMAC credential to its enrollment token's name restrictions, a signature to the names its
+    /// signing certificate holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Run from the pipeline's post-authorization hook, which is the place in the order these
+    /// checks already had: after the caller is authorized to enroll at this CA, and before any
+    /// profile is read, so a caller who may not enroll here is told that and nothing more.
+    /// </para>
+    /// <para>
+    /// It settles nothing and only refuses, by throwing, exactly as before. CMP's names come from
+    /// the CertTemplate in every case, including a key update: the signer-name binding requires a
+    /// signature-protected request to name its signer, so a renewal is already bound to the
+    /// certificate being replaced and has no names to take from it. That is what distinguishes this
+    /// from Windows autoenrollment, whose renewal PKCS#10 carries no subject at all and must have
+    /// one settled from the certificate it renews.
+    /// </para>
+    /// </remarks>
+    /// <param name="request">The certification request as the middle now holds it.</param>
+    /// <param name="reqCtx">Per-request CMP state carrying the verified credential.</param>
+    internal static void BindNamesToCredential(EnrollmentRequestMaterial request, CmpRequestContext reqCtx)
+    {
+        var subject = request.Subject ?? string.Empty;
+        var sans = request.SubjectAlternativeNames;
 
         // A PBMAC credential may only enroll the names it is scoped to.
         //
@@ -1065,86 +1351,95 @@ public class CmpService : ICmpService
             if (bindingError != null)
                 throw new InvalidOperationException($"Request not permitted for this signing certificate: {bindingError}");
         }
-
-        // Validate against request profile if one is configured for this protocol
-        if (context.RequestProfileId != null)
-        {
-            var (isValid, error, modifiedSubject) = await _requestProfileValidation
-                .ValidateAsync(context.RequestProfileId.Value, subject, sanJson);
-            if (!isValid)
-                throw new InvalidOperationException(error ?? "Request profile validation failed");
-            if (modifiedSubject != null)
-                subject = modifiedSubject;
-        }
-        var pubKeyDer = publicKeyInfo?.GetDerEncoded() ?? Array.Empty<byte>();
-        var csrPlaceholder = $"-----CMP-PUBKEY-----\n{Convert.ToBase64String(pubKeyDer)}\n-----END CMP-PUBKEY-----";
-
-        // Pick the appropriate signature algorithm based on key algorithm + curve (centralised
-        // in KeyAlgorithmPolicy so ECDSA curves are paired with NIST-recommended hashes).
-        var sigAlgorithm = KeyAlgorithmPolicy.ResolveSignatureAlgorithm(keyAlgorithm, keySize);
-
-        var csrEntity = new CertRequestEntity
-        {
-            Subject = subject,
-            SubjectAlternativeNames = sanJson,
-            CSR = csrPlaceholder,
-            KeyAlgorithm = keyAlgorithm,
-            KeySize = keySize,
-            SignatureAlgorithm = sigAlgorithm,
-            SubmittedAt = DateTime.UtcNow,
-            Status = "Pending",
-            CertProfileId = certProfileId,
-            CertProfile = certProfile,
-            SigningProfileId = signingProfileId,
-            SigningProfile = signingProfile
-        };
-
-        _db.CertificateRequests.Add(csrEntity);
-        await _db.SaveChangesAsync();
-
-        // Determine validity from template or defaults
-        var notBefore = CertificateValidityUtil.DefaultNotBefore();
-        var notAfter = notBefore.Add(Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y"));
-
-        if (certTemplate.Validity != null)
-        {
-            var optValidity = certTemplate.Validity;
-            if (optValidity.NotBefore != null)
-            {
-                notBefore = CertificateValidityUtil.ClampRequestedNotBefore(
-                    optValidity.NotBefore.ToDateTime(), out var notBeforeRaised);
-                if (notBeforeRaised)
-                    _logger.LogInformation("CMP requested a notBefore in the past; raised to the issuance floor.");
-            }
-            if (optValidity.NotAfter != null)
-                notAfter = optValidity.NotAfter.ToDateTime();
-
-            // Clamp to the signing profile's max validity
-            var maxSpan = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-            if (notAfter > notBefore.Add(maxSpan))
-                notAfter = notBefore.Add(maxSpan);
-        }
-
-        var issuanceResult = await _issuanceService.IssueCertificateAsync(
-            csrEntity.Id, notBefore, notAfter);
-        var certPem = issuanceResult.Pem;
-
-        // Parse the issued certificate
-        var issuedCert = CertificateUtil.ParseFromPem(certPem);
-        var issuedCertStructure = Org.BouncyCastle.Asn1.X509.X509CertificateStructure.GetInstance(
-            Asn1Object.FromByteArray(issuedCert.GetEncoded()));
-
-        await _protocolAudit.LogCmpAsync("IR", csrEntity.Subject,
-            CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber),
-            csrEntity.KeyAlgorithm, csrEntity.KeySize, reqCtx.CaLabel, null, null, reqCtx.SourceIp,
-            callerPrincipal: reqCtx.CallerPrincipal);
-
-        var status = new PkiStatusInfo(StatusGranted);
-        var certifiedKeyPair = new CertifiedKeyPair(
-            new CertOrEncCert(new CmpCertificate(issuedCertStructure)));
-
-        return new CertResponse(certReqId, status, certifiedKeyPair, null);
     }
+
+    /// <summary>
+    /// The certificate a key update renews: the one whose private key signed the message.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// RFC 4210 §5.3.5 has a <c>kur</c> signed by the certificate being updated, and the signature
+    /// over the protected part is what proves the holder of that certificate's private key made the
+    /// request — the same conclusion Windows autoenrollment draws from a CMC wrapper, which is why
+    /// it fits <see cref="EnrollmentRenewal"/>. The evidence is proven before the pipeline is
+    /// called, by the protection check, which already required the signer to be this CA's, within
+    /// its validity window and unrevoked; and the signer-name binding requires the request to name
+    /// that signer, so a key update cannot drift to a name the old certificate did not hold. There
+    /// is nothing left to prove once the caller is authorized, so this is resolved up front rather
+    /// than from the post-authorization hook.
+    /// </para>
+    /// <para>
+    /// This never refuses. A <c>kur</c> protected by a shared secret names no certificate to renew
+    /// and is issued unlinked, as every CMP request was before; so is one whose signer has no
+    /// stored row. The link is what stops the renewal job queueing a second renewal for a
+    /// certificate the client has already replaced, and a request that cannot be linked is no worse
+    /// off than it was.
+    /// </para>
+    /// </remarks>
+    /// <param name="reqCtx">Per-request CMP state carrying the verified signer's serial.</param>
+    private async Task<EnrollmentRenewal?> ResolveKeyUpdateRenewalAsync(CmpRequestContext reqCtx)
+    {
+        if (reqCtx.ProtectionMode != CmpProtectionMode.Signature || reqCtx.SignerSerialHex == null)
+            return null;
+
+        var signer = await _db.Certificates
+            .AsNoTracking()
+            .ResolveBySerialOrNullAsync(reqCtx.SignerSerialHex);
+        if (signer == null)
+        {
+            _logger.LogInformation(
+                "CMP key update signed by serial {Serial}, which is not a stored certificate; the new request is not linked to it.",
+                reqCtx.SignerSerialHex);
+            return null;
+        }
+
+        return new EnrollmentRenewal(signer.CertificateId, signer.SerialNumber);
+    }
+
+    /// <summary>
+    /// Closes a request row no client can ever come back for, so the approval queue does not
+    /// accumulate requests whose protocol has no way to collect them.
+    /// </summary>
+    /// <param name="requestId">The row the middle wrote before the approval gate stopped it.</param>
+    private async Task CloseUncollectableRequestAsync(Guid requestId)
+    {
+        var request = await _db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == requestId);
+        if (request == null) return;
+        request.Status = "Rejected";
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Writes the shared audit fields the pipeline supplies as a CMP row, in CMP's own message
+    /// types and with the transactionID the CMP tab has a column for and nothing ever filled.
+    /// </summary>
+    /// <param name="record">The shared fields; see <see cref="EnrollmentAuditRecord"/>.</param>
+    /// <param name="reqCtx">Per-request CMP state, for the caller and the address.</param>
+    private Task WriteCmpAuditAsync(EnrollmentAuditRecord record, CmpRequestContext reqCtx)
+        => record.Event switch
+        {
+            EnrollmentAuditEvent.Issued => _protocolAudit.LogCmpAsync(
+                IssueOperation, record.Subject, record.SerialNumber,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: reqCtx.CallerPrincipal),
+
+            // A request an approver owns is one this client can never collect, so it is recorded as
+            // the refusal it becomes rather than as something still in flight.
+            EnrollmentAuditEvent.Pending => _protocolAudit.LogCmpAsync(
+                RejectOperation, record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
+                success: false, errorMessage: ApprovalUnsupported,
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: reqCtx.CallerPrincipal),
+
+            _ => _protocolAudit.LogCmpAsync(
+                RejectOperation, record.Subject, null,
+                record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
+                success: false, errorMessage: record.Message ?? "Enrollment refused.",
+                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                callerPrincipal: reqCtx.CallerPrincipal),
+        };
 
     /// <summary>
     /// Handles CMP revocation requests (rr). Validates that each certificate exists,
@@ -1155,7 +1450,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         RevReqContent revReqContent;
@@ -1165,7 +1460,7 @@ public class CmpService : ICmpService
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid revocation request content.");
         }
 
@@ -1173,7 +1468,7 @@ public class CmpService : ICmpService
 
         if (revDetails.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKeyHandle, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "Empty revocation request — no RevDetails provided.");
         }
 
@@ -1318,7 +1613,7 @@ public class CmpService : ICmpService
         var statusSeq = new DerSequence(statusList.ToArray());
         var revRepContent = RevRepContent.GetInstance(new DerSequence((Asn1Encodable)statusSeq));
         var responseBody = new PkiBody(TypeRp, revRepContent);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
@@ -1331,7 +1626,7 @@ public class CmpService : ICmpService
         PkiBody body,
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         // CertConfirm is an acknowledgement from the client that it received
@@ -1378,13 +1673,13 @@ public class CmpService : ICmpService
         }
 
         var responseBody = new PkiBody(TypePkiConf, DerNull.Instance);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     private byte[] HandleGeneralMessage(
         PkiHeader requestHeader,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         // General Message — respond with the CA certificates (GenRepContent).
@@ -1406,7 +1701,7 @@ public class CmpService : ICmpService
 
         var genRepContent = new GenRepContent(infoTypeAndValue);
         var responseBody = new PkiBody(TypeGenp, genRepContent);
-        return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+        return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
 
     /// <summary>
@@ -1418,7 +1713,7 @@ public class CmpService : ICmpService
         PkiHeader requestHeader,
         PkiBody responseBody,
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         CmpRequestContext reqCtx)
     {
         var sender = new GeneralName(caCert.SubjectDN);
@@ -1458,9 +1753,9 @@ public class CmpService : ICmpService
         if (reqCtx.SignerIssuerCert != null)
             builder.AddCmpCertificate(reqCtx.SignerIssuerCert);
 
-        // Sign with the CA private key using the same algorithm as the CA cert
+        // Sign through the signer with the algorithm the signing key's type calls for
         var sigAlg = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caCert.GetPublicKey()));
-        var sigFactory = new PrivateKeyHandleSignatureFactory(sigAlg, caKeyHandle);
+        var sigFactory = new SigningServiceSignatureFactory(_signer, caKey.Key, SignatureAlgorithm.FromName(sigAlg), caKey.Context);
         var protectedMsg = builder.Build(sigFactory);
 
         return protectedMsg.ToAsn1Message().GetDerEncoded();
@@ -1570,7 +1865,7 @@ public class CmpService : ICmpService
 
     private byte[] BuildErrorResponse(
         X509Certificate caCert,
-        IPrivateKeyHandle caKeyHandle,
+        CmpSignerKey caKey,
         PkiHeader? requestHeader,
         CmpRequestContext reqCtx,
         int pkiStatus,
@@ -1587,7 +1882,7 @@ public class CmpService : ICmpService
 
         if (requestHeader != null)
         {
-            return BuildPkiMessage(requestHeader, responseBody, caCert, caKeyHandle, reqCtx);
+            return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
         }
 
         // No request header available — build a minimal header
@@ -1610,9 +1905,11 @@ public class CmpService : ICmpService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> DirectSignerWarned = new();
 
     /// <summary>
-    /// Resolves the certificate and private key that sign CMP responses for the addressed CA:
-    /// the dedicated CMP signer when one is configured and usable, otherwise the CA itself.
-    /// Returns the key handle directly (supports HSM-backed keys).
+    /// Resolves the certificate and the signer key reference that sign CMP responses for the
+    /// addressed CA: the dedicated CMP signer when one is configured and usable, otherwise the
+    /// CA itself. Whether a key is present is asked of the signer while choosing, so an
+    /// unregistered signer key falls back to the CA and a CA without its key is passed over,
+    /// exactly as when the keystore was consulted directly.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -1630,7 +1927,7 @@ public class CmpService : ICmpService
     /// to build the chain.
     /// </para>
     /// </remarks>
-    private async Task<(X509Certificate cert, IPrivateKeyHandle keyHandle, X509Certificate? signerIssuer)?> ResolveSignerForCaAsync(ResolvedCaContext context)
+    private async Task<(X509Certificate cert, CmpSignerKey key, X509Certificate? signerIssuer)?> ResolveSignerForCaAsync(ResolvedCaContext context)
     {
         if (context.Ca != null)
         {
@@ -1638,6 +1935,8 @@ public class CmpService : ICmpService
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
+                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.TenantId);
+                var held = await _signer.ListKeysAsync(caContext);
 
                 if (context.Ca.CmpSigningCertificateId != null)
                 {
@@ -1647,11 +1946,10 @@ public class CmpService : ICmpService
                     {
                         var signerCert = CertificateUtil.ParseFromPem(signerEntity.Pem);
                         var now = DateTime.UtcNow;
-                        var signerKey = now >= signerCert.NotBefore && now <= signerCert.NotAfter
-                            ? _keystore.GetPrivateKeyFor(signerCert)
-                            : null;
-                        if (signerKey != null)
-                            return (signerCert, signerKey, caCert);
+                        var signerKeyHeld = now >= signerCert.NotBefore && now <= signerCert.NotAfter
+                            && held.Any(k => k.Key.CertificateId == signerEntity.CertificateId);
+                        if (signerKeyHeld)
+                            return (signerCert, new CmpSignerKey(new KeyRef(signerEntity.CertificateId), caContext), caCert);
 
                         _logger.LogWarning(
                             "CMP signer {SignerId} for CA {CaLabel} is expired or its key is not registered; signing responses with the CA certificate instead.",
@@ -1672,29 +1970,39 @@ public class CmpService : ICmpService
                         context.Ca.Label);
                 }
 
-                var keyHandle = _keystore.GetPrivateKeyFor(caCert);
-                if (keyHandle != null)
-                    return (caCert, keyHandle, null);
+                if (held.Any(k => k.Key.CertificateId == certEntity.CertificateId))
+                    return (caCert, new CmpSignerKey(new KeyRef(certEntity.CertificateId), caContext), null);
             }
         }
 
-        // Fallback: pick first available signer
+        // Fallback: the first registered signer that is a CA key the signer holds
+        var caKeys = await _signer.ListKeysAsync(new SigningContext(SignerCaller, SigningPurpose.Cmp, null, null));
         foreach (var signer in _keystore.GetSigners())
         {
-            var cert = signer.PublicCertificate;
-            var keyHandle = _keystore.GetPrivateKeyFor(cert);
-            if (keyHandle != null)
-                return (cert, keyHandle, null);
+            var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
+            var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
+            if (info != null)
+                return (signer.PublicCertificate, new CmpSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Cmp, info.TenantId, info.CaId)), null);
         }
         return null;
     }
 
-    private (string algorithm, string size) MapKeyAlgorithm(string algOid, SubjectPublicKeyInfo publicKeyInfo)
+    /// <summary>
+    /// Maps a CertTemplate public key's algorithm OID to the algorithm and size the request row
+    /// records. Static, and logging through the logger it is given rather than the service's, so
+    /// the reading of a CertTemplate can be exercised without a service; see
+    /// <see cref="BuildSubmission"/>.
+    /// </summary>
+    /// <param name="algOid">The SubjectPublicKeyInfo algorithm OID.</param>
+    /// <param name="publicKeyInfo">The key itself, for the size or curve.</param>
+    /// <param name="logger">Where a parse failure is reported, when there is one to report it to.</param>
+    internal static (string algorithm, string size) MapKeyAlgorithm(
+        string algOid, SubjectPublicKeyInfo publicKeyInfo, Microsoft.Extensions.Logging.ILogger? logger = null)
     {
         return algOid switch
         {
-            "1.2.840.113549.1.1.1" => ("RSA", EstimateRsaKeySize(publicKeyInfo)),
-            "1.2.840.10045.2.1" => ("ECDSA", EstimateEcKeySize(publicKeyInfo)),
+            "1.2.840.113549.1.1.1" => ("RSA", EstimateRsaKeySize(publicKeyInfo, logger)),
+            "1.2.840.10045.2.1" => ("ECDSA", EstimateEcKeySize(publicKeyInfo, logger)),
             "1.3.101.112" => ("Ed25519", "256"),
             "1.3.101.113" => ("Ed448", "456"),
             _ => throw new InvalidOperationException($"Unsupported key algorithm OID '{algOid}' in CMP request")
@@ -1708,7 +2016,9 @@ public class CmpService : ICmpService
     /// Now throws <see cref="InvalidOperationException"/> on parse failure so the caller
     /// rejects the enrollment rather than silently accepting a weak key.
     /// </summary>
-    private string EstimateRsaKeySize(SubjectPublicKeyInfo publicKeyInfo)
+    /// <param name="publicKeyInfo">The key to measure.</param>
+    /// <param name="logger">Where a parse failure is reported, when there is one to report it to.</param>
+    private static string EstimateRsaKeySize(SubjectPublicKeyInfo publicKeyInfo, Microsoft.Extensions.Logging.ILogger? logger)
     {
         try
         {
@@ -1720,7 +2030,7 @@ public class CmpService : ICmpService
         }
         catch (Exception ex) when (ex is not InvalidOperationException)
         {
-            _logger.LogWarning(ex,
+            logger?.LogWarning(ex,
                 "CMP EstimateRsaKeySize failed to parse SubjectPublicKeyInfo; rejecting request to fail closed on key-size policy.");
             throw new InvalidOperationException(
                 "Unable to determine RSA key size from CMP request; rejecting to enforce key-strength policy.", ex);
@@ -1734,7 +2044,9 @@ public class CmpService : ICmpService
     /// Now throws <see cref="InvalidOperationException"/> on parse failure so the caller
     /// rejects the enrollment rather than silently accepting an unknown curve.
     /// </summary>
-    private string EstimateEcKeySize(SubjectPublicKeyInfo publicKeyInfo)
+    /// <param name="publicKeyInfo">The key whose curve is read.</param>
+    /// <param name="logger">Where a parse failure is reported, when there is one to report it to.</param>
+    private static string EstimateEcKeySize(SubjectPublicKeyInfo publicKeyInfo, Microsoft.Extensions.Logging.ILogger? logger)
     {
         try
         {
@@ -1755,7 +2067,7 @@ public class CmpService : ICmpService
         }
         catch (Exception ex) when (ex is not InvalidOperationException)
         {
-            _logger.LogWarning(ex,
+            logger?.LogWarning(ex,
                 "CMP EstimateEcKeySize failed to parse SubjectPublicKeyInfo; rejecting request to fail closed on curve policy.");
             throw new InvalidOperationException(
                 "Unable to determine EC curve from CMP request; rejecting to enforce curve policy.", ex);

@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services;
 using ModularCA.Database;
+using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Csr;
 using ModularCA.Shared.Models.Issuance;
@@ -19,6 +21,7 @@ using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -29,19 +32,21 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/requests")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class UserCertSignRequestController(
     ICsrService csrService,
     ICertificateStore certService,
     ICurrentUserService currentUser,
     ModularCADbContext db,
-    IKeyWrappingPassphraseProvider passphraseProvider
+    IProfileResolutionService profiles,
+    IHeldKeyService heldKeys
 ) : ControllerBase
 {
     private readonly ICsrService _csrService = csrService;
     private readonly ICertificateStore _certService = certService;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly ModularCADbContext _db = db;
-    private readonly IKeyWrappingPassphraseProvider _passphraseProvider = passphraseProvider;
+    private readonly IHeldKeyService _heldKeys = heldKeys;
 
     /// <summary>
     /// Lists all certificate signing requests submitted by the authenticated user, ordered by most recent first.
@@ -65,13 +70,43 @@ public class UserCertSignRequestController(
                 r.SubmittedAt,
                 r.CertProfileId,
                 r.SigningProfileId,
-                IssuedCertificateSerial = r.IssuedCertificate != null ? r.IssuedCertificate.SerialNumber : null
+                IssuedCertificateSerial = r.IssuedCertificate != null ? r.IssuedCertificate.SerialNumber : null,
+                // Whether the CA still holds the key it generated for this request, and when it
+                // was handed over; the My Requests page offers the .pfx from these.
+                KeyHeld = r.HeldPrivateKey != null,
+                r.HeldKeyDeliveredAt,
             })
             .ToListAsync();
 
         return Ok(requests);
     }
 
+    /// <summary>
+    /// Downloads the caller's issued request as one PKCS#12: the certificate, its chain and the
+    /// private key the CA held for it, under the caller's password. The held key is deleted in
+    /// the same save. The request must belong to the caller; step-up MFA is required as for
+    /// certificate export. Answers 409 with the reason when the certificate is not issued yet,
+    /// the key was already delivered, or no key was ever held.
+    /// </summary>
+    [HttpPost("{id:guid}/pkcs12")]
+    [Authorize(Policy = "CaUser")]
+    [RequireStepUp(StepUpOps.ExportCert, "id")]
+    public async Task<IActionResult> DownloadPkcs12(Guid id, [FromBody] HeldKeyPkcs12Request request)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+
+        var delivery = await _heldKeys.DeliverAsync(id, request.Password,
+            new HeldKeyRequester(_currentUser.User.Id, _currentUser.User.Username, HttpContext.Connection.RemoteIpAddress?.ToString(), MustOwnRequest: true));
+        return HeldKeyDeliveryResults.ToResult(this, delivery);
+    }
+
+    /// <summary>
+    /// Generates a certificate signing request with a key pair the server generates. The
+    /// private key is held on the request until the certificate is issued and downloaded as
+    /// PKCS#12 from <c>{id}/pkcs12</c>; it is not in this response.
+    /// </summary>
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -80,8 +115,8 @@ public class UserCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
-        var pem = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
-        return Ok(new { csr = pem });
+        var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
+        return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, keyHeld = generated.KeyHeld });
     }
 
     [HttpPost("upload")]
@@ -101,9 +136,10 @@ public class UserCertSignRequestController(
 
     /// <summary>
     /// Requests a certificate with a server-generated key pair. The server generates the key,
-    /// builds a PKCS#10 CSR, stores the encrypted private key on the request entity, and submits
-    /// it for approval. The certificate is NOT issued immediately — an admin must approve and issue it.
-    /// Once issued, the user can download the PFX via the certificate export endpoint.
+    /// builds a PKCS#10 CSR and submits it for approval; the certificate is NOT issued
+    /// immediately, an admin must approve and issue it. The private key is held on the request
+    /// under Data Protection until then, and delivered once as PKCS#12 with the certificate
+    /// from <c>{id}/pkcs12</c>; it is not in this response.
     /// </summary>
     [HttpPost("request-with-key")]
     [Authorize]
@@ -170,15 +206,10 @@ public class UserCertSignRequestController(
             var sanGeneralNames = new List<GeneralName>();
             foreach (var san in req.Sans)
             {
-                var gn = san.Type.ToUpperInvariant() switch
-                {
-                    "DNS" => new GeneralName(GeneralName.DnsName, san.Value),
-                    "IP" => new GeneralName(GeneralName.IPAddress, san.Value),
-                    "EMAIL" => new GeneralName(GeneralName.Rfc822Name, san.Value),
-                    "URI" => new GeneralName(GeneralName.UniformResourceIdentifier, san.Value),
-                    _ => new GeneralName(GeneralName.DnsName, san.Value)
-                };
-                sanGeneralNames.Add(gn);
+                // The same builder the admin path uses: a type it does not know (or a malformed
+                // value) is refused, where this loop used to turn it into a DNS name silently.
+                try { sanGeneralNames.Add(SanGeneralNames.Build(san.Type, san.Value)); }
+                catch (ArgumentException ex) { return BadRequest(new { error = $"Subject alternative name '{san.Type}: {san.Value}' is not valid: {ex.Message}" }); }
             }
             var sanExtension = new GeneralNames(sanGeneralNames.ToArray());
             var extGen = new X509ExtensionsGenerator();
@@ -204,33 +235,24 @@ public class UserCertSignRequestController(
         await _csrService.UploadCsrAsync(csrPem, req.CertProfileId, req.SigningProfileId,
             _currentUser.User.Id, req.Subject, sanOverrides);
 
-        // Store the encrypted private key on the CSR entity
         var csrEntity = await _db.CertificateRequests
             .Where(c => c.CSR == csrPem && c.RequestorUserId == _currentUser.User.Id)
             .OrderByDescending(c => c.SubmittedAt)
             .FirstOrDefaultAsync();
+        if (csrEntity == null)
+            return StatusCode(500, new { error = "Failed to locate the uploaded CSR entity." });
 
-        if (csrEntity != null)
-        {
-            var encryptionCert = _db.Certificates.AsNoTracking()
-                .Where(c => c.SubjectDN.Contains("ModularCA System Signing CA") && c.IsCA).FirstOrDefault();
-            if (encryptionCert != null)
-            {
-                var bcCert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(encryptionCert.RawCertificate);
-                var encrypted = KeyEncryptionUtil.EncryptPrivateKey(bcCert.GetPublicKey(), keyPair.Private, _passphraseProvider.GetPassphrase());
-                csrEntity.EncryptedPrivateKey = encrypted.encryptedPrivateKey;
-                csrEntity.EncryptedAesForPrivateKey = encrypted.aesKeyEncrypted;
-                csrEntity.AesKeyEncryptionIv = encrypted.iv;
-                csrEntity.EncryptionCertSerialNumber = encryptionCert.SerialNumber;
-                await _db.SaveChangesAsync();
-            }
-        }
+        // The key is held on the request, wrapped, until the certificate is issued and the
+        // PKCS#12 is downloaded from My Requests. It is not in this response.
+        await _heldKeys.HoldAsync(csrEntity.Id, keyPair.Private, req.KeyAlgorithm);
 
         return Ok(new
         {
-            message = "Certificate request submitted with server-generated key pair. The private key is stored encrypted and will be available for PFX export after the certificate is issued.",
-            requestId = csrEntity?.Id,
-            hasPrivateKey = true,
+            message = "Certificate request submitted with a server-generated key pair. The CA holds the private key until the certificate is issued; download the certificate and key as one .pfx from My Requests once it is approved.",
+            requestId = csrEntity.Id,
+            keyHeld = true,
+            certificateIssued = false,
+            csr = csrPem,
         });
     }
 
@@ -271,9 +293,12 @@ public class UserCertSignRequestController(
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.AnyCa)]
     public async Task<IActionResult> ValidateAgainstProfile([FromBody] ValidateAgainstProfileRequest request)
     {
-        var profile = await _db.RequestProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == request.RequestProfileId);
-        if (profile == null)
-            return NotFound(new { error = "Request profile not found." });
+        // The rules issuance applies are the effective profile's, after inheritance; validating
+        // against the profile's own rows let the form and the CA disagree for every profile
+        // that inherits from a system profile.
+        Core.Models.EffectiveRequestProfile profile;
+        try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
+        catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
 
         var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
         var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules) ?? new();

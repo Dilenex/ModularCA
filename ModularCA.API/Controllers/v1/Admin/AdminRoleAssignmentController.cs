@@ -8,6 +8,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -17,6 +18,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/role-assignments")]
 [Authorize(Policy = "SystemAdmin")]
+[NodeRole(ProcessRole.Control)]
 public class AdminRoleAssignmentController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

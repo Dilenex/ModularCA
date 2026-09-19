@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
@@ -15,6 +15,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth;
 
@@ -25,6 +26,7 @@ namespace ModularCA.API.Controllers.v1.Auth;
 [ApiController]
 [Route("api/v1/auth/totp")]
 [Route("auth/totp")]
+[NodeRole(ProcessRole.Control)]
 public class TotpController : ControllerBase
 {
     private readonly ModularCADbContext _db;

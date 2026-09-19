@@ -19,6 +19,26 @@ namespace ModularCA.Shared.Models.Config
         public EmailConfig Email { get; set; } = new();
         public HttpsConfig Https { get; set; } = new();
         public HsmConfig Hsm { get; set; } = new();
+
+        /// <summary>
+        /// Where the node finds its signer and how the signer role listens; in process by default.
+        /// </summary>
+        public SignerConfig Signer { get; set; } = new();
+
+        /// <summary>
+        /// The ingress role: the routes by hostname to the nodes that serve them, the upstream
+        /// health probe and the upstream TLS trust. Empty routes mean this process serves every
+        /// name itself, which is the default.
+        /// </summary>
+        public IngressConfig Ingress { get; set; } = new();
+
+        /// <summary>
+        /// The roles this process runs when the command line names none: a comma-separated list
+        /// of <c>signer</c>, <c>enrollment</c>, <c>validation</c>, <c>control</c>, <c>ingress</c>,
+        /// <c>node</c> or <c>all</c>. Empty means every role. <c>--role</c> on the command line
+        /// wins outright.
+        /// </summary>
+        public string Roles { get; set; } = string.Empty;
         public IpWhitelistConfig IpWhitelist { get; set; } = new();
         public NetworkAuditConfig NetworkAudit { get; set; } = new();
         public WebhookConfig Webhook { get; set; } = new();
@@ -688,7 +708,14 @@ namespace ModularCA.Shared.Models.Config
         /// Returns <c>https://PublicDomain</c> when <see cref="PublicPort"/> is null or 443,
         /// otherwise <c>https://PublicDomain:PublicPort</c>.
         /// </summary>
-        public string GetPublicHttpsBaseUrl()
+        public string GetPublicHttpsBaseUrl() => GetHttpsBaseUrlFor(PublicDomain);
+
+        /// <summary>
+        /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
+        /// process serves on the same listener as <see cref="PublicDomain"/>: a tenant hostname,
+        /// for instance. The port rule is the public one, since every name shares the listener.
+        /// </summary>
+        public string GetHttpsBaseUrlFor(string host)
         {
             // PublicPort is the operator-facing port (may differ from Kestrel's bind port
             // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
@@ -696,8 +723,8 @@ namespace ModularCA.Shared.Models.Config
             var port = PublicPort ?? Port;
             if (port <= 0) port = 443;
             return port == 443
-                ? $"https://{PublicDomain}"
-                : $"https://{PublicDomain}:{port}";
+                ? $"https://{host}"
+                : $"https://{host}:{port}";
         }
 
         /// <summary>

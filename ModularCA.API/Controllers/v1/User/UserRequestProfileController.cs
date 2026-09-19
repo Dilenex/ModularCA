@@ -1,8 +1,10 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services;
 using ModularCA.Database;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -12,9 +14,11 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/request-profiles")]
 [Authorize(Policy = "CaUser")]
+[NodeRole(ProcessRole.Control)]
 public class UserRequestProfileController(
     ModularCADbContext db,
-    ICurrentUserService currentUser
+    ICurrentUserService currentUser,
+    IProfileResolutionService profileResolution
 ) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
@@ -53,16 +57,27 @@ public class UserRequestProfileController(
                 .Where(p => p.CertificateAuthorityId == null || userCaIds.Contains(p.CertificateAuthorityId.Value))
                 .ToList();
 
+        // A user never edits a profile, so what they see are the effective rules after
+        // inheritance, which are the rules issuance applies. The form validates against these.
+        var effective = new Dictionary<Guid, Core.Models.EffectiveRequestProfile>();
+        foreach (var p in profiles)
+        {
+            try { effective[p.Id] = await profileResolution.ResolveRequestProfileAsync(p.Id); }
+            catch (InvalidOperationException) { /* an unresolvable parent: fall back to the row's own rules below */ }
+        }
+
         return Ok(profiles.Select(p => new
         {
             p.Id,
             p.Name,
             p.Description,
-            p.SubjectDnRules,
-            p.SanRules,
-            p.AllowedCertProfileIds,
-            p.RequireApproval,
-            p.DefaultCertProfileId,
+            SubjectDnRules = effective.TryGetValue(p.Id, out var e) ? e.SubjectDnRules : p.SubjectDnRules,
+            SanRules = effective.TryGetValue(p.Id, out var e2) ? e2.SanRules : p.SanRules,
+            EffectiveSubjectDnRules = effective.TryGetValue(p.Id, out var e3) ? e3.SubjectDnRules : p.SubjectDnRules,
+            EffectiveSanRules = effective.TryGetValue(p.Id, out var e4) ? e4.SanRules : p.SanRules,
+            AllowedCertProfileIds = effective.TryGetValue(p.Id, out var e5) ? e5.AllowedCertProfileIds : p.AllowedCertProfileIds,
+            RequireApproval = effective.TryGetValue(p.Id, out var e6) ? e6.RequireApproval : p.RequireApproval,
+            DefaultCertProfileId = effective.TryGetValue(p.Id, out var e7) ? e7.DefaultCertProfileId : p.DefaultCertProfileId,
             p.CertificateAuthorityId,
             p.RequiredApprovalCount,
             p.InheritsFromId,

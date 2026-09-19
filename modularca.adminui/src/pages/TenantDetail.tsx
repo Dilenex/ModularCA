@@ -12,6 +12,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { TenantUserQuorumSection, TenantQ, QuorumData } from '../components/UserQuorumPanel';
 import KerberosRealmsPanel from '../components/KerberosRealmsPanel';
+import TenantHostnamesPanel from '../components/TenantHostnamesPanel';
 import { Tenant, CaQuotaRow, formatDate, numInput } from './TenantsAndQuotas';
 import { labelClass as labelCls, FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
@@ -315,6 +316,8 @@ const TenantDetail: React.FC = () => {
                 </div>
 
                 <KerberosRealmsPanel tenantId={t.id} tenantName={t.name} caLabels={cas.map((c: any) => c.caLabel || c.label || c.name).filter(Boolean)} />
+
+                <TenantHostnamesPanel tenantId={t.id} cas={cas} />
 
                 <ConfirmModal
                     isOpen={!!confirm}

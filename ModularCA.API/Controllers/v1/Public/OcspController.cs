@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
@@ -19,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Public;
 [Route("api/v1/public/ocsp")]
 [Route("api/v1/public/ocsp/ca/{caLabel}")]
 [AllowAnonymous]
+[NodeRole(ProcessRole.Validation)]
 public class OcspController(IOcspService ocspService) : ControllerBase
 {
     private const string OcspRequestContentType = "application/ocsp-request";

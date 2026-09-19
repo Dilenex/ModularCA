@@ -1,4 +1,3 @@
-using ModularCA.Shared.Interfaces;
 using Net.Pkcs11Interop.HighLevelAPI;
 
 namespace ModularCA.Keystore.Hsm;

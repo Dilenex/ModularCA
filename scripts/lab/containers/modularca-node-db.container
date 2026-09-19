@@ -1,0 +1,18 @@
+# The node's database, private to the pod. Two schemas (application and audit) are created by
+# the node's bootstrap from setup-database.yaml, which carries this root password once.
+[Unit]
+Description=ModularCA node database
+
+[Container]
+Image=docker.io/library/mariadb:11
+Pod=modularca-node.pod
+Environment=MARIADB_ROOT_PASSWORD=change-me-once
+Volume=modularca-node-db:/var/lib/mysql:Z
+HealthCmd=healthcheck.sh --connect --innodb_initialized
+HealthInterval=10s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

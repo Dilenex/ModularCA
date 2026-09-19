@@ -6,6 +6,91 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
+  configuration can name a request profile, and both protocols used that profile to choose the
+  certificate profile and to validate the names a client asked for. Neither ever read the flag
+  saying a human must approve first. Every ACME order finalized, and every CMP certificate request
+  issued, straight to a certificate with no approver, while the console showed the gate as set.
+  EST and Windows autoenrollment, the two anyone had exercised, both honoured it.
+
+  ACME and CMP now refuse and close the request, because neither offers a way for a client to come
+  back for a certificate approved later: nothing links a later approval to an ACME order, and CMP
+  implements no polling operation at all. SCEP, which does have a poll, answers with its pending
+  status and leaves the request in the queue for an approver. A deployment with any of the three
+  enabled on a CA whose request profile requires approval will see those clients start failing, or
+  in SCEP's case start waiting, where they previously succeeded.
+
+  All three were found by moving the protocols onto the shared enrollment pipeline, which is the
+  point of that work: the rule now lives in one place instead of being reimplemented, correctly or
+  not, five times. Three of the five were wrong, including the one whose wire format had carried a
+  pending status since it was written, declared and never once used.
+
+- **SCEP enrollment refused every request.** The key-algorithm rule read the certificate profile's
+  permitted list, which is JSON, by splitting it on commas. The profile default is an empty JSON
+  array, which splits into one token that matches no algorithm, and a populated list splits into
+  fragments that match nothing either, so every enrollment was answered with a bad-algorithm
+  failure. The same column is read correctly everywhere else. It is read as JSON now.
+
+### Separation of duties
+
+- **The signer is its own process.** Every stored private key is reached through one signing
+  contract, and nothing outside the keystore project can hold a key handle; an architecture test
+  fails the build if that changes. A key signs only for its own CA and tenant and only for the
+  purposes its kind allows; every decision is recorded in the signer's own audit table with the
+  ceremony it ran under and, over the wire, the peer that asked. `--role signer` runs the keystore
+  behind gRPC with mutual TLS, pinned both ways from a dedicated identity CA the signer creates
+  (`--init-identity`, `--issue-node-identity`), failing closed when it cannot record a decision; a
+  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A tenant
+  that requires ceremonies gets no key without an approved, unexpired one; a CA's OCSP, timestamp
+  and CMP signer keys are reissued under an infrastructure context that can never mint a CA key.
+  The default single process is unchanged.
+- **Roles.** Every controller and scheduled job belongs to one role: enrollment (the protocols),
+  validation (CRL, OCSP, AIA, CA certificates), control (console, admin, users, ceremonies,
+  backups) and ingress. `--role` or `Roles:` in the configuration selects any subset; a process
+  hosts only its roles' endpoints and jobs, and `/health/ready` reports what each active role
+  needs. The deploy readme describes the three-process layout.
+- **Ingress.** `--role ingress` terminates TLS for the public domain and every tenant hostname,
+  selected by SNI, and routes by hostname to tenant nodes with YARP, on plain HTTP as well so a
+  tenant's revocation URLs reach its node. Routes come from `Ingress.Routes` and from the tenant
+  hostnames table (`NodeUpstream`); a name with no upstream is served locally, which is how a
+  single process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that
+  fails its health checks answers 503 for its names.
+- **Tenant hostnames.** A tenant is reachable by its own names from one process: each name gets
+  an endpoint certificate from a CA of the tenant, presented by SNI and renewed with the console's
+  own; enrollment URLs derive from the name a request arrived on; the readiness check accepts any
+  name a tenant is reached by. The console and sign-in stay on the public domain.
+
+### Server-generated private keys are delivered once, as one PKCS#12
+
+- **Short custody, then one file.** A private key the CA generates for a request is held on the
+  request row, wrapped with ASP.NET Core Data Protection under a purpose bound to that row, until
+  the certificate is issued; it never enters the keystore or the signer, and it is not in the
+  response that carries the request. Once the certificate exists, the holder downloads
+  certificate, chain and key together as a `.pfx` under a password of their choosing, from
+  `POST /api/v1/user/requests/{id}/pkcs12` (the request must be their own) or
+  `POST /api/v1/admin/requests/{id}/pkcs12` (gated as certificate export is: operator rights on
+  the CA, manage rights on the certificate, step-up MFA). The held key is deleted in the same
+  save that records the delivery and the delivery is audited; a second download reports the
+  date the key left. A request that is rejected or cancelled loses its held key at once, and the
+  protocol cleanup tick discards keys whose certificate is revoked or expired, or whose requested
+  validity passed unissued. The admin console's Issue Certificate page, the user portal's
+  Request Certificate page, My Requests and the admin request detail page carry the download
+  and say when the key was delivered. Keys the CA stored before this change stay exportable as
+  PKCS#12 from the user portal until their certificates expire; they are not copied to a
+  renewal request any more, and the admin API's clear-text `pem-key` export is withdrawn.
+- **Stored keys leave through the signer.** PKCS#12 export of a stored end-entity key is a
+  signer operation, allowed for end-entity keys only, to a named caller, and written to the
+  signer's audit like every other decision; the node no longer unwraps a key itself.
+- **The signer is a readiness step.** The node unlocks its keystore behind the signer and asks
+  it whether it is unlocked: `/health/ready` reports the signer (unlocked, key count, backend),
+  the Windows autoenrollment checklist has a "signer" step, and the ACME, EST, SCEP, CMP, MSAE
+  and admin issuance endpoints answer 503 with a clear message while the signer is locked.
+  Backups take the keystore files from the signer and restores return them through it, which
+  verifies each file against the pinned signer before it replaces the one in place; the archive
+  layout is unchanged.
+
 ## [0.2.0] — 2026-09-16
 
 ### Windows autoenrollment (MSAE), complete

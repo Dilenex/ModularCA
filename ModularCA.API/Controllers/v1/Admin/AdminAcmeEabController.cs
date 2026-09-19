@@ -10,6 +10,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -22,6 +23,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/acme/eab-keys")]
 [Authorize]
+[NodeRole(ProcessRole.Control)]
 public class AdminAcmeEabController(
     ModularCADbContext db,
     ICurrentUserService currentUser,

@@ -235,6 +235,72 @@ Https:
   Port: 8443
   RenewalWindow: "P30D"      # ISO 8601 duration — renew 30 days before expiry
 
+# Signer separation. By default the signer runs inside this process and nothing here is read.
+# To hold the keys in a separate process (the "modularca-signer" systemd unit, or a sidecar):
+#   1. on the signer host:  ModularCA.API --role signer --init-identity
+#   2. on the signer host:  ModularCA.API --role signer --issue-node-identity <dir>
+#      (prints PinnedClientSpki for the signer and writes signer-client.pfx + signer-pin.txt for the node)
+#   3. set the node side below, run the node with --role node, and the signer with --role signer.
+# Each side pins the other's public key (SHA-256 over the SubjectPublicKeyInfo, hex); there is
+# no trust-store lookup. The node with Mode Remote holds no keystore and no keystore password.
+# Signer:
+#   # --- node side (--role node) ---
+#   Mode: "InProcess"                          # InProcess (default) | Remote
+#   Endpoint: "https://127.0.0.1:8446"         # the signer role's address
+#   ClientCertificate: "config/signer-client.pfx"
+#   ClientCertificatePassword: ""              # empty when the file has none
+#   PinnedServerSpki: ""                       # from signer-pin.txt
+#   # --- signer side (--role signer) ---
+#   Listen: "127.0.0.1:8446"                   # gRPC over mutual TLS, HTTP/2 only
+#   ServerCertificate: "config/signer-server.pfx"
+#   ServerCertificatePassword: ""
+#   PinnedClientSpki: ""                       # printed by --issue-node-identity
+#   IdentityCa: "config/signer-identity-ca.pfx"   # written by --init-identity; never read at runtime
+#   IdentityCaPassword: ""
+
+# Process roles. By default one process runs every role. A process may run any subset:
+#   enrollment  the protocols (ACME, EST, SCEP, CMP, MSAE), token and integration enrollment,
+#               the TSA, and the protocol cleanup jobs
+#   validation  distribution: CRL, OCSP, AIA and CA certificates, on HTTPS and on the plain-HTTP
+#               listener (Http.Port), which only this role opens; no scheduler
+#   control     the console, the setup wizard, the admin/auth/user/account API, and every
+#               scheduled job and startup write that mutates (CRL publishing, TLS renewal,
+#               backups, migrations)
+#   signer      the keystore and the signing service (see Signer above)
+#   ingress     TLS termination for every hostname and routing by name to the node that serves
+#               it (see Ingress below); alone it hosts no controller, scheduler or console
+# "node" is the three node roles; "all" is every role. An inactive role's paths do not exist
+# (404); /health lists the roles a process runs. --role on the command line wins over this
+# value, so a unit drop-in (deploy/dropins/) can set the role per host while the file is shared.
+# Roles: "all"                                 # e.g. "enrollment,validation" or "control"
+
+# Ingress. The process that terminates TLS for every name (the public domain with the web TLS
+# certificate, each tenant hostname with its own, chosen by SNI) and forwards each name to the
+# node that serves it, on Https.Port and on Http.Port (plain HTTP is routed by Host too, so a
+# tenant's CRL and OCSP URLs reach that tenant's node without a redirect). The route table is
+# the list below merged with the tenant hostnames table: a row whose NodeUpstream is set is
+# routed there; a route listed here wins over the row for the same host. A name with no
+# upstream anywhere is served by this process's own roles, so the default single process
+# routes nothing. A public-domain request with no route is served locally.
+# X-Forwarded-For/Proto/Host are added on the way to the node, which trusts them from loopback
+# and from Http.TrustedProxyCidrs. Authorization: Negotiate and WWW-Authenticate pass through.
+# Ingress:
+#   Routes:
+#     - Host: "ca.customer-a.example"
+#       Upstream: "https://127.0.0.1:8443"     # the node for that name
+#       PlainHttpUpstream: "http://127.0.0.1:8080"   # its plain-HTTP listener (CRL/OCSP); omit to use Upstream
+#       PinnedSpki: ""                         # SHA-256 SPKI pin of the node's TLS certificate, hex; optional
+#   HealthCheckIntervalSeconds: 10             # active probe of HealthCheckPath on every upstream
+#   HealthCheckTimeoutSeconds: 5               # a node failing its probes is answered 503 for its hosts
+#   HealthCheckPath: "/health/live"
+#   RouteRefreshSeconds: 30                    # re-read of the tenant hostnames table
+#   # Upstream TLS trust for https:// upstreams, in order: a route's PinnedSpki; else this CA
+#   # (PEM, relative to the install directory); else the system trust store.
+#   UpstreamCaCertificatePath: ""
+#   # Accept any certificate from an upstream on loopback (127.0.0.1, ::1, localhost) only. A
+#   # non-loopback https:// upstream under this flag is refused at startup: pin it or name a CA.
+#   DangerousAcceptAnyUpstreamCertificate: false
+
 # Webhook Notifications
 # Webhook:
 #   Enabled: false
@@ -330,3 +396,20 @@ Https:
 #     - 3
 #     - 1
 #   Schedule: "0 6 * * *"       # Cron expression — default is daily at 6 AM UTC
+
+# Windows autoenrollment (MSAE). Generated certificate template identifiers are minted under this
+# product's own arc, 1.3.6.1.4.1.66874.1.1, with nothing set here: a new installation is correct
+# out of the box. Both settings below are for existing installations, and for an operator who
+# holds their own Private Enterprise Number (see docs/oid-allocation.md).
+#
+# TemplateOidArc overrides the arc new identifiers are minted under. It must leave room for four
+# arcs of ten digits, so it can be at most eighty-four characters.
+#
+# MoveGeneratedTemplateOids moves identifiers minted by an older build to the current arc, once,
+# at the next start. It is off by default because a Windows client recognises a certificate it
+# already holds by that identifier: after a move every client sees those templates as new and
+# enrolls again. Identifiers an operator typed are never touched, and certificates already issued
+# keep the old identifier and stay valid. Choose the moment; a maintenance window is the place.
+# Msae:
+#   TemplateOidArc: "1.3.6.1.4.1.66874.1.1"
+#   MoveGeneratedTemplateOids: true

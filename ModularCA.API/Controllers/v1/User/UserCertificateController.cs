@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -14,6 +14,7 @@ using ModularCA.Shared.Utils;
 using System.Text;
 using System.Text.Json;
 using ModularCA.Core.Helpers;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -24,6 +25,7 @@ namespace ModularCA.API.Controllers.v1.User;
 [ApiController]
 [Route("api/v1/user/certificates")]
 [Authorize(Policy = "CaUser")]
+[NodeRole(ProcessRole.Control)]
 public class UserCertificateController(
     ICertificateStore certStore,
     ICurrentUserService currentUser,
@@ -233,9 +235,18 @@ public class UserCertificateController(
         if (string.IsNullOrWhiteSpace(request.Password))
             return BadRequest(new { error = "Password is required for PFX export." });
 
-        var pfxBytes = await _exportService.ExportPfxAsync(serial, request.Password, includeChain: true);
-        if (pfxBytes == null)
-            return NotFound(new { error = "Certificate not found or private key not available." });
+        var export = await _exportService.ExportPfxAsync(serial, request.Password, _currentUser.User.Username, includeChain: true);
+        switch (export.Outcome)
+        {
+            case CertificateExportOutcome.NotFound:
+                return NotFound(new { error = "Certificate not found." });
+            case CertificateExportOutcome.KeyNotHeld:
+                // Not a missing certificate: the holder is told where their key went.
+                return Conflict(new { error = export.Detail });
+            case CertificateExportOutcome.Refused:
+                return StatusCode(403, new { error = "The signer refused the export.", detail = export.Detail });
+        }
+        var pfxBytes = export.Pkcs12!;
 
         // Audit log the PFX export
         await _audit.LogAsync(
@@ -404,11 +415,7 @@ public class UserCertificateController(
             CertProfileId = certProfileId.Value,
             SigningProfileId = signingProfileId.Value,
             RequestorUserId = _currentUser.User.Id,
-            RenewalOfCertificateId = certEntity.CertificateId,
-            EncryptedPrivateKey = originalRequest?.EncryptedPrivateKey,
-            EncryptedAesForPrivateKey = originalRequest?.EncryptedAesForPrivateKey,
-            AesKeyEncryptionIv = originalRequest?.AesKeyEncryptionIv,
-            EncryptionCertSerialNumber = originalRequest?.EncryptionCertSerialNumber
+            RenewalOfCertificateId = certEntity.CertificateId
         };
 
         _dbContext.CertificateRequests.Add(renewalRequest);

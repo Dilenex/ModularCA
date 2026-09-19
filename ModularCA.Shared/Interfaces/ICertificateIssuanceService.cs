@@ -1,6 +1,6 @@
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Models;
-using Org.BouncyCastle.Crypto;
+using ModularCA.Shared.Signing;
 using Org.BouncyCastle.X509;
 
 namespace ModularCA.Shared.Interfaces
@@ -30,11 +30,17 @@ namespace ModularCA.Shared.Interfaces
             CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Issues a certificate using a pre-resolved CA cert and key handle. Used for infrastructure
-        /// certs (TSA, OCSP) where the CA is not yet registered in the keystore registry.
+        /// Issues a certificate signed by a CA the caller names explicitly: its certificate, the
+        /// signer's reference to its key, and the context the signature is asked under. This is
+        /// the CA creation seam: a new CA issues its infrastructure certificates (TSA, OCSP, CMP
+        /// signer) before its row is committed and before the signer has bound its key to a
+        /// certificate, so the ordinary resolution by row cannot find it; the caller passes the
+        /// generated key's reference under the ceremony context that generated it. Infrastructure
+        /// reissue uses the same path with the committed CA key. The key itself is never seen
+        /// here: the signer judges the reference and the context like any other signature.
         /// </summary>
         Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default);
+            X509Certificate caCert, KeyRef caKey, SigningContext caSigningContext, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Issues a CA certificate — one whose profile carries <c>IsCaProfile</c>, producing
@@ -49,10 +55,12 @@ namespace ModularCA.Shared.Interfaces
         /// is not a secret — the profile list endpoint returns every profile unfiltered.
         ///
         /// Intended for <c>CaCreationService</c>, which is the legitimate CA-creation path and
-        /// applies its own authorization and ceremony controls before calling this.
+        /// applies its own authorization and ceremony controls before calling this. The issuing
+        /// CA is the parent named by the CSR's signing profile, resolved and signed with like any
+        /// other issuance: the parent is a registered CA whose key the signer holds.
         /// </remarks>
         Task<IssuanceResult> IssueCaCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
-            X509Certificate caCert, IPrivateKeyHandle caKeyHandle, CancellationToken cancellationToken = default);
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Reissues a certificate by certificate ID, serial number, or CSR ID. Optional

@@ -1,4 +1,4 @@
-﻿namespace ModularCA.Shared.Models.Csr
+namespace ModularCA.Shared.Models.Csr
 {
     public class CertRequestDto
     {
@@ -26,5 +26,14 @@
 
         /// <inheritdoc cref="RequestedNotBefore"/>
         public DateTime? RequestedNotAfter { get; set; }
+
+        /// <summary>
+        /// True while the CA holds the private key it generated for this request. The key is
+        /// downloadable as PKCS#12 once the certificate is issued, and deleted on delivery.
+        /// </summary>
+        public bool KeyHeld { get; set; }
+
+        /// <summary>When the held key was delivered as PKCS#12, or null if it was not (yet).</summary>
+        public DateTime? HeldKeyDeliveredAt { get; set; }
     }
 }

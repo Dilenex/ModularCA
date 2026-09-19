@@ -6,6 +6,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -16,6 +17,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/audit")]
 [Authorize(Policy = "CaAuditor")]
+[NodeRole(ProcessRole.Control)]
 public class AdminAuditController : ControllerBase
 {
     private readonly AuditDbContext? _auditDb;

@@ -2,15 +2,16 @@
 using ModularCA.Database;
 using ModularCA.Keystore.Hsm;
 using ModularCA.Keystore.Services;
-using ModularCA.Shared.Interfaces;
 using Org.BouncyCastle.X509;
 
 namespace ModularCA.Keystore.Utils;
 
 /// <summary>
-/// Loads keystore files (CA private keys and trusted certificates) at application startup.
+/// Loads keystore files (CA private keys and trusted certificates) at application startup, for
+/// <see cref="Signing.SignerBootstrap"/>. Internal: the key parameters it returns never leave
+/// the keystore project.
 /// </summary>
-public static class StartupKeystoreLoader
+internal static class StartupKeystoreLoader
 {
     /// <summary>
     /// Loads signing keys and trusted CA certificates from their respective keystore files.

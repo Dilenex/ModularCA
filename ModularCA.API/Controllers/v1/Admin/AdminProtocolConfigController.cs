@@ -5,8 +5,10 @@ using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
@@ -16,12 +18,40 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [ApiController]
 [Route("api/v1/admin/protocol-configs")]
 [Authorize(Policy = "CaOperator")]
+[NodeRole(ProcessRole.Control)]
 public class AdminProtocolConfigController(
     ModularCADbContext db,
     IAuditService audit,
     ICurrentUserService currentUser,
-    IDistributedCache cache) : ControllerBase
+    IDistributedCache cache,
+    IEnumerable<IEnrollmentProtocol> protocols,
+    IFeatureFlagService featureFlags) : ControllerBase
 {
+    private readonly IReadOnlyList<IEnrollmentProtocol> _protocols = protocols.ToList();
+    private readonly IFeatureFlagService _featureFlags = featureFlags;
+
+    /// <summary>
+    /// What a protocol says it can do, as the names of the flags it declares, or null for a
+    /// protocol that does not declare itself yet.
+    /// </summary>
+    /// <remarks>
+    /// Read from the implementation through <see cref="IEnrollmentProtocol.Capabilities"/> rather
+    /// than from a table kept beside it, which is the point of the declaration: a protocol that
+    /// gains renewal or loses server-side key generation says so where the change is made. Only the
+    /// protocols migrated onto the shared middle declare it so far, and the rest report null rather
+    /// than an empty list, which would read as a protocol that can do nothing.
+    /// </remarks>
+    private string[]? CapabilitiesOf(string protocol)
+    {
+        var declared = _protocols.FirstOrDefault(
+            p => string.Equals(p.Name, protocol, StringComparison.OrdinalIgnoreCase));
+        if (declared == null) return null;
+        return Enum.GetValues<EnrollmentCapabilities>()
+            .Where(c => c != EnrollmentCapabilities.None && declared.Capabilities.HasFlag(c))
+            .Select(c => c.ToString())
+            .ToArray();
+    }
+
     private readonly ModularCADbContext _db = db;
     private readonly IDistributedCache _cache = cache;
 
@@ -36,13 +66,23 @@ public class AdminProtocolConfigController(
     };
 
     /// <summary>
-    /// Get all protocol configs for a given CA.
+    /// Get the protocol configs for a given CA that this system can actually run: a protocol
+    /// turned off by its system feature flag is left out of the listing, and each remaining row
+    /// carries any advisory about a configuration that cannot work on this CA.
     /// </summary>
+    /// <remarks>
+    /// A protocol disabled system-wide is refused at the edge by <c>ProtocolFeatureGateMiddleware</c>,
+    /// so listing its configuration here showed an operator settings for something that cannot
+    /// run. The row is filtered out of the response, never deleted — turning the flag back on
+    /// restores the configuration exactly as it was.
+    /// </remarks>
     [HttpGet("{caId:guid}")]
     public async Task<IActionResult> GetByCa(Guid caId)
     {
         // SSH CAs don't use X.509 protocols
-        var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId);
+        var ca = await _db.CertificateAuthorities.AsNoTracking()
+            .Include(c => c.Certificate)
+            .FirstOrDefaultAsync(c => c.Id == caId);
         if (ca == null) return NotFound(new { error = "CA not found." });
         if (ca.IsSshCa) return BadRequest(new { error = "SSH CAs do not support X.509 protocol configuration." });
         if (ca.Label != null && ReservedSystemLabels.Contains(ca.Label))
@@ -87,7 +127,34 @@ public class AdminProtocolConfigController(
                 c.MsaeAllowKerberos,
             })
             .ToListAsync();
-        return Ok(configs);
+
+        // The CA's key algorithm, read from its certificate; see ProtocolCompatibility.
+        var keyAlgorithm = ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate);
+
+        // What each protocol can do, from the protocol itself; see CapabilitiesOf. Protocols the
+        // system does not serve are dropped entirely rather than listed as configured.
+        return Ok(configs
+            .Where(c => _featureFlags.IsEnabled(ProtocolCompatibility.FeatureFlagName(c.Protocol)))
+            .Select(c => new
+            {
+                Config = c,
+                Capabilities = CapabilitiesOf(c.Protocol),
+                Advisories = ProtocolCompatibility.Advisories(c.Protocol, keyAlgorithm),
+            })
+            .Select(x => new
+            {
+                x.Config.Id, x.Config.CaId, x.Config.Protocol, x.Config.Enabled,
+                x.Config.SigningProfileId, x.Config.SigningProfileName,
+                x.Config.CertProfileId, x.Config.CertProfileName,
+                x.Config.IsPublicVisible,
+                x.Config.EstRequireClientCert, x.Config.EstHttpAuthEnabled,
+                x.Config.ScepChallengeRequired, x.Config.CmpRequireSignature, x.Config.CmpSignerConfigured,
+                x.Config.AcmeRequireEab, x.Config.AcmeAllowedChallengeTypes, x.Config.AcmeAllowPrivateAddressValidation,
+                x.Config.OcspSignResponses,
+                x.Config.MsaeAllowUsernameToken, x.Config.MsaeAllowKerberos,
+                x.Capabilities,
+                x.Advisories,
+            }));
     }
 
     /// <summary>
@@ -102,7 +169,9 @@ public class AdminProtocolConfigController(
             return Unauthorized();
 
         // SSH CAs don't use X.509 protocols
-        var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId);
+        var ca = await _db.CertificateAuthorities.AsNoTracking()
+            .Include(c => c.Certificate)
+            .FirstOrDefaultAsync(c => c.Id == caId);
         if (ca == null) return NotFound(new { error = "CA not found." });
         if (ca.IsSshCa) return BadRequest(new { error = "SSH CAs do not support X.509 protocol configuration." });
         if (ca.Label != null && ReservedSystemLabels.Contains(ca.Label))
@@ -116,6 +185,18 @@ public class AdminProtocolConfigController(
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var normalizedProtocol = protocol.ToUpperInvariant();
+
+        // Refuse a combination the protocol itself cannot express — today, SCEP on a non-RSA
+        // authority. Only when the request turns the protocol ON: an already-stored row is left
+        // as it is, so this cannot strand a configuration that was saved before the check existed.
+        if (request.Enabled)
+        {
+            var refusal = ProtocolCompatibility.RefusalForEnabling(
+                normalizedProtocol, ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate));
+            if (refusal != null)
+                return BadRequest(new { error = refusal });
+        }
+
         var config = await _db.CaProtocolConfigs
             .FirstOrDefaultAsync(c => c.CaId == caId && c.Protocol == normalizedProtocol);
 

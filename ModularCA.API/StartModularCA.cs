@@ -170,11 +170,20 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
     var exitCode = BootstrapModularCA.Run(wipeAudit);
     Environment.Exit(exitCode);
 }
+// The command-line backup and restore run before the node's container exists, so the keystore
+// files go through a maintenance signer: locked, holding no key, auditing to the application
+// database the operation names. The node's own paths use its signer instead.
+static ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
+    => ModularCA.Keystore.Signing.MaintenanceSigner.Create(
+        Path.Combine(AppContext.BaseDirectory, "keystores"),
+        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+        appConnectionString);
+
 if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath);
+    var exitCode = await BackupRestore.Backup(outputPath, MaintenanceSignerFor);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -265,7 +274,7 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
     }
 
     Log.Warning("Operator triggered restore (--restore) archive={ArchivePath}", archivePath);
-    var exitCode = await BackupRestore.Restore(archivePath, skipSchemaCheck: false, providedPassword: providedPassword);
+    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
@@ -682,6 +691,63 @@ var appConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
 };
 var appConnStr = appConnBuilder.ConnectionString;
 
+// === Process roles ===
+// Every role by default: one process, the signer in it, as every install before stage 2.
+// --role signer runs the keystore and the signing service alone and returns here when it
+// stops; the node roles (enrollment, validation, control) each host their own controllers,
+// middleware and background work, in any combination, and reach a signer as Signer.Mode says.
+// The command line wins; Roles in config.yaml is the fallback; neither means every role.
+ModularCA.API.Startup.ProcessRole processRoles;
+try
+{
+    processRoles = ModularCA.API.Startup.ProcessRoles.Parse(args, config.Roles);
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"[FATAL] {ex.Message}");
+    Environment.Exit(1);
+    throw;
+}
+var activeRoles = new ModularCA.API.Startup.ActiveRoles(processRoles);
+builder.Services.AddSingleton(activeRoles);
+// The control role gates the most: the console and wizard surface, every startup write, and
+// the scheduled jobs that mutate. Named once so the gates below read the same.
+var controlActive = activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control);
+// A process with the ingress role and nothing else terminates TLS and forwards; it holds no
+// key, hosts no controller, no scheduler and no console, and needs no signer at all.
+var ingressOnly = !activeRoles.HasAnyNodeRole && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer);
+if (ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args))
+{
+    // The identity of the signer channel is the signer role's to create; the node receives
+    // its half from the operator. These need the Signer section and nothing else.
+    if (processRoles != ModularCA.API.Startup.ProcessRole.Signer)
+    {
+        Console.Error.WriteLine("[FATAL] --init-identity and --issue-node-identity run on the signer role: add --role signer.");
+        Environment.Exit(1);
+    }
+    Log.Information("Operator triggered a signer identity command ({Args})", string.Join(' ', args));
+    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, AppContext.BaseDirectory));
+}
+if (processRoles == ModularCA.API.Startup.ProcessRole.Signer)
+{
+    Log.Information("Starting in the signer role");
+    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode));
+}
+
+// The setup wizard is the control role's. A process without it has nothing to serve on an
+// unconfigured install and no way to become configured, so it says so instead of listening.
+if (isSetupMode && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control))
+{
+    Console.Error.WriteLine("[FATAL] This install is not configured, and the setup wizard is served by the control role.");
+    Console.Error.WriteLine("        Complete the setup wizard as a single process (or with --role control) first, then split the roles.");
+    Environment.Exit(1);
+}
+Console.WriteLine($"[ROLES] This process runs: {string.Join(", ", activeRoles.Names)}"
+    + (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer) ? " (signer in process)"
+        : ingressOnly ? " (no signer: the ingress holds no key)"
+        : " (signer as Signer.Mode says)"));
+Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
+
 // EF Core command interceptor measuring db query duration.
 // Shared singleton instance — interceptor itself is stateless and thread-safe.
 var dbDurationInterceptor = new ModularCA.Core.Services.DbCommandDurationInterceptor();
@@ -805,10 +871,8 @@ builder.Services.AddScoped<ICrlService, CrlService>();
 builder.Services.AddScoped<ICaServiceUrlService, CaServiceUrlService>();
 
 builder.Services.AddScoped<ICrlConfigurationService, CrlConfigurationService>();
-builder.Services.AddScoped<LdapPublisherJob>();
-builder.Services.AddScoped<ISchedulerJob, LdapPublisherJob>(sp => sp.GetRequiredService<LdapPublisherJob>());
-builder.Services.AddScoped<CrlExportJob>();
-builder.Services.AddScoped<ISchedulerJob, CrlExportJob>(sp => sp.GetRequiredService<CrlExportJob>());
+builder.Services.AddSchedulerJob<LdapPublisherJob>(activeRoles);
+builder.Services.AddSchedulerJob<CrlExportJob>(activeRoles);
 // Singleton registry of system (singleton) scheduler jobs — backs the unified
 // /api/v1/admin/scheduler endpoints (cron writeback, manual-run dispatch). Holds
 // no per-request state so a single instance is safe; each manual run creates its
@@ -824,8 +888,23 @@ builder.Services.AddSingleton(sp => new ModularCA.Core.Services.SchedulerJobRunn
     sp.GetRequiredService<ILogger<ModularCA.Core.Services.SchedulerJobRunner>>(),
     sp.GetRequiredService<SystemConfig>(),
     ModularCA.Core.Services.SchedulerService.InstanceId));
-if (!isSetupMode)
-    builder.Services.AddHostedService<SchedulerService>();
+// The scheduler runs where a role that owns jobs runs: the control plane, or an enrollment
+// process for its protocol sweeps. A validation-only process hosts none. The lease is the
+// control plane's usual one, or the enrollment set's own when control is elsewhere.
+if (!isSetupMode && ModularCA.API.Startup.SchedulerJobRoles.RunsScheduler(activeRoles))
+{
+    var schedulerLeaseName = ModularCA.API.Startup.SchedulerJobRoles.LeaseNameFor(activeRoles);
+    builder.Services.AddHostedService(sp => new SchedulerService(
+        sp,
+        sp.GetRequiredService<ILogger<SchedulerService>>(),
+        sp.GetRequiredService<SystemConfig>(),
+        sp.GetService<TimeProvider>(),
+        schedulerLeaseName));
+}
+else if (!isSetupMode)
+{
+    Console.WriteLine("[SCHEDULER] Not hosted: no role active in this process owns a scheduled job.");
+}
 
 // Bounded-channel drain for network audit rows. Replaces the
 // per-request Task.Run/CreateScope pattern in RequestAuditMiddleware; batches
@@ -835,8 +914,10 @@ if (!isSetupMode)
 builder.Services.AddHostedService<AuditNetworkDrainService>();
 
 // Stage 2 TLS provisioning: if Mode=Pending, register the hosted service that issues
-// the real web TLS cert via the standard pipeline on first startup.
-if (!isSetupMode && string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
+// the real web TLS cert via the standard pipeline on first startup. It issues a certificate
+// and rewrites config.yaml, so it is the control plane's.
+if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control)
+    && string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddHostedService<ModularCA.Core.Services.WebTlsProvisioningService>();
 
 builder.Services.AddHttpContextAccessor();
@@ -855,11 +936,9 @@ builder.Services.AddScoped<ICaaCheckService, CaaCheckService>();
 // Per-account ACME rate limiter (new-order / finalize /
 // failed-validation). Runs alongside the per-IP buckets in ProtocolRateLimitMiddleware.
 builder.Services.AddSingleton<IAcmeAccountRateLimiter, AcmeAccountRateLimiter>();
-builder.Services.AddScoped<AcmeCleanupJob>();
-builder.Services.AddScoped<ISchedulerJob, AcmeCleanupJob>(sp => sp.GetRequiredService<AcmeCleanupJob>());
+builder.Services.AddSchedulerJob<AcmeCleanupJob>(activeRoles);
 // Orphaned enrollment requests from every protocol, plus SCEP/CMP transaction sweeps.
-builder.Services.AddScoped<ProtocolCleanupJob>();
-builder.Services.AddScoped<ISchedulerJob, ProtocolCleanupJob>(sp => sp.GetRequiredService<ProtocolCleanupJob>());
+builder.Services.AddSchedulerJob<ProtocolCleanupJob>(activeRoles);
 // The ACME http-01 validator must NOT auto-follow
 // redirects to arbitrary hosts. We disable the default auto-redirect behavior
 // here; AcmeChallengeService performs a single-hop, allow-listed redirect
@@ -884,6 +963,10 @@ builder.Services.AddHttpClient("CtLog");
 // OCSP Protocol Service
 builder.Services.AddScoped<IOcspService, OcspResponderService>();
 
+// The shared middle every enrollment protocol runs between parsing and responding.
+builder.Services.AddScoped<ModularCA.Core.Services.Enrollment.IEnrollmentPipeline,
+    ModularCA.Core.Services.Enrollment.EnrollmentPipeline>();
+
 // EST Protocol Service
 builder.Services.AddScoped<IEstService, EstService>();
 
@@ -898,6 +981,17 @@ builder.Services.AddScoped<ModularCA.Core.Services.Msae.IMsaeEnrollmentService,
                            ModularCA.Core.Services.Msae.MsaeEnrollmentService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.IXcepPolicyService,
                            ModularCA.Core.Services.Msae.XcepPolicyService>();
+
+// The protocols that declare themselves, so the protocol configuration page reports what each one
+// can do from the implementation rather than from a table beside it that drifts. Resolved from the
+// services already registered above; registering the class a second time would give a protocol two
+// instances per request.
+builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
+    sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<IEstService>());
+builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
+    sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<ModularCA.Core.Services.Msae.IMsaeEnrollmentService>());
+builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
+    sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<IAcmeOrderService>());
 // Kerberos for MSAE: realm bindings and keys, a replay cache over the distributed cache, and the
 // managed acceptor (Kerberos.NET) that validates tickets without the OS Kerberos stack.
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>();
@@ -1124,28 +1218,35 @@ builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<ModularCA.Auth.Services.IDpopProofService, ModularCA.Auth.Services.DpopProofService>();
 builder.Services.AddScoped<IPasswordPolicyService, PasswordPolicyService>();
 
-// Configure dependency injection — skip keystore loading in setup mode (files don't exist yet)
-List<Org.BouncyCastle.X509.X509Certificate> trustedCAs;
-List<CertificateAuthorityIdentity> fullCAs;
+// The startup unlock, behind the signer. The node never receives a key: SignerBootstrap
+// decrypts the keystores and keeps the handles where only the signer reads them. Setup mode
+// and a failed load leave it locked; the signer's health reports that, the readiness endpoint
+// and the MSAE checklist show it, and enrollment answers 503 until it changes.
+ModularCA.Keystore.Signing.SignerBootstrap signerBootstrap;
 
-if (isSetupMode)
+// A node whose signer is another process holds no keystore and needs none of its passwords:
+// the keys, the unlock and the audit are the signer role's, reached over mutual TLS. A
+// process that holds the signer role itself keeps the signer in process whatever Signer.Mode
+// says, since the keystore is here and the channel would lead back to this process.
+// An ingress-only process signs nothing and opens no channel to a signer: it holds a locked,
+// empty in-process signer, as setup mode does, so no keystore, password or client certificate
+// is needed on the ingress host.
+var signerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote && !ingressOnly;
+if (processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote)
+    Log.Warning("Signer.Mode is Remote but this process holds the signer role; the signer stays in process. Run --role node for a node that reaches a separate signer.");
+
+if (isSetupMode || signerIsRemote || ingressOnly)
 {
-    trustedCAs = new();
-    fullCAs = new();
+    signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
 }
 else
 {
     try
     {
-        var loaded = StartupKeystoreLoader.LoadAll(
+        signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Unlock(
             yamlPath: Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
             keystorePath: Path.Combine(AppContext.BaseDirectory, "keystores"),
-            dbConnStr: appConnStr
-        );
-        trustedCAs = loaded.TrustedCAs;
-        fullCAs = loaded.FullCAs
-            .Select(x => new CertificateAuthorityIdentity(x.Cert, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(x.PrivateKey)))
-            .ToList();
+            dbConnectionString: appConnStr);
     }
     catch (Exception ex) when (IsKeystoreIntegrityFailure(ex))
     {
@@ -1182,8 +1283,7 @@ else
         Console.WriteLine($"[WARNING] Could not load keystores: {ex.GetType().Name}: {ex.Message}");
         Console.WriteLine("          Starting with an empty CA registry. No certificate can be issued");
         Console.WriteLine("          until this is resolved.");
-        trustedCAs = new();
-        fullCAs = new();
+        signerBootstrap = ModularCA.Keystore.Signing.SignerBootstrap.Locked();
     }
 }
 
@@ -1206,20 +1306,13 @@ static bool IsKeystoreIntegrityFailure(Exception? ex)
 
 // Load HSM-backed CA signers if PKCS#11 is configured and enabled
 Pkcs11SessionManager? hsmSession = null;
-if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
+if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
 {
     try
     {
         hsmSession = new Pkcs11SessionManager(config.Hsm.ModulePath, config.Hsm.SlotId, config.Hsm.Pin);
-        var hsmSigners = StartupKeystoreLoader.LoadHsmSigners(hsmSession, appConnStr);
-
-        foreach (var (cert, keyHandle) in hsmSigners)
-        {
-            var identity = new CertificateAuthorityIdentity(cert, keyHandle);
-            fullCAs.Add(identity);
-            trustedCAs.Add(cert);
+        foreach (var cert in signerBootstrap.AddHsmSigners(hsmSession, appConnStr))
             Console.WriteLine($"[HSM] CA loaded: {cert.SubjectDN}");
-        }
 
         // Register the session manager as a singleton so runtime services can access the HSM
         builder.Services.AddSingleton(hsmSession);
@@ -1232,14 +1325,71 @@ if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
     }
 }
 
-var registry = new MultiCARegistry(fullCAs, trustedCAs);
+if (signerIsRemote)
+{
+    // The certificates the keystore used to supply come from the database: every CA row's
+    // certificate as a signer, every CA certificate and enabled trust anchor as trusted.
+    builder.Services.AddSingleton<IKeystoreCertificates>(sp =>
+        new ModularCA.Core.Services.DatabaseKeystoreCertificates(
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Core.Services.DatabaseKeystoreCertificates>>()));
+}
+else
+{
+    builder.Services.AddSingleton<IKeystoreCertificates>(signerBootstrap.Certificates);
+}
 
-builder.Services.AddSingleton<MultiCARegistry>(registry);
-builder.Services.AddSingleton<IKeystoreCertificates>(registry);
+// The signer: the one door to a stored private key. In process by default, over the keys the
+// bootstrap unlocked, judging every request against its policy and writing its own audit row.
+// A key it commits is appended to the keystore files under the passphrases the keystore
+// configuration already holds, re-signed by the pinned system signer. With Signer.Mode Remote
+// the same contract is a channel to the signer role: the node presents the client certificate
+// the signer's identity CA issued it and accepts only the server key it was given the pin of.
+if (signerIsRemote)
+{
+    ModularCA.Signer.Client.RemoteSignerOptions remoteSigner;
+    try
+    {
+        remoteSigner = new ModularCA.Signer.Client.RemoteSignerOptions(
+            new Uri(config.Signer.Endpoint, UriKind.Absolute),
+            ModularCA.Signer.Identity.Pkcs12Files.Load(
+                ModularCA.Shared.Models.Config.SignerConfig.ResolvePath(config.Signer.ClientCertificate, AppContext.BaseDirectory),
+                config.Signer.ClientCertificatePassword),
+            config.Signer.PinnedServerSpki);
+        if (ModularCA.Signer.Identity.SpkiPin.Normalize(remoteSigner.PinnedServerSpki) == null)
+            throw new ArgumentException("Signer.PinnedServerSpki is not a SHA-256 SPKI pin; copy it from the signer-pin.txt that --issue-node-identity wrote.");
+    }
+    catch (Exception ex) when (ex is ArgumentException or UriFormatException or FileNotFoundException or System.Security.Cryptography.CryptographicException)
+    {
+        Console.Error.WriteLine($"[FATAL] Signer.Mode is Remote but the node cannot reach a signer: {ex.Message}");
+        Console.Error.WriteLine("        Set Signer.Endpoint, Signer.ClientCertificate (from --issue-node-identity on the signer) and Signer.PinnedServerSpki.");
+        Environment.Exit(1);
+        throw;
+    }
+    Console.WriteLine($"[SIGNER] Remote signer at {remoteSigner.Endpoint}; the keystore and its passwords are not held by this process.");
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
+        new ModularCA.Signer.Client.RemoteSigningService(
+            remoteSigner,
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Signer.Client.RemoteSigningService>>()));
+}
+else
+{
+    builder.Services.AddSingleton<ModularCA.Keystore.Signing.ISignerAuditSink>(sp =>
+        new ModularCA.Keystore.Signing.DatabaseSignerAuditSink(sp.GetRequiredService<IServiceScopeFactory>()));
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISigningService>(sp =>
+        signerBootstrap.CreateSigner(
+            Path.Combine(AppContext.BaseDirectory, "keystores"),
+            Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
+            sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
+}
 
-// Key wrapping passphrase provider for HKDF-based non-RSA private key encryption
+// Key wrapping passphrase provider for HKDF-based non-RSA private key encryption. A node with
+// a remote signer holds no keystore password, so it gets the provider that refuses.
 var kwYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-if (!isSetupMode && File.Exists(kwYamlPath))
+if (!isSetupMode && !signerIsRemote && !ingressOnly && File.Exists(kwYamlPath))
 {
     builder.Services.AddSingleton<IKeyWrappingPassphraseProvider>(
         new KeystoreKeyWrappingPassphraseProvider(kwYamlPath));
@@ -1261,7 +1411,13 @@ builder.Services.AddScoped<ICsrService, CsrService>();
 // default System.Text.Json options reject string enum values at model binding with
 // "The JSON value could not be converted to <Enum>". Adding it once here removes the
 // need for per-property [JsonConverter] attributes on every request DTO.
-builder.Services.AddControllers().AddJsonOptions(opts =>
+// The role convention removes every controller whose [NodeRole] this process does not run,
+// before routing exists: an inactive role's paths are not there, so they answer 404 with no
+// authentication challenge. A controller without a role stops startup.
+builder.Services.AddControllers(options =>
+{
+    options.Conventions.Add(new ModularCA.API.Startup.NodeRoleConvention(processRoles));
+}).AddJsonOptions(opts =>
 {
     opts.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     // Emit every DateTime as ISO-8601 UTC with a trailing 'Z'. EF (MySQL datetime) and NCrontab
@@ -1331,13 +1487,13 @@ builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAutho
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
 builder.Services.AddScoped<ICertificateExportService, CertificateExportService>();
+builder.Services.AddScoped<IHeldKeyService, HeldKeyService>();
 builder.Services.AddScoped<ITimestampService, TimestampService>();
 builder.Services.AddScoped<ISshCaService, SshCaService>();
 builder.Services.AddScoped<ILdapGroupProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Services.ILdapAuthService>() as ILdapGroupProvider
     ?? throw new InvalidOperationException("LdapAuthService must implement ILdapGroupProvider"));
 builder.Services.AddScoped<ILdapGroupSyncService, LdapGroupSyncService>();
-builder.Services.AddScoped<LdapGroupSyncJob>();
-builder.Services.AddScoped<ISchedulerJob, LdapGroupSyncJob>(sp => sp.GetRequiredService<LdapGroupSyncJob>());
+builder.Services.AddSchedulerJob<LdapGroupSyncJob>(activeRoles);
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddSingleton<IWebhookService, WebhookService>();
 builder.Services.AddHttpClient("Webhook")
@@ -1345,28 +1501,27 @@ builder.Services.AddHttpClient("Webhook")
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ISecurityAlertService, SecurityAlertService>();
 builder.Services.AddScoped<IKeyCeremonyService, KeyCeremonyService>();
-builder.Services.AddScoped<CertExpiryNotificationJob>();
-builder.Services.AddScoped<ISchedulerJob, CertExpiryNotificationJob>(sp => sp.GetRequiredService<CertExpiryNotificationJob>());
-builder.Services.AddScoped<ComplianceScanJob>();
-builder.Services.AddScoped<ISchedulerJob, ComplianceScanJob>(sp => sp.GetRequiredService<ComplianceScanJob>());
-builder.Services.AddScoped<AutoRenewalJob>();
-builder.Services.AddScoped<ISchedulerJob, AutoRenewalJob>(sp => sp.GetRequiredService<AutoRenewalJob>());
-builder.Services.AddScoped<CertExpireJob>();
-builder.Services.AddScoped<ISchedulerJob, CertExpireJob>(sp => sp.GetRequiredService<CertExpireJob>());
+builder.Services.AddSchedulerJob<CertExpiryNotificationJob>(activeRoles);
+builder.Services.AddSchedulerJob<ComplianceScanJob>(activeRoles);
+builder.Services.AddSchedulerJob<AutoRenewalJob>(activeRoles);
+builder.Services.AddSchedulerJob<CertExpireJob>(activeRoles);
 builder.Services.AddSingleton<ModularCA.Shared.Interfaces.IBackupArchiver, ModularCA.Bootstrap.BackupArchiver>();
-builder.Services.AddScoped<BackupCreationJob>();
-builder.Services.AddScoped<ISchedulerJob, BackupCreationJob>(sp => sp.GetRequiredService<BackupCreationJob>());
-builder.Services.AddScoped<BackupVerificationJob>();
-builder.Services.AddScoped<ISchedulerJob, BackupVerificationJob>(sp => sp.GetRequiredService<BackupVerificationJob>());
+builder.Services.AddSchedulerJob<BackupCreationJob>(activeRoles);
+builder.Services.AddSchedulerJob<BackupVerificationJob>(activeRoles);
 // Scheduled audit-retention job (chunked DELETE + optional gzip
 // archive) across AuditLogs/AuditEst/AuditScep/AuditCmp/AuditAcme/AuditMsae/AuditNetwork.
-builder.Services.AddScoped<AuditRetentionJob>();
-builder.Services.AddScoped<ISchedulerJob, AuditRetentionJob>(sp => sp.GetRequiredService<AuditRetentionJob>());
+builder.Services.AddSchedulerJob<AuditRetentionJob>(activeRoles);
 builder.Services.AddScoped<ICertHealthScoreService, CertHealthScoreService>();
 builder.Services.AddScoped<IComplianceReportService, ComplianceReportService>();
 
-builder.Services.AddHealthChecks()
-    .AddCheck<ModularCA.API.HealthChecks.ModularCAHealthCheck>("modularca");
+var healthChecks = builder.Services.AddHealthChecks()
+    .AddCheck<ModularCA.API.HealthChecks.ModularCAHealthCheck>("modularca")
+    // The active roles and, per role, whether what it needs is there (validation: the signer
+    // reachable; enrollment: the signer unlocked; control: the database).
+    .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles");
+// The ingress: whether the route table is built, and what the probe of each upstream found.
+if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
+    healthChecks.AddCheck<ModularCA.API.HealthChecks.IngressHealthCheck>("ingress");
 
 builder.Services.AddValidatorsFromAssemblyContaining<CreateSigningProfileValidator>();
 
@@ -1380,6 +1535,11 @@ builder.Services.AddScoped<CertificateTemplateService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
 builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
+// Names this service is known by: the public domain plus each tenant's own hostnames, and the
+// endpoint certificates those names are served under.
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.IPublicNameResolver, ModularCA.Core.Services.Hostnames.PublicNameResolver>();
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.ITenantHostnameCertificateIssuer, ModularCA.Core.Services.Hostnames.TenantHostnameCertificateService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.TenantHostnameService>();
 builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
@@ -1442,8 +1602,72 @@ builder.Services.AddCors(options =>
 // but it now holds the Web TLS certificate used by the management UI / API listener.
 var apiCertProvider = new ApiCertificateProvider();
 builder.Services.AddSingleton(apiCertProvider);
-builder.Services.AddScoped<TlsRenewalJob>();
-builder.Services.AddScoped<ISchedulerJob, TlsRenewalJob>(sp => sp.GetRequiredService<TlsRenewalJob>());
+
+// Tenant hostnames: each name a tenant is reached by carries its own certificate, picked by SNI
+// on the same listener. The cache is filled once the listener is configured (below) and
+// rebuilt by the hostname service after every change; a five-minute TTL catches changes
+// made elsewhere. In setup mode there is no database and no tenant, so it stays empty.
+var tenantHostnameDbOptions = new Lazy<DbContextOptions<ModularCADbContext>>(() =>
+    new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+        .Options);
+var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache(
+    () =>
+    {
+        if (isSetupMode)
+            return new Dictionary<string, System.Security.Cryptography.X509Certificates.X509Certificate2>();
+        using var hostnameDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
+        return ModularCA.Core.Services.Hostnames.TenantHostnamePfxStore.LoadAll(
+            hostnameDb, config.Https.CertificatePassword ?? string.Empty,
+            message => Log.Warning("[TLS] Tenant hostname certificate: {Message}", message));
+    },
+    TimeSpan.FromMinutes(5),
+    message => Log.Warning("[TLS] Tenant hostname certificate reload failed: {Message}", message));
+builder.Services.AddSingleton(tenantHostnameCerts);
+builder.Services.AddSchedulerJob<TlsRenewalJob>(activeRoles);
+
+// The ingress route table: Ingress.Routes merged with the tenant hostnames whose NodeUpstream
+// is set, re-read on a short interval and after every change the hostname service makes in
+// this process. A name with no upstream is served here, so a single process with no route
+// configured routes nothing. The section is validated first: a route the ingress could not
+// honour safely (the dangerous flag on a node that is not loopback) stops startup.
+ModularCA.Core.Services.Ingress.IngressRouteTableService? ingressRoutes = null;
+if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
+{
+    var ingressProblems = config.Ingress.Validate(AppContext.BaseDirectory);
+    if (ingressProblems.Count > 0)
+    {
+        Console.Error.WriteLine("[FATAL] The Ingress section of config.yaml is not usable:");
+        foreach (var problem in ingressProblems)
+            Console.Error.WriteLine($"        {problem}");
+        Environment.Exit(1);
+    }
+    ModularCA.API.Ingress.UpstreamTrustPolicy ingressTrust;
+    try
+    {
+        ingressTrust = ModularCA.API.Ingress.UpstreamTrustPolicy.Load(config.Ingress, AppContext.BaseDirectory);
+    }
+    catch (Exception ex) when (ex is FileNotFoundException or System.Security.Cryptography.CryptographicException or IOException)
+    {
+        Console.Error.WriteLine($"[FATAL] Ingress.UpstreamCaCertificatePath cannot be used: {ex.Message}");
+        Environment.Exit(1);
+        throw;
+    }
+    ingressRoutes = new ModularCA.Core.Services.Ingress.IngressRouteTableService(
+        config.Ingress,
+        () =>
+        {
+            if (isSetupMode)
+                return Array.Empty<ModularCA.Core.Services.Ingress.TenantHostnameUpstream>();
+            using var routeDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
+            return routeDb.TenantHostnames.AsNoTracking()
+                .Select(h => new ModularCA.Core.Services.Ingress.TenantHostnameUpstream(h.Hostname, h.NodeUpstream))
+                .ToList();
+        },
+        TimeSpan.FromSeconds(config.Ingress.RouteRefreshSeconds),
+        message => Log.Warning("[INGRESS] {Message}", message));
+    ModularCA.API.Ingress.IngressHosting.AddIngress(builder.Services, config.Ingress, ingressRoutes, ingressTrust);
+}
 
 if (isSetupMode)
 {
@@ -1979,6 +2203,12 @@ else
                 Environment.Exit(1);
             }
 
+            // Tenant hostname certificates for SNI selection. Never fatal: a name whose file is
+            // missing is answered with the console's certificate and reported in the log.
+            var tenantHostnameCount = tenantHostnameCerts.LoadNow();
+            if (tenantHostnameCount > 0)
+                Console.WriteLine($"[TLS] {tenantHostnameCount} tenant hostname certificate(s) loaded for SNI selection: {string.Join(", ", tenantHostnameCerts.Hostnames)}");
+
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
@@ -1997,7 +2227,11 @@ else
 
                         var options = new System.Net.Security.SslServerAuthenticationOptions
                         {
-                            ServerCertificate = apiCertProvider.GetCertificate(),
+                            // A tenant hostname gets its own certificate by exact SNI match; the
+                            // public domain, unknown names and clients that send no SNI get the
+                            // console's certificate, whichever mode supplied it.
+                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(
+                                sni, tenantHostnameCerts, apiCertProvider.GetCertificate()),
                             EnabledSslProtocols = sslProtocols,
 
                             // True on the EST subdomain as well, but it means something different
@@ -2165,8 +2399,18 @@ else
 
             // Plain HTTP listener for CRL, OCSP, and AIA endpoints.
             // RFC 5280 requires these to be reachable without TLS (clients validating a cert
-            // cannot use HTTPS to fetch the CRL/OCSP that validates that same cert).
-            if (config.Http.Port > 0)
+            // cannot use HTTPS to fetch the CRL/OCSP that validates that same cert). Those are
+            // the validation role's endpoints, so the listener is the validation role's: a
+            // process without it serves nothing that belongs on plain HTTP.
+            // The ingress opens it as well, routing by Host, so a tenant's revocation URLs reach
+            // that tenant's node on plain HTTP without a redirect.
+            if (config.Http.Port > 0
+                && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation)
+                && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
+            {
+                Console.WriteLine($"[HTTP] Plain HTTP port {config.Http.Port} not opened: neither the validation nor the ingress role is active in this process.");
+            }
+            else if (config.Http.Port > 0)
             {
                 var httpPort = FindAvailablePort(config.Http.Port, failFast: true);
                 if (httpPort != config.Http.Port)
@@ -2296,7 +2540,16 @@ if (hsmSession != null)
 // Apply pending EF Core migrations for the main database on startup
 // In setup mode, skip migrations entirely — the setup wizard handles schema creation
 // via BootstrapService.Initialize() which calls Migrate() with root credentials.
-if (!isSetupMode)
+//
+// Everything in this block writes: migrations, the template OID repair, the feature-flag
+// backfill, the audit migrations further down, the policy sync and the audit replay at the
+// end. Those are the control plane's; an enrollment or validation process reads the schema
+// the control plane maintains and changes nothing at startup.
+if (!isSetupMode && !controlActive)
+{
+    Console.WriteLine("[STARTUP] Migrations and startup repairs are the control role's; this process applies none.");
+}
+if (!isSetupMode && controlActive)
 {
     try
     {
@@ -2341,17 +2594,19 @@ if (!isSetupMode)
         logger.LogWarning(ex, "Failed to check/apply migrations — the database may not exist yet. Setup wizard will handle initialization.");
     }
 
-    // Generated template OIDs move under the operator's arc once Msae:TemplateOidArc is set, in
-    // one pass, so each template's OID changes exactly once. The repair only touches OIDs that
-    // equal a generated derivation of their own template id, never an operator's, and does
-    // nothing while no arc is configured.
+    // New templates are minted under this product's own arc with nothing configured. Identifiers
+    // generated by an older build move to it only when Msae:MoveGeneratedTemplateOids says so,
+    // in one pass, so a template's identifier changes exactly once: a Windows client recognises a
+    // certificate it holds by that identifier, so a move makes every client enroll again. The
+    // repair only touches identifiers that equal a generated derivation of their own template id,
+    // never one an operator typed.
     try
     {
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
         var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ModularCA.Core.Services.Msae.MsaeOptions>>();
         var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-        await ModularCA.Core.Services.Msae.MsaeTemplateOidRepair.RunAsync(db, options.Value.TemplateOidArc, logger);
+        await ModularCA.Core.Services.Msae.MsaeTemplateOidRepair.RunAsync(db, options.Value.TemplateOidArc, options.Value.MoveGeneratedTemplateOids, logger);
     }
     catch (Exception ex)
     {
@@ -2370,7 +2625,7 @@ if (!isSetupMode)
 // IsWarm = true once real credentials exist.
 // Flags introduced after this instance was bootstrapped have no row, so the settings page cannot
 // show them and the path gate treats them as off with no way to turn them on. Add them, disabled.
-if (!isSetupMode)
+if (!isSetupMode && controlActive)
 {
     try
     {
@@ -2411,8 +2666,8 @@ else
     Console.WriteLine("[STARTUP] IWhitelistService warmup skipped (setup mode) — middleware will use the hardcoded fallback for /setup paths.");
 }
 
-// Apply pending audit database migrations on startup (skip in setup mode)
-if (!isSetupMode)
+// Apply pending audit database migrations on startup (skip in setup mode; the control role's)
+if (!isSetupMode && controlActive)
 {
     try
     {
@@ -2456,13 +2711,18 @@ if (!isSetupMode)
 // they must not be reachable on a credential-free basis just because the state is odd: mint a
 // token exactly as setup mode does, so recovery needs the console. Without a token the setup
 // controller refuses.
-if (!isSetupMode && needsSetup)
+if (!isSetupMode && needsSetup && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control))
 {
     var recoveryToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     SetupTokenHolder.SetToken(recoveryToken);
     Console.WriteLine("[SETUP] This instance is configured but has no certificate authorities.");
     Console.WriteLine("[SETUP] The setup wizard is available for recovery. It requires this one-time token,");
     Console.WriteLine($"[SETUP] valid for {SetupTokenHolder.DefaultTokenTtl.TotalMinutes:0} minutes: {recoveryToken}");
+}
+else if (!isSetupMode && needsSetup)
+{
+    Console.WriteLine("[SETUP] This instance is configured but has no certificate authorities.");
+    Console.WriteLine("[SETUP] The setup wizard for recovery is served by the control role, which this process does not run.");
 }
 
 // Startup state logging
@@ -2526,7 +2786,7 @@ if (!needsSetup)
         foreach (var ta in trustAnchors)
         {
             var cert = new Org.BouncyCastle.X509.X509Certificate(ta.RawCertificate);
-            registry.RegisterTrustedCert(cert);
+            signerBootstrap.Certificates.RegisterTrustedCert(cert);
         }
         if (trustAnchors.Count > 0)
             Console.WriteLine($"[TrustAnchors] Loaded {trustAnchors.Count} trust anchor(s) into runtime registry.");
@@ -2659,6 +2919,22 @@ if (config.Security.BehindReverseProxy && string.IsNullOrWhiteSpace(config.Http.
 
 app.UseForwardedHeaders(forwardedOptions);
 
+// The ingress branch. A request whose host the route table sends elsewhere is proxied here,
+// after the forwarded headers from any proxy in front of this one are honoured and before
+// any local middleware: no scheme redirect, security header, rate limit or authentication of
+// this process touches it, since the node it reaches applies its own. Plain-HTTP arrivals go
+// to the node's plain-HTTP listener when the route names one, so a tenant's CRL and OCSP URLs
+// are answered there. A host with no upstream, the public domain included, continues down
+// the local pipeline exactly as before the role existed.
+if (ingressRoutes != null)
+{
+    var ingressRouteCount = ingressRoutes.LoadNow();
+    Console.WriteLine(ingressRouteCount == 0
+        ? "[INGRESS] No route has an upstream; every name is served by this process."
+        : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));
+    ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
+}
+
 // Standard error response format: { "error": "message" }
 // ACME endpoints use RFC 8555 format: { "type": "urn:...", "detail": "message", "status": 400 }
 // Step-up MFA errors add: { "requiresStepUp": true }
@@ -2700,9 +2976,14 @@ if (config.Http.EnableCors && corsOrigins.Length > 0)
     Console.WriteLine($"[CORS] Restricted CORS policy active for origins: {string.Join(", ", corsOrigins)}");
 }
 
+// The console, the setup wizard, the docs and the public portal are the control role's: the
+// SPAs and their static files, the setup redirect, the CSRF cookie the sign-in and wizard
+// forms use, and the docs gate exist only where the control role runs (controlActive, above).
+// Everything under that flag is unchanged for a process that runs it, which the default does.
+
 // Serve static files from wwwroot relative to ContentRoot
 var webRoot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
-if (Directory.Exists(webRoot))
+if (controlActive && Directory.Exists(webRoot))
 {
     app.Environment.WebRootPath = webRoot;
 }
@@ -2711,7 +2992,7 @@ if (Directory.Exists(webRoot))
 // Backups contain encrypted CA private key material — if they are reachable via static-files
 // they become anonymously downloadable by a date-range guess. Hard-fail at boot is the only
 // safe behaviour here.
-if (Directory.Exists(webRoot) && config.Backup != null && !string.IsNullOrEmpty(config.Backup.OutputPath))
+if (controlActive && Directory.Exists(webRoot) && config.Backup != null && !string.IsNullOrEmpty(config.Backup.OutputPath))
 {
     var resolvedBackupPath = Path.IsPathRooted(config.Backup.OutputPath)
         ? Path.GetFullPath(config.Backup.OutputPath)
@@ -2728,7 +3009,8 @@ if (Directory.Exists(webRoot) && config.Backup != null && !string.IsNullOrEmpty(
     }
 }
 
-app.UseMiddleware<ModularCA.API.Middleware.CsrfProtectionMiddleware>();
+if (controlActive)
+    app.UseMiddleware<ModularCA.API.Middleware.CsrfProtectionMiddleware>();
 
 // Cache the fingerprinted bundles forever; never cache the documents that point at them.
 //
@@ -2742,6 +3024,7 @@ app.UseMiddleware<ModularCA.API.Middleware.CsrfProtectionMiddleware>();
 // a cached index.html, and hours went into debugging source that was not the source running.
 // Pairs with install.sh, which now clears wwwroot on upgrade so a superseded chunk is not left
 // on disk to be served even if something does ask for it.
+if (controlActive)
 app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
@@ -2765,7 +3048,8 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 
-app.UseMiddleware<ModularCA.API.Middleware.SetupRedirectMiddleware>();
+if (controlActive)
+    app.UseMiddleware<ModularCA.API.Middleware.SetupRedirectMiddleware>();
 
 app.UseRouting();
 app.UseAuthentication();
@@ -2776,10 +3060,12 @@ app.UseMiddleware<ModularCA.API.Middleware.ReservedCaLabelGuardMiddleware>(); //
 app.UseMiddleware<ModularCA.API.Middleware.ProtocolFeatureGateMiddleware>(); // Gate protocol endpoints by feature flag
 app.UseMiddleware<ModularCA.API.Middleware.JwtIpBindingMiddleware>();
 app.UseMiddleware<ModularCA.API.Middleware.MfaEnrollmentMiddleware>();
-app.UseMiddleware<ModularCA.API.Middleware.DocsAuthMiddleware>();
+if (controlActive)
+    app.UseMiddleware<ModularCA.API.Middleware.DocsAuthMiddleware>();
 
-// Root path: permanently redirect to the public landing UI.
-app.MapGet("/", () => Microsoft.AspNetCore.Http.Results.Redirect("/public/", permanent: true)).AllowAnonymous();
+// Root path: permanently redirect to the public landing UI, where the control role serves it.
+if (controlActive)
+    app.MapGet("/", () => Microsoft.AspNetCore.Http.Results.Redirect("/public/", permanent: true)).AllowAnonymous();
 
 app.MapControllers();
 
@@ -2857,12 +3143,14 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 
 // Legacy /health compatibility shim — redirects callers to the split endpoints.
 // Anonymous GET returns the minimal liveness payload so existing probes do not break.
+// It also names the roles this process runs, so a probe can tell which process it reached.
 app.MapGet("/health", async context =>
 {
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsJsonAsync(new
     {
         status = "healthy",
+        roles = activeRoles.Names,
         detail = "Use /health/live (anonymous, minimal) or /health/ready (authorized, full)."
     });
 }).AllowAnonymous();
@@ -2920,6 +3208,9 @@ static bool IsConsoleAuthPath(string path)
     return false;
 }
 
+// Without the control role there is no SPA to fall back to, and an unmatched path is a 404
+// from routing itself.
+if (controlActive)
 app.MapFallback(context =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -2983,8 +3274,9 @@ app.MapFallback(context =>
 // service itself refuses to sign such requests when the DB-backed
 // SecurityPolicy.AllowCaDirectSigning=false; the startup warning surfaces
 // the configuration gap before the first client request does.
-// Skip in setup mode — tables don't exist yet.
-if (!isSetupMode)
+// Skip in setup mode — tables don't exist yet. OCSP is the validation role's, so only a
+// process that answers OCSP warns about it.
+if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation))
 try
 {
     using var ocspStartupScope = app.Services.CreateScope();
@@ -3020,8 +3312,8 @@ catch (Exception ex)
     fallbackLogger.LogWarning(ex, "OCSP: failed to scan for CAs missing a delegated responder at startup");
 }
 
-// GitOps policy sync on startup (if enabled)
-if (config.PolicySync.Enabled && config.PolicySync.SyncOnStartup)
+// GitOps policy sync on startup (if enabled). It writes policy rows: the control role's.
+if (controlActive && config.PolicySync.Enabled && config.PolicySync.SyncOnStartup)
 {
     using var startupScope = app.Services.CreateScope();
     var policySyncService = startupScope.ServiceProvider.GetRequiredService<IPolicySyncService>();
@@ -3044,8 +3336,8 @@ if (config.PolicySync.Enabled && config.PolicySync.SyncOnStartup)
 // Drain any logs/bootstrap-audit-*.jsonl files left behind by
 // bootstrap (where audit writes must be deferred because the audit DB is not yet
 // reachable) and replay each entry into the real audit DB. Wrapped in try/catch
-// so a replay failure never blocks startup.
-if (!isSetupMode)
+// so a replay failure never blocks startup. Bootstrap ran where the control plane runs.
+if (!isSetupMode && controlActive)
 {
     try
     {

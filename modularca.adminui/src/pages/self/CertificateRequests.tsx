@@ -5,6 +5,7 @@ import { apiGet } from '../../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { Link } from 'react-router-dom';
+import { HeldKeyDownload } from '../../components/HeldKeyDownload';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -29,6 +30,15 @@ interface CertRequest {
     certProfileId: string | null;
     signingProfileId: string | null;
     issuedCertificateSerial: string | null;
+    /** The CA still holds the key it generated for this request. */
+    keyHeld: boolean;
+    /** When that key was delivered as a .pfx, if it was. */
+    heldKeyDeliveredAt: string | null;
+}
+
+function subjectCn(subjectDN: string | null): string {
+    const m = /(?:^|,)\s*CN=([^,]+)/i.exec(subjectDN || '');
+    return (m?.[1] || subjectDN || 'certificate').trim();
 }
 
 const CertificateRequests: React.FC = () => {
@@ -36,12 +46,13 @@ const CertificateRequests: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
+    const [refresh, setRefresh] = useState(0);
     useEffect(() => {
         apiGet<CertRequest[]>('/api/v1/user/requests')
             .then((data) => setRequests(Array.isArray(data) ? data : []))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
-    }, []);
+    }, [refresh]);
 
     const columns: DataTableColumn<CertRequest>[] = [
         {
@@ -60,6 +71,17 @@ const CertificateRequests: React.FC = () => {
             render: (r) => r.issuedCertificateSerial
                 ? <span className="font-mono text-xs text-green-800 dark:text-green-400 truncate">{r.issuedCertificateSerial}</span>
                 : <span className="text-xs text-gray-500">-</span>,
+        },
+        {
+            key: 'key', header: 'Private Key', defaultWidth: 150, truncate: false,
+            exportValue: (r) => r.heldKeyDeliveredAt ? 'Delivered' : r.keyHeld ? (r.issuedCertificateSerial ? 'Ready to download' : 'Held by the CA') : '',
+            render: (r) => r.heldKeyDeliveredAt
+                ? <span className="text-xs text-gray-600 dark:text-gray-400">Delivered</span>
+                : r.keyHeld
+                    ? (r.issuedCertificateSerial
+                        ? <span className="text-xs font-medium text-green-800 dark:text-green-400">Ready to download</span>
+                        : <span className="text-xs text-yellow-800 dark:text-yellow-400">Held by the CA</span>)
+                    : <span className="text-xs text-gray-500">-</span>,
         },
         {
             key: 'submitted', header: 'Submitted', defaultWidth: 200, truncate: false,
@@ -95,6 +117,25 @@ const CertificateRequests: React.FC = () => {
                     <Link to="/certificates" className="text-xs text-blue-800 dark:text-blue-400 hover:underline mt-1 inline-block">
                         View in My Certificates
                     </Link>
+                </div>
+            )}
+            {(req.keyHeld || req.heldKeyDeliveredAt) && (
+                <div className="pt-2 border-t border-gray-300 dark:border-gray-700 space-y-1">
+                    <span className="text-xs text-gray-600">Private Key</span>
+                    {req.keyHeld && !req.issuedCertificateSerial && (
+                        <p className="text-xs text-yellow-800 dark:text-yellow-400">
+                            Your private key is held by the CA until the certificate is issued. The .pfx download appears here once it is approved.
+                        </p>
+                    )}
+                    <HeldKeyDownload
+                        endpoint={`/api/v1/user/requests/${encodeURIComponent(req.id)}/pkcs12`}
+                        requestId={req.id}
+                        fileName={subjectCn(req.subjectDN)}
+                        keyHeld={req.keyHeld}
+                        deliveredAt={req.heldKeyDeliveredAt}
+                        issued={!!req.issuedCertificateSerial}
+                        onDelivered={() => setRefresh((n) => n + 1)}
+                    />
                 </div>
             )}
             {req.status?.toLowerCase() === 'rejected' && (

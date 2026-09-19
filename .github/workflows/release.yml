@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: write        # create the release and upload assets
+  packages: write        # publish the container image to GHCR
   id-token: write        # provenance attestation
   attestations: write    # provenance attestation
 
@@ -67,6 +68,42 @@ jobs:
 
       - name: Build win-x64 distribution
         run: bash scripts/build-windows-dist.sh
+
+      # The node as an OCI image, built from the tarball above so the container carries exactly
+      # the bytes the release does. Tagged with the version; a release without a hyphen is also
+      # `latest`. Pushed only for a tag; a manual run builds it to prove the Containerfile.
+      - name: Container image tags
+        id: image
+        run: |
+          version="$(tr -d ' 
+' < VERSION)"
+          repo="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/modularca"
+          tags="$repo:$version"
+          case "$version" in *-*) ;; *) tags="$tags,$repo:latest" ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "dist=$(ls dist/modularca-*-linux-x64.tar.gz)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: github.ref_type == 'tag'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/container/Containerfile
+          build-args: DIST=${{ steps.image.outputs.dist }}
+          tags: ${{ steps.image.outputs.tags }}
+          push: ${{ github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+            org.opencontainers.image.licenses=see LICENSE
 
       # One checksum file over both artifacts, in the standard `sha256sum -c` format, so a
       # downloader can verify everything in one step.

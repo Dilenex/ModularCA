@@ -247,20 +247,33 @@ export default function CertIssuanceFlow() {
     |                                |  Generate key pair
     |                                |  Create CSR internally
     |                                |  Validate against profile
-    |                                |  Sign certificate
-    |                                |  Store encrypted private key
+    |                                |  Hold the key on the request
+    |                                |  (Data Protection, not the keystore)
     |                                |
-    |  200 { certificate,            |
-    |        privateKey,             |
-    |        pkcs12 (base64) }       |
+    |  200 { requestId, csr,         |
+    |        keyHeld: true }         |
+    |<-------------------------------|
+    |                                |
+    |   ... approve and issue from   |
+    |       the Requests page ...    |
+    |                                |
+    |  POST /api/v1/admin/requests/  |
+    |       {id}/pkcs12              |
+    |  { password }  + step-up MFA   |
+    |------------------------------->|
+    |                                |  Build PKCS#12: certificate,
+    |                                |  chain and key; delete the
+    |                                |  held key in the same save
+    |  200 application/x-pkcs12      |
     |<-------------------------------|
 `}</pre>
                 </div>
                 <div className="border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-r">
                     <p className="text-gray-700 dark:text-gray-300 text-sm">
-                        <span className="font-semibold">Security note:</span> Server-side key generation means
-                        the private key is transmitted over the network. Always use TLS. For maximum security,
-                        prefer client-side key generation with CSR upload.
+                        <span className="font-semibold">Security note:</span> The CA holds the generated key only
+                        until the certificate is issued and the .pfx is downloaded once; a second download reports the
+                        date the key left. The key still crosses the network in that file, so always use TLS, and prefer
+                        client-side key generation with CSR upload where the client can do it.
                     </p>
                 </div>
 

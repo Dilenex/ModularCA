@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Enrollment;
 using ModularCA.Database;
+using ModularCA.Shared.Enrollment;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
@@ -15,21 +17,53 @@ namespace ModularCA.Core.Services.Acme;
 /// <summary>
 /// Manages ACME order lifecycle including creation, finalization, and certificate issuance.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Only finalization runs on the shared enrollment middle. ACME is accounts, orders,
+/// authorizations, challenges and nonces — a state machine the other protocols do not have — and
+/// generalising that would describe nothing. What the pipeline owns here is the middle between
+/// "this order is ready and here is its CSR" and "here is the issued certificate": the CA, the
+/// protocol's enablement on it, the profiles, the name validation, the request row and the
+/// issuance. Everything either side of that stays ACME's, including the order state machine that
+/// reads the outcome.
+/// </para>
+/// <para>
+/// The checks ACME makes for itself still run before the pipeline, in the order they always have:
+/// the CSR must carry only identifiers the order authorized, and CAA must permit this CA to issue
+/// for each of them. Neither is a question about the CA's policy, and both refuse in ACME's own
+/// rendering.
+/// </para>
+/// </remarks>
 public class AcmeOrderService(
     ModularCADbContext db,
-    ICertificateIssuanceService issuanceService,
-    ICertificateStore certStore,
-    ICaResolverService caResolver,
     IProtocolAuditService protocolAudit,
-    RequestProfileValidationService requestProfileValidation,
-    ICaaCheckService caaCheckService) : IAcmeOrderService
+    IEnrollmentPipeline pipeline,
+    ICaaCheckService caaCheckService) : IAcmeOrderService, IEnrollmentProtocol
 {
+    /// <summary>The protocol name as per-CA protocol configuration and audit rows record it.</summary>
+    public const string Protocol = "ACME";
+
+    /// <inheritdoc />
+    string IEnrollmentProtocol.Name => Protocol;
+
+    /// <summary>
+    /// What ACME offers here: issuance through an order, and revocation (RFC 8555 §7.6).
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="EnrollmentCapabilities.ReEnroll"/> or
+    /// <see cref="EnrollmentCapabilities.Renew"/>: an ACME client renews by placing another order
+    /// and validating the identifiers again, so a renewal is not a distinct operation carrying
+    /// evidence of the certificate it replaces. Not <see cref="EnrollmentCapabilities.Poll"/> or
+    /// <see cref="EnrollmentCapabilities.Collect"/> either — the order resource is polled, but no
+    /// request taken under submission can be asked after, which is what those two name. No
+    /// server-side key generation; ACME has none.
+    /// </remarks>
+    EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
+        EnrollmentCapabilities.Enroll | EnrollmentCapabilities.Revoke;
+
     private readonly ModularCADbContext _db = db;
-    private readonly ICertificateIssuanceService _issuanceService = issuanceService;
-    private readonly ICertificateStore _certStore = certStore;
-    private readonly ICaResolverService _caResolver = caResolver;
     private readonly IProtocolAuditService _protocolAudit = protocolAudit;
-    private readonly RequestProfileValidationService _requestProfileValidation = requestProfileValidation;
+    private readonly IEnrollmentPipeline _pipeline = pipeline;
     private readonly ICaaCheckService _caaCheckService = caaCheckService;
 
     /// <summary>
@@ -111,13 +145,26 @@ public class AcmeOrderService(
     }
 
     /// <summary>
-    /// Finalizes an ACME order by decoding the CSR, validating it against the
-    /// order identifiers, issuing the certificate via the configured cert and
-    /// signing profiles, and updating the order status.
-    /// The CA label is plumbed from the order's stored value (or optionally
-    /// from <paramref name="caLabel"/> if the caller wants to override) into
-    /// <see cref="ICaResolverService"/> so the right CA signs the cert.
+    /// Finalizes an ACME order: decodes the CSR, holds it to the identifiers the order
+    /// authorized, checks CAA, runs the shared enrollment middle, and moves the order to valid or
+    /// invalid on what came back.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The CA label is taken from the order's stored value, which is authoritative;
+    /// <paramref name="caLabel"/> from the route may only confirm it. The label is handed to the
+    /// pipeline, which resolves the CA, refuses a CA that is gone or has ACME switched off, and
+    /// reads that CA's ACME profiles — the work <see cref="ICaResolverService"/> used to be asked
+    /// for here.
+    /// </para>
+    /// <para>
+    /// Every refusal below reaches the client as one RFC 8555 problem document, because that is
+    /// what the controller has always rendered a failed finalize as: 403 with type
+    /// <c>urn:ietf:params:acme:error:orderNotReady</c> and a fixed detail. The sentence a refusal
+    /// carries is for the log and the ACME audit tab, and the order state machine is what the
+    /// client reads instead.
+    /// </para>
+    /// </remarks>
     public async Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, string? caLabel = null)
     {
         var order = await _db.AcmeOrders.FindAsync(orderId)
@@ -153,20 +200,6 @@ public class AcmeOrderService(
             }
 
             var effectiveCaLabel = !string.IsNullOrWhiteSpace(order.CaLabel) ? order.CaLabel : caLabel;
-            var caContext = await _caResolver.ResolveAsync(effectiveCaLabel, "ACME");
-            var signingProfileId = caContext.SigningProfileId;
-
-            // Resolve cert profile: ACME doesn't support requester choice → protocol default → request profile default
-            var (resolvedCertProfileId, certProfileError) = await _requestProfileValidation
-                .ResolveCertProfileIdAsync(null, caContext.CertProfileId, caContext.RequestProfileId);
-            if (resolvedCertProfileId == null)
-                throw new InvalidOperationException(certProfileError ?? "No certificate profile available for ACME");
-            var certProfileId = resolvedCertProfileId.Value;
-
-            var signingProfile = await _db.SigningProfiles.FindAsync(signingProfileId)
-                ?? throw new InvalidOperationException("Configured ACME signing profile not found.");
-            var certProfile = await _db.CertProfiles.FindAsync(certProfileId)
-                ?? throw new InvalidOperationException("Configured ACME certificate profile not found.");
 
             // Validate that the CSR identifiers match the order identifiers
             var orderIdentifiers = JsonSerializer.Deserialize<List<AcmeIdentifier>>(order.IdentifiersJson) ?? [];
@@ -183,77 +216,73 @@ public class AcmeOrderService(
                         $"CAA record for '{identifier.Value}' does not authorize this CA to issue certificates.");
             }
 
-            // Create the CSR entity for the issuance pipeline
-            var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
-            var subject = parsedCsr.SubjectName;
-
-            // Validate against request profile if one is configured for this protocol
-            if (caContext.RequestProfileId != null)
+            // The middle: the CA, its ACME configuration, the profiles, the names, the request row
+            // and the issuance. ACME resolves no CA of its own - the order carries a label and
+            // nothing more - so the pipeline resolves it, and the refusals it can make for a CA
+            // that is gone or has ACME switched off are the refusals ResolveAsync used to throw.
+            var submission = new EnrollmentSubmission
             {
-                var (isValid, error, modifiedSubject) = await _requestProfileValidation
-                    .ValidateAsync(caContext.RequestProfileId.Value, subject, sanJson);
-                if (!isValid)
-                    throw new InvalidOperationException(error ?? "Request profile validation failed");
-                if (modifiedSubject != null)
-                    subject = modifiedSubject;
-            }
-
-            var csrEntity = new CertRequestEntity
-            {
-                Subject = subject,
-                SubjectAlternativeNames = sanJson,
-                CSR = csrPem,
-                KeyAlgorithm = parsedCsr.KeyAlgorithm,
-                KeySize = parsedCsr.KeySize,
-                SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
-                SubmittedAt = DateTime.UtcNow,
-                Status = "Pending",
-                CertProfileId = certProfileId,
-                CertProfile = certProfile,
-                SigningProfileId = signingProfileId,
-                SigningProfile = signingProfile
+                Protocol = Protocol,
+                CaLabel = effectiveCaLabel,
+                Correlation = order.Id.ToString(),
+                RequestedNotBefore = order.NotBefore,
+                RequestedNotAfter = order.NotAfter,
+                Caller = new EnrollmentCaller(
+                    Principal: $"acme-account:{order.AccountId}",
+                    AuthMethod: EnrollmentAuthMethod.MessageSignature,
+                    IsVerified: true),
+                Request = new EnrollmentRequestMaterial
+                {
+                    CsrPem = csrPem,
+                    Subject = parsedCsr.SubjectName,
+                    SubjectAlternativeNames = parsedCsr.SubjectAlternativeNames,
+                    KeyAlgorithm = parsedCsr.KeyAlgorithm,
+                    KeySize = parsedCsr.KeySize,
+                    SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
+                },
+                Audit = record => WriteAcmeAuditAsync(record, order, effectiveCaLabel),
             };
 
-            _db.CertificateRequests.Add(csrEntity);
-            await _db.SaveChangesAsync();
-
-            order.FinalizedCsrId = csrEntity.Id;
-
-            // Default validity dates from signing profile when certbot omits them
-            // The order's notBefore is the client's request; the floor applies at issuance.
-            var issuanceNotBefore = CertificateValidityUtil.ClampRequestedNotBefore(order.NotBefore, out _);
-            var maxValidity = Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y");
-            var issuanceNotAfter = order.NotAfter ?? issuanceNotBefore.Add(maxValidity);
-
-            // Issue the certificate
-            var result = await _issuanceService.IssueCertificateAsync(
-                csrEntity.Id,
-                issuanceNotBefore,
-                issuanceNotAfter);
-            var certPem = result.Pem;
-
-            // Parse the issued cert for audit details
-            var issuedCert = CertificateUtil.ParseFromPem(certPem);
-
-            var identifiersJson = order.IdentifiersJson;
-            // Include signing/cert profile ids and caLabel so
-            // post-incident forensics can trace the cert back to the policy
-            // that issued it.
-            await _protocolAudit.LogAcmeAsync("CertificateIssued", order.AccountId, order.Id,
-                csrEntity.Subject, CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber),
-                identifiersJson, null, null,
-                caLabel: effectiveCaLabel,
-                signingProfileId: signingProfileId,
-                certProfileId: certProfileId);
-
-            // Find the issued certificate entity
-            var csrWithCert = await _db.CertificateRequests
-                .Include(c => c.IssuedCertificate)
-                .FirstOrDefaultAsync(c => c.Id == csrEntity.Id);
-
-            if (csrWithCert?.IssuedCertificateId != null)
+            var outcome = await _pipeline.SubmitAsync(submission);
+            switch (outcome)
             {
-                order.CertificateId = csrWithCert.IssuedCertificateId;
+                case EnrollmentOutcome.Issued issued:
+                    order.FinalizedCsrId = issued.RequestId;
+                    var issuedCertificateId = await _db.CertificateRequests
+                        .Where(c => c.Id == issued.RequestId)
+                        .Select(c => c.IssuedCertificateId)
+                        .FirstOrDefaultAsync();
+                    if (issuedCertificateId != null)
+                        order.CertificateId = issuedCertificateId;
+                    break;
+
+                // An ACME order has no state for "waiting for a human". RFC 8555 lets finalize
+                // leave the order processing and have the client poll, but nothing links an
+                // approval made days later back to the order, so the client would poll an order
+                // that never moves and an approver would issue a certificate nobody can fetch.
+                // The finalize is refused instead, and the row the middle wrote is closed so the
+                // approval queue does not fill with ACME requests that can never be collected.
+                //
+                // This is the one place where migrating changes what a CA does: an approval-gated
+                // request profile on an ACME-enabled CA used to be ignored here and the
+                // certificate issued without an approver. Refusing is the direction that fails
+                // closed, and it is what the gate was configured to mean.
+                case EnrollmentOutcome.Pending pending:
+                    await CloseUncollectableRequestAsync(pending.RequestId);
+                    throw new InvalidOperationException(
+                        "The request profile for this CA requires approval, which ACME cannot wait for.");
+
+                // Already audited, by the writer above and in the shape the ACME tab has. The
+                // controller renders every one of these as the same RFC 8555 problem document, so
+                // the sentence reaches the log and never the client.
+                case EnrollmentOutcome.Refused refused:
+                    throw new InvalidOperationException(refused.Message);
+
+                case EnrollmentOutcome.Failed failed:
+                    throw new InvalidOperationException(failed.Message);
+
+                default:
+                    throw new InvalidOperationException("Unrecognised enrollment outcome.");
             }
 
             order.Status = nameof(AcmeOrderStatus.Valid);
@@ -267,6 +296,66 @@ public class AcmeOrderService(
         }
 
         return await BuildOrderDto(order, baseUrl);
+    }
+
+    /// <summary>
+    /// Writes the shared audit fields the pipeline supplies as an ACME row, against the order the
+    /// request finalizes.
+    /// </summary>
+    /// <remarks>
+    /// An issued certificate keeps the row it has always had, down to the signing and certificate
+    /// profile ids that let post-incident forensics trace a certificate back to the policy that
+    /// issued it; those are read off the request row the middle wrote, so they are the profiles it
+    /// actually used rather than the ones a second resolution would pick. A refusal is a new row:
+    /// finalize refusals were audited nowhere before, so an operator saw a client failing and had
+    /// only the application log to read.
+    /// </remarks>
+    /// <param name="record">The shared fields; see <see cref="EnrollmentAuditRecord"/>.</param>
+    /// <param name="order">The order being finalized, which names the account and the identifiers.</param>
+    /// <param name="caLabel">The CA label as the order carries it, which may be null for the default CA.</param>
+    private async Task WriteAcmeAuditAsync(EnrollmentAuditRecord record, AcmeOrderEntity order, string? caLabel)
+    {
+        if (record.Event == EnrollmentAuditEvent.Issued)
+        {
+            var profiles = record.RequestId == null ? null : await _db.CertificateRequests
+                .AsNoTracking()
+                .Where(c => c.Id == record.RequestId.Value)
+                .Select(c => new { c.SigningProfileId, c.CertProfileId })
+                .FirstOrDefaultAsync();
+
+            await _protocolAudit.LogAcmeAsync("CertificateIssued", order.AccountId, order.Id,
+                record.Subject, record.SerialNumber,
+                order.IdentifiersJson, null, null,
+                caLabel: caLabel,
+                signingProfileId: profiles?.SigningProfileId,
+                certProfileId: profiles?.CertProfileId);
+            return;
+        }
+
+        // Pending arrives here too, and is recorded as the refusal it becomes: the finalize is
+        // turned down below rather than left waiting, so a row saying otherwise would describe an
+        // order that does not exist.
+        var reason = record.Event == EnrollmentAuditEvent.Pending
+            ? "The request profile for this CA requires approval, which ACME cannot wait for."
+            : record.Message ?? "Finalization refused.";
+
+        await _protocolAudit.LogAcmeAsync("FinalizeRefused", order.AccountId, order.Id,
+            record.Subject, null, order.IdentifiersJson, null, null,
+            success: false, errorMessage: reason, caLabel: caLabel);
+    }
+
+    /// <summary>
+    /// Closes a request row the middle took under submission for an order that cannot wait for an
+    /// approver, so the approval queue does not accumulate ACME requests whose certificate nobody
+    /// could ever collect.
+    /// </summary>
+    /// <param name="requestId">The row the pipeline wrote.</param>
+    private async Task CloseUncollectableRequestAsync(Guid requestId)
+    {
+        var request = await _db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == requestId);
+        if (request == null) return;
+        request.Status = "Rejected";
+        await _db.SaveChangesAsync();
     }
 
     /// <summary>
