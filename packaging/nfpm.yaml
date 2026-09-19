@@ -96,6 +96,13 @@ contents:
     dst: /opt/modularca/ModularCA.Keystore.Unlocker
     file_info:
       mode: 0755
+  # The MariaDB-to-PostgreSQL migration helper. It ships with the release it migrates TO, which
+  # is the point: 0.3.1 refuses to start against MariaDB, and the tool that resolves that is
+  # already installed by the time the operator reads the refusal.
+  - src: ${BINDIR}/modularca-migrate
+    dst: /opt/modularca/modularca-migrate
+    file_info:
+      mode: 0755
 
   # systemd unit under /lib, not /etc. /etc/systemd/system belongs to the administrator; a package
   # that writes there fights the operator's own overrides and cannot be cleanly upgraded. Local
@@ -119,6 +126,12 @@ contents:
     type: symlink
   - src: /opt/modularca/logs
     dst: /var/log/modularca
+    type: symlink
+  # On the path, because the whole design of the helper is that an operator types one word. It
+  # finds the deployment's db.yaml and borrows its own database role, so there is nothing to
+  # assemble and no directory to be standing in.
+  - src: /opt/modularca/modularca-migrate
+    dst: /usr/local/bin/modularca-migrate
     type: symlink
 
   # Directories that must exist with the right modes before first run. Content is created at

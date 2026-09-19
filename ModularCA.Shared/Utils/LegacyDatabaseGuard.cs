@@ -1,4 +1,4 @@
-using ModularCA.Shared.Models.Config;
+﻿using ModularCA.Shared.Models.Config;
 
 namespace ModularCA.Shared.Utils;
 
@@ -29,14 +29,18 @@ public static class LegacyDatabaseGuard
     public const string Explanation =
         "ModularCA 0.3.1 and later run on PostgreSQL only; MySQL and MariaDB are no longer supported.\n"
         + "\n"
-        + "The supported upgrade path has three steps, in this order:\n"
-        + "  1. Upgrade to 0.3.0 on MariaDB, which applies every remaining MariaDB migration and\n"
-        + "     leaves the schema at a single known version.\n"
-        + "  2. Run the migration helper, which copies that database into a fresh PostgreSQL one.\n"
-        + "  3. Start this build against the PostgreSQL database the helper produced.\n"
+        + "The migration helper ships with this build and is already installed. It reads this\n"
+        + "configuration itself, so there is nothing to assemble:\n"
         + "\n"
-        + "See docs/architecture/postgresql-migration.md for the full description, including what\n"
-        + "the helper verifies before it reports success.";
+        + "    sudo modularca-migrate --dry-run     # checks everything, creates nothing\n"
+        + "    sudo modularca-migrate               # does it, then prints the new db.yaml values\n"
+        + "\n"
+        + "It never writes to the MariaDB database, so it can be run again, and starting 0.3.0\n"
+        + "against MariaDB remains a complete rollback.\n"
+        + "\n"
+        + "If this deployment has not reached 0.3.0 yet, upgrade to it on MariaDB first: the\n"
+        + "helper understands that one schema, which is what keeps it a script rather than a\n"
+        + "product. See docs/architecture/postgresql-migration.md.";
 
     /// <summary>
     /// Returns the reason this configuration looks like MySQL or MariaDB, or null if it does not.

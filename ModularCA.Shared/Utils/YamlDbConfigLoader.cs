@@ -1,5 +1,6 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using YamlDotNet.Core;
 
 namespace ModularCA.Shared.Utils;
 
@@ -45,6 +46,14 @@ public static class YamlDbConfigLoader
         public int Port { get; set; } = 5432;
         public string Database { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
+        /// <summary>
+        /// The account password. Always written double-quoted: a generated password is
+        /// arbitrary text, and an unquoted YAML scalar that happens to start with a character
+        /// the parser treats specially, or that reads as a number or a boolean, becomes
+        /// something other than the string it was — which surfaces later as a connection
+        /// refused with no indication that the file is the reason.
+        /// </summary>
+        [YamlMember(ScalarStyle = ScalarStyle.DoubleQuoted)]
         public string Password { get; set; } = string.Empty;
 
         /// <summary>

@@ -74,6 +74,15 @@ dotnet publish ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj \
     -c "$CONFIG" -r "$RID" --self-contained true \
     -o "$STAGE" -v minimal --nologo
 
+# The MariaDB-to-PostgreSQL migration helper, into the same directory for the same reason as
+# the CLI above. It ships with the release it migrates TO, which is the point: an operator on
+# 0.3.0 unpacks 0.3.1, finds the tool beside the binary that refuses to start against MariaDB,
+# and needs nothing they did not already download.
+note "publishing ModularCA.Migrate"
+dotnet publish ModularCA.Migrate/ModularCA.Migrate.csproj \
+    -c "$CONFIG" -r "$RID" --self-contained true \
+    -o "$STAGE" -v minimal --nologo
+
 note "staging config, deploy files and installer"
 mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ModularCA.Migrate</RootNamespace>
+    <AssemblyName>modularca-migrate</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The one project in the solution that still speaks MySQL, and the reason it may: it is the
+         only thing that ever has to read a MariaDB database again. The node refuses one outright
+         (LegacyDatabaseGuard), which is exactly why the reading has to happen somewhere else. -->
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ModularCA.Database\ModularCA.Database.csproj" />
+    <ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
+    <ProjectReference Include="..\ModularCA.Core\ModularCA.Core.csproj" />
+    <ProjectReference Include="..\ModularCA.Keystore\ModularCA.Keystore.csproj" />
+  </ItemGroup>
+
+</Project>

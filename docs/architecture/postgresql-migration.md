@@ -158,5 +158,109 @@ characters in `CmpSecretLastFour` for the console.
    the driver directly.
 3. ~~The case-sensitivity decision, applied per column, with tests that fail if a lookup becomes
    case-sensitive where it was not.~~ Done — see **As built** above.
-4. The helper, and a rehearsal of the whole path against a copy of the staging database.
+4. ~~The helper~~ Built — see **The helper, as built** below. The rehearsal against a copy of
+   staging is still to do, and is the first thing a PostgreSQL instance is needed for.
 5. A rehearsal against a copy of production before anything touches production.
+
+
+## The helper, as built
+
+`ModularCA.Migrate`, published as `modularca-migrate`. It is the only project in the solution that
+still references MySqlConnector, and the only one that may: the node refuses a MariaDB connection
+outright, which is precisely why the last reading of one has to happen somewhere else.
+
+### The destination rule changed
+
+The design said the helper "refuses a destination that is not empty". That conflated the server
+with the database, and no one dedicates a PostgreSQL cluster to a single application. The rule is
+now **the two target databases and the two login roles must not exist**, which is narrower in what
+it demands and stronger in what it gives:
+
+- The helper creates the databases, so it sets their encoding and collation rather than inheriting
+  whatever `template1` was left as. That is not housekeeping — `citext` folds case through a
+  locale-dependent `lower()`, so the case rules the model declares are only true if the database
+  agrees with them. They are created `ENCODING 'UTF8' TEMPLATE template0`, and the resulting
+  collation is printed.
+- A failed run can drop what it made, because it knows it made it. Had it accepted a pre-existing
+  empty database, dropping it would be presumptuous, and the operator would be left clearing up by
+  hand before every retry.
+
+**Roles are the part a database-name check misses.** A PostgreSQL role is cluster-wide, so on a
+shared server the databases can be free while the role names are not, and the existing-role
+behaviour elsewhere in the product is to rotate the password — which, on a role belonging to a
+neighbouring application, is a quiet outage for somebody else. So roles are held to the same rule
+and the helper never takes one over.
+
+### What it checks before it creates anything
+
+In order, and it collects every refusal rather than stopping at the first, so an operator fixes one
+set of problems instead of discovering them one run at a time:
+
+- The source is really MariaDB, by asking it, not by trusting the port.
+- The source schema is 0.3.0 and nothing else. One schema to understand is what keeps this a script.
+- No CMP enrollment token is still live (see below).
+- No case collisions, swept per case-insensitive column against the source.
+- The server is PostgreSQL 13 or newer — where `citext` became trusted and `DROP DATABASE WITH
+  (FORCE)` arrived, which are the two facts the rest of the design rests on.
+- `citext` is available in `pg_available_extensions`. Missing contrib is a packaging problem and
+  insufficient rights are a permissions problem, and the two failures read nothing alike.
+- The administrative role has `CREATEDB` and `CREATEROLE`. Neither is transactional, so neither can
+  be tested by trying it and rolling back; the catalogue is the only honest answer.
+- Neither target database nor either target role exists, and none of the four names collide with
+  each other or with the administrative account.
+
+`--dry-run` stops after all of it. Nothing outside the operator's terminal has changed at that
+point, which is what makes the whole preflight readable at a time when acting on it is free.
+
+### Foreign keys, and why there is no topological sort
+
+The constraints are dropped before the copy and added back after it. Ordering the tables so that no
+constraint is ever violated cannot express a table that references itself — a certificate whose
+issuer is another certificate — and the usual alternative, suppressing constraints with
+`session_replication_role`, needs a superuser, which this helper deliberately does not require.
+Re-adding a constraint makes PostgreSQL scan and validate it, so the referential integrity of the
+copy is checked by the server rather than asserted by us. They are restored in a `finally`: a
+destination left without its foreign keys would look like a working database and behave like a
+corrupt one.
+
+### Live CMP credentials are refused, not migrated
+
+On 0.3.0 the `Token` column held the token itself, and for a CMP row that value *is* the PBMAC
+shared secret. On 0.3.1 the token column holds a hash and the secret lives wrapped under a key only
+the signer can use, so carrying a live CMP credential across would mean wrapping it — which would
+mean handing a one-way copy tool a keystore and its passphrase. The credential is short-lived and
+cheap to re-issue, so the helper refuses while any CMP token is unrevoked and unexpired, and says
+to revoke and re-issue. Revoked and expired rows migrate normally with no secret: their history is
+worth keeping and their secret is not.
+
+That is the single functional limitation, and it is deliberate. It keeps the helper free of the
+keystore entirely.
+
+### What it verifies before reporting success
+
+A copy that reports success and is subtly wrong is worse than one that fails, because the source
+gets decommissioned on the strength of the report. Four kinds of evidence:
+
+- Foreign keys, validated by the server as they are restored.
+- Row counts per table, source against destination.
+- Certificates re-parsed from the bytes that crossed and checked against the serial stored beside
+  them — the proof that the `bytea` round trip was byte-exact, on the data where one flipped byte
+  matters most, and the closest available proxy for the key material in the same columns.
+- The audit hash chain re-verified end to end, per chain.
+
+And before any of that, **every identity sequence is reset** past the largest value its column now
+holds. This is the step whose absence produces a database that verifies perfectly and then collides
+on the first insert, because copying preserves identifiers while the sequences behind them still sit
+at 1. It is the most common way a PostgreSQL migration appears to have worked.
+
+On failure the helper drops the databases and roles it created, says so, and states that the source
+was not touched. `--keep-on-failure` leaves them for inspection instead.
+
+### What is not covered by tests
+
+The copy itself needs two live database servers and belongs to the rehearsal, not the unit suite.
+What is pinned there is everything deciding *what* is copied and what it becomes: that `xmin` is
+never written and identity columns always are, that the case-insensitive column list resolves to
+real table and column names, the type conversions — with the timestamp case called out, since
+stamping UTC rather than converting is the difference between every row surviving and every row
+shifting by the migrating machine's offset — and the enrollment token transform.

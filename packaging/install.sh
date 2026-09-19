@@ -90,7 +90,11 @@ note "setting ownership and permissions"
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
 
 # Executables. The .NET apphost and the break-glass unlocker both need +x.
-chmod 0755 "$APP_DIR/ModularCA.API" "$APP_DIR/ModularCA.Keystore.Unlocker"
+chmod 0755 "$APP_DIR/ModularCA.API" "$APP_DIR/ModularCA.Keystore.Unlocker" \
+           "$APP_DIR/modularca-migrate"
+# On the path, so the MariaDB-to-PostgreSQL migration is one word from anywhere. The .deb
+# ships the same link; this is the tarball doing it by hand.
+ln -sf "$APP_DIR/modularca-migrate" /usr/local/bin/modularca-migrate
 
 # Application directory: traversable, not world-writable.
 chmod 0750 "$APP_DIR"

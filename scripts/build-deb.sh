@@ -86,7 +86,7 @@ rm -rf "$STAGE/keystores" "$STAGE/logs"
 # source file: on Windows there is none for nfpm to read.
 BINDIR="$WORK/bin"
 mkdir -p "$BINDIR"
-mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$BINDIR/"
+mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$STAGE/modularca-migrate" "$BINDIR/"
 
 # Refuse to ship a maintainer script with CRLF line endings.
 #
