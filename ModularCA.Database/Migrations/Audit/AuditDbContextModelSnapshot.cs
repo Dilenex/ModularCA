@@ -304,6 +304,9 @@ namespace ModularCA.Database.Migrations.Audit
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<int?>("HashVersion")
+                        .HasColumnType("integer");
+
                     b.Property<string>("PreviousRecordHash")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");

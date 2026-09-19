@@ -65,6 +65,19 @@ public class AuditLogEntity
     [MaxLength(64)]
     public string? RecordHash { get; set; }
 
+    /// <summary>
+    /// Which canonical form <see cref="RecordHash"/> was computed with, or null for a record
+    /// written before the form was versioned.
+    /// <para>
+    /// A null here is not a defect in the row; it means the hash was computed over a rendering of
+    /// the timestamp carrying more precision than the column could store, so the value it was
+    /// taken from no longer exists and the hash can never be reproduced. Those records are
+    /// reported as unverifiable rather than as tampered, which is the honest answer and the one
+    /// that leaves a real tamper visible instead of buried.
+    /// </para>
+    /// </summary>
+    public int? HashVersion { get; set; }
+
     /// <summary>RecordHash of the preceding record in this tenant's chain. Null for the first record.</summary>
     [MaxLength(64)]
     public string? PreviousRecordHash { get; set; }

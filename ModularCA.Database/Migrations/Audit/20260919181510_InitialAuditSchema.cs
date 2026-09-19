@@ -108,6 +108,7 @@ namespace ModularCA.Database.Migrations.Audit
                     AccessBadgeId = table.Column<Guid>(type: "uuid", nullable: true),
                     AccessBadgeName = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     RecordHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    HashVersion = table.Column<int>(type: "integer", nullable: true),
                     PreviousRecordHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true)
                 },
                 constraints: table =>

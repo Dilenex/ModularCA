@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModularCA.Database.Migrations.Audit
 {
     [DbContext(typeof(AuditDbContext))]
-    [Migration("20260918174006_InitialAuditSchema")]
+    [Migration("20260919181510_InitialAuditSchema")]
     partial class InitialAuditSchema
     {
         /// <inheritdoc />
@@ -306,6 +306,9 @@ namespace ModularCA.Database.Migrations.Audit
                     b.Property<string>("ErrorMessage")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
+
+                    b.Property<int?>("HashVersion")
+                        .HasColumnType("integer");
 
                     b.Property<string>("PreviousRecordHash")
                         .HasMaxLength(64)

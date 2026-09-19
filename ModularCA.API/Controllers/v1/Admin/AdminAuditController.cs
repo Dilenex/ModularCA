@@ -497,15 +497,31 @@ public class AdminAuditController : ControllerBase
             return BadRequest(new { error = "Hash chain service is not available." });
 
         var result = await _hashChain.VerifyAsync(_auditDb, tenantId, Math.Min(limit, 100000));
+
+        // Unverifiable is its own answer, and conflating it with tampered is what made this
+        // endpoint useless: records written before the canonical form was versioned hashed a
+        // timestamp at a precision the column does not keep, so they cannot be recomputed. Calling
+        // that TAMPERED puts every deployment permanently in the alarm state, which is exactly how
+        // a real tamper goes unnoticed.
+        var integrity = result.Breaks.Count > 0
+            ? "TAMPERED"
+            : result.UnverifiableRecords > 0 ? "PartiallyVerifiable" : "Valid";
+
         return Ok(new
         {
             result.TenantId,
             result.RecordsVerified,
+            result.UnverifiableRecords,
             BreakCount = result.Breaks.Count,
             result.Breaks,
             result.FirstRecord,
             result.LastRecord,
-            Integrity = result.Breaks.Count == 0 ? "Valid" : "TAMPERED"
+            Integrity = integrity,
+            UnverifiableReason = result.UnverifiableRecords > 0
+                ? "Written before the audit hash was versioned; the timestamp they were hashed from "
+                  + "carried more precision than the column stores, so the hash cannot be reproduced. "
+                  + "Their chain links are still checked."
+                : null
         });
     }
 }
