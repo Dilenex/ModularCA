@@ -2631,6 +2631,31 @@ if (!isSetupMode && controlActive)
     }
 }
 
+// Records written before the audit hash canonical form was versioned cannot be recomputed, and
+// a report that lists them as unverifiable forever is a report nobody reads. Draw the line once,
+// as the node, with a marker that says why: every chain that still has such records and has not
+// been restarted since gets a fresh epoch, after which the verify report has one clean answer.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var chainScope = app.Services.CreateScope();
+        var chainAuditDb = chainScope.ServiceProvider.GetService<AuditDbContext>();
+        var chainService = chainScope.ServiceProvider.GetService<ModularCA.Core.Services.AuditHashChainService>();
+        if (chainAuditDb is not null && chainService is not null)
+        {
+            var restarted = await chainService.RestartLegacyChainsAsync(chainAuditDb);
+            if (restarted.Count > 0)
+                Console.WriteLine($"[STARTUP] Audit chain restarted for {restarted.Count} tenant chain(s): records before "
+                    + "this start were hashed under the previous canonical form and stay link-checked only.");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Audit chain epoch check skipped; it runs again at the next start. {ex.Message}");
+    }
+}
+
 if (!isSetupMode)
 {
     try

@@ -512,6 +512,8 @@ public class AdminAuditController : ControllerBase
             result.TenantId,
             result.RecordsVerified,
             result.UnverifiableRecords,
+            result.Epochs,
+            result.VerifiableSince,
             BreakCount = result.Breaks.Count,
             result.Breaks,
             result.FirstRecord,
@@ -523,5 +525,51 @@ public class AdminAuditController : ControllerBase
                   + "Their chain links are still checked."
                 : null
         });
+    }
+
+    /// <summary>
+    /// Begins a new epoch of the audit chain for a tenant.
+    /// <para>
+    /// Every record after the marker verifies fully and the report says so from one moment. The
+    /// marker is itself an audited record naming the caller and the reason, hashed and chained
+    /// forward, and the verify report counts restarts — so this is a visible act, not a way to
+    /// make something disappear. Records before it keep their link checks.
+    /// </para>
+    /// </summary>
+    [HttpPost("verify/restart")]
+    [Authorize(Policy = "SystemAdmin")]
+    public async Task<IActionResult> RestartHashChain(
+        [FromQuery] Guid? tenantId,
+        [FromBody] RestartChainRequest? request)
+    {
+        if (_auditDb == null)
+            return BadRequest(new { error = "Audit database is not configured." });
+        if (_hashChain == null)
+            return BadRequest(new { error = "Hash chain service is not available." });
+
+        var reason = string.IsNullOrWhiteSpace(request?.Reason) ? "Restarted by an administrator." : request!.Reason.Trim();
+        if (reason.Length > 500)
+            return BadRequest(new { error = "Reason must be 500 characters or fewer." });
+
+        var sub = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
+        var actorId = Guid.TryParse(sub, out var parsed) ? parsed : (Guid?)null;
+        var actorName = User.Identity?.Name ?? sub ?? "unknown";
+
+        var marker = await _hashChain.RestartChainAsync(_auditDb, tenantId, actorId, actorName, reason);
+        return Ok(new
+        {
+            marker.Id,
+            marker.Timestamp,
+            marker.TenantId,
+            Message = "A new chain epoch begins at this record. Everything after it verifies fully.",
+        });
+    }
+
+    /// <summary>Body of a chain restart request.</summary>
+    public sealed class RestartChainRequest
+    {
+        /// <summary>Why the chain is being restarted; recorded in the marker.</summary>
+        public string? Reason { get; set; }
     }
 }
