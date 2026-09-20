@@ -17,7 +17,7 @@ Description=ModularCA Certificate Authority
 Documentation=https://github.com/edphemeral/modularCA
 # The CA cannot serve issuance, OCSP or CRL without its database. Ordering only —
 # add Requires= if the DB is local and the service should not start without it.
-After=network-online.target mysql.service mariadb.service
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 # These belong in [Unit], not [Service]: they moved in systemd 229 and a modern systemd ignores

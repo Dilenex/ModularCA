@@ -410,6 +410,36 @@ Follow-ups: a console field for `NodeUpstream` (the API and the audit row exist)
 and gRPC to upstreams are not needed today and not configured; the pod definition for the
 container tier with the ingress as its own container.
 
+## The pod as built (2026-09-19)
+
+Step 6 of the order of work: `deploy/container/modularca-pod.yaml`, a Kubernetes pod manifest
+that Podman runs as written and Kubernetes runs as a Pod. One image, run twice — `--role signer`
+and `--role node` — sharing the pod's network namespace and nothing else that matters. The
+signer alone mounts the keystores volume; the node never does. The config volume is shared and
+the signer mounts it read-only. The signer publishes no port.
+
+What the design left to the operator's hands, the pod does with init containers, and that needed
+one addition to the product. The identity commands printed two config sections for an operator
+to transcribe onto two hosts. `--issue-node-identity --apply <config.yaml>` now writes both halves
+into the one `Signer:` section of a shared file — the node reads `Mode`, `Endpoint`,
+`ClientCertificate` and `PinnedServerSpki`; the signer reads `Listen`, `ServerCertificate` and
+`PinnedClientSpki`; `SignerConfig` was already one class carrying both — splicing that section
+and leaving every other byte of the file alone, then loading it back and restoring the backup if
+it did not read as written. It is idempotent, which is what makes it an init container: a file
+that already names a remote signer with both pins set is not touched. `--init-identity` already
+refused to replace an existing CA, and the entrypoint gained a `--bootstrap-only` mode so the
+first-install bootstrap runs once, by one process, before anything else from the image starts.
+The entrypoint also refuses to bootstrap for a signer or ingress role: two processes from one
+volume racing to create the keystore was the failure that check exists to prevent.
+
+The image is unchanged from stage 2. Both systemd units now order after `postgresql.service`
+rather than the MySQL units they still named.
+
+Not done here, and recorded: the ingress as its own container in the pod (its follow-up above
+still stands — the pod is the "node container + signer sidecar" row of the deployment table, not
+the multi-tenant shape), and a live proof of the pod on ca4, which needs Podman on a host that
+has it. Stage 3 follows that proof.
+
 ## Secrets the node must keep, wrapped behind the signer (2026-09-18)
 
 The signer holds every private key, and a node in remote mode holds none. Three database columns

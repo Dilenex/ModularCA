@@ -1,6 +1,5 @@
 using ModularCA.Shared.Models.Config;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.Migrate;
 
@@ -26,44 +25,16 @@ public static class ConfigYamlDbSection
     /// <param name="yaml">The existing file contents.</param>
     /// <param name="db">The database settings to write.</param>
     /// <returns>The new file contents.</returns>
-    public static string Replace(string yaml, DbConfig db)
-    {
-        var rendered = Render(db);
-        var lines = yaml.Replace("\r\n", "\n").Split('\n');
-
-        var start = Array.FindIndex(lines, l => l.StartsWith("DB:", StringComparison.Ordinal));
-        if (start < 0)
-            return yaml.TrimEnd('\n', '\r') + "\n\n" + rendered;
-
-        // The block runs until the next line that starts at column zero and is not blank — the
-        // next top-level key. Anything indented, or empty, still belongs to DB.
-        var end = start + 1;
-        while (end < lines.Length
-               && (lines[end].Length == 0 || char.IsWhiteSpace(lines[end][0])))
-        {
-            end++;
-        }
-
-        return string.Join("\n", lines[..start])
-            + (start > 0 ? "\n" : "")
-            + rendered
-            + string.Join("\n", lines[end..]);
-    }
+    public static string Replace(string yaml, DbConfig db) =>
+        YamlSectionSplicer.Replace(yaml, "DB", db);
 
     /// <summary>
     /// Serialises just the <c>DB:</c> section, with the same conventions the loader reads by.
     /// </summary>
     /// <param name="db">The database settings.</param>
     /// <returns>The YAML for the section, ending in a newline.</returns>
-    public static string Render(DbConfig db)
-    {
-        var serializer = new SerializerBuilder()
-            .WithNamingConvention(PascalCaseNamingConvention.Instance)
-            .Build();
-
-        var yaml = serializer.Serialize(new { DB = db }).Replace("\r\n", "\n");
-        return yaml.EndsWith('\n') ? yaml : yaml + "\n";
-    }
+    public static string Render(DbConfig db) =>
+        YamlSectionSplicer.Render("DB", db);
 
     /// <summary>
     /// Builds the settings block from the migration's outcome.

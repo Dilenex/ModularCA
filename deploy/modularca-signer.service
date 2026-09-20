@@ -21,7 +21,7 @@
 Description=ModularCA Signer (keystore and signing service)
 Documentation=https://github.com/edphemeral/modularCA
 # The signer classifies keys, verifies ceremonies and writes its audit through the database.
-After=network-online.target mysql.service mariadb.service
+After=network-online.target postgresql.service
 Wants=network-online.target
 # The node refuses enrollment while the signer is unreachable and reconnects on its own, so
 # this is ordering only: start the signer first, and let the node find it.

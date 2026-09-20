@@ -236,6 +236,46 @@ needs and whether it has it: validation the signer reachable, enrollment the sig
 control the database. A process without the control role refuses to start an unconfigured
 install, because the wizard is the control plane's.
 
+## The pod: node and signer as two containers
+
+The container tier is the two-unit shape above with the units as containers from one image,
+sharing only the pod's loopback. `deploy/container/modularca-pod.yaml` is a Kubernetes pod
+manifest that Podman runs directly:
+
+    podman kube play deploy/container/modularca-pod.yaml
+    podman kube play --down deploy/container/modularca-pod.yaml
+
+The same file is a plain Pod on Kubernetes, or the template of a one-replica Deployment: the
+signer is a sidecar and scales with the node, not apart from it.
+
+Before the first start, put into the `modularca-config` volume what a headless bootstrap needs —
+`bootstrap.yaml`, `setup-database.yaml`, and a `config.yaml` naming the node (each has an
+`.example` under `config/`). Nothing else is ever needed. Three init containers run every start
+and find their work done after the first:
+
+1. **bootstrap** completes the first install as a single process, because bootstrap writes the
+   keystore locally and there is nothing to split until it exists. The initial administrator
+   password is printed once, into this container's log: `podman logs modularca-bootstrap`.
+2. **signer-init** creates the signer's identity CA and server certificate. It refuses to replace
+   an existing CA, so it does nothing on later starts.
+3. **node-identity** issues the node its client certificate and writes both halves of the channel
+   into the one `Signer:` section of the shared `config.yaml` — the node reads its keys from it,
+   the signer reads its own. It exits without touching a file that already names a remote signer
+   with both pins set.
+
+Then the two containers start: `signer` with `--role signer`, `node` with `--role node`.
+
+The volumes are the security division, not housekeeping. `modularca-config` is shared, and the
+signer mounts it read-only. `modularca-keystores` is mounted by the signer alone — **the node
+never sees it**, which is the whole point of the split. `modularca-data` is the node's alone. The
+signer listens on the pod's loopback, publishes no port, and cannot be reached from outside the
+pod at all.
+
+To do the same by hand on a host with the two units, the command the third init container runs
+is the one to know: `--role signer --issue-node-identity --apply config/config.yaml` writes what
+the earlier steps in this file have you transcribe, and takes a `.pre-signer-*.bak` copy of the
+file first.
+
 ## The ingress in front of tenant nodes
 
 The ingress role is what makes a split install reachable under its names: one process

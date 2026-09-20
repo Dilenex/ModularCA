@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Signer.Identity;
 using ModularCA.Signer.Server;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.API.Startup;
 
@@ -30,6 +31,24 @@ public static class SignerIdentityCommands
 
     /// <summary>Optional with <see cref="InitFlag"/>: replace an existing identity CA, which invalidates every node identity it issued.</summary>
     public const string ForceFlag = "--force";
+
+    /// <summary>
+    /// Optional with <see cref="IssueNodeFlag"/>: write the result into the named config.yaml
+    /// instead of printing it for an operator to transcribe. Takes the path to the file.
+    /// <para>
+    /// Both halves of the channel — the node's client certificate, endpoint and server pin, and
+    /// the signer's client pin — land in the one <c>Signer:</c> section, because a container pod
+    /// shares one config volume between the node and the signer and each process reads the keys
+    /// meant for it. The output directory becomes the file's directory, so the certificate is
+    /// where <c>ClientCertificate</c> says it is.
+    /// </para>
+    /// <para>
+    /// Idempotent, which is what makes it usable as an init container: when the file already
+    /// names a remote signer, the client certificate exists, and both pins are set, it does
+    /// nothing and exits zero. <see cref="ForceFlag"/> reissues regardless.
+    /// </para>
+    /// </summary>
+    public const string ApplyFlag = "--apply";
 
     /// <summary>The file the node's client certificate is written to under the output directory.</summary>
     public const string ClientFileName = "signer-client.pfx";
@@ -114,10 +133,29 @@ public static class SignerIdentityCommands
     /// </summary>
     private static int IssueNodeIdentity(IReadOnlyList<string> args, SignerConfig signer, string baseDirectory)
     {
+        var applyTo = ValueOf(args, ApplyFlag);
         var outputDir = ValueOf(args, IssueNodeFlag);
+        if (applyTo is not null)
+        {
+            // With --apply the certificate goes beside the config it is named in.
+            outputDir = Path.GetDirectoryName(Path.GetFullPath(applyTo)) ?? ".";
+            if (!File.Exists(applyTo))
+            {
+                Console.Error.WriteLine($"[FATAL] {ApplyFlag}: no config.yaml at {applyTo}.");
+                return 1;
+            }
+
+            var force = args.Any(a => a.Equals(ForceFlag, StringComparison.OrdinalIgnoreCase));
+            if (!force && AlreadyApplied(applyTo, outputDir))
+            {
+                Console.WriteLine($"Node identity already applied in {applyTo}; nothing to do.");
+                return 0;
+            }
+        }
         if (string.IsNullOrWhiteSpace(outputDir))
         {
             Console.Error.WriteLine($"Usage: --role signer {IssueNodeFlag} <output-dir> [{ClientPasswordFlag} <password>]");
+            Console.Error.WriteLine($"   or: --role signer {IssueNodeFlag} {ApplyFlag} <config.yaml>");
             return 1;
         }
         var caPath = SignerConfig.ResolvePath(signer.IdentityCa, baseDirectory);
@@ -149,6 +187,12 @@ public static class SignerIdentityCommands
         Console.WriteLine($"  Client certificate: {clientPath}  ({SignerIdentity.NodeSubject}, valid until {client.NotAfter:yyyy-MM-dd})");
         Console.WriteLine($"  Server pin:         {pinPath}");
         Console.WriteLine();
+
+        if (applyTo is not null)
+        {
+            return ApplyToConfig(applyTo, signer, dialHost, listenPort, clientPin, serverPin, clientPassword);
+        }
+
         Console.WriteLine("On the signer, set in config.yaml and restart the signer unit:");
         Console.WriteLine("  Signer:");
         Console.WriteLine($"    PinnedClientSpki: \"{clientPin}\"");
@@ -163,6 +207,75 @@ public static class SignerIdentityCommands
         Console.WriteLine();
         Console.WriteLine("The node's keystore.yaml and keystores/ are not needed on the node once the signer holds them.");
         return 0;
+    }
+
+    /// <summary>
+    /// Writes both halves of the channel into the one <c>Signer:</c> section of a config.yaml,
+    /// leaving every other section untouched, and proves the result by loading it back.
+    /// </summary>
+    private static int ApplyToConfig(
+        string configPath, SignerConfig current, string dialHost, int listenPort,
+        string clientPin, string serverPin, string clientPassword)
+    {
+        var section = new SignerConfig
+        {
+            // The node's half.
+            Mode = SignerConfig.RemoteMode,
+            Endpoint = $"https://{dialHost}:{listenPort}",
+            ClientCertificate = "config/" + ClientFileName,
+            ClientCertificatePassword = clientPassword,
+            PinnedServerSpki = serverPin,
+            // The signer's half, carried over so nothing the signer needs is lost.
+            Listen = current.Listen,
+            ServerCertificate = current.ServerCertificate,
+            ServerCertificatePassword = current.ServerCertificatePassword,
+            PinnedClientSpki = clientPin,
+            IdentityCa = current.IdentityCa,
+            IdentityCaPassword = current.IdentityCaPassword,
+        };
+
+        var backup = configPath + $".pre-signer-{DateTime.UtcNow:yyyyMMdd-HHmmss}.bak";
+        File.Copy(configPath, backup, overwrite: false);
+        FileSecurityUtil.SetOwnerOnly(backup);
+
+        var original = File.ReadAllText(configPath);
+        File.WriteAllText(configPath, YamlSectionSplicer.Replace(original, "Signer", section));
+        FileSecurityUtil.SetOwnerOnly(configPath);
+
+        var reloaded = YamlConfigLoader.Load(configPath).Signer;
+        if (!reloaded.IsRemote
+            || !string.Equals(reloaded.PinnedClientSpki, clientPin, StringComparison.Ordinal)
+            || !string.Equals(reloaded.PinnedServerSpki, serverPin, StringComparison.Ordinal))
+        {
+            File.Copy(backup, configPath, overwrite: true);
+            Console.Error.WriteLine($"[FATAL] {configPath} did not load back with the Signer section as written; restored from {backup}.");
+            return 1;
+        }
+
+        Console.WriteLine($"Applied to {configPath} (previous copy at {backup}).");
+        Console.WriteLine("  The node reads Mode, Endpoint, ClientCertificate and PinnedServerSpki from it;");
+        Console.WriteLine("  the signer reads Listen, ServerCertificate and PinnedClientSpki. Restart both.");
+        return 0;
+    }
+
+    /// <summary>
+    /// Whether a config already names a remote signer with both pins set and the client
+    /// certificate present — the state <see cref="ApplyFlag"/> produces.
+    /// </summary>
+    private static bool AlreadyApplied(string configPath, string configDir)
+    {
+        try
+        {
+            var signer = YamlConfigLoader.Load(configPath).Signer;
+            return signer.IsRemote
+                && SpkiPin.Normalize(signer.PinnedClientSpki) is not null
+                && SpkiPin.Normalize(signer.PinnedServerSpki) is not null
+                && File.Exists(Path.Combine(configDir, ClientFileName));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
