@@ -58,6 +58,9 @@ public class AuditService : IAuditService
     /// Persists an audit log entry. When <paramref name="certificateAuthorityId"/> is provided,
     /// the event is scoped to that CA for filtered audit queries. The <paramref name="details"/>
     /// object is serialized and scrubbed via <see cref="AuditJsonScrubber"/> before persistence.
+    /// String fields are fitted to their columns, and the write goes through
+    /// <see cref="AuditHashChainService.AppendAsync"/>, which detaches a failed entry so it does
+    /// not poison later writes in this scope.
     /// </summary>
     public async Task LogAsync(
         string actionType,
@@ -111,20 +114,23 @@ public class AuditService : IAuditService
                 AccessBadgeName = _wornBadge?.BadgeName,
             };
 
-            // Compute hash chain for tamper-evident audit trail
-            IDisposable? chainLock = null;
-            try
+            if (_hashChain != null)
             {
-                if (_hashChain != null)
-                {
-                    chainLock = await _hashChain.AcquireAndComputeAsync(_auditDb, entry);
-                }
-                _auditDb.AuditLogs.Add(entry);
-                await _auditDb.SaveChangesAsync();
+                await _hashChain.AppendAsync(_auditDb, entry);
             }
-            finally
+            else
             {
-                chainLock?.Dispose();
+                AuditHashChainService.FitToColumns(entry);
+                _auditDb.AuditLogs.Add(entry);
+                try
+                {
+                    await _auditDb.SaveChangesAsync();
+                }
+                catch
+                {
+                    _auditDb.Entry(entry).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+                    throw;
+                }
             }
         }
         catch (Exception ex)
@@ -216,6 +222,7 @@ public class AuditService : IAuditService
             AuditActionType.KeyCeremonyExecuted or
             AuditActionType.KeyCeremonyCancelled or
             AuditActionType.KeyCeremonyExpired or
+            AuditActionType.ControlledUserChangeRefused or
             // Authentication
             AuditActionType.UserLogin or
             AuditActionType.UserLoginFailed or

@@ -62,34 +62,34 @@ public class AuditChainPrecisionTests
         // The fix. The timestamp is truncated before it is hashed and before it is saved, so the
         // value that was hashed is the value that comes back — whether the engine would have
         // rounded or truncated what it was given no longer matters, because it is handed
-        // something it can hold exactly.
+        // something it can hold exactly. The chain re-stamps the entry under its lock, so the
+        // caller's value is replaced; the precision guarantee holds for the value it stamps.
         var written = await WrittenAsync(Awkward);
 
         Assert.Equal(0, written.Timestamp.Ticks % 10);
-        Assert.Equal(AsStored(Awkward), written.Timestamp);
+        Assert.Equal(AsStored(written.Timestamp), written.Timestamp);
     }
 
     [Fact]
-    public async Task The_hash_survives_the_round_trip_that_used_to_break_it()
+    public void The_hash_survives_the_round_trip_that_used_to_break_it()
     {
-        var written = await WrittenAsync(Awkward);
+        // Re-hashing the row as a database would return it reproduces the hash of the value given.
+        var entry = Entry(Awkward);
+        var reread = Entry(AsStored(Awkward));
 
-        // Re-hashing the row as a database would return it now reproduces the stored hash.
-        var reread = await WrittenAsync(AsStored(written.Timestamp));
-
-        Assert.Equal(written.RecordHash, reread.RecordHash);
+        Assert.Equal(AuditHashChainService.ComputeHash(entry, null), AuditHashChainService.ComputeHash(reread, null));
     }
 
     [Fact]
-    public async Task The_hash_no_longer_depends_on_a_kind_no_database_stores()
+    public void The_hash_no_longer_depends_on_a_kind_no_database_stores()
     {
         // The second sharp edge in the same line. "O" renders a trailing Z for UTC and nothing for
         // Unspecified, and which one a value carries depends on how a driver labelled it on the
         // way out, not on anything stored. The canonical form now writes a literal Z.
-        var utc = await WrittenAsync(Awkward);
-        var unspecified = await WrittenAsync(DateTime.SpecifyKind(Awkward, DateTimeKind.Unspecified));
+        var utc = Entry(AsStored(Awkward));
+        var unspecified = Entry(DateTime.SpecifyKind(AsStored(Awkward), DateTimeKind.Unspecified));
 
-        Assert.Equal(utc.RecordHash, unspecified.RecordHash);
+        Assert.Equal(AuditHashChainService.ComputeHash(utc, null), AuditHashChainService.ComputeHash(unspecified, null));
     }
 
     [Fact]

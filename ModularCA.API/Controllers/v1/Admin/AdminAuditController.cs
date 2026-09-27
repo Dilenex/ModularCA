@@ -483,7 +483,9 @@ public class AdminAuditController : ControllerBase
 
     /// <summary>
     /// Verifies the integrity of the audit hash chain for a given tenant.
-    /// Walks records sequentially, recomputes hashes, and reports any broken links.
+    /// Walks records sequentially, recomputes hashes, and reports any broken links. A run that
+    /// stopped at <paramref name="limit"/> before the end of the chain reports
+    /// <c>PartiallyChecked</c> and the count it did not examine, never <c>Valid</c>.
     /// </summary>
     [HttpGet("verify")]
     [Authorize(Policy = "SystemAdmin")]
@@ -505,6 +507,7 @@ public class AdminAuditController : ControllerBase
         // a real tamper goes unnoticed.
         var integrity = result.Breaks.Count > 0
             ? "TAMPERED"
+            : result.Truncated ? "PartiallyChecked"
             : result.UnverifiableRecords > 0 ? "PartiallyVerifiable" : "Valid";
 
         return Ok(new
@@ -512,7 +515,11 @@ public class AdminAuditController : ControllerBase
             result.TenantId,
             result.RecordsVerified,
             result.UnverifiableRecords,
+            result.TotalRecords,
+            result.Truncated,
+            RecordsNotExamined = Math.Max(0, result.TotalRecords - result.RecordsVerified - result.UnverifiableRecords),
             result.Epochs,
+            result.Pruned,
             result.VerifiableSince,
             BreakCount = result.Breaks.Count,
             result.Breaks,

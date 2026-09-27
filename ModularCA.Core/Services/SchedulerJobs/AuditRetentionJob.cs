@@ -34,25 +34,29 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 public class AuditRetentionJob : SingletonCronJob
 {
     private readonly AuditDbContext? _auditDb;
+    private readonly AuditHashChainService? _hashChain;
     private readonly SystemConfig _config;
     private readonly ILogger<AuditRetentionJob> _logger;
 
     /// <summary>
     /// Initializes a new instance of <see cref="AuditRetentionJob"/>. The audit
     /// <see cref="AuditDbContext"/> is optional so the job resolves cleanly even in
-    /// bootstrap scenarios where the audit database hasn't been provisioned.
+    /// bootstrap scenarios where the audit database hasn't been provisioned. The
+    /// <paramref name="hashChain"/> writes a prune marker for each chain pruned.
     /// </summary>
     public AuditRetentionJob(
         IServiceProvider serviceProvider,
         SystemConfig config,
         ILogger<AuditRetentionJob> logger,
         SchedulerJobRunner runner,
-        AuditDbContext? auditDb = null)
+        AuditDbContext? auditDb = null,
+        AuditHashChainService? hashChain = null)
         : base(serviceProvider, logger, config, runner)
     {
         _config = config;
         _logger = logger;
         _auditDb = auditDb;
+        _hashChain = hashChain;
     }
 
     /// <inheritdoc />
@@ -81,7 +85,9 @@ public class AuditRetentionJob : SingletonCronJob
     /// <summary>
     /// Runs one retention pass across every audit table. Each table is pruned under
     /// its own retention window and batch size; failures on one table log and continue
-    /// so a stuck index or missing column doesn't block the rest of the cleanup.
+    /// so a stuck index or missing column doesn't block the rest of the cleanup. When
+    /// <c>ArchiveBeforeDelete</c> is set and the archive directory cannot be created, the run
+    /// deletes nothing.
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
@@ -121,9 +127,9 @@ public class AuditRetentionJob : SingletonCronJob
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "AuditRetentionJob: could not create archive directory {Path}; archive will be skipped for this run",
+                    "AuditRetentionJob: could not create archive directory {Path}; ArchiveBeforeDelete is set, so nothing is deleted this run",
                     resolvedArchiveDir ?? archivePath);
-                resolvedArchiveDir = null;
+                return;
             }
         }
 
@@ -166,7 +172,10 @@ public class AuditRetentionJob : SingletonCronJob
     /// <summary>
     /// Optionally streams rows older than <paramref name="cutoff"/> in <paramref name="table"/>
     /// to a gzip jsonl file under <paramref name="archiveDir"/>, then chunked-deletes rows
-    /// <paramref name="batchSize"/> at a time until none remain or cancellation fires.
+    /// <paramref name="batchSize"/> at a time until none remain or cancellation fires. When the
+    /// archive was requested and fails, nothing is deleted. AuditLogs is pruned one tenant chain at
+    /// a time, and each chain's prune marker is written as soon as its rows are gone (even when a
+    /// later batch failed or the run was cancelled), so no chain is left pruned without a marker.
     /// Catches per-table failures so one broken table can't abort the rest of the run.
     /// </summary>
     private async Task PruneTableAsync(
@@ -186,45 +195,37 @@ public class AuditRetentionJob : SingletonCronJob
                 }
                 catch (Exception archiveEx)
                 {
-                    // Archive failure should NOT block the delete — if we can't write the
-                    // archive we'd rather keep rolling retention than grow the table forever.
-                    // Operators see the Error in logs and can retry later.
+                    // ArchiveBeforeDelete promises the rows exist somewhere before they are gone.
+                    // Deleting without the archive would break that promise silently.
                     _logger.LogError(archiveEx,
-                        "AuditRetentionJob: archive step failed for {Table}; proceeding with delete anyway", table);
+                        "AuditRetentionJob: archive step failed for {Table}; skipping delete for this run", table);
+                    return;
                 }
             }
 
             var totalDeleted = 0;
-            while (!ct.IsCancellationRequested)
+            if (table == "AuditLogs")
             {
-                // Raw SQL keeps the DELETE off EF's change tracker. The parameter form avoids
-                // any string-formatting risk even though the cutoff is purely numeric; the
-                // table name is not operator-supplied (it comes from the literals in RunAsync
-                // above) and is quoted because PostgreSQL folds unquoted identifiers to lower
-                // case, and EF created these tables with their C# casing.
-                //
-                // PostgreSQL has no DELETE ... LIMIT — the clause MySQL offered and this job was
-                // built around. The batching is preserved by selecting the batch first and
-                // deleting by ctid, the physical row address, which is the cheapest possible
-                // join back to the rows just chosen. The behaviour is the same: bounded batches
-                // so no single DELETE holds a long transaction over an audit table.
-                var quoted = "\"" + table.Replace("\"", "\"\"") + "\"";
-                var sql =
-                    $"DELETE FROM {quoted} WHERE ctid IN ("
-                    + $"SELECT ctid FROM {quoted} WHERE \"Timestamp\" < {{0}} LIMIT {{1}})";
-                var affected = await _auditDb!.Database.ExecuteSqlRawAsync(
-                    sql, new object[] { cutoff, batchSize }, ct);
-
-                if (affected <= 0)
-                    break;
-
-                totalDeleted += affected;
-
-                if (affected < batchSize)
-                    break; // short batch — we're caught up
-
-                // Cooperative yield so a huge backlog doesn't wedge the scheduler cycle.
-                await Task.Delay(50, ct);
+                var chains = await _auditDb!.AuditLogs.Where(a => a.Timestamp < cutoff)
+                    .Select(a => a.TenantId).Distinct().ToListAsync(ct);
+                foreach (var tenantId in chains)
+                {
+                    var deleted = 0;
+                    try
+                    {
+                        await DeleteInBatchesAsync(table, cutoff, true, tenantId, batchSize, n => deleted += n, ct);
+                    }
+                    finally
+                    {
+                        totalDeleted += deleted;
+                        if (deleted > 0)
+                            await RecordPruneMarkerAsync(tenantId, cutoff);
+                    }
+                }
+            }
+            else
+            {
+                await DeleteInBatchesAsync(table, cutoff, false, null, batchSize, n => totalDeleted += n, ct);
             }
 
             if (totalDeleted > 0)
@@ -243,6 +244,72 @@ public class AuditRetentionJob : SingletonCronJob
         catch (Exception ex)
         {
             _logger.LogError(ex, "AuditRetentionJob: prune failed for table {Table}", table);
+        }
+    }
+
+    /// <summary>
+    /// Deletes rows older than <paramref name="cutoff"/> from <paramref name="table"/> in batches
+    /// until a short batch or cancellation, reporting each batch's count to
+    /// <paramref name="onDeleted"/> as it commits so a caller still knows what was deleted when a
+    /// later batch throws. With <paramref name="byTenant"/> only <paramref name="tenantId"/>'s rows
+    /// (null meaning the system chain) are deleted.
+    /// </summary>
+    private async Task DeleteInBatchesAsync(
+        string table, DateTime cutoff, bool byTenant, Guid? tenantId, int batchSize, Action<int> onDeleted, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var affected = await DeleteBatchAsync(table, cutoff, byTenant, tenantId, batchSize, ct);
+            if (affected <= 0)
+                break;
+            onDeleted(affected);
+            if (affected < batchSize)
+                break;
+
+            // Cooperative yield so a huge backlog doesn't wedge the scheduler cycle.
+            await Task.Delay(50, ct);
+        }
+    }
+
+    /// <summary>
+    /// Deletes one batch of at most <paramref name="batchSize"/> rows older than
+    /// <paramref name="cutoff"/> and returns how many went. PostgreSQL has no DELETE ... LIMIT,
+    /// so the batch is selected first and deleted by ctid. The table name comes from the literals
+    /// in <see cref="ExecuteAsync"/> and is quoted to keep EF's casing. Overridable so tests can
+    /// run the job's control flow on a provider without ctid.
+    /// </summary>
+    protected virtual Task<int> DeleteBatchAsync(
+        string table, DateTime cutoff, bool byTenant, Guid? tenantId, int batchSize, CancellationToken ct)
+    {
+        var quoted = "\"" + table.Replace("\"", "\"\"") + "\"";
+        var tenantClause = !byTenant ? "" : tenantId == null ? " AND \"TenantId\" IS NULL" : " AND \"TenantId\" = {2}";
+        var sql =
+            $"DELETE FROM {quoted} WHERE ctid IN ("
+            + $"SELECT ctid FROM {quoted} WHERE \"Timestamp\" < {{0}}{tenantClause} LIMIT {{1}})";
+        var parameters = byTenant && tenantId != null
+            ? new object[] { cutoff, batchSize, tenantId.Value }
+            : new object[] { cutoff, batchSize };
+        return _auditDb!.Database.ExecuteSqlRawAsync(sql, parameters, ct);
+    }
+
+    /// <summary>
+    /// Writes the prune marker for one tenant chain right after its rows were deleted. Runs
+    /// uncancellable, so a shutdown that arrives after the delete still leaves the chain marked;
+    /// a failure is logged, since verification will then report a break at the chain's oldest record.
+    /// </summary>
+    private async Task RecordPruneMarkerAsync(Guid? tenantId, DateTime cutoff)
+    {
+        if (_hashChain == null)
+            return;
+        try
+        {
+            await _hashChain.RecordPruneAsync(_auditDb!, tenantId, cutoff, CancellationToken.None);
+        }
+        catch (Exception markerEx)
+        {
+            _logger.LogError(markerEx,
+                "AuditRetentionJob: could not write the prune marker for audit chain {TenantId}; verification will report a break at its oldest record",
+                tenantId?.ToString() ?? "system");
         }
     }
 

@@ -307,4 +307,10 @@ public static class AuditActionType
     public const string ServiceIdentityUpdated = "ServiceIdentityUpdated";
     public const string ServiceIdentityGroupsChanged = "ServiceIdentityGroupsChanged";
     public const string ServiceIdentityDeleted = "ServiceIdentityDeleted";
+
+    /// <summary>
+    /// An approved <c>ControlledUserChange</c> ceremony was refused at execute because it would remove
+    /// the last dominating user of its scope. The ceremony stays Approved and may be executed later.
+    /// </summary>
+    public const string ControlledUserChangeRefused = "ControlledUserChangeRefused";
 }

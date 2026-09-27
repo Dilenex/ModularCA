@@ -1,17 +1,22 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 
 namespace ModularCA.Core.Services;
 
 /// <summary>
-/// Computes and verifies SHA-256 hash chains for audit records.
-/// Uses per-tenant SemaphoreSlim to serialize writes within a tenant
-/// while allowing cross-tenant parallelism.
+/// Computes and verifies SHA-256 hash chains for audit records. Writes to one tenant's chain
+/// are serialised by an in-process semaphore and, on PostgreSQL, by a transaction-scoped
+/// advisory lock shared by every process on the audit database; tenants proceed in parallel.
 /// </summary>
 public class AuditHashChainService
 {
@@ -43,7 +48,21 @@ public class AuditHashChainService
     /// <summary>The actor recorded when the node restarts a chain on its own at startup.</summary>
     public const string SystemActor = "system";
 
+    /// <summary>
+    /// The action type of a record written by audit retention after it pruned the oldest records
+    /// of a chain. Unlike a restart it chains forward; it declares the oldest surviving record so
+    /// verification can start an epoch there. See <see cref="RecordPruneAsync"/>.
+    /// </summary>
+    public const string ChainPrunedAction = "AuditChainPruned";
+
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _tenantLocks = new();
+    private readonly TimeProvider _time;
+
+    /// <summary>Creates the service on the system clock.</summary>
+    public AuditHashChainService() : this(TimeProvider.System) { }
+
+    /// <summary>Creates the service on <paramref name="time"/>, which stamps every record.</summary>
+    public AuditHashChainService(TimeProvider time) => _time = time;
 
     /// <summary>
     /// Begins a new epoch of the chain for a tenant: a record that links to nothing, after which
@@ -73,46 +92,82 @@ public class AuditHashChainService
         AuditDbContext db, Guid? tenantId, Guid? actorUserId, string actorUsername, string reason,
         CancellationToken ct = default)
     {
-        var lockKey = tenantId?.ToString() ?? "__system__";
-        var semaphore = _tenantLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
-        await semaphore.WaitAsync(ct);
-        try
+        var lockKey = LockKey(tenantId);
+        var marker = new AuditLogEntity
+        {
+            ActorUserId = actorUserId,
+            ActorUsername = actorUsername,
+            ActionType = ChainRestartAction,
+            TargetEntityType = "AuditChain",
+            TargetEntityId = lockKey,
+            Success = true,
+            TenantId = tenantId,
+        };
+
+        await AppendCoreAsync(db, marker, genesis: true, async () =>
         {
             var preceding = await db.AuditLogs.CountAsync(a => a.TenantId == tenantId, ct);
             var unverifiable = await db.AuditLogs.CountAsync(
                 a => a.TenantId == tenantId && a.RecordHash != null && a.HashVersion == null, ct);
-
-            var marker = new AuditLogEntity
+            marker.DetailsJson = JsonSerializer.Serialize(new
             {
-                Timestamp = ToStorablePrecision(DateTime.UtcNow),
-                ActorUserId = actorUserId,
-                ActorUsername = actorUsername,
-                ActionType = ChainRestartAction,
-                TargetEntityType = "AuditChain",
-                TargetEntityId = lockKey,
-                DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    reason,
-                    recordsBefore = preceding,
-                    unverifiableBefore = unverifiable,
-                    hashVersion = CurrentHashVersion,
-                }),
-                Success = true,
-                TenantId = tenantId,
-                PreviousRecordHash = null,
-                HashVersion = CurrentHashVersion,
-            };
-            marker.RecordHash = ComputeHash(marker, null);
-
-            db.AuditLogs.Add(marker);
-            await db.SaveChangesAsync(ct);
-            return marker;
-        }
-        finally
-        {
-            semaphore.Release();
-        }
+                reason,
+                recordsBefore = preceding,
+                unverifiableBefore = unverifiable,
+                hashVersion = CurrentHashVersion,
+            });
+        }, ct);
+        return marker;
     }
+
+    /// <summary>
+    /// Records that retention pruned the oldest records of a tenant's chain. The marker chains
+    /// forward like any record, and declares the oldest surviving record and the hash it links
+    /// to, so <see cref="VerifyAsync"/> starts a verifiable epoch at that record instead of
+    /// reporting a break where the pruned prefix used to be. A prefix removed any other way has
+    /// no such declaration and is still reported. When the prune stopped short of
+    /// <paramref name="cutoff"/> (cancelled or failed between batches), the recorded cutoff is the
+    /// anchor's timestamp, so the marker never claims more was deleted than was.
+    /// </summary>
+    /// <param name="db">The audit context.</param>
+    /// <param name="tenantId">The tenant whose chain was pruned, or null for the system chain.</param>
+    /// <param name="cutoff">Records before this instant were deleted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The marker record, already saved.</returns>
+    public async Task<AuditLogEntity> RecordPruneAsync(
+        AuditDbContext db, Guid? tenantId, DateTime cutoff, CancellationToken ct = default)
+    {
+        var marker = new AuditLogEntity
+        {
+            ActorUsername = SystemActor,
+            ActionType = ChainPrunedAction,
+            TargetEntityType = "AuditChain",
+            TargetEntityId = LockKey(tenantId),
+            Success = true,
+            TenantId = tenantId,
+        };
+
+        await AppendCoreAsync(db, marker, genesis: false, async () =>
+        {
+            var anchor = await db.AuditLogs
+                .Where(a => a.TenantId == tenantId && a.RecordHash != null)
+                .OrderBy(a => a.Timestamp).ThenBy(a => a.Id)
+                .Select(a => new { a.Id, a.PreviousRecordHash, a.Timestamp })
+                .FirstOrDefaultAsync(ct);
+            var recorded = ToStorablePrecision(cutoff);
+            if (anchor != null && anchor.Timestamp < recorded)
+                recorded = ToStorablePrecision(DateTime.SpecifyKind(anchor.Timestamp, DateTimeKind.Utc));
+            marker.DetailsJson = JsonSerializer.Serialize(new PruneDetails(
+                "Audit retention deleted the records before the cutoff; the chain resumes at the anchor record.",
+                recorded,
+                anchor?.Id,
+                anchor?.PreviousRecordHash));
+        }, ct);
+        return marker;
+    }
+
+    /// <summary>What a prune marker declares; serialised into its details and read back by verification.</summary>
+    private sealed record PruneDetails(string Reason, DateTime Cutoff, Guid? AnchorRecordId, string? AnchorPreviousHash);
 
     /// <summary>
     /// Restarts the chain for every tenant that still has records from before the canonical
@@ -167,51 +222,193 @@ public class AuditHashChainService
         new(value.Ticks - (value.Ticks % 10), value.Kind);
 
     /// <summary>
-    /// Acquires the per-tenant lock and computes the hash chain fields on the entry.
-    /// The caller MUST call SaveChangesAsync before disposing the returned lock.
+    /// Acquires the tenant's chain lock and computes the hash chain fields on the entry: string
+    /// fields are fitted to their columns, the timestamp is re-stamped after the chain head, and
+    /// the entry is linked to the head. On PostgreSQL the lock is also a transaction-scoped
+    /// advisory lock, so writers in other processes sharing the audit database serialise too.
+    /// <para>
+    /// The caller adds the entry, saves, then calls <see cref="AuditChainLease.CommitAsync"/>
+    /// before disposing the lease. Disposing without committing rolls the transaction back.
+    /// <see cref="AppendAsync"/> does all of that and is what writers should use.
+    /// </para>
     /// </summary>
-    public async Task<IDisposable> AcquireAndComputeAsync(
+    public Task<AuditChainLease> AcquireAndComputeAsync(
         AuditDbContext db, AuditLogEntity entry, CancellationToken ct = default)
-    {
-        var tenantId = entry.TenantId;
-        var lockKey = tenantId?.ToString() ?? "__system__";
-        var semaphore = _tenantLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
-        await semaphore.WaitAsync(ct);
+        => AcquireAndStampAsync(db, entry, genesis: false, prepare: null, ct);
 
+    /// <summary>
+    /// Links, saves and commits one audit record under the tenant's chain lock. On failure the
+    /// entry is detached from <paramref name="db"/>, so a failed write cannot poison later
+    /// writes in the same scope or be committed later with a stale link.
+    /// </summary>
+    public Task AppendAsync(AuditDbContext db, AuditLogEntity entry, CancellationToken ct = default)
+        => AppendCoreAsync(db, entry, genesis: false, prepare: null, ct);
+
+    /// <summary>
+    /// The one write path behind <see cref="AppendAsync"/> and the chain markers.
+    /// <paramref name="prepare"/> runs under the lock, before the entry is hashed.
+    /// </summary>
+    private async Task AppendCoreAsync(
+        AuditDbContext db, AuditLogEntity entry, bool genesis, Func<Task>? prepare, CancellationToken ct)
+    {
+        await using var lease = await AcquireAndStampAsync(db, entry, genesis, prepare, ct);
         try
         {
-            var previousHash = await db.AuditLogs
-                .Where(a => a.TenantId == tenantId && a.RecordHash != null)
-                .OrderByDescending(a => a.Timestamp)
-                .ThenByDescending(a => a.Id)
-                .Select(a => a.RecordHash)
-                .FirstOrDefaultAsync(ct);
-
-            // Truncated before it is hashed AND before it is stored, so the two agree. Both
-            // datetime(6) and timestamptz keep microseconds, and the engines differ on whether
-            // they round or truncate what they are given — handing them a value they can hold
-            // exactly removes the question.
-            entry.Timestamp = ToStorablePrecision(entry.Timestamp);
-            entry.PreviousRecordHash = previousHash;
-            entry.HashVersion = CurrentHashVersion;
-            entry.RecordHash = ComputeHash(entry, previousHash);
-
-            return new SemaphoreReleaser(semaphore);
+            db.AuditLogs.Add(entry);
+            await db.SaveChangesAsync(ct);
+            await lease.CommitAsync(ct);
         }
         catch
         {
-            semaphore.Release();
+            db.Entry(entry).State = EntityState.Detached;
             throw;
         }
     }
 
     /// <summary>
-    /// Verifies the hash chain for a tenant. Walks records sequentially,
-    /// recomputes hashes, and returns any broken links.
+    /// Takes the lock, reads the chain head, fits and re-stamps the entry, and hashes it.
+    /// A <paramref name="genesis"/> entry links to nothing but is still stamped after the head.
+    /// </summary>
+    private async Task<AuditChainLease> AcquireAndStampAsync(
+        AuditDbContext db, AuditLogEntity entry, bool genesis, Func<Task>? prepare, CancellationToken ct)
+    {
+        var lease = await AcquireLockAsync(db, entry.TenantId, ct);
+        try
+        {
+            var tenantId = entry.TenantId;
+            var head = await db.AuditLogs
+                .Where(a => a.TenantId == tenantId && a.RecordHash != null)
+                .OrderByDescending(a => a.Timestamp)
+                .ThenByDescending(a => a.Id)
+                .Select(a => new { a.RecordHash, a.Timestamp })
+                .FirstOrDefaultAsync(ct);
+
+            if (prepare != null)
+                await prepare();
+
+            FitToColumns(entry);
+
+            // The chain is ordered by Timestamp, so the entry is stamped here, under the lock and
+            // after the head, rather than when the caller built it. Truncated before it is hashed
+            // AND before it is stored, so the two agree.
+            entry.Timestamp = NextTimestamp(_time.GetUtcNow().UtcDateTime, head?.Timestamp);
+
+            var previousHash = genesis ? null : head?.RecordHash;
+            entry.PreviousRecordHash = previousHash;
+            entry.HashVersion = CurrentHashVersion;
+            entry.RecordHash = ComputeHash(entry, previousHash);
+            return lease;
+        }
+        catch
+        {
+            await lease.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Serialises writers to one tenant's chain: an in-process semaphore as the fast path and,
+    /// on PostgreSQL, <c>pg_advisory_xact_lock</c> inside a transaction the lease owns, which
+    /// serialises every process sharing the audit database and is released at commit or rollback.
+    /// Other providers (InMemory, SQLite) get the semaphore only.
+    /// </summary>
+    private async Task<AuditChainLease> AcquireLockAsync(AuditDbContext db, Guid? tenantId, CancellationToken ct)
+    {
+        var lockKey = LockKey(tenantId);
+        var semaphore = _tenantLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
+        await semaphore.WaitAsync(ct);
+
+        IDbContextTransaction? transaction = null;
+        try
+        {
+            if (db.Database.IsNpgsql())
+            {
+                if (db.Database.CurrentTransaction == null)
+                    transaction = await db.Database.BeginTransactionAsync(ct);
+                await db.Database.ExecuteSqlRawAsync(
+                    "SELECT pg_advisory_xact_lock({0})", new object[] { AdvisoryLockKey(lockKey) }, ct);
+            }
+            return new AuditChainLease(semaphore, transaction);
+        }
+        catch
+        {
+            if (transaction != null)
+            {
+                try { await transaction.RollbackAsync(CancellationToken.None); } catch { }
+                await transaction.DisposeAsync();
+            }
+            semaphore.Release();
+            throw;
+        }
+    }
+
+    /// <summary>The per-tenant lock name; the system chain has its own.</summary>
+    private static string LockKey(Guid? tenantId) => tenantId?.ToString() ?? "__system__";
+
+    /// <summary>
+    /// The 64-bit advisory lock key for a chain, derived from a namespaced hash of its lock name
+    /// so it cannot collide with advisory locks taken for other purposes by accident.
+    /// </summary>
+    internal static long AdvisoryLockKey(string lockKey) =>
+        BinaryPrimitives.ReadInt64BigEndian(SHA256.HashData(Encoding.UTF8.GetBytes("modularca.audit-chain:" + lockKey)));
+
+    /// <summary>
+    /// The timestamp for the next record: now, or one microsecond after the chain head when the
+    /// head is not earlier than now (clock skew between processes, or a head stamped in the
+    /// future), truncated to storable precision.
+    /// </summary>
+    internal static DateTime NextTimestamp(DateTime utcNow, DateTime? previous)
+    {
+        var now = ToStorablePrecision(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
+        if (previous is { } p)
+        {
+            var floor = ToStorablePrecision(DateTime.SpecifyKind(p, DateTimeKind.Utc)).AddTicks(10);
+            if (floor > now)
+                return floor;
+        }
+        return now;
+    }
+
+    /// <summary>String columns of <see cref="AuditLogEntity"/> with a declared length, excluding the hash columns.</summary>
+    private static readonly (PropertyInfo Property, int Max)[] BoundedColumns = typeof(AuditLogEntity)
+        .GetProperties()
+        .Where(p => p.PropertyType == typeof(string)
+                    && p.Name is not nameof(AuditLogEntity.RecordHash) and not nameof(AuditLogEntity.PreviousRecordHash))
+        .Select(p => (p, p.GetCustomAttribute<MaxLengthAttribute>()?.Length ?? 0))
+        .Where(x => x.Item2 > 0)
+        .ToArray();
+
+    /// <summary>
+    /// Truncates every length-bounded string field to its column limit, before it is hashed and
+    /// saved, so an over-long value (a long exception message) cannot fail the audit write.
+    /// </summary>
+    internal static void FitToColumns(AuditLogEntity entry)
+    {
+        foreach (var (property, max) in BoundedColumns)
+        {
+            if (property.GetValue(entry) is string value && value.Length > max)
+            {
+                var cut = char.IsHighSurrogate(value[max - 1]) ? max - 1 : max;
+                property.SetValue(entry, value[..cut]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Verifies the hash chain for a tenant. Walks the oldest <paramref name="limit"/> records
+    /// sequentially, recomputes hashes, and returns any broken links. When the chain holds more
+    /// records than that, the result says so (<see cref="HashChainVerificationResult.Truncated"/>)
+    /// rather than implying the unexamined records are clean. A walk that begins at the anchor a
+    /// retention prune marker declared starts an epoch there instead of reporting a break, but only
+    /// for a marker this walk examined and verified (see <see cref="EvaluatePruneMarkers"/>): a
+    /// marker beyond <paramref name="limit"/> is not honoured, so a truncated walk of a pruned chain
+    /// reports the oldest record's link until the limit covers the marker.
     /// </summary>
     public async Task<HashChainVerificationResult> VerifyAsync(
         AuditDbContext db, Guid? tenantId, int limit = 10000, CancellationToken ct = default)
     {
+        var total = await db.AuditLogs.CountAsync(a => a.TenantId == tenantId && a.RecordHash != null, ct);
+
         var records = await db.AuditLogs
             .Where(a => a.TenantId == tenantId && a.RecordHash != null)
             .OrderBy(a => a.Timestamp)
@@ -220,13 +417,26 @@ public class AuditHashChainService
             .ToListAsync(ct);
 
         var breaks = new List<HashChainBreak>();
+        var prunedAtOldest = EvaluatePruneMarkers(records, breaks);
         var unverifiable = 0;
         var epochs = 0;
+        var pruned = false;
         DateTime? verifiableSince = null;
         string? expectedPreviousHash = null;
 
-        foreach (var record in records)
+        for (var i = 0; i < records.Count; i++)
         {
+            var record = records[i];
+
+            // The oldest surviving record after a retention prune links to a deleted record. The
+            // prune marker declared exactly this record and link, so the walk resumes from it.
+            if (i == 0 && prunedAtOldest)
+            {
+                epochs++;
+                pruned = true;
+                expectedPreviousHash = record.PreviousRecordHash;
+            }
+
             // A restart marker is a genesis by declaration: its own hash must still recompute,
             // and every record after it chains from it, but it is not expected to link to what
             // came before. Counted, so an unexpected one is visible in the report.
@@ -293,11 +503,77 @@ public class AuditHashChainService
             RecordsVerified = records.Count - unverifiable,
             UnverifiableRecords = unverifiable,
             Epochs = epochs,
+            Pruned = pruned,
             VerifiableSince = verifiableSince,
             Breaks = breaks,
             FirstRecord = records.FirstOrDefault()?.Timestamp,
-            LastRecord = records.LastOrDefault()?.Timestamp
+            LastRecord = records.LastOrDefault()?.Timestamp,
+            TotalRecords = total,
+            Truncated = total > records.Count,
         };
+    }
+
+    /// <summary>
+    /// Decides whether the oldest walked record is the anchor of an honoured prune marker. A marker
+    /// is honoured only when it was walked here, its hash recomputes, it links to the record walked
+    /// before it, it comes after the anchor it names, and its cutoff is not later than the anchor's
+    /// timestamp. A marker naming a walked anchor that fails the ordering or cutoff rule is added to
+    /// <paramref name="breaks"/>; hash and link failures are already reported by the walk itself. A
+    /// marker whose anchor is not among the walked records (deleted by a later prune, or beyond the
+    /// limit) neither starts an epoch nor is reported.
+    /// </summary>
+    private static bool EvaluatePruneMarkers(List<AuditLogEntity> records, List<HashChainBreak> breaks)
+    {
+        if (records.Count == 0)
+            return false;
+
+        var position = new Dictionary<Guid, int>(records.Count);
+        for (var i = 0; i < records.Count; i++)
+            position.TryAdd(records[i].Id, i);
+
+        var honoured = false;
+        for (var i = 0; i < records.Count; i++)
+        {
+            var marker = records[i];
+            if (marker.ActionType != ChainPrunedAction)
+                continue;
+            var details = ReadPruneDetails(marker.DetailsJson);
+            if (details is not { AnchorRecordId: Guid anchorId, AnchorPreviousHash: not null }
+                || !position.TryGetValue(anchorId, out var anchorAt))
+                continue;
+            var anchor = records[anchorAt];
+
+            var hashVerifies = marker.HashVersion is not null && marker.RecordHash == ComputeHash(marker, marker.PreviousRecordHash);
+            var linkVerifies = i > 0 && marker.PreviousRecordHash == records[i - 1].RecordHash;
+            string? fault = null;
+            if (anchorAt >= i)
+                fault = "it does not come after the anchor record it names";
+            else if (details.Cutoff > anchor.Timestamp)
+                fault = $"its cutoff {details.Cutoff:O} is later than the anchor's timestamp {anchor.Timestamp:O}";
+
+            if (fault != null)
+            {
+                breaks.Add(new HashChainBreak
+                {
+                    RecordId = marker.Id,
+                    Timestamp = marker.Timestamp,
+                    Issue = $"Prune marker not honoured: {fault} (anchor {anchorId})",
+                });
+                continue;
+            }
+
+            if (hashVerifies && linkVerifies && anchorAt == 0 && anchor.PreviousRecordHash == details.AnchorPreviousHash)
+                honoured = true;
+        }
+        return honoured;
+    }
+
+    /// <summary>Reads a prune marker's details, or null when they are not a prune declaration.</summary>
+    private static PruneDetails? ReadPruneDetails(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<PruneDetails>(json); }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>
@@ -305,7 +581,7 @@ public class AuditHashChainService
     /// The previous hash is included in the input to create the chain link.
     /// Hash is computed on the SCRUBBED DetailsJson (safe/redacted version).
     /// </summary>
-    private static string ComputeHash(AuditLogEntity e, string? previousHash)
+    internal static string ComputeHash(AuditLogEntity e, string? previousHash)
     {
         var canonical = string.Join("|",
             e.Id.ToString(),
@@ -327,12 +603,74 @@ public class AuditHashChainService
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private sealed class SemaphoreReleaser(SemaphoreSlim semaphore) : IDisposable
+}
+
+/// <summary>
+/// Holds a tenant's audit chain lock between computing an entry's link and saving it. On
+/// PostgreSQL it owns the transaction the advisory lock lives in: <see cref="CommitAsync"/>
+/// commits it after a successful save, and disposing an uncommitted lease rolls it back, so an
+/// exception can never lead to a commit. Disposal always releases the in-process lock.
+/// </summary>
+public sealed class AuditChainLease : IDisposable, IAsyncDisposable
+{
+    private readonly SemaphoreSlim _semaphore;
+    private readonly IDbContextTransaction? _transaction;
+    private bool _committed;
+    private bool _disposed;
+
+    internal AuditChainLease(SemaphoreSlim semaphore, IDbContextTransaction? transaction)
     {
-        private bool _disposed;
-        public void Dispose()
+        _semaphore = semaphore;
+        _transaction = transaction;
+    }
+
+    /// <summary>Commits the owned transaction, if any. Call only after SaveChanges succeeded.</summary>
+    public async Task CommitAsync(CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_committed) return;
+        if (_transaction != null)
+            await _transaction.CommitAsync(ct);
+        _committed = true;
+    }
+
+    /// <summary>Rolls back an uncommitted transaction and releases the lock.</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        try
         {
-            if (!_disposed) { _disposed = true; semaphore.Release(); }
+            if (_transaction != null)
+            {
+                if (!_committed)
+                    try { _transaction.Rollback(); } catch { }
+                _transaction.Dispose();
+            }
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    /// <summary>Rolls back an uncommitted transaction and releases the lock.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        try
+        {
+            if (_transaction != null)
+            {
+                if (!_committed)
+                    try { await _transaction.RollbackAsync(CancellationToken.None); } catch { }
+                await _transaction.DisposeAsync();
+            }
+        }
+        finally
+        {
+            _semaphore.Release();
         }
     }
 }
@@ -354,6 +692,21 @@ public class HashChainVerificationResult
     /// naming its actor; one the operator did not expect is a finding in its own right.
     /// </summary>
     public int Epochs { get; set; }
+
+    /// <summary>
+    /// True when the walk began at the oldest surviving record of a chain that audit retention
+    /// pruned, as declared by a prune marker. Counted in <see cref="Epochs"/> as well.
+    /// </summary>
+    public bool Pruned { get; set; }
+
+    /// <summary>Every hashed record in the tenant's chain, whether or not this run examined it.</summary>
+    public int TotalRecords { get; set; }
+
+    /// <summary>
+    /// True when the chain holds more records than the run examined. A truncated run with no
+    /// breaks says nothing about the records it never looked at.
+    /// </summary>
+    public bool Truncated { get; set; }
 
     /// <summary>
     /// The moment from which every record recomputes and links: the latest restart, or the first
