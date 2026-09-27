@@ -103,6 +103,15 @@ public static class ErrorCodes
     /// </summary>
     public const string CaExtendedKeyUsageForbidden = "MCA-CFG-013";
 
+    /// <summary>The issuing CA certificate is not yet valid or has expired.</summary>
+    public const string IssuingCaOutsideValidity = "MCA-CFG-014";
+
+    /// <summary>The issuing CA (X.509 or SSH) is disabled or deleted.</summary>
+    public const string IssuingCaDisabled = "MCA-CFG-015";
+
+    /// <summary>No certificate authority record names the issuing CA certificate.</summary>
+    public const string IssuingCaUnregistered = "MCA-CFG-016";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>

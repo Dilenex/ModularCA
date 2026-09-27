@@ -390,7 +390,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Open to a tenant administrator: <c>ca.manage</c> held tenant-wide for the target tenant,
         /// with a parent in that tenant or one the caller holds <c>ca.manage</c> on. The tenant
         /// and parent come from the body, so the check is made here rather than by a route policy
-        /// (see <see cref="CaCreationAccess"/>).
+        /// (see <see cref="CaCreationAccess"/>). A parent that is disabled, revoked or outside its
+        /// validity is refused before any ceremony is opened.
         /// </summary>
         [HttpPost("create-intermediate")]
         [Authorize]
@@ -416,6 +417,12 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             if (parentCa.Certificate == null)
                 return BadRequest(new { error = "Parent CA has no certificate" });
+
+            if (parentCa.Certificate.Revoked)
+                return BadRequest(new { error = "Parent CA is revoked and cannot sign an intermediate." });
+            var utcNow = DateTime.UtcNow;
+            if (utcNow < parentCa.Certificate.NotBefore || utcNow > parentCa.Certificate.NotAfter)
+                return BadRequest(new { error = "Parent CA is outside its validity and cannot sign an intermediate." });
 
             // The System Signing CA signs keystore entries only — never sub-CAs or
             // end-entity certs. Refuse to let it parent a new CA.

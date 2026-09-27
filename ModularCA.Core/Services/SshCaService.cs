@@ -4,6 +4,7 @@ using ModularCA.Core.Authorization;
 using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Errors;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using System.Security.Cryptography;
@@ -207,6 +208,27 @@ public class SshCaService : ISshCaService
         _logger.LogWarning("SSH CA key '{Name}' disabled. {Count} certificate(s) revoked.", key.Name, activeCerts.Count);
     }
 
+    /// <summary>
+    /// Refuses with <see cref="ConfigurationValidationException"/> when the SSH CA key, or the
+    /// certificate authority it belongs to, is disabled or deleted.
+    /// </summary>
+    private async Task EnsureSshCaUsableAsync(SshCaKeyEntity caKey)
+    {
+        if (!caKey.IsEnabled)
+            throw new ConfigurationValidationException(
+                $"SSH CA key '{caKey.Name}' is disabled and cannot sign.", ErrorCodes.IssuingCaDisabled);
+
+        var ca = await _db.CertificateAuthorities.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.Id == caKey.CertificateAuthorityId);
+        if (ca == null || ca.IsDeleted || !ca.IsEnabled)
+            throw new ConfigurationValidationException(
+                $"The certificate authority for SSH CA key '{caKey.Name}' is disabled or deleted; the key cannot sign.",
+                ErrorCodes.IssuingCaDisabled);
+    }
+
+    /// <summary>
+    /// Signs a user public key under the given SSH CA key. Refuses a disabled or deleted CA.
+    /// </summary>
     public async Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, List<string> principals,
         int? validityHours, string? keyId, List<string>? extensions, Guid? issuedByUserId, string? sourceIp)
     {
@@ -214,6 +236,7 @@ public class SshCaService : ISshCaService
 
         var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");
+        await EnsureSshCaUsableAsync(caKey);
         if (!caKey.IsUserCa)
             throw new InvalidOperationException("This CA key is not configured for user certificates");
 
@@ -229,6 +252,9 @@ public class SshCaService : ISshCaService
             false, extensions, "user", issuedByUserId, sourceIp, principals);
     }
 
+    /// <summary>
+    /// Signs a host public key under the given SSH CA key. Refuses a disabled or deleted CA.
+    /// </summary>
     public async Task<SshCertificateEntity> SignHostKeyAsync(Guid caKeyId, string publicKey, List<string> hostnames,
         int? validityHours, string? keyId, Guid? issuedByUserId, string? sourceIp)
     {
@@ -236,6 +262,7 @@ public class SshCaService : ISshCaService
 
         var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");
+        await EnsureSshCaUsableAsync(caKey);
         if (!caKey.IsHostCa)
             throw new InvalidOperationException("This CA key is not configured for host certificates");
 

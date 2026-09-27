@@ -2,6 +2,7 @@ using ModularCA.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
@@ -317,7 +318,8 @@ public class CaCreationService(
     /// extension AND copied onto the per-CA signing profile so downstream issuance honours
     /// the same constraints. <paramref name="ceremonyId"/> is the approved key ceremony this
     /// creation executes, when the tenant required one; the signer verifies it before it
-    /// generates or commits a key.
+    /// generates or commits a key. A parent that is disabled, deleted, revoked or outside its
+    /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated.
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateIntermediateAsync(
         CertificateAuthorityEntity parentCa, CertificateEntity parentCert,
@@ -334,6 +336,10 @@ public class CaCreationService(
         await EnforceTenantCaQuotaAsync(tenantId);
 
         var parentBcCert = CertificateUtil.ParseFromPem(parentCert.Pem);
+        if (parentCa.IsDeleted || !parentCa.IsEnabled)
+            throw new ConfigurationValidationException(
+                $"The parent CA '{parentCa.Name}' is disabled or deleted and cannot sign an intermediate.", ErrorCodes.IssuingCaDisabled);
+        await IssuingCaGuard.EnsureUsableAsync(db, parentCert, parentBcCert, requireAuthority: true, DateTime.UtcNow);
         if (!await SignerHoldsKeyAsync(parentCa, parentCert.CertificateId))
             throw new InvalidOperationException("Parent CA private key not found in keystore");
 

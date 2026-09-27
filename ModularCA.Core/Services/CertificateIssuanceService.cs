@@ -139,6 +139,10 @@ namespace ModularCA.Core.Services
         /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why. It doubles as
         /// one of the three tenant-ceiling exemptions — see <see cref="ApplyTenantValidityCeiling"/>.
         /// </param>
+        /// <param name="preResolvedCa">
+        /// The CA creation seam, or null. The issuing CA is refused by <see cref="IssuingCaGuard"/>
+        /// either way; only this seam may proceed without a committed authority row.
+        /// </param>
         /// <param name="ceilingEnforcement">
         /// Whether the caller is one that may be refused by a tenant configured to refuse
         /// over-reaching validity. Every path through this method passes it explicitly rather than
@@ -264,9 +268,10 @@ namespace ModularCA.Core.Services
                 (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
             }
 
-            // Check tenant is enabled — block issuance if the CA's tenant has been disabled
-            var issuingCaEntity = await _db.CertificateAuthorities
-                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId, cancellationToken);
+            // A revoked, expired, disabled, deleted or unregistered CA does not sign. The CA creation
+            // seam alone may lack an authority row, because the new CA's row is not committed yet.
+            var issuingCaEntity = await IssuingCaGuard.EnsureUsableAsync(
+                _db, refCACert, caMatch, requireAuthority: preResolvedCa == null, DateTime.UtcNow, cancellationToken);
             // Hoisted out of the block below because the validity ceiling further down needs it too.
             TenantEntity? caTenant = null;
             if (issuingCaEntity != null)
@@ -484,8 +489,10 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Reissues a certificate identified by certificate ID, serial number, or CSR ID.
-        /// Revokes the previous certificate (if not already revoked), validates constraints,
-        /// builds a new certificate, and persists it.
+        /// Refuses first when the issuing CA is revoked, outside its validity, disabled, deleted or
+        /// unregistered (see <see cref="IssuingCaGuard"/>), so the predecessor is not auto-revoked
+        /// for a reissue that cannot happen. Otherwise revokes the previous certificate (if not
+        /// already revoked), validates constraints, builds a new certificate, and persists it.
         /// </summary>
         /// <param name="certId">Optional certificate ID to look up the original CSR.</param>
         /// <param name="certSN">Optional serial number to look up the original CSR.</param>
@@ -603,6 +610,17 @@ namespace ModularCA.Core.Services
                 }
             }
 
+            // The issuing CA is judged before the predecessor is auto-revoked below, so a reissue
+            // the CA can never sign does not take the predecessor out of service first.
+            var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
+            var reissueCaEntity = (await IssuingCaGuard.EnsureUsableAsync(
+                _db, refCACert, caMatch, requireAuthority: true, DateTime.UtcNow))!;
+            var caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
+            if (caTenant != null && !caTenant.IsEnabled)
+                throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+            if (string.Equals(reissueCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
+                throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
+
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
             // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, do so now via
             // ICertificateRevocationService — that path triggers CRL regeneration, audit logging,
@@ -690,21 +708,6 @@ namespace ModularCA.Core.Services
             // Infrastructure certs (TSA, OCSP) bypass quota enforcement
             if (!csrEntity.IsInfrastructureCert)
                 await EnforceQuotaAsync(csrEntity.SigningProfile);
-
-            // Resolve CA certificate and row; the key stays with the signer
-            var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
-
-            // Check tenant is enabled — block reissuance if the CA's tenant has been disabled
-            var reissueCaEntity = await _db.CertificateAuthorities
-                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId);
-            // Hoisted out of the block below because the validity ceiling further down needs it too.
-            TenantEntity? caTenant = null;
-            if (reissueCaEntity != null)
-            {
-                caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
-                if (caTenant != null && !caTenant.IsEnabled)
-                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.");
-            }
 
             var now = DateTime.UtcNow;
             var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
