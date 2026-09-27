@@ -1,6 +1,6 @@
 # The instance is the tenant
 
-Status: proposed 2026-09-26. No deployment runs more than one non-system tenant, so nothing
+Status: accepted 2026-09-26; the work is release 0.4.0. No deployment runs more than one non-system tenant, so nothing
 has to be migrated before the change starts.
 
 ## Why
@@ -132,5 +132,39 @@ with the caveats below when the instance is enrolled and in the visor afterwards
    inventory, ciphertext backup and restore, then staged upgrades. A tool to split a
    multi-tenant instance into instances is only needed if a deployment ever has one.
 
-The schema changes in steps 3 and 4 follow the project rule: the single `InitialCreate` per
-context is regenerated, and no migration is added.
+## Decisions for 0.4.0 (2026-09-26)
+
+- **Schema changes arrive as EF migrations.** Production and staging have run
+  `20260919181506_InitialCreate` (and the audit context's `InitialAuditSchema`) since
+  2026-09-19. Regenerating a baseline that a live database has applied leaves that database on
+  the old schema, whichever id the new baseline takes. Both baselines are therefore frozen.
+  Every schema change from 0.4.0 on is a migration, with any data transformation written into
+  it. Each migration checks its preconditions first and raises, rolling back, when one fails.
+  The control role stops if a migration fails, instead of starting on a stale schema.
+- **The delegation scope is a space, and an instance may have several.** A space is an access
+  scope. It is not a partition of data.
+- **`/admin/tenants` is replaced by `/admin/spaces` with no alias.** The console ships with the
+  server and is the only known consumer.
+- **Tenant hostnames are removed without a cutover.** Neither live deployment serves one.
+- **Defaults, unless revisited:**
+  - Where the system and organisation tenants disagree on a setting, the stricter value wins.
+  - Super remains as the break-glass rank, and a space-wide operator rank is kept.
+  - Tenant quotas are removed; group quotas stay.
+  - The multi-tenancy licence flag moves to the visor.
+  - Per-tenant audit chains stay as recorded, because `TenantId` is inside every hash. They
+    verify as earlier epochs, and new records go to one instance chain.
+
+## Stages of 0.4.0
+
+Each stage builds, passes the tests and leaves the product working. The rename comes last, so
+that nothing is renamed only to be deleted.
+
+- **S0.** Freeze the baselines. Make a failed migration stop the control role. Add an opt-in
+  upgrade test against real PostgreSQL, rehearsed on a dump of staging.
+- **S1.** Single-organisation mode.
+- **S2.** Retire tenant hostnames and tenant ingress routes.
+- **S3.** Fold the system tenant into the instance.
+- **S4.** Remove the isolation-only query filters and fences, and make CA labels and names
+  unique across the instance.
+- **S5.** Simplify ranks to instance, space, CA and operator.
+- **S6.** Rename tenant to space in the schema, API, console and docs.

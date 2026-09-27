@@ -25,7 +25,9 @@ wizard. That work is the same whoever the new provider is.
 means two migration sets forever and an abstraction over every piece of database-specific SQL, for
 a product that controls its own deployments.
 
-**One migration per context.** A clean install applies a single `InitialCreate` for the
+**One migration per context — until 0.4.0.** Once production and staging had applied these
+baselines, they were frozen, and schema changes since arrive as migrations (see
+`instance-tenancy.md`, "Decisions for 0.4.0"). A clean install applies a single `InitialCreate` for the
 application context and a single one for the audit context, generated fresh from the model. The
 thirty-one existing migrations describe how a MariaDB schema was built up over time and have no
 meaning against a database that never had them.
