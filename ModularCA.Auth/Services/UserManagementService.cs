@@ -40,7 +40,7 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Creates a new user and assigns them to the groups specified in <paramref name="request"/>.GroupIds.
-        /// If no groups are specified, the user is added to the "system-auditor" group by default.
+        /// If no groups are specified, the user is created with no group memberships.
         /// </summary>
         public async Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request)
         {
@@ -88,16 +88,8 @@ namespace ModularCA.Auth.Services
                 };
                 _dbContext.Users.Add(newUser);
 
-                // Assign to specified groups, or fall back to system-auditor
+                // Only the requested groups; an account created without groups has none.
                 var groupIds = request.GroupIds;
-                if (groupIds == null || groupIds.Count == 0)
-                {
-                    var defaultGroup = await _dbContext.CaGroups
-                        .FirstOrDefaultAsync(g => g.Name == "system-auditor");
-                    if (defaultGroup != null)
-                        groupIds = new List<Guid> { defaultGroup.Id };
-                }
-
                 if (groupIds != null)
                 {
                     foreach (var groupId in groupIds)

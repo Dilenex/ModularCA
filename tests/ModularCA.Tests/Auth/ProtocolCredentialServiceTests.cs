@@ -50,7 +50,7 @@ public class ProtocolCredentialServiceTests
             return Task.FromResult((succeeds, (string?)null));
         }
 
-        public Task<List<string>> GetUserGroupsAsync(string username) => Task.FromResult(new List<string>());
+        public Task<List<string>?> GetUserGroupsAsync(string username) => Task.FromResult<List<string>?>(new List<string>());
     }
 
     private sealed class StubPolicy(int maxAttempts, int lockoutMinutes) : ISecurityPolicyService

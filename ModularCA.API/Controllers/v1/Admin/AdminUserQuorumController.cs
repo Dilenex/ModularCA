@@ -1,7 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
@@ -23,7 +26,9 @@ namespace ModularCA.API.Controllers.v1.Admin;
 public class AdminUserQuorumController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    ITenantPolicyChangeService tenantPolicyChangeService,
+    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
 {
     /// <summary>
     /// Returns the system quorum plus every tenant and CA with its override and effective value.
@@ -64,8 +69,13 @@ public class AdminUserQuorumController(
         return Ok(new { system = new { quorum = systemQuorum }, tenants = tenantDtos });
     }
 
-    /// <summary>Sets (or clears, when null) a tenant's user-quorum override.</summary>
+    /// <summary>
+    /// Sets (or clears, when null) a tenant's user-quorum override. Step-up gated like the tenant
+    /// settings save. System-super applies directly; any other caller opens a TenantPolicyChange
+    /// ceremony (202 + ceremonyId), mirroring <c>AdminTenantController.UpdateSettings</c>.
+    /// </summary>
     [HttpPut("tenant/{id:guid}")]
+    [RequireStepUp(StepUpOps.UpdateTenantSettings, "id")]
     public async Task<IActionResult> SetTenant(Guid id, [FromBody] QuorumValueRequest request)
     {
         if (request.Quorum is int q && q < 1)
@@ -74,10 +84,15 @@ public class AdminUserQuorumController(
         var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
         if (tenant == null) return NotFound(new { error = "Tenant not found." });
 
+        await currentUser.EnsureLoadedAsync();
+        if (currentUser.User == null) return Unauthorized();
+
+        if (request.Quorum != tenant.UserCeremonyRequiredApprovals && !await controlledUserSvc.IsSuperAsync(currentUser.User.Id))
+            return await GateThroughCeremonyAsync(id, userQuorumIncluded: true, proposedUserQuorum: request.Quorum, caChanges: null);
+
         tenant.UserCeremonyRequiredApprovals = request.Quorum;
         await db.SaveChangesAsync();
 
-        await currentUser.EnsureLoadedAsync();
         await audit.LogAsync(AuditActionType.TenantUpdated, currentUser.User?.Id, currentUser.User?.Username,
             "Tenant", id.ToString(), new { UserCeremonyRequiredApprovals = request.Quorum },
             HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -87,9 +102,11 @@ public class AdminUserQuorumController(
 
     /// <summary>
     /// Sets (or clears, when null) a CA's user-quorum override. Rejects a value above the tenant's
-    /// effective quorum — the tenant is the ceiling.
+    /// effective quorum — the tenant is the ceiling. Step-up gated; system-super applies directly,
+    /// any other caller opens a TenantPolicyChange ceremony on the CA's tenant (202 + ceremonyId).
     /// </summary>
     [HttpPut("ca/{id:guid}")]
+    [RequireStepUp(StepUpOps.UpdateTenantSettings, "id")]
     public async Task<IActionResult> SetCa(Guid id, [FromBody] QuorumValueRequest request)
     {
         var ca = await db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == id);
@@ -107,15 +124,61 @@ public class AdminUserQuorumController(
                 return BadRequest(new { error = $"A CA's quorum can't exceed its tenant's ({tenantEffective}). Use {tenantEffective} or lower, or clear it to inherit." });
         }
 
+        await currentUser.EnsureLoadedAsync();
+        if (currentUser.User == null) return Unauthorized();
+
+        if (request.Quorum != ca.UserCeremonyRequiredApprovals && !await controlledUserSvc.IsSuperAsync(currentUser.User.Id))
+            return await GateThroughCeremonyAsync(ca.TenantId, userQuorumIncluded: false, proposedUserQuorum: null,
+                caChanges: [new ModularCA.Shared.Models.CaUserQuorumChange { CaId = ca.Id, ProposedQuorum = request.Quorum }]);
+
         ca.UserCeremonyRequiredApprovals = request.Quorum;
         await db.SaveChangesAsync();
 
-        await currentUser.EnsureLoadedAsync();
         await audit.LogAsync(AuditActionType.CaUpdated, currentUser.User?.Id, currentUser.User?.Username,
             "CertificateAuthority", id.ToString(), new { UserCeremonyRequiredApprovals = request.Quorum },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new { id, quorum = ca.UserCeremonyRequiredApprovals });
+    }
+
+    /// <summary>
+    /// Opens a TenantPolicyChange ceremony carrying a deferred user-quorum change (the same path the
+    /// tenant settings save uses for non-super callers) and returns 202, or 409 when one is already
+    /// pending for the tenant.
+    /// </summary>
+    private async Task<IActionResult> GateThroughCeremonyAsync(
+        Guid tenantId, bool userQuorumIncluded, int? proposedUserQuorum,
+        IReadOnlyList<ModularCA.Shared.Models.CaUserQuorumChange>? caChanges)
+    {
+        Guid ceremonyId;
+        try
+        {
+            ceremonyId = await tenantPolicyChangeService.InitiateChangeAsync(
+                tenantId, null, null,
+                currentUser.User!.Id, currentUser.User.Username,
+                userQuorumIncluded: userQuorumIncluded,
+                proposedUserQuorum: proposedUserQuorum,
+                caUserQuorums: caChanges);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("already pending", StringComparison.OrdinalIgnoreCase))
+        {
+            return Conflict(new
+            {
+                error = "A tenant policy-change ceremony is already pending for this tenant. Resolve or cancel it before opening a new one."
+            });
+        }
+
+        await audit.LogAsync(AuditActionType.TenantUpdated, currentUser.User.Id, currentUser.User.Username,
+            "Tenant", tenantId.ToString(),
+            new { GatedThroughCeremony = true, CeremonyId = ceremonyId, ProposedUserQuorum = proposedUserQuorum, CaUserQuorums = caChanges },
+            HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        return Accepted(new
+        {
+            ceremonyId,
+            requiresCeremony = true,
+            message = "Changing a user-approval quorum requires ceremony approval. Approve via /api/v1/admin/ceremonies/" + ceremonyId + "/approve."
+        });
     }
 }
 

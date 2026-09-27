@@ -48,9 +48,17 @@ public interface IKeyCeremonyService
     Task<KeyCeremonyEntity> CancelAsync(Guid ceremonyId, Guid requestorId);
 
     /// <summary>
-    /// Marks a ceremony as executed after the operation has been carried out.
+    /// Marks a ceremony as executed after the operation has been carried out. Throws
+    /// <see cref="CeremonyNotExecutableException"/> when it is no longer Approved.
     /// </summary>
     Task MarkExecutedAsync(Guid ceremonyId);
+
+    /// <summary>
+    /// Takes the execution lock for <paramref name="ceremonyId"/> without waiting, so two executes of
+    /// one ceremony cannot run side by side. Returns a handle that releases the lock on dispose, or
+    /// null when another execution holds it. Callers re-read the ceremony's status once they hold it.
+    /// </summary>
+    Task<IAsyncDisposable?> TryAcquireExecutionLockAsync(Guid ceremonyId);
 
     /// <summary>
     /// Retrieves a ceremony by its ID.
@@ -71,4 +79,15 @@ public interface IKeyCeremonyService
     /// Expires all pending ceremonies whose ExpiresAt has passed.
     /// </summary>
     Task<int> ExpireStaleCeremoniesAsync();
+}
+
+/// <summary>
+/// A ceremony that is no longer Approved when an execute reaches it, typically because a concurrent
+/// execute already ran it. Maps to 409 Conflict.
+/// </summary>
+public sealed class CeremonyNotExecutableException(Guid ceremonyId, string status)
+    : InvalidOperationException($"Ceremony {ceremonyId} is '{status}', not 'Approved'; it cannot be executed.")
+{
+    /// <summary>The ceremony's status when the execute reached it.</summary>
+    public string Status { get; } = status;
 }

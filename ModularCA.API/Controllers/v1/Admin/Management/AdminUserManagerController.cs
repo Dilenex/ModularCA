@@ -150,6 +150,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Creates a new user account. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
+        /// Requested groups pass the membership tier gate; a group that confers a controlled tier is
+        /// refused (403) unless the caller is system-super. No groups requested means no groups.
         /// </summary>
         [HttpPost]
         [Authorize]
@@ -173,10 +175,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Membership assigned at creation goes through the same tier gate as every other
             // membership write. Checked BEFORE the account is created so a refusal cannot leave a
             // half-provisioned user behind.
+            var callerIsSuper = await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id);
             foreach (var groupId in request.GroupIds ?? new List<Guid>())
             {
                 if (await AuthorizeGroupAssignmentAsync(groupId) is { } denied)
                     return denied;
+
+                // A controlled membership needs a ceremony, which has no path for an account that
+                // does not exist yet; otherwise the creator would choose the password of a new admin.
+                var group = await _dbContext.CaGroups.FindAsync(groupId);
+                if (!callerIsSuper && group != null && await _controlledUserSvc.ClassifyGroupAsync(group) != null)
+                    return StatusCode(403, new
+                    {
+                        error = $"Group '{group.DisplayName ?? group.Name}' confers a privileged tier. Create the user without it, "
+                                + "then add the membership, which goes through a controlled-user ceremony."
+                    });
             }
 
             var (success, error) = await _userService.CreateUser(request);
@@ -194,6 +207,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Updates a user account (e.g. activate/deactivate). Requires CaAdmin policy and step-up MFA verification.
+        /// Identity-altering changes to a controlled user need a caller who dominates every tier it holds (403 otherwise).
         /// </summary>
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "CaAdmin")]
@@ -214,6 +228,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             if (_currentUser.User?.Id == id && request.IsActive == false)
                 return BadRequest(new { error = "You cannot deactivate your own account" });
+            if (AltersIdentity(request) && await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                return denied;
             if (!(await _userService.UpdateUser(id, request)))
                 return NotFound(new { message = $"User with ID {id} not found" });
             // Drop any cached stamp so the disable/lock change propagates
@@ -226,6 +242,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Deletes a user account. Self-deletion is blocked. Requires CaAdmin policy and step-up MFA verification.
+        /// Deleting a controlled user is refused for every caller when no one other than the caller would
+        /// still dominate its tier; otherwise non-super opens a ceremony.
         /// </summary>
         [HttpDelete("{id:guid}")]
         [Authorize(Policy = "CaAdmin")]
@@ -243,10 +261,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Controlled-user gate: deleting a user who holds a controlled tier (admin/CA-admin)
             // requires a ceremony for non-super, with the last-controlled-user guard.
             var delTier = await _controlledUserSvc.GetDeletionTierAsync(id);
+            if (delTier != null
+                && await _controlledUserSvc.CountDominatingControlledUsersAsync(delTier.Value, id, actorUserId: _currentUser.User!.Id) == 0)
+                return BadRequest(new { error = "Refusing to delete the last controlled user of this scope." });
             if (delTier != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User!.Id))
             {
-                if (await _controlledUserSvc.CountDominatingControlledUsersAsync(delTier.Value, id) == 0)
-                    return BadRequest(new { error = "Refusing to delete the last controlled user of this scope." });
                 if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, delTier.Value))
                     return StatusCode(403, new { error = "You cannot delete a user above your own tier." });
 
@@ -282,6 +301,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Resets another user's password. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
+        /// Refused (403) when the target holds a controlled tier the caller does not dominate.
         /// </summary>
         [HttpPost("{id:guid}/reset-password")]
         [Authorize(Policy = "CaAdmin")]
@@ -295,6 +315,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 return Unauthorized();
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetPassword, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
+
+            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                return denied;
 
             var newPassword = await _userService.ResetUserPassword(id);
             if (newPassword != null)
@@ -313,7 +336,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <summary>
         /// Removes all MFA methods (TOTP secrets and WebAuthn credentials) for a user,
         /// forcing them to re-enroll on next login. Requires step-up MFA verification
-        /// via X-MFA-Token header. Requires SystemOperator authorization policy.
+        /// via X-MFA-Token header. Requires SystemOperator authorization policy. Refused (403) when
+        /// the target holds a controlled tier the caller does not dominate.
         /// </summary>
         [HttpPost("{id:guid}/reset-mfa")]
         [Authorize(Policy = "SystemOperator")]
@@ -330,6 +354,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             var user = await _dbContext.Users.FindAsync(id);
             if (user == null)
                 return NotFound(new { message = $"User with ID {id} not found" });
+
+            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                return denied;
 
             // Remove all TOTP secrets
             var totpSecrets = await _dbContext.TotpSecrets.Where(t => t.UserId == id).ToListAsync();
@@ -359,6 +386,34 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 webAuthnCredentialsRemoved = webAuthnCreds.Count
             });
         }
+
+        /// <summary>
+        /// Tier gate for identity-altering administration of another account (password reset,
+        /// MFA reset, activation/lock/username/email changes). Self-targeting is left to the
+        /// endpoint's existing rules. Returns a 403 when the target holds a controlled tier the
+        /// caller does not dominate, or is system-super and the caller is not.
+        /// </summary>
+        private async Task<IActionResult?> AuthorizeAccountAdministrationAsync(Guid targetUserId)
+        {
+            if (_currentUser.User == null) return Unauthorized();
+            if (targetUserId == _currentUser.User.Id) return null;
+            if (await _controlledUserSvc.CanAdministerAccountAsync(_currentUser.User.Id, targetUserId))
+                return null;
+            return StatusCode(403, new
+            {
+                error = "This account holds a privileged tier you do not dominate. Only a system-super, "
+                        + "or an administrator whose tier dominates every tier the account holds, can change its credentials or account state."
+            });
+        }
+
+        /// <summary>
+        /// True when an update touches credentials, account state or identity fields rather than
+        /// only cosmetic name fields.
+        /// </summary>
+        private static bool AltersIdentity(UpdateUserRequest request) =>
+            request.Username != null || request.Email != null || request.Password != null
+            || request.IsActive != null || request.IsLocked != null
+            || request.PasswordNeverExpires != null || request.PasswordChangeOnNextLogon != null;
 
         /// <summary>
         /// Tiered authorization for membership writes.
@@ -465,7 +520,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Controlled-user gate: adding to a privilege-controlled group promotes a controlled
             // user — a non-super routes it through a ceremony (mirrors AdminGroupController.AddMember).
             var addGroup = await _dbContext.CaGroups.FindAsync(groupId);
-            var addTier = addGroup != null ? _controlledUserSvc.ClassifyGroup(addGroup) : null;
+            var addTier = addGroup != null ? await _controlledUserSvc.ClassifyGroupAsync(addGroup) : null;
             if (addTier != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User!.Id))
             {
                 var targetUsername = (await _dbContext.Users.FindAsync(id))?.Username;
@@ -519,12 +574,12 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Controlled-user gate: removing from a privilege-controlled group demotes a controlled
             // user — non-super routes it through a ceremony, with the last-controlled-user guard.
             var remGroup = await _dbContext.CaGroups.FindAsync(groupId);
-            var remTier = remGroup != null ? _controlledUserSvc.ClassifyGroup(remGroup) : null;
+            var remTier = remGroup != null ? await _controlledUserSvc.ClassifyGroupAsync(remGroup) : null;
+            if (remTier != null
+                && await _controlledUserSvc.CountDominatingControlledUsersAsync(remTier.Value, id, actorUserId: _currentUser.User!.Id) == 0)
+                return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
             if (remTier != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User!.Id))
             {
-                if (await _controlledUserSvc.CountDominatingControlledUsersAsync(remTier.Value, id) == 0)
-                    return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
-
                 var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
                     new ModularCA.Shared.Models.ControlledUserChangeParameters
                     {
@@ -590,7 +645,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 var grp = await _dbContext.CaGroups.FindAsync(groupId);
                 if (grp == null) { results.Add(new { groupId, action = "add", status = "not_found" }); skipped++; continue; }
 
-                var tier = _controlledUserSvc.ClassifyGroup(grp);
+                var tier = await _controlledUserSvc.ClassifyGroupAsync(grp);
                 if (tier != null && !isSuper)
                 {
                     var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
@@ -619,12 +674,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 var grp = await _dbContext.CaGroups.FindAsync(groupId);
                 if (grp == null) { results.Add(new { groupId, action = "remove", status = "not_found" }); skipped++; continue; }
 
-                var tier = _controlledUserSvc.ClassifyGroup(grp);
+                var tier = await _controlledUserSvc.ClassifyGroupAsync(grp);
+                if (tier != null && await _controlledUserSvc.CountDominatingControlledUsersAsync(tier.Value, id, actorUserId: _currentUser.User!.Id) == 0)
+                { results.Add(new { groupId, action = "remove", status = "last_user" }); skipped++; continue; }
                 if (tier != null && !isSuper)
                 {
-                    if (await _controlledUserSvc.CountDominatingControlledUsersAsync(tier.Value, id) == 0)
-                    { results.Add(new { groupId, action = "remove", status = "last_user" }); skipped++; continue; }
-
                     var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
                         new ModularCA.Shared.Models.ControlledUserChangeParameters
                         {

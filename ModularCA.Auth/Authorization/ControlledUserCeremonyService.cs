@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -15,120 +16,149 @@ namespace ModularCA.Auth.Authorization;
 /// Default <see cref="IControlledUserCeremonyService"/>. Mirrors
 /// <c>TenantPolicyChangeService</c>: opens a <see cref="CeremonyType.ControlledUserChange"/>
 /// ceremony via <see cref="IKeyCeremonyService"/> with the deferred change in
-/// <c>ParametersJson</c>, and applies it on execute. Tier classification and dominance use
-/// group-membership flags (<c>IsSystemTierSuper</c>, <c>IsSystemGroup</c>, the CA
-/// <c>Administrator</c> template).
+/// <c>ParametersJson</c>, and applies it on execute. Tiers come from effective capability across
+/// every grant source (<see cref="ControlledTierResolver"/>), not from group structure alone.
+/// The acting user's tiers (initiate, approve, super) honour the worn badge from
+/// <paramref name="badges"/>; a target account's tiers never do.
 /// </summary>
 public class ControlledUserCeremonyService(
     ModularCADbContext db,
     IKeyCeremonyService keyCeremonyService,
     IUserManagementService userService,
-    ILogger<ControlledUserCeremonyService> logger) : IControlledUserCeremonyService
+    ILogger<ControlledUserCeremonyService> logger,
+    IAccessBadgeContext? badges = null) : IControlledUserCeremonyService
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    // Capabilities whose direct grant confers a privilege-controlled tier (Stage 1). Extended
-    // in later stages as the role/group/operator paths are wired.
-    private static readonly HashSet<string> ControlledCapabilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        Capabilities.SystemManage,
-    };
-
     /// <inheritdoc />
-    public ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId)
+    public ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? tenantId = null)
     {
-        if (string.IsNullOrWhiteSpace(capability) || !ControlledCapabilities.Contains(capability))
-            return null;
-
-        // system.manage scoped to a CA confers CA-admin authority; unscoped (global/tenant)
-        // confers system-admin.
-        return TierForScope(certificateAuthorityId);
+        if (string.IsNullOrWhiteSpace(capability)) return null;
+        // A CA-scoped grant is minted without the CA's tenant, so only system-tier or same-CA
+        // holders dominate it (stricter than the tier the grant eventually confers).
+        return ControlledTierResolver.TierFor(capability, tenantId, certificateAuthorityId, null);
     }
 
     /// <inheritdoc />
-    public async Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId)
+    public async Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? tenantId = null, Guid? groupId = null)
     {
-        var carriesControlled = await db.RoleCapabilities
-            .AnyAsync(rc => rc.RoleId == roleId && ControlledCapabilities.Contains(rc.Capability));
-        return carriesControlled ? TierForScope(certificateAuthorityId) : null;
+        var caps = ControlledTierResolver.ControlledCapabilities;
+        var roleCaps = await db.RoleCapabilities.AsNoTracking()
+            .Where(rc => rc.RoleId == roleId && rc.ResourceType == null && caps.Contains(rc.Capability))
+            .Select(rc => rc.Capability)
+            .ToListAsync();
+        if (roleCaps.Count == 0) return null;
+
+        // A role on a group takes the group's scope, exactly as the authorization resolver reads it.
+        if (groupId != null)
+        {
+            var group = await db.CaGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId);
+            if (group != null)
+                return ControlledTierResolver.Strongest(roleCaps.Select(c =>
+                    ControlledTierResolver.TierForGroupCapability(c, group.IsSystemGroup, group.TenantId, group.CertificateAuthorityId)));
+        }
+        return ControlledTierResolver.Strongest(roleCaps.Select(c =>
+            ControlledTierResolver.TierFor(c, tenantId, certificateAuthorityId, null)));
     }
 
-    /// <inheritdoc />
-    public ControlledTier? ClassifyGroup(CaGroupEntity group)
+    /// <summary>
+    /// The tiers that <paramref name="capabilities"/> on role <paramref name="roleId"/> confer through
+    /// the role's current assignments and through pending or approved-but-unexecuted
+    /// <c>AssignRole</c> ceremonies, so a role awaiting a ceremony-gated assignment counts as assigned.
+    /// </summary>
+    public async Task<IReadOnlyList<ControlledTier>> TiersConferredByRoleAsync(Guid roleId, IEnumerable<string> capabilities)
     {
-        if (group.IsSystemTierSuper)
-            return new ControlledTier(ControlledTierLevel.SystemSuper, null);
-        if (group.IsSystemGroup)
-            return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
+        var caps = capabilities.Where(ControlledTierResolver.IsControlledCapability).ToList();
+        if (caps.Count == 0) return Array.Empty<ControlledTier>();
 
-        var isAdmin = string.Equals(group.TemplateName, "Administrator", StringComparison.OrdinalIgnoreCase);
-        var isOperator = string.Equals(group.TemplateName, "Operator", StringComparison.OrdinalIgnoreCase);
-
-        if (group.CertificateAuthorityId != null)
-            // CA-scoped admin group → CA-admin tier; carry the tenant so an org admin can dominate it.
-            // (CA operator groups remain uncontrolled.)
-            return isAdmin
-                ? new ControlledTier(ControlledTierLevel.CaAdmin, group.CertificateAuthorityId) { TenantId = group.TenantId }
-                : null;
-
-        // Tenant-wide (org) controlled groups.
-        if (isAdmin) return new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = group.TenantId };
-        if (isOperator) return new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = group.TenantId };
-        return null;
-    }
-
-    // CA-scoped controlled grants confer CA-admin; otherwise system-admin.
-    private static ControlledTier TierForScope(Guid? caId) =>
-        caId != null
-            ? new ControlledTier(ControlledTierLevel.CaAdmin, caId)
-            : new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-
-    /// <inheritdoc />
-    public async Task<bool> IsSuperAsync(Guid userId)
-    {
-        return await db.CaGroupMembers
-            .AnyAsync(m => m.UserId == userId && m.Group.IsSystemTierSuper);
-    }
-
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<ControlledTier>> GetUserTiersAsync(Guid userId)
-    {
-        var groups = await db.CaGroupMembers
-            .Where(m => m.UserId == userId)
-            .Select(m => new
-            {
-                m.Group.IsSystemGroup,
-                m.Group.IsSystemTierSuper,
-                m.Group.TemplateName,
-                m.Group.CertificateAuthorityId,
-                m.Group.TenantId,
-            })
+        var assignments = await db.RoleAssignments.AsNoTracking()
+            .Where(ra => ra.RoleId == roleId)
+            .Select(ra => new ScopedAssignment(ra.TenantId, ra.CertificateAuthorityId, ra.GroupId))
             .ToListAsync();
 
-        var tiers = new List<ControlledTier>();
-        if (groups.Any(g => g.IsSystemTierSuper))
-            tiers.Add(new ControlledTier(ControlledTierLevel.SystemSuper, null));
-        if (groups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper))
-            tiers.Add(new ControlledTier(ControlledTierLevel.SystemAdmin, null));
-        foreach (var g in groups.Where(g => !g.IsSystemGroup))
+        var roleIdText = roleId.ToString();
+        var open = await db.KeyCeremonies.AsNoTracking()
+            .Where(c => c.OperationType == "ControlledUserChange"
+                && (c.Status == "Pending" || c.Status == "Approved")
+                && c.ParametersJson.Contains(roleIdText))
+            .ToListAsync();
+        foreach (var c in open)
         {
-            var isAdmin = string.Equals(g.TemplateName, "Administrator", StringComparison.OrdinalIgnoreCase);
-            var isOperator = string.Equals(g.TemplateName, "Operator", StringComparison.OrdinalIgnoreCase);
-            if (g.CertificateAuthorityId != null)
-            {
-                if (isAdmin)
-                    tiers.Add(new ControlledTier(ControlledTierLevel.CaAdmin, g.CertificateAuthorityId) { TenantId = g.TenantId });
-                // CA operators are not a controlled tier.
-            }
-            else if (isAdmin)
-                tiers.Add(new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = g.TenantId });
-            else if (isOperator)
-                tiers.Add(new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = g.TenantId });
+            var p = Deserialize(c);
+            if (p is { ChangeType: "AssignRole" } && p.RoleId == roleId)
+                assignments.Add(new ScopedAssignment(p.TenantId, p.CertificateAuthorityId, p.GroupId));
         }
-        return tiers;
+
+        var groupIds = assignments.Where(a => a.GroupId != null).Select(a => a.GroupId!.Value).Distinct().ToList();
+        var groups = await db.CaGroups.AsNoTracking()
+            .Where(g => groupIds.Contains(g.Id))
+            .ToDictionaryAsync(g => g.Id);
+
+        var tiers = new HashSet<ControlledTier>();
+        foreach (var a in assignments)
+            foreach (var c in caps)
+            {
+                ControlledTier? t;
+                if (a.GroupId is Guid gid)
+                {
+                    if (!groups.TryGetValue(gid, out var g)) continue;
+                    t = ControlledTierResolver.TierForGroupCapability(c, g.IsSystemGroup, g.TenantId, g.CertificateAuthorityId);
+                }
+                else
+                    t = ControlledTierResolver.TierFor(c, a.TenantId, a.CertificateAuthorityId, null);
+                if (t != null) tiers.Add(t.Value);
+            }
+        return tiers.ToList();
     }
 
+    private sealed record ScopedAssignment(Guid? TenantId, Guid? CertificateAuthorityId, Guid? GroupId);
+
     /// <inheritdoc />
+    public Task<ControlledTier?> ClassifyGroupAsync(CaGroupEntity group) => ControlledTierResolver.ClassifyGroupAsync(db, group);
+
+    /// <summary>
+    /// True when <paramref name="userId"/>, the acting user, is system-super under the badge they
+    /// wear: a worn badge counts the super group only when it includes that group.
+    /// </summary>
+    public async Task<bool> IsSuperAsync(Guid userId)
+    {
+        var worn = await WornSourcesAsync(userId);
+        var superGroups = await db.CaGroupMembers
+            .Where(m => m.UserId == userId && m.Group.IsSystemTierSuper)
+            .Select(m => m.GroupId)
+            .ToListAsync();
+        return worn == null ? superGroups.Count > 0 : superGroups.Any(worn.GroupIds.Contains);
+    }
+
+    /// <summary>True when the account <paramref name="userId"/> is system-super, ignoring any worn badge.</summary>
+    private Task<bool> IsSuperAccountAsync(Guid userId)
+        => db.CaGroupMembers.AnyAsync(m => m.UserId == userId && m.Group.IsSystemTierSuper);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ControlledTier>> GetUserTiersAsync(Guid userId) => ControlledTierResolver.GetUserTiersAsync(db, userId);
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ControlledTier>> GetActorTiersAsync(Guid actorUserId)
+        => await ControlledTierResolver.GetActorTiersAsync(db, actorUserId, await WornSourcesAsync(actorUserId));
+
+    /// <summary>
+    /// The grant sources the acting user's worn badge keeps, or null when badgeless or outside a
+    /// request. Must be called for the request's own user: the badge context resolves the token's
+    /// badge and fails closed (keeps nothing) for any other user id.
+    /// </summary>
+    private async Task<ControlledSourceFilter?> WornSourcesAsync(Guid actorUserId)
+    {
+        var filter = badges == null ? null : await badges.GetWornAsync(actorUserId);
+        return filter == null ? null : new ControlledSourceFilter(filter.GroupIds, filter.RoleAssignmentIds, filter.CapabilityGrantIds);
+    }
+
+    /// <summary>
+    /// The tier an approver must dominate to delete <paramref name="userId"/>: the user's strongest
+    /// tier when it dominates every other tier they hold (e.g. org-admin(T) over ca-admin(X in T)),
+    /// otherwise system-admin, because the holdings span scopes (two tenants, two CAs, or a CA and
+    /// a tenant-wide operator tier) that no single scoped approver covers. Null when the user holds
+    /// no controlled tier.
+    /// </summary>
     public async Task<ControlledTier?> GetDeletionTierAsync(Guid userId)
     {
         var tiers = await GetUserTiersAsync(userId);
@@ -139,85 +169,96 @@ public class ControlledUserCeremonyService(
         if (tiers.Any(t => t.Level == ControlledTierLevel.SystemAdmin))
             return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
 
-        // Highest controlled tier wins, escalating to system when it spans multiple scopes
-        // (cross-org / cross-CA needs a system-tier approver).
-        var orgAdminTenants = tiers.Where(t => t.Level == ControlledTierLevel.OrgAdmin).Select(t => t.TenantId).Distinct().ToList();
-        if (orgAdminTenants.Count == 1)
-            return new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = orgAdminTenants[0] };
-        if (orgAdminTenants.Count > 1)
-            return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-
-        var caTiers = tiers.Where(t => t.Level == ControlledTierLevel.CaAdmin).ToList();
-        var caIds = caTiers.Select(t => t.CaId).Distinct().ToList();
-        if (caIds.Count == 1)
-        {
-            var ct = caTiers[0];
-            return new ControlledTier(ControlledTierLevel.CaAdmin, ct.CaId) { TenantId = ct.TenantId };
-        }
-        if (caIds.Count > 1)
-            return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-
-        var orgOpTenants = tiers.Where(t => t.Level == ControlledTierLevel.OrgOperator).Select(t => t.TenantId).Distinct().ToList();
-        if (orgOpTenants.Count == 1)
-            return new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = orgOpTenants[0] };
-        if (orgOpTenants.Count > 1)
-            return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-
-        return null;
+        var strongest = ControlledTierResolver.Strongest(tiers.Select(t => (ControlledTier?)t))!.Value;
+        return tiers.All(strongest.Dominates)
+            ? strongest
+            : new ControlledTier(ControlledTierLevel.SystemAdmin, null);
     }
 
     /// <inheritdoc />
-    public async Task<int> CountDominatingControlledUsersAsync(ControlledTier minted, Guid excludeUserId)
+    public Task<int> CountDominatingControlledUsersAsync(
+        ControlledTier minted, Guid excludeUserId, Guid? ignoreGroupId = null, Guid? actorUserId = null, Guid? ignoreRoleAssignmentId = null)
+        => CountDominatorsAsync(minted, excludeUserId, actorUserId,
+            new ControlledSourceExclusions { GroupId = ignoreGroupId, RoleAssignmentId = ignoreRoleAssignmentId });
+
+    /// <summary>
+    /// Counts users whose remaining tiers (after <paramref name="exclusions"/>) dominate
+    /// <paramref name="minted"/>, without <paramref name="excludeUserId"/>. A non-super actor is also
+    /// left out: an initiator never counts toward a ceremony's quorum, so a scope whose only
+    /// dominating user is that actor could no longer approve anything. A super actor is counted,
+    /// because supers act directly and dominate every scope; a super may therefore remove the last
+    /// non-super admin of a scope. Only accounts that can act count: active, not hard-locked, not
+    /// service identities, and holding the tier through a CA/tenant that is not soft-deleted.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="actorIsRequestUser"/> is false when the actor is not the caller (the initiator
+    /// of a ceremony being executed): their super status is then read without the caller's badge.
+    /// </remarks>
+    private async Task<int> CountDominatorsAsync(ControlledTier minted, Guid excludeUserId, Guid? actorUserId, ControlledSourceExclusions exclusions, bool actorIsRequestUser = true)
     {
-        // System-tier members (super + system-admin) dominate every tier.
-        var dominators = new HashSet<Guid>(await db.CaGroupMembers
-            .Where(m => m.Group.IsSystemGroup)
-            .Select(m => m.UserId)
-            .ToListAsync());
+        var holdings = await ControlledTierResolver.LoadHoldingsAsync(db, null, exclusions);
+        var candidates = holdings.Where(h => h.Tier.Dominates(minted) && h.UserId != excludeUserId).ToList();
+        if (actorUserId is Guid actor && !(actorIsRequestUser ? await IsSuperAsync(actor) : await IsSuperAccountAsync(actor)))
+            candidates.RemoveAll(h => h.UserId == actor);
+        if (candidates.Count == 0) return 0;
 
-        // For a CA-scoped change, that CA's Administrator-group members also dominate.
-        if (minted.CaId != null)
-        {
-            foreach (var u in await db.CaGroupMembers
-                .Where(m => !m.Group.IsSystemGroup
-                    && m.Group.CertificateAuthorityId == minted.CaId
-                    && m.Group.TemplateName == "Administrator")
-                .Select(m => m.UserId).ToListAsync())
-                dominators.Add(u);
-        }
+        var userIds = candidates.Select(h => h.UserId).Distinct().ToList();
+        var usable = (await db.Users.AsNoTracking()
+                .Where(u => userIds.Contains(u.Id) && u.IsActive && !u.IsLocked && !u.IsServiceIdentity)
+                .Select(u => u.Id)
+                .ToListAsync())
+            .ToHashSet();
 
-        // Org admins of the affected tenant dominate org- and CA-scoped changes within their org.
-        if (minted.TenantId is Guid tid)
-        {
-            foreach (var u in await db.CaGroupMembers
-                .Where(m => !m.Group.IsSystemGroup
-                    && m.Group.CertificateAuthorityId == null
-                    && m.Group.TenantId == tid
-                    && m.Group.TemplateName == "Administrator")
-                .Select(m => m.UserId).ToListAsync())
-                dominators.Add(u);
+        var caIds = candidates.Where(h => h.Tier.CaId != null).Select(h => h.Tier.CaId!.Value).Distinct().ToList();
+        var liveCas = (await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(c => caIds.Contains(c.Id) && !c.IsDeleted)
+                .Select(c => c.Id)
+                .ToListAsync())
+            .ToHashSet();
+        var tenantIds = candidates.Where(h => h.Tier.TenantId != null).Select(h => h.Tier.TenantId!.Value).Distinct().ToList();
+        var liveTenants = (await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => tenantIds.Contains(t.Id) && !t.IsDeleted)
+                .Select(t => t.Id)
+                .ToListAsync())
+            .ToHashSet();
 
-            // For an org-operator change, same-org operators also dominate.
-            if (minted.CaId == null && minted.Level == ControlledTierLevel.OrgOperator)
-            {
-                foreach (var u in await db.CaGroupMembers
-                    .Where(m => !m.Group.IsSystemGroup
-                        && m.Group.CertificateAuthorityId == null
-                        && m.Group.TenantId == tid
-                        && m.Group.TemplateName == "Operator")
-                    .Select(m => m.UserId).ToListAsync())
-                    dominators.Add(u);
-            }
-        }
-
-        dominators.Remove(excludeUserId);
-        return dominators.Count;
+        return candidates
+            .Where(h => usable.Contains(h.UserId)
+                && (h.Tier.CaId is not Guid ca || liveCas.Contains(ca))
+                && (h.Tier.TenantId is not Guid t || liveTenants.Contains(t)))
+            .Select(h => h.UserId)
+            .Distinct()
+            .Count();
     }
+
+    /// <inheritdoc />
+    public async Task<bool> CanAdministerAccountAsync(Guid actorUserId, Guid targetUserId)
+    {
+        if (await IsSuperAsync(actorUserId)) return true;
+
+        var targetTiers = await GetUserTiersAsync(targetUserId);
+        if (targetTiers.Any(t => t.Level == ControlledTierLevel.SystemSuper)) return false;
+        var actorTiers = await GetActorTiersAsync(actorUserId);
+
+        // System-group members without a tier (system operators and auditors) hold system-wide
+        // rights, including key-ceremony approval for every tenant; only system-admin administers them.
+        if (await db.CaGroupMembers.AnyAsync(m => m.UserId == targetUserId && m.Group.IsSystemGroup)
+            && !actorTiers.Any(a => a.Level == ControlledTierLevel.SystemAdmin))
+            return false;
+
+        return targetTiers.All(t => actorTiers.Any(a => a.Dominates(t)));
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> IsLastControlledSourceForRoleAsync(
+        Guid roleId, ControlledTier minted, Guid? actorUserId = null, IReadOnlyCollection<string>? removedCapabilities = null)
+        => await CountDominatorsAsync(minted, Guid.Empty, actorUserId,
+            new ControlledSourceExclusions { RoleId = roleId, RoleCapabilities = removedCapabilities }) == 0;
 
     /// <inheritdoc />
     public async Task<bool> CanInitiateAsync(Guid userId, ControlledTier minted)
     {
-        var tiers = await GetUserTiersAsync(userId);
+        var tiers = await GetActorTiersAsync(userId);
         return tiers.Any(t => t.Dominates(minted));
     }
 
@@ -231,8 +272,17 @@ public class ControlledUserCeremonyService(
         if (approverUserId == p.TargetUserId) return false;
 
         var minted = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
-        var tiers = await GetUserTiersAsync(approverUserId);
+        var tiers = await GetActorTiersAsync(approverUserId);
         return tiers.Any(t => t.Dominates(minted));
+    }
+
+    /// <inheritdoc />
+    public (Guid? TargetUserId, ControlledTier? Minted) DescribeCeremony(KeyCeremonyEntity ceremony)
+    {
+        var p = Deserialize(ceremony);
+        if (p == null) return (null, null);
+        return (p.TargetUserId == Guid.Empty ? null : p.TargetUserId,
+            new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId });
     }
 
     /// <inheritdoc />
@@ -262,7 +312,12 @@ public class ControlledUserCeremonyService(
         return InitiateChangeAsync(parameters, minted, initiatorUserId, initiatorUsername);
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Opens a <c>ControlledUserChange</c> ceremony for <paramref name="parameters"/>, recording the
+    /// minted tier in the parameters and stamping the ceremony's tenant from the tier's scope (the
+    /// tier's tenant, or its CA's tenant) so scoped approvers can reach it. System tiers leave the
+    /// tenant null, which keeps the ceremony system-only.
+    /// </summary>
     public async Task<Guid> InitiateChangeAsync(
         ControlledUserChangeParameters parameters,
         ControlledTier minted,
@@ -291,6 +346,7 @@ public class ControlledUserCeremonyService(
         var tracked = await db.KeyCeremonies.FindAsync(ceremony.Id)
             ?? throw new InvalidOperationException($"Newly-created ceremony {ceremony.Id} could not be re-loaded.");
         tracked.CeremonyType = CeremonyType.ControlledUserChange;
+        tracked.TenantId = await ScopeTenantAsync(minted);
         await db.SaveChangesAsync();
 
         logger.LogInformation(
@@ -318,17 +374,61 @@ public class ControlledUserCeremonyService(
         };
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Applies an approved controlled-user ceremony. Inside a transaction it locks the ceremony row
+    /// and re-reads its status, so of two concurrent executes only one finds it Approved; the other
+    /// gets <see cref="CeremonyNotExecutableException"/>. It then takes the role lock where a role is
+    /// involved and recomputes the tier the change confers or removes now. When that tier is higher
+    /// than the approved one, or the recorded approvals no longer hold enough active approvers
+    /// dominating it, the ceremony is marked Expired and a
+    /// <see cref="ControlledUserChangeRefusedException"/> is thrown. A demotion or deletion that would
+    /// leave its scope without a dominating user is refused the same way but stays Approved.
+    /// Otherwise the ceremony is marked Executed in the same transaction as the change.
+    /// </summary>
     public async Task<ControlledUserChangeResult> ApplyApprovedAsync(Guid ceremonyId)
     {
+        await using var tx = db.Database.CurrentTransaction == null ? await db.Database.BeginTransactionAsync() : null;
+
+        await ModularCA.Core.Services.KeyCeremonyService.LockRowAsync(db, ceremonyId);
         var ceremony = await db.KeyCeremonies.FindAsync(ceremonyId)
             ?? throw new InvalidOperationException($"Ceremony {ceremonyId} not found.");
+        await db.Entry(ceremony).ReloadAsync();
 
         if (ceremony.Status != "Approved")
-            throw new InvalidOperationException($"Ceremony must be Approved to apply (current: {ceremony.Status}).");
+            throw new CeremonyNotExecutableException(ceremonyId, ceremony.Status);
 
         var p = Deserialize(ceremony)
             ?? throw new InvalidOperationException($"Ceremony {ceremonyId} parameters could not be deserialized.");
+
+        var approved = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
+        var (current, stale) = await RecomputeTierAsync(p);
+        if (stale == null && current is { } now && !approved.Dominates(now))
+            stale = "it now confers a higher privilege tier than the one approved";
+        if (stale == null && !await ApprovalsStillCoverAsync(ceremony, p, approved, current))
+            stale = "the recorded approvals no longer include enough active approvers who dominate it";
+        if (stale != null)
+        {
+            ceremony.Status = "Expired";
+            await db.SaveChangesAsync();
+            if (tx != null) await tx.CommitAsync();
+            logger.LogWarning("Refused ControlledUserChange ceremony {CeremonyId} at execute: {Reason}.", ceremonyId, stale);
+            throw new ControlledUserChangeRefusedException(
+                $"The privilege changed after approval ({stale}); start a new ceremony.", ceremonyExpired: true);
+        }
+
+        if (current is { } removed && p.ChangeType is "RevokeCapability" or "UnassignRole" or "RemoveGroupMember" or "DeleteUser"
+            && await CountDominatorsAsync(removed, p.TargetUserId, ceremony.InitiatedByUserId,
+                new ControlledSourceExclusions { RoleAssignmentId = p.ChangeType == "UnassignRole" ? p.RecordId : null },
+                actorIsRequestUser: false) == 0)
+        {
+            if (tx != null) await tx.RollbackAsync();
+            throw new ControlledUserChangeRefusedException(
+                "Refusing this change: it would remove the last controlled user of this scope.", ceremonyExpired: false);
+        }
+
+        ceremony.Status = "Executed";
+        ceremony.ExecutedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
 
         switch (p.ChangeType)
         {
@@ -337,12 +437,13 @@ public class ControlledUserCeremonyService(
                     if (string.IsNullOrWhiteSpace(p.Capability))
                         throw new InvalidOperationException($"Ceremony {ceremonyId} has no capability to grant.");
 
-                    // Idempotency: skip if an identical grant already exists.
+                    // A CA-scoped grant is effective on its CA whatever tenant it records.
                     var exists = await db.UserCapabilityGrants.AnyAsync(g =>
                         g.UserId == p.TargetUserId
                         && g.Capability == p.Capability
-                        && g.TenantId == p.TenantId
-                        && g.CertificateAuthorityId == p.CertificateAuthorityId
+                        && (p.CertificateAuthorityId != null
+                            ? g.CertificateAuthorityId == p.CertificateAuthorityId
+                            : g.CertificateAuthorityId == null && g.TenantId == p.TenantId)
                         && g.ResourceType == p.ResourceType
                         && g.ResourceId == p.ResourceId);
 
@@ -461,11 +562,150 @@ public class ControlledUserCeremonyService(
                 throw new InvalidOperationException($"Unsupported controlled-user change type '{p.ChangeType}'.");
         }
 
+        if (tx != null) await tx.CommitAsync();
+
         logger.LogInformation(
             "Applied ControlledUserChange ceremony {CeremonyId}: {ChangeType} for user {TargetUserId}.",
             ceremonyId, p.ChangeType, p.TargetUserId);
 
         return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.TenantId, p.CertificateAuthorityId);
+    }
+
+    /// <summary>
+    /// The tier the stored change would confer (promotion) or remove (demotion/deletion) against the
+    /// current state, taking the row lock on every role involved first. Null when the change no
+    /// longer touches a controlled tier (including a demotion whose record is already gone).
+    /// <c>Stale</c> is set when a record the promotion needs has disappeared.
+    /// </summary>
+    private async Task<(ControlledTier? Tier, string? Stale)> RecomputeTierAsync(ControlledUserChangeParameters p)
+    {
+        switch (p.ChangeType)
+        {
+            case "GrantCapability":
+                return (string.IsNullOrWhiteSpace(p.Capability)
+                    ? null
+                    : ClassifyCapabilityGrant(p.Capability, p.CertificateAuthorityId, p.TenantId), null);
+
+            case "AssignRole":
+                {
+                    if (p.RoleId is not Guid roleId)
+                        return (null, "the role no longer exists");
+                    // Checked under the lock: a delete that committed while we waited is seen here.
+                    await ControlledTierResolver.LockRoleAsync(db, roleId);
+                    if (!await db.Roles.AnyAsync(r => r.Id == roleId))
+                        return (null, "the role no longer exists");
+                    if (p.GroupId is Guid gid && !await db.CaGroups.AnyAsync(g => g.Id == gid))
+                        return (null, "the group no longer exists");
+                    return (await ClassifyRoleAssignmentAsync(roleId, p.CertificateAuthorityId, p.TenantId, p.GroupId), null);
+                }
+
+            case "AddGroupMember":
+                {
+                    var group = p.GroupId is Guid gid
+                        ? await db.CaGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == gid)
+                        : null;
+                    if (group == null) return (null, "the group no longer exists");
+                    await LockGroupRolesAsync(group.Id);
+                    return (await ClassifyGroupAsync(group), null);
+                }
+
+            case "RevokeCapability":
+                {
+                    var grant = p.RecordId is Guid rid
+                        ? await db.UserCapabilityGrants.AsNoTracking().FirstOrDefaultAsync(g => g.Id == rid)
+                        : null;
+                    return (grant == null ? null : ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.TenantId), null);
+                }
+
+            case "UnassignRole":
+                {
+                    var assignment = p.RecordId is Guid rid
+                        ? await db.RoleAssignments.AsNoTracking().FirstOrDefaultAsync(ra => ra.Id == rid)
+                        : null;
+                    if (assignment == null) return (null, null);
+                    await ControlledTierResolver.LockRoleAsync(db, assignment.RoleId);
+                    return (await ClassifyRoleAssignmentAsync(assignment.RoleId, assignment.CertificateAuthorityId, assignment.TenantId, assignment.GroupId), null);
+                }
+
+            case "RemoveGroupMember":
+                {
+                    var group = p.GroupId is Guid gid
+                        ? await db.CaGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == gid)
+                        : null;
+                    if (group == null || !await db.CaGroupMembers.AnyAsync(m => m.GroupId == group.Id && m.UserId == p.TargetUserId))
+                        return (null, null);
+                    await LockGroupRolesAsync(group.Id);
+                    return (await ClassifyGroupAsync(group), null);
+                }
+
+            case "DeleteUser":
+                return (await GetDeletionTierAsync(p.TargetUserId), null);
+
+            default:
+                return (null, null);
+        }
+    }
+
+    /// <summary>Takes the role lock on every role assigned to <paramref name="groupId"/>, in id order.</summary>
+    private async Task LockGroupRolesAsync(Guid groupId)
+    {
+        var roleIds = await db.RoleAssignments.AsNoTracking()
+            .Where(ra => ra.GroupId == groupId)
+            .Select(ra => ra.RoleId)
+            .Distinct()
+            .ToListAsync();
+        foreach (var roleId in roleIds.OrderBy(id => id))
+            await ControlledTierResolver.LockRoleAsync(db, roleId);
+    }
+
+    /// <summary>
+    /// True when the ceremony's recorded approvals still include at least
+    /// <c>RequiredApprovals</c> distinct approvers, other than the initiator and the target, whose
+    /// accounts can act (exist, active, not locked, not service identities) and who hold a tier
+    /// dominating both the <paramref name="approved"/> tier and the <paramref name="current"/> one.
+    /// </summary>
+    private async Task<bool> ApprovalsStillCoverAsync(
+        KeyCeremonyEntity ceremony, ControlledUserChangeParameters p, ControlledTier approved, ControlledTier? current)
+    {
+        List<ModularCA.Core.Services.ApprovalRecord> records;
+        try
+        {
+            records = JsonSerializer.Deserialize<List<ModularCA.Core.Services.ApprovalRecord>>(ceremony.ApprovalsJson, JsonOpts) ?? new();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        var approverIds = records
+            .Where(r => r.Decision == "Approved" && r.UserId != ceremony.InitiatedByUserId && r.UserId != p.TargetUserId)
+            .Select(r => r.UserId)
+            .Distinct()
+            .ToList();
+        var usable = await db.Users.AsNoTracking()
+            .Where(u => approverIds.Contains(u.Id) && u.IsActive && !u.IsLocked && !u.IsServiceIdentity)
+            .Select(u => u.Id)
+            .ToListAsync();
+
+        var valid = 0;
+        foreach (var id in usable)
+        {
+            var tiers = await GetUserTiersAsync(id);
+            if (tiers.Any(t => t.Dominates(approved)) && (current is not { } c || tiers.Any(t => t.Dominates(c))))
+                valid++;
+        }
+        return valid >= Math.Max(1, ceremony.RequiredApprovals);
+    }
+
+    /// <summary>The tenant a tier is scoped to: its own tenant, else its CA's tenant; null for system tiers.</summary>
+    private async Task<Guid?> ScopeTenantAsync(ControlledTier tier)
+    {
+        if (tier.TenantId != null) return tier.TenantId;
+        if (tier.CaId is not Guid caId) return null;
+        return await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.Id == caId)
+            .Select(c => (Guid?)c.TenantId)
+            .FirstOrDefaultAsync();
     }
 
     /// <summary>

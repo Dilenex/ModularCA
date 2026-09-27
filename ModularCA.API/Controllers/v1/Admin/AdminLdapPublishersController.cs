@@ -199,7 +199,8 @@ public class AdminLdapPublishersController(
 
     /// <summary>
     /// Updates an existing LDAP publisher configuration. Non-null fields are applied;
-    /// password is skipped when sent as "***". Requires step-up MFA
+    /// password is skipped when sent as "***". Changing Host, Port or UseSsl while a password is
+    /// stored needs the password re-entered (400). Requires step-up MFA
     /// (<see cref="StepUpOps.UpdateLdapPublisher"/>) and enforces the tenant fence.
     /// Audit emits before/after field snapshots on success and access-failure on cross-tenant
     /// or missing-publisher paths. The password value is never written to the audit payload.
@@ -263,6 +264,13 @@ public class AdminLdapPublishersController(
             entity.UpdateInterval,
             entity.Enabled,
         };
+
+        // The stored bind password never follows the publisher to a server the caller just chose.
+        var endpointChanged = (request.Host != null && !string.Equals(request.Host, entity.Host, StringComparison.OrdinalIgnoreCase))
+                              || (request.Port.HasValue && request.Port.Value != entity.Port)
+                              || (request.UseSsl.HasValue && request.UseSsl.Value != entity.UseSsl);
+        if (endpointChanged && !string.IsNullOrEmpty(entity.Password) && (request.Password == null || request.Password == "***"))
+            return BadRequest(new { error = "Re-enter the password when changing the server." });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Host != null) entity.Host = request.Host;

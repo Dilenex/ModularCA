@@ -105,7 +105,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // Source 4: role grants via user role assignments — match scope
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.UserId == userId
-                && ra.GroupId == null
+                && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
                 && (
                     // Global assignment
@@ -334,7 +334,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         // User role assignment (global scope)
         if (await _db.RoleAssignments
             .AnyAsync(ra => ra.UserId == userId
-                && ra.GroupId == null
+                && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.TenantId == null && ra.CertificateAuthorityId == null
                 && ra.Role.Capabilities.Any(rc => rc.Capability == Capabilities.SystemManage && rc.ResourceType == null)))
             return true;

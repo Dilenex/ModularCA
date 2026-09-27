@@ -8,7 +8,7 @@ namespace ModularCA.Auth.Interfaces
     public interface IUserManagementService
     {
         /// <summary>
-        /// Creates a new user and assigns them to the specified groups (or system-auditor by default).
+        /// Creates a new user and assigns them to the specified groups (none when no groups are given).
         /// </summary>
         Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request);
 

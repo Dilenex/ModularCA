@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
+using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
@@ -81,6 +82,8 @@ public class AdminRoleAssignmentController(
     /// Creates a new role assignment. Exactly one of UserId or GroupId must be provided.
     /// Validates that the referenced role exists before creating the assignment. Requires step-up
     /// MFA because a fresh assignment immediately grants every capability bound to the role.
+    /// Classification runs under a row lock on the role (shared with role capability changes) so a
+    /// concurrently added controlled capability cannot slip past the controlled-user gate.
     /// </summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.AssignRole)]
@@ -159,9 +162,17 @@ public class AdminRoleAssignmentController(
         // Controlled-user gate: assigning a role that carries a controlled capability (e.g.
         // system.manage) promotes a controlled user/group. A non-super must route it through a
         // ControlledUserChange ceremony; system-super assigns directly.
-        var minted = await _controlledUserSvc.ClassifyRoleAssignmentAsync(request.RoleId, request.CertificateAuthorityId);
+        // The role row is locked before classifying, and a capability change on the role takes the
+        // same lock, so the role cannot gain a controlled capability between this classification and
+        // the insert below.
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        await ControlledTierResolver.LockRoleAsync(_db, request.RoleId);
+        var minted = await _controlledUserSvc.ClassifyRoleAssignmentAsync(
+            request.RoleId, request.CertificateAuthorityId, request.TenantId, request.GroupId);
         if (minted != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
+            await tx.CommitAsync();
+
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, minted.Value))
                 return StatusCode(403, new { error = "You cannot assign a role above your own tier. A higher-tier admin must initiate this." });
 
@@ -205,6 +216,7 @@ public class AdminRoleAssignmentController(
 
         _db.RoleAssignments.Add(assignment);
         await _db.SaveChangesAsync();
+        await tx.CommitAsync();
 
         await _audit.LogAsync(
             AuditActionType.ConfigUpdated,
@@ -240,6 +252,8 @@ public class AdminRoleAssignmentController(
     /// <summary>
     /// Revokes (deletes) a role assignment by its ID. Requires step-up MFA because the
     /// revocation can immediately strip the target principal of role-derived capabilities.
+    /// Removing a controlled assignment is refused for every caller when no one other than the
+    /// caller would still dominate its tier; otherwise non-super opens a ceremony.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.UnassignRole, "id")]
@@ -258,12 +272,14 @@ public class AdminRoleAssignmentController(
 
         // Controlled-user gate (demote): unassigning a role that carries a controlled capability
         // demotes a controlled user — non-super routes it through a ceremony, with the last-user guard.
-        var demoteTier = await _controlledUserSvc.ClassifyRoleAssignmentAsync(assignment.RoleId, assignment.CertificateAuthorityId);
+        var demoteTier = await _controlledUserSvc.ClassifyRoleAssignmentAsync(
+            assignment.RoleId, assignment.CertificateAuthorityId, assignment.TenantId, assignment.GroupId);
+        if (demoteTier != null && _currentUser.User != null
+            && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, assignment.UserId ?? Guid.Empty,
+                actorUserId: _currentUser.User.Id, ignoreRoleAssignmentId: assignment.Id) == 0)
+            return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
         if (demoteTier != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
-            if (assignment.UserId.HasValue
-                && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, assignment.UserId.Value) == 0)
-                return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, demoteTier.Value))
                 return StatusCode(403, new { error = "You cannot demote a privilege above your own tier." });
 

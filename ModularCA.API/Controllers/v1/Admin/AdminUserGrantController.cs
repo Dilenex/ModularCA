@@ -107,7 +107,7 @@ public class AdminUserGrantController(
         // promotes a controlled user. A system-super applies it directly (falls through); any
         // other actor must route it through a ControlledUserChange ceremony approved by a quorum
         // that dominates the affected tier.
-        var minted = _controlledUserSvc.ClassifyCapabilityGrant(request.Capability, request.CertificateAuthorityId);
+        var minted = _controlledUserSvc.ClassifyCapabilityGrant(request.Capability, request.CertificateAuthorityId, request.TenantId);
         if (minted != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, minted.Value))
@@ -166,7 +166,9 @@ public class AdminUserGrantController(
 
     /// <summary>
     /// Revokes (deletes) a direct user capability grant by its ID. Requires step-up MFA because
-    /// the revocation can lock another admin out of resources mid-session.
+    /// the revocation can lock another admin out of resources mid-session. Revoking a controlled
+    /// grant is refused for every caller when no one other than the caller and the grantee would
+    /// still dominate its tier; otherwise non-super opens a ceremony.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.RevokeUserCapability, "id")]
@@ -183,11 +185,12 @@ public class AdminUserGrantController(
         // Controlled-user gate (demote): revoking a controlled capability demotes a controlled
         // user — non-super must route it through a ceremony, and we hard-refuse removing the last
         // dominating controlled user of the scope.
-        var demoteTier = _controlledUserSvc.ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId);
+        var demoteTier = _controlledUserSvc.ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.TenantId);
+        if (demoteTier != null && _currentUser.User != null
+            && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, grant.UserId, actorUserId: _currentUser.User.Id) == 0)
+            return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
         if (demoteTier != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
-            if (await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, grant.UserId) == 0)
-                return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, demoteTier.Value))
                 return StatusCode(403, new { error = "You cannot demote a privilege above your own tier." });
 

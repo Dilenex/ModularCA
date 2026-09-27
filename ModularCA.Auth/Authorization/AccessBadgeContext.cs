@@ -51,7 +51,8 @@ public sealed class AccessBadgeContext : IAccessBadgeContext, IWornBadgeProvider
     {
         var http = _http?.HttpContext;
         if (http == null) return null;
-        if (http.Items.TryGetValue(ItemsKey, out var cached)) return cached as AccessBadgeFilter;
+        var itemsKey = $"{ItemsKey}:{userId:N}";
+        if (http.Items.TryGetValue(itemsKey, out var cached)) return cached as AccessBadgeFilter;
 
         AccessBadgeFilter? filter = null;
         if (BadgeId is Guid badgeId)
@@ -70,7 +71,7 @@ public sealed class AccessBadgeContext : IAccessBadgeContext, IWornBadgeProvider
                     badge.Sources.Where(s => s.Kind == AccessBadgeSourceKind.CapabilityGrant).Select(s => s.SourceId).ToList());
         }
 
-        http.Items[ItemsKey] = filter;
+        http.Items[itemsKey] = filter;
         return filter;
     }
 }

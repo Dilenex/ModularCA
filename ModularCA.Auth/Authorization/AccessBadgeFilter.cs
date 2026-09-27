@@ -32,7 +32,8 @@ public interface IAccessBadgeContext
 {
     /// <summary>
     /// The filter for the badge the current request wears, or <c>null</c> when badgeless or
-    /// outside an HTTP request (scheduled jobs, protocol clients). Cached per request.
+    /// outside an HTTP request (scheduled jobs, protocol clients). Cached per request and user; while
+    /// a badge is worn, any user other than the token's owner gets <see cref="AccessBadgeFilter.Nothing"/>.
     /// </summary>
     Task<AccessBadgeFilter?> GetWornAsync(Guid userId);
 }

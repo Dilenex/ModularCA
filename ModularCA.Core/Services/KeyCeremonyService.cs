@@ -205,7 +205,7 @@ public class KeyCeremonyService : IKeyCeremonyService
             ?? throw new InvalidOperationException("Ceremony not found.");
 
         if (ceremony.Status != "Approved")
-            throw new InvalidOperationException($"Ceremony must be in Approved status to execute (current: {ceremony.Status}).");
+            throw new CeremonyNotExecutableException(ceremonyId, ceremony.Status);
 
         ceremony.Status = "Executed";
         ceremony.ExecutedAt = DateTime.UtcNow;
@@ -218,6 +218,69 @@ public class KeyCeremonyService : IKeyCeremonyService
             "KeyCeremony",
             ceremonyId.ToString(),
             new { ceremony.OperationType, ceremony.TargetEntityId });
+    }
+
+    /// <summary>
+    /// Takes a PostgreSQL session advisory lock keyed on the ceremony, on this context's connection,
+    /// which stays open until the handle is disposed. An advisory lock rather than a row lock, because
+    /// CA creation runs outside any one transaction and the signer must still read the ceremony as
+    /// Approved while it does. Providers without advisory locks (unit tests) get a no-op handle.
+    /// </summary>
+    public async Task<IAsyncDisposable?> TryAcquireExecutionLockAsync(Guid ceremonyId)
+    {
+        if (!_db.Database.IsNpgsql())
+            return new ExecutionLock(null);
+
+        var key = ExecutionLockKey(ceremonyId);
+        await _db.Database.OpenConnectionAsync();
+        var acquired = await _db.Database
+            .SqlQuery<bool>($"SELECT pg_try_advisory_lock({ExecutionLockNamespace}, {key}) AS \"Value\"")
+            .SingleAsync();
+        if (!acquired)
+        {
+            await _db.Database.CloseConnectionAsync();
+            return null;
+        }
+        return new ExecutionLock(async () =>
+        {
+            try
+            {
+                await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_unlock({ExecutionLockNamespace}, {key})");
+            }
+            finally
+            {
+                await _db.Database.CloseConnectionAsync();
+            }
+        });
+    }
+
+    private const int ExecutionLockNamespace = 0x4B434558;
+
+    private static int ExecutionLockKey(Guid ceremonyId)
+    {
+        var bytes = ceremonyId.ToByteArray();
+        return BitConverter.ToInt32(bytes, 0) ^ BitConverter.ToInt32(bytes, 4) ^ BitConverter.ToInt32(bytes, 8) ^ BitConverter.ToInt32(bytes, 12);
+    }
+
+    private sealed class ExecutionLock(Func<Task>? release) : IAsyncDisposable
+    {
+        private Func<Task>? _release = release;
+
+        public async ValueTask DisposeAsync()
+        {
+            var release = Interlocked.Exchange(ref _release, null);
+            if (release != null) await release();
+        }
+    }
+
+    /// <summary>
+    /// Takes a row lock on the ceremony for the rest of the current transaction (PostgreSQL only), so
+    /// a second execute waits and then reads the first one's committed status. A no-op elsewhere.
+    /// </summary>
+    public static async Task LockRowAsync(ModularCADbContext db, Guid ceremonyId)
+    {
+        if (db.Database.IsNpgsql())
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM \"KeyCeremonies\" WHERE \"Id\" = {ceremonyId} FOR UPDATE");
     }
 
     /// <inheritdoc />

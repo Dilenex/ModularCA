@@ -4,6 +4,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Hosting;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Enums;
@@ -314,6 +315,15 @@ public class AdminConfigController(
         return Ok(new { message = "Security config updated", config = _config.Security });
     }
 
+    /// <summary>
+    /// Updates the LDAP authentication and group-sync configuration. Step-up gated. Changing the
+    /// server, bind identity, search settings or group mappings needs <c>system.manage</c> (403
+    /// otherwise): whoever controls the directory can sign in as any LDAP user, super included.
+    /// Operators may still toggle Enabled, GroupSyncEnabled and AutoProvisionUsers. Changing the
+    /// Host, Port or UseSsl while a bind password is stored needs the password re-entered (400), so
+    /// the stored secret is never sent to a new server. New or changed group mappings that target a
+    /// system or privilege-controlled group are rejected with 400.
+    /// </summary>
     [HttpPut("ldap-auth")]
     // Step-up parity with every other security-relevant section. Omitting it here was
     // account takeover, not merely an inconsistency: LdapAuthService re-reads this config per
@@ -321,8 +331,33 @@ public class AdminConfigController(
     // successful LDAP bind as proof of the local password. Pointing Host at an attacker-
     // controlled directory therefore yields any user's JWT.
     [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update)
+    public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update, [FromServices] ILdapGroupSyncService ldapSync,
+        [FromServices] ICaGroupAuthorizationService groupAuth)
     {
+        var cur = _config.LdapAuth;
+        var newBindPassword = update.BindPassword != null && !IsRedactionSentinel(update.BindPassword);
+        var endpointChanged = (!string.IsNullOrEmpty(update.Host) && !string.Equals(update.Host, cur.Host, StringComparison.OrdinalIgnoreCase))
+                              || (update.Port > 0 && update.Port != cur.Port)
+                              || update.UseSsl != cur.UseSsl;
+        var identityChanged = endpointChanged
+                              || Sets(update.SearchBaseDn, cur.SearchBaseDn)
+                              || Sets(update.SearchFilter, cur.SearchFilter)
+                              || (update.BindDn != null && update.BindDn != cur.BindDn)
+                              || (newBindPassword && update.BindPassword != cur.BindPassword)
+                              || Sets(update.GroupSearchBaseDn, cur.GroupSearchBaseDn)
+                              || Sets(update.GroupSearchFilter, cur.GroupSearchFilter)
+                              || Sets(update.GroupMemberAttribute, cur.GroupMemberAttribute)
+                              || (update.GroupToRoleMappings != null && update.GroupToRoleMappings != cur.GroupToRoleMappings);
+        if (identityChanged && await RequireSystemAdminAsync(groupAuth,
+                "Changing the LDAP server, bind identity, search settings or group mappings requires system.manage.") is { } denied)
+            return denied;
+        if (endpointChanged && !newBindPassword && !string.IsNullOrEmpty(cur.BindPassword))
+            return BadRequest(new { error = "Re-enter the bind password when changing the server." });
+
+        if (update.GroupToRoleMappings != null
+            && await ldapSync.ValidateMappingsAsync(update.GroupToRoleMappings, cur.GroupToRoleMappings) is { } mappingError)
+            return BadRequest(new { error = mappingError });
+
         _config.LdapAuth.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.Host)) _config.LdapAuth.Host = update.Host;
         if (update.Port > 0) _config.LdapAuth.Port = update.Port;
@@ -343,9 +378,28 @@ public class AdminConfigController(
         return Ok(new { message = "LDAP auth config updated", enabled = _config.LdapAuth.Enabled });
     }
 
+    /// <summary>
+    /// Updates the outbound email configuration. Changing the SMTP host or port, or turning TLS off,
+    /// while a password is stored, or the OAuth2 token URL while a client secret is stored, needs that
+    /// secret re-entered (400), so a stored secret is never delivered to a server the caller just
+    /// chose or sent in the clear.
+    /// </summary>
     [HttpPut("email")]
     public async Task<IActionResult> UpdateEmail([FromBody] EmailConfigUpdateRequest update)
     {
+        var smtpChanged = (!string.IsNullOrEmpty(update.SmtpHost) && !string.Equals(update.SmtpHost, _config.Email.SmtpHost, StringComparison.OrdinalIgnoreCase))
+                          || (update.SmtpPort > 0 && update.SmtpPort != _config.Email.SmtpPort);
+        var passwordMissing = !string.IsNullOrEmpty(_config.Email.Password)
+                              && (update.Password == null || IsRedactionSentinel(update.Password));
+        if (smtpChanged && passwordMissing)
+            return BadRequest(new { error = "Re-enter the password when changing the server." });
+        if (_config.Email.UseTls && !update.UseTls && passwordMissing)
+            return BadRequest(new { error = "Re-enter the password when changing the server's security." });
+        var tokenUrlChanged = update.OAuth2TokenUrl != null && update.OAuth2TokenUrl != _config.Email.OAuth2TokenUrl;
+        if (tokenUrlChanged && !string.IsNullOrEmpty(_config.Email.OAuth2ClientSecret)
+            && (update.OAuth2ClientSecret == null || IsRedactionSentinel(update.OAuth2ClientSecret)))
+            return BadRequest(new { error = "Re-enter the OAuth2 client secret when changing the token URL." });
+
         _config.Email.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.SmtpHost)) _config.Email.SmtpHost = update.SmtpHost;
         if (update.SmtpPort > 0) _config.Email.SmtpPort = update.SmtpPort;
@@ -825,6 +879,24 @@ public class AdminConfigController(
     /// </para>
     /// </summary>
     private static bool IsRedactionSentinel(string? value) => value is "***" or "(env)";
+
+    /// <summary>
+    /// True when a partial-update field that is applied only when non-empty would change the stored value.
+    /// </summary>
+    private static bool Sets(string? incoming, string? current) =>
+        !string.IsNullOrEmpty(incoming) && !string.Equals(incoming, current, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 403 with <paramref name="error"/> unless the caller holds <c>system.manage</c> at system scope;
+    /// null when they do.
+    /// </summary>
+    private async Task<IActionResult?> RequireSystemAdminAsync(ICaGroupAuthorizationService groupAuth, string error)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (_currentUser.User != null && await groupAuth.IsSystemAdminAsync(_currentUser.User.Id))
+            return null;
+        return StatusCode(403, new { error });
+    }
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -39,7 +40,7 @@ public sealed record ServiceIdentitySpec(
 /// existing authorization check works on them unchanged because they are users; every sign-in
 /// path refuses them because <see cref="UserEntity.IsServiceIdentity"/> is set.
 /// </summary>
-public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth)
+public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth, IControlledUserCeremonyService? controlledUsers = null)
 {
     /// <summary>The synthetic mail domain given to service identities, which have no mailbox.</summary>
     public const string MailDomain = "service-identity.invalid";
@@ -101,7 +102,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         => db.Users.AsNoTracking().Include(u => u.GroupMemberships).ThenInclude(m => m.Group)
             .FirstOrDefaultAsync(u => u.Id == id && u.IsServiceIdentity);
 
-    /// <summary>Creates an identity in the caller's scope with the requested groups. No password is ever set.</summary>
+    /// <summary>Creates an identity in the caller's scope with the requested groups. No password is ever set. Controlled groups need system-super.</summary>
     public async Task<UserEntity> CreateAsync(Guid callerId, ServiceIdentitySpec spec)
     {
         var username = NormalizeUsername(spec.Username);
@@ -112,6 +113,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
             throw new InvalidOperationException($"Username '{username}' is taken.");
 
         var groups = await AssignableGroupsAsync(callerId, scope, spec.GroupIds);
+        await EnsureMayChangeControlledMembershipAsync(callerId, groups);
 
         var user = new UserEntity
         {
@@ -150,7 +152,8 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
 
     /// <summary>
     /// Replaces the identity's group memberships. Every group added or removed must fit the
-    /// identity's scope and be one the caller administers.
+    /// identity's scope and be one the caller administers; adding or removing a controlled group
+    /// needs system-super.
     /// </summary>
     public async Task<UserEntity> SetGroupsAsync(Guid callerId, Guid id, IReadOnlyList<Guid> groupIds)
     {
@@ -162,6 +165,10 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var wanted = await AssignableGroupsAsync(callerId, scope, groupIds);
         var wantedIds = wanted.Select(g => g.Id).ToHashSet();
         var current = await db.CaGroupMembers.Include(m => m.Group).Where(m => m.UserId == id).ToListAsync();
+        var currentIds = current.Select(m => m.GroupId).ToHashSet();
+        await EnsureMayChangeControlledMembershipAsync(callerId,
+            current.Where(m => !wantedIds.Contains(m.GroupId) && m.Group != null).Select(m => m.Group!)
+                .Concat(wanted.Where(g => !currentIds.Contains(g.Id))));
 
         foreach (var m in current.Where(m => !wantedIds.Contains(m.GroupId)))
         {
@@ -169,7 +176,6 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
                 throw new UnauthorizedAccessException($"You cannot remove membership of '{m.Group.DisplayName}'.");
             db.CaGroupMembers.Remove(m);
         }
-        var currentIds = current.Select(m => m.GroupId).ToHashSet();
         foreach (var g in wanted.Where(g => !currentIds.Contains(g.Id)))
             db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = g.Id, UserId = id, AddedByUserId = callerId });
 
@@ -177,7 +183,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         return (await GetAsync(id))!;
     }
 
-    /// <summary>Deletes the identity. Refused while a Kerberos realm binding acts as it.</summary>
+    /// <summary>Deletes the identity. Refused while a Kerberos realm binding acts as it, and for non-super callers while it holds a controlled group.</summary>
     public async Task DeleteAsync(Guid callerId, Guid id)
     {
         var user = await LoadAsync(id);
@@ -186,7 +192,8 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var realms = await db.KerberosRealms.Where(r => r.EnrollmentUserId == id).Select(r => r.Realm).ToListAsync();
         if (realms.Count > 0)
             throw new InvalidOperationException($"Kerberos realm {string.Join(", ", realms)} acts as this identity; point the realm elsewhere first.");
-        var memberships = await db.CaGroupMembers.Where(m => m.UserId == id).ToListAsync();
+        var memberships = await db.CaGroupMembers.Include(m => m.Group).Where(m => m.UserId == id).ToListAsync();
+        await EnsureMayChangeControlledMembershipAsync(callerId, memberships.Where(m => m.Group != null).Select(m => m.Group!));
         db.CaGroupMembers.RemoveRange(memberships);
         db.Users.Remove(user);
         await db.SaveChangesAsync();
@@ -232,6 +239,28 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
                 throw new UnauthorizedAccessException($"You do not administer group '{g.DisplayName}'.");
         }
         return groups;
+    }
+
+    /// <summary>
+    /// Adding an identity to, or removing it from, a privilege-controlled group (structure or
+    /// capability, see <see cref="ControlledTierResolver.ClassifyGroupAsync"/>) is reserved to
+    /// system-super (as the caller's worn badge allows); anyone else is refused with <see cref="UnauthorizedAccessException"/>. Service
+    /// identities have no ceremony path.
+    /// </summary>
+    private async Task EnsureMayChangeControlledMembershipAsync(Guid callerId, IEnumerable<CaGroupEntity> changedGroups)
+    {
+        CaGroupEntity? controlled = null;
+        foreach (var g in changedGroups)
+        {
+            if (await ControlledTierResolver.ClassifyGroupAsync(db, g) != null) { controlled = g; break; }
+        }
+        if (controlled == null) return;
+        var isSuper = controlledUsers != null
+            ? await controlledUsers.IsSuperAsync(callerId)
+            : await db.CaGroupMembers.AnyAsync(m => m.UserId == callerId && m.Group.IsSystemTierSuper);
+        if (isSuper) return;
+        throw new UnauthorizedAccessException(
+            $"Group '{controlled.DisplayName}' confers a privileged tier; only a system-super can add a service identity to it, remove one from it, or delete an identity that holds it.");
     }
 
     /// <summary>System groups are never assignable here; otherwise ca.manage on the group's CA, or tenant-wide for its tenant.</summary>
