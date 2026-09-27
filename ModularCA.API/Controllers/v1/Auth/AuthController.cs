@@ -112,6 +112,10 @@ namespace ModularCA.API.Controllers.v1.Auth
             return Ok(new { banner, title });
         }
 
+        /// <summary>
+        /// Password login. With a second factor enrolled, returns a pending-MFA token recorded as
+        /// password-first; otherwise issues the session.
+        /// </summary>
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] ModularCA.Auth.Models.LoginRequest request)
@@ -371,10 +375,8 @@ namespace ModularCA.API.Controllers.v1.Auth
                 // hard-coded TimeSpan.FromMinutes(5) read from a single knob.
                 var mfaToken = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
                 var mfaSessionTtl = Math.Clamp((await _securityPolicy.GetAsync()).MfaSessionTtlSeconds, 60, 900);
-                await _cache.SetStringAsync($"mfa:{mfaToken}", user.Id.ToString(), new DistributedCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(mfaSessionTtl)
-                });
+                await ModularCA.Auth.Utils.PendingMfaToken.StoreAsync(_cache, mfaToken, user.Id,
+                    ModularCA.Auth.Utils.PendingMfaToken.Password, TimeSpan.FromSeconds(mfaSessionTtl));
 
                 // Reset failed attempts
                 user.FailedLoginAttempts = 0;
@@ -516,6 +518,12 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
         }
 
+        /// <summary>
+        /// Rotates a refresh token. The DPoP proof is validated once, up front. Presenting a token
+        /// that is already revoked (a replay of a rotated token) revokes the whole family and returns 401.
+        /// The presented token is revoked by a conditional update in the same transaction that
+        /// inserts its successor, so a concurrent request that loses the race is treated as reuse.
+        /// </summary>
         [AllowAnonymous]
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh([FromBody] RefreshRequest request)
@@ -535,12 +543,11 @@ namespace ModularCA.API.Controllers.v1.Auth
             if (stored == null || stored.ExpiresAt < DateTime.UtcNow)
                 return Unauthorized(new { error = "Invalid or expired refresh token" });
 
-            // Refresh-token reuse detection (rotation). A token that is already REVOKED is being
-            // replayed — the client already rotated it, or a stolen copy is in use. If it belonged to
-            // a rotation family, revoke the whole family (fail safe). This fires only on genuine replay
-            // of a spent token — NOT on every post-rotation refresh. (Previously a normally-revoked
-            // predecessor tripped a "any revoked sibling" check, breaking the 2nd refresh of every
-            // session; that check is removed below.)
+            // Validated once: the proof's jti is single-use.
+            var dpopSvc = HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>();
+            var proofJkt = await dpopSvc.GetValidatedJktAsync(HttpContext, HttpContext.RequestAborted);
+
+            // A revoked token being replayed is theft: the whole family is revoked.
             if (stored.IsRevoked)
             {
                 if (stored.FamilyId.HasValue)
@@ -646,8 +653,6 @@ namespace ModularCA.API.Controllers.v1.Auth
             // client key at issuance (CnfJkt set), rotation requires a valid proof signed by that
             // non-extractable key — so a stolen refresh token alone cannot be used to keep the session
             // alive. Soft rollout: unbound (legacy/non-PoP) sessions skip the check until they expire.
-            var dpopSvc = HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>();
-            var proofJkt = await dpopSvc.GetValidatedJktAsync(HttpContext, HttpContext.RequestAborted);
             if (!string.IsNullOrEmpty(stored.CnfJkt))
             {
                 var popOk = proofJkt != null && string.Equals(proofJkt, stored.CnfJkt, StringComparison.Ordinal);
@@ -707,13 +712,14 @@ namespace ModularCA.API.Controllers.v1.Auth
             // the SHA-256 hash of the same plaintext.
             var newRefreshPlaintext = newRefreshToken.PlaintextTokenForClient ?? newRefreshToken.Token;
 
-            // Revoke old token
-            stored.IsRevoked = true;
-            stored.RevokedAt = DateTime.UtcNow;
-            stored.ReplacedByToken = newRefreshToken.Token;
-
-            _db.RefreshTokens.Add(newRefreshToken);
-            await _db.SaveChangesAsync();
+            if (!await ModularCA.Auth.Services.RefreshTokenRotation.RotateAsync(
+                    _db, stored.Id, stored.FamilyId, newRefreshToken, DateTime.UtcNow, HttpContext.RequestAborted))
+            {
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
+                    sourceIp: currentIpStr, success: false,
+                    errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} (concurrent rotation) — all tokens revoked");
+                return Unauthorized(new { error = "Token family compromised. Please log in again." });
+            }
 
             return Ok(new LoginResponse
             {
@@ -723,6 +729,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 MfaSetupRequired = mfaSetupNeeded ? true : null
             });
         }
+
         /// <summary>
         /// Pre-JWT password change endpoint for users who are forced to change their password
         /// on next login (e.g., first login or admin-initiated reset). Does not require a JWT
@@ -987,6 +994,10 @@ namespace ModularCA.API.Controllers.v1.Auth
             return Ok(new { message = "Logged out successfully" });
         }
 
+        /// <summary>
+        /// Client-certificate login. With TOTP or WebAuthn enrolled, returns a pending-MFA token
+        /// recorded as certificate-first, which certificate completion refuses.
+        /// </summary>
         [AllowAnonymous]
         [HttpPost("cert-login")]
         public async Task<IActionResult> CertLogin()
@@ -1078,11 +1089,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             {
                 var certMfaToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
                 var certMfaTtl = Math.Clamp((await _securityPolicy.GetAsync()).MfaSessionTtlSeconds, 60, 900);
-                await _cache.SetStringAsync($"mfa:{certMfaToken}", user.Id.ToString(),
-                    new DistributedCacheEntryOptions
-                    {
-                        AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(certMfaTtl)
-                    });
+                await ModularCA.Auth.Utils.PendingMfaToken.StoreAsync(_cache, certMfaToken, user.Id,
+                    ModularCA.Auth.Utils.PendingMfaToken.Certificate, TimeSpan.FromSeconds(certMfaTtl));
 
                 return Ok(new
                 {

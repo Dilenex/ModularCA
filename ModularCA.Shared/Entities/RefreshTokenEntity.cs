@@ -40,6 +40,7 @@ namespace ModularCA.Shared.Entities
 
         public DateTime? RevokedAt { get; set; }
 
+        /// <summary>Hash of the successor issued when this token was rotated; set only by rotation, so non-null marks revocation by rotation.</summary>
         public string? ReplacedByToken { get; set; }
 
         /// <summary>
