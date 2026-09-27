@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services.SchedulerJobs;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -92,7 +93,9 @@ public class CrlService : ICrlService
     /// Generates a new full CRL for the specified CA certificate. Signs with the CA's own
     /// public key algorithm (not the issuer's), excludes expired entries, increments the
     /// monotonic CRL number atomically, and emits the <c>IssuingDistributionPoint</c>
-    /// extension when the configuration scopes over a subset. Emits an
+    /// extension when the configuration scopes over a subset. Covers certificates issued under the
+    /// CA's current certificate and any superseded certificate of the same CA with the same name and
+    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>). Emits an
     /// <see cref="AuditActionType.CrlGenerated"/> audit record after successful persistence,
     /// with <c>IsDelta=false</c> in the details payload.
     /// </summary>
@@ -182,10 +185,11 @@ public class CrlService : ICrlService
             // Issuer-DN match for legacy rows pre-migration. Exclude expired entries per
             // RFC 5280 §3.3.
             var issuerDnString = caPubKey.SubjectDN.ToString();
+            var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_dbContext, caCertificateId, caPubKey, cancellationToken);
             var revokedCerts = await _dbContext.Certificates
                 .Where(c => c.Revoked
                     && c.NotAfter > now
-                    && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                    && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                         || (c.IssuerCertificateId == null && c.Issuer == issuerDnString)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
@@ -314,6 +318,7 @@ public class CrlService : ICrlService
     /// <summary>
     /// Generates a delta CRL containing only revocations since the last full CRL.
     /// RFC 5280 §5.2.4 — includes DeltaCRLIndicator and IssuingDistributionPoint extensions.
+    /// Scoped like the full CRL: the CA's certificates that share the signing key.
     /// Audit findings #26: emits an <see cref="AuditActionType.CrlGenerated"/> audit record
     /// with <c>IsDelta=true</c> in the details payload after successful persistence.
     /// </summary>
@@ -402,12 +407,13 @@ public class CrlService : ICrlService
 
             // Delta CRL includes only entries revoked AFTER the base full CRL was generated
             // and still unexpired (RFC 5280 §3.3).
+            var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_dbContext, caCertificateId, caPubKey, cancellationToken);
             var revokedSinceBase = await _dbContext.Certificates
                 .Where(c => c.Revoked
                     && c.NotAfter > now
                     && c.RevocationDate != null
                     && c.RevocationDate > baseFullCrl.GeneratedAt
-                    && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                    && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                         || (c.IssuerCertificateId == null && c.Issuer == issuerDn)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
@@ -445,7 +451,7 @@ public class CrlService : ICrlService
                     var reinstated = await _dbContext.Certificates
                         .Where(c => baseSerials.Contains(c.SerialNumber)
                             && !c.Revoked
-                            && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                            && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                                 || (c.IssuerCertificateId == null && c.Issuer == issuerDn)))
                         .Select(c => c.SerialNumber)
                         .AsNoTracking()

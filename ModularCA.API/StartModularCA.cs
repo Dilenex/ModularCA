@@ -2631,6 +2631,27 @@ if (!isSetupMode && controlActive)
     }
 }
 
+// CA-scoped access and the console's lists scope certificates by IssuerCertificateId. Rows written
+// before it was recorded have none and are invisible to CA-scoped users; link the ones whose issuer
+// can be proved (key identifier or DN, plus signature), and leave ambiguous ones alone.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var issuerScope = app.Services.CreateScope();
+        var issuerDb = issuerScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var result = await ModularCA.Core.Services.IssuerCertificateBackfill.RunAsync(issuerDb,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("IssuerBackfill"));
+        if (result.Scanned > 0)
+            Console.WriteLine($"[STARTUP] Issuer backfill: linked {result.Linked} of {result.Scanned} certificate(s); "
+                + $"{result.Ambiguous} ambiguous and {result.Unmatched} unmatched left unlinked.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Issuer backfill skipped; it runs again at the next start. {ex.Message}");
+    }
+}
+
 // Records written before the audit hash canonical form was versioned cannot be recomputed, and
 // a report that lists them as unverifiable forever is a report nobody reads. Draw the line once,
 // as the node, with a marker that says why: every chain that still has such records and has not

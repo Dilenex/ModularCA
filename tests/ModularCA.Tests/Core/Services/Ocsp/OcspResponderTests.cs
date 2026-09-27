@@ -286,6 +286,54 @@ public class OcspResponderTests
         }
     }
 
+    /// <summary>A superseded certificate of <paramref name="ca"/> over the same key and name.</summary>
+    private static CertificateEntity SupersededSameKeyRow(TestCaMaterial ca)
+    {
+        var old = ca.Issue(BigInteger.ValueOf(99), ca.SubjectDn, ca.KeyPair.Public, isCa: true);
+        return new CertificateEntity
+        {
+            CertificateId = Guid.NewGuid(),
+            SerialNumber = CertificateUtil.FormatSerialNumber(old.SerialNumber),
+            SubjectDN = ca.SubjectDn,
+            Issuer = ca.SubjectDn,
+            IsCA = true,
+            Pem = CertificateUtil.ConvertDerToPem(old.GetEncoded(), "CERTIFICATE"),
+            RawCertificate = old.GetEncoded(),
+            NotBefore = old.NotBefore,
+            NotAfter = old.NotAfter,
+        };
+    }
+
+    /// <summary>
+    /// A row the issuer backfill linked to a superseded certificate of the same CA, with the same
+    /// key, is still answered for. Matching only the CA's current certificate id reported it as
+    /// never issued (extended revoke) when good, and hid its revocation when revoked.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_row_linked_to_a_superseded_same_key_ca_certificate_is_answered(bool revoked)
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var revokedAt = new DateTime(2026, 4, 1, 8, 0, 0, DateTimeKind.Utc);
+        var (db, service) = Build(ca, (d, _) =>
+        {
+            var superseded = SupersededSameKeyRow(ca);
+            d.Certificates.Add(superseded);
+            d.Certificates.Add(Row(ca, superseded.CertificateId, LeafSerial, "CN=legacy.example.test",
+                isCa: false, revoked: revoked, revokedAt: revoked ? revokedAt : null));
+        });
+
+        using (db)
+        {
+            var status = await StatusForAsync(service, ca, LeafSerial);
+            if (revoked)
+                Assert.Equal(revokedAt, Assert.IsType<RevokedStatus>(status).RevocationTime.ToUniversalTime());
+            else
+                Assert.Null(status);
+        }
+    }
+
     // ── Nonce echo ───────────────────────────────────────────────────────────
 
     /// <summary>

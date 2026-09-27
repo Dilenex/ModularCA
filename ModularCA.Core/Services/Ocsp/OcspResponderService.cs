@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Entities;
@@ -100,7 +101,8 @@ public class OcspResponderService : IOcspService
     /// Bails out with <c>malformedRequest</c> / <c>unauthorized</c>
     /// / <c>internalError</c> before ever touching the keystore on all known
     /// abuse paths (oversized nonce, duplicate extensions, unknown hash alg,
-    /// etc.) so DoS amplification cannot force an HSM operation.
+    /// etc.) so DoS amplification cannot force an HSM operation. A serial is looked up among
+    /// certificates issued under any of the CA's certificates sharing the key the request names.
     /// </summary>
     public async Task<byte[]> ProcessOcspRequestAsync(
         byte[] derRequest,
@@ -235,6 +237,9 @@ public class OcspResponderService : IOcspService
 
         var respGen = new BasicOcspRespGenerator(signerCert2.GetPublicKey());
         var signingCaCertId = resolved.CaCertificateId;
+        var issuerScope = signingCaCertId is Guid scopeRoot
+            ? await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_db, scopeRoot, caCert, cancellationToken)
+            : [];
         var anyExtendedRevoke = false;
         var minNextUpdate = now.AddMinutes(goodTtlMinutes);
 
@@ -260,12 +265,15 @@ public class OcspResponderService : IOcspService
             //
             // Issuer scoping below already restricts answers to certificates this CA issued, so
             // dropping the filter does not widen what the responder speaks for.
-            var caIdLocal = signingCaCertId;
+            //
+            // The issuer scope is every certificate of this CA with the key the request's
+            // issuerKeyHash named, so a row the backfill linked to a superseded same-key CA
+            // certificate is still answered for rather than reported as never issued.
             var issuerDn = caCert.SubjectDN.ToString();
             var certEntity = await _db.Certificates
                 .AsNoTracking()
                 .Where(c => c.SerialNumber == serialHex)
-                .Where(c => (caIdLocal != null && c.IssuerCertificateId == caIdLocal)
+                .Where(c => (c.IssuerCertificateId != null && issuerScope.Contains(c.IssuerCertificateId.Value))
                          || (c.IssuerCertificateId == null && c.Issuer == issuerDn))
                 .FirstOrDefaultAsync(cancellationToken);
 

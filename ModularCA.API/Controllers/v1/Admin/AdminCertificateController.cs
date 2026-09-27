@@ -124,30 +124,7 @@ public class AdminCertificateController(
                 || c.Issuer.Contains(s));
         }
 
-        // The console's tenant scope: certificates issued by any CA of the tenant.
-        if (tenantId.HasValue)
-        {
-            var tenantCaCertIds = await _dbContext.CertificateAuthorities
-                .Where(ca => ca.TenantId == tenantId.Value && ca.CertificateId != null)
-                .Select(ca => ca.CertificateId!.Value)
-                .ToListAsync();
-            query = query.Where(c => c.SigningProfileId != null
-                && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && tenantCaCertIds.Contains(sp.IssuerId.Value)));
-        }
-
-        // Issuing-CA filter — certs whose signing profile is issued by this CA's certificate.
-        if (caId.HasValue)
-        {
-            var caCertId = await _dbContext.CertificateAuthorities
-                .Where(ca => ca.Id == caId.Value)
-                .Select(ca => ca.CertificateId)
-                .FirstOrDefaultAsync();
-            if (caCertId != null)
-                query = query.Where(c => c.SigningProfileId != null
-                    && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId == caCertId.Value));
-            else
-                query = query.Where(_ => false); // unknown CA → no matches
-        }
+        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
 
         // Subject filter
         if (!string.IsNullOrWhiteSpace(subject))
@@ -330,23 +307,60 @@ public class AdminCertificateController(
             .Select(a => a.CertificateId)
             .ToListAsync();
 
-        // Resolve the CertificateId values for the allowed CAs so we can match via the signing
-        // profile's IssuerId (which points at the CA's cert row).
-        var allowedCaCertIds = await _dbContext.CertificateAuthorities
-            .Where(ca => allowedCaIdList.Contains(ca.Id) && ca.CertificateId != null)
-            .Select(ca => ca.CertificateId!.Value)
-            .ToListAsync();
+        var allowedCaIds = allowedCaIdList.ToHashSet();
+        var allowedIssuerIds = (await CaCertificateOwnersAsync())
+            .Where(o => allowedCaIds.Contains(o.Value.CaId))
+            .Select(o => o.Key)
+            .ToList();
 
-        // A certificate is visible if:
-        //   (a) it was signed by a CA the user has cert.view access to, OR
-        //   (b) the user is the requestor of the request that produced it, OR
-        //   (c) the user has an explicit ACL grant at View level or higher.
+        // The CA arm mirrors CertificateAccessEvaluator.ResolveCertScope: the issuer certificate
+        // belongs to an allowed CA, current or superseded. No signing-profile fallback, so the list
+        // is never wider than CanViewCertificate; legacy rows are covered by the IssuerCertificateId
+        // backfill instead.
         return query.Where(c =>
-            (c.SigningProfileId != null && _dbContext.SigningProfiles
-                .Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && allowedCaCertIds.Contains(sp.IssuerId.Value)))
+            (c.IssuerCertificateId != null && allowedIssuerIds.Contains(c.IssuerCertificateId.Value))
             || _dbContext.CertificateRequests.Any(r => r.IssuedCertificateId == c.CertificateId && r.RequestorUserId == userId)
             || aclCertIdList.Contains(c.CertificateId));
     }
+
+    private Dictionary<Guid, IssuerChainResolver.CaOwner>? _caCertificateOwners;
+
+    /// <summary>
+    /// Every CA certificate, current or superseded, mapped to the CA that owns it
+    /// (<see cref="IssuerChainResolver.ResolveCaCertificateOwnersAsync"/>), computed once per request.
+    /// </summary>
+    private async Task<Dictionary<Guid, IssuerChainResolver.CaOwner>> CaCertificateOwnersAsync()
+        => _caCertificateOwners ??= await IssuerChainResolver.ResolveCaCertificateOwnersAsync(_dbContext);
+
+    /// <summary>
+    /// Applies the console's tenant and issuing-CA scope. A certificate is a CA's when its
+    /// <c>IssuerCertificateId</c> is any certificate that CA owns, current or superseded, as
+    /// <c>CertificateAccessEvaluator.ResolveCertScope</c> resolves it. Only legacy rows with no
+    /// <c>IssuerCertificateId</c> fall back to the signing profile; this filter only narrows the
+    /// already access-controlled query. Shared by the list, expiry-histogram and health-summary endpoints.
+    /// </summary>
+    private async Task<IQueryable<CertificateEntity>> ApplyScopeFiltersAsync(IQueryable<CertificateEntity> query, Guid? caId, Guid? tenantId)
+    {
+        if (!tenantId.HasValue && !caId.HasValue)
+            return query;
+
+        var owners = await CaCertificateOwnersAsync();
+        if (tenantId.HasValue)
+            query = WhereIssuedBy(query, owners.Where(o => o.Value.TenantId == tenantId.Value).Select(o => o.Key).ToList());
+        if (caId.HasValue)
+            query = WhereIssuedBy(query, owners.Where(o => o.Value.CaId == caId.Value).Select(o => o.Key).ToList());
+        return query;
+    }
+
+    /// <summary>
+    /// Restricts <paramref name="query"/> to certificates issued by one of <paramref name="issuerCertIds"/>,
+    /// or, for a legacy row with no issuer link, whose signing profile names one of them.
+    /// </summary>
+    private IQueryable<CertificateEntity> WhereIssuedBy(IQueryable<CertificateEntity> query, List<Guid> issuerCertIds)
+        => query.Where(c =>
+            (c.IssuerCertificateId != null && issuerCertIds.Contains(c.IssuerCertificateId.Value))
+            || (c.IssuerCertificateId == null && c.SigningProfileId != null
+                && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && issuerCertIds.Contains(sp.IssuerId.Value))));
 
     /// <summary>
     /// Orders the certificate list by the <c>sort</c> parameter (<c>field</c> / <c>-field</c>):
@@ -396,31 +410,7 @@ public class AdminCertificateController(
 
         var userId = _currentUser.User.Id;
         var query = await BuildAccessibleCertificatesQueryAsync(userId);
-
-        // The console's tenant scope: certificates issued by any CA of the tenant.
-        if (tenantId.HasValue)
-        {
-            var tenantCaCertIds = await _dbContext.CertificateAuthorities
-                .Where(ca => ca.TenantId == tenantId.Value && ca.CertificateId != null)
-                .Select(ca => ca.CertificateId!.Value)
-                .ToListAsync();
-            query = query.Where(c => c.SigningProfileId != null
-                && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && tenantCaCertIds.Contains(sp.IssuerId.Value)));
-        }
-
-        // Issuing-CA filter — same signing-profile join as the list endpoint.
-        if (caId.HasValue)
-        {
-            var caCertId = await _dbContext.CertificateAuthorities
-                .Where(ca => ca.Id == caId.Value)
-                .Select(ca => ca.CertificateId)
-                .FirstOrDefaultAsync();
-            if (caCertId != null)
-                query = query.Where(c => c.SigningProfileId != null
-                    && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId == caCertId.Value));
-            else
-                query = query.Where(_ => false); // unknown CA → no matches
-        }
+        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
 
         if (from.HasValue) query = query.Where(c => c.NotAfter >= from.Value);
         if (to.HasValue) query = query.Where(c => c.NotAfter <= to.Value);
@@ -492,6 +482,7 @@ public class AdminCertificateController(
 
     /// <summary>
     /// Downloads a certificate file by serial number in PEM or DER format based on the Accept header.
+    /// CA certificates are served too; only the public certificate is ever returned.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to download.</param>
     /// <returns>The certificate file in the requested format.</returns>
@@ -502,8 +493,7 @@ public class AdminCertificateController(
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
         var raw = await _certStore.GetCertificateInfoAsync(serial);
-        // Hide CA certs from certificate download
-        if (raw == null || raw.IsCA)
+        if (raw == null)
             return NotFound();
 
         var isAllowed = _certificateAccessEvaluator.CanViewCertificate(_currentUser.User.Id, raw.CertificateId);
@@ -521,6 +511,35 @@ public class AdminCertificateController(
         // Default: DER
         var cert = CertificateUtil.ParseFromPem(raw.Pem);
         return File(cert.GetEncoded(), "application/pkix-cert", $"{certName}.cer");
+    }
+
+    /// <summary>Downloads the PEM chain (certificate plus issuers, root only when it is the direct issuer) for any certificate the caller may view, CA certificates included.</summary>
+    /// <param name="serial">The serial number of the certificate.</param>
+    /// <returns>A PEM bundle, or 404 when the certificate is missing or not viewable.</returns>
+    [HttpGet("{serial}/chain")]
+    public async Task<IActionResult> GetCertificateChain(string serial)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+        var cert = await _certStore.GetCertificateInfoAsync(serial);
+        if (cert == null)
+            return NotFound();
+        if (!_certificateAccessEvaluator.CanViewCertificate(_currentUser.User.Id, cert.CertificateId))
+            return NotFound();
+
+        var certEntity = await _dbContext.Certificates.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId);
+        if (certEntity == null)
+            return NotFound();
+
+        var issuers = await IssuerChainResolver.ResolveIssuerCertificatesAsync(_dbContext, certEntity);
+        var chainPems = new List<string> { cert.Pem.Trim() };
+        chainPems.AddRange(issuers.Select(i => i.Pem.Trim()));
+
+        var bundle = string.Join("\n", chainPems) + "\n";
+        var certName = CertificateUtil.ParseCnFromPem(cert.Pem);
+        return File(System.Text.Encoding.UTF8.GetBytes(bundle), "application/x-pem-file", $"{certName}-fullchain.pem");
     }
 
     /// <summary>
@@ -1049,20 +1068,23 @@ public class AdminCertificateController(
     }
 
     /// <summary>
-    /// Returns an aggregate health summary across all non-CA certificates.
+    /// Returns an aggregate health summary across the non-CA certificates the caller may view,
+    /// with the same access control and caId/tenantId scope as the certificate list.
     /// Includes the grade distribution (count of A/B/C/D/F) and the average score.
     /// </summary>
+    /// <param name="caId">Optional issuing-CA filter (same semantics as the certificate list).</param>
+    /// <param name="tenantId">Optional tenant filter (same semantics as the certificate list).</param>
     /// <returns>An object with grade distribution counts and the average health score.</returns>
     [HttpGet("health/summary")]
-    public async Task<IActionResult> GetHealthSummary()
+    public async Task<IActionResult> GetHealthSummary([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
-        var certIds = await _dbContext.Certificates
-            .AsNoTracking()
-            .Where(c => !c.IsCA)
+        var query = await BuildAccessibleCertificatesQueryAsync(_currentUser.User.Id);
+        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
+        var certIds = await query
             .Select(c => c.CertificateId)
             .ToListAsync();
 

@@ -261,13 +261,9 @@ public class UserCertificateController(
     }
 
     /// <summary>
-    /// Initiates renewal of an existing certificate by creating a new CSR request
-    /// pre-filled with the same subject, SANs, cert profile, and signing profile.
-    /// The user must own the certificate and it must not be revoked.
-    /// </summary>
-    /// <summary>
     /// Downloads the PEM trust chain for an end-entity certificate, including the leaf and
-    /// all intermediate CA certificates. The self-signed root is excluded per RFC 8446 best practice.
+    /// all intermediate CA certificates. The self-signed root is excluded per RFC 8446 best
+    /// practice unless it is the direct issuer.
     /// </summary>
     /// <param name="serial">The serial number of the certificate.</param>
     /// <returns>A PEM bundle containing the certificate and its issuer chain.</returns>
@@ -301,45 +297,10 @@ public class UserCertificateController(
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId);
 
-        if (certEntity != null && certEntity.SigningProfileId != null)
+        if (certEntity != null)
         {
-            // Fetch every CA row in a single query, then walk the ParentCaId
-            // chain in memory. Previous code issued one round-trip per hop which dominates
-            // latency on deep PKIs and ACME/EST/SCEP `cacerts` responses.
-            var allCas = await _dbContext.CertificateAuthorities
-                .AsNoTracking()
-                .Include(ca => ca.Certificate)
-                .ToDictionaryAsync(ca => ca.Id);
-
-            var sigProfile = await _dbContext.SigningProfiles
-                .AsNoTracking()
-                .FirstOrDefaultAsync(sp => sp.Id == certEntity.SigningProfileId);
-
-            var issuingCa = sigProfile != null
-                ? allCas.Values.FirstOrDefault(ca => ca.CertificateId == sigProfile.IssuerId)
-                : null;
-
-            var visited = new HashSet<Guid>();
-            var directIssuerIsRoot = issuingCa?.ParentCaId == null;
-
-            while (issuingCa?.Certificate != null)
-            {
-                if (!visited.Add(issuingCa.Id))
-                    break;
-
-                // Skip root when intermediates exist; include root when it's the direct issuer
-                if (issuingCa.ParentCaId == null && !directIssuerIsRoot)
-                    break;
-
-                chainPems.Add(issuingCa.Certificate.Pem.Trim());
-
-                if (issuingCa.ParentCaId == null)
-                    break;
-
-                if (!allCas.TryGetValue(issuingCa.ParentCaId.Value, out var nextCa))
-                    break;
-                issuingCa = nextCa;
-            }
+            var issuers = await IssuerChainResolver.ResolveIssuerCertificatesAsync(_dbContext, certEntity);
+            chainPems.AddRange(issuers.Select(i => i.Pem.Trim()));
         }
 
         var bundle = string.Join("\n", chainPems) + "\n";
@@ -349,6 +310,11 @@ public class UserCertificateController(
         return File(Encoding.UTF8.GetBytes(bundle), "application/x-pem-file", fileName);
     }
 
+    /// <summary>
+    /// Initiates renewal of an existing certificate by creating a new CSR request
+    /// pre-filled with the same subject, SANs, cert profile, and signing profile.
+    /// The user must own the certificate and it must not be revoked.
+    /// </summary>
     [HttpPost("{serial}/renew")]
     public async Task<IActionResult> RenewCertificate(string serial)
     {

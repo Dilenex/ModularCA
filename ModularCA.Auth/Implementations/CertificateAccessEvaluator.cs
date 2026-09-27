@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -68,20 +69,18 @@ namespace ModularCA.Auth.Implementations
         }
 
         /// <summary>
-        /// Resolves the (CA, tenant) scope that gates a certificate. Leaf certs don't populate
-        /// <c>CertificateAuthorityId</c> (only CA certs do), so we fall back to the issuing CA via
-        /// <c>IssuerCertificateId</c> (= the CA's own <c>CertificateId</c>). Returning null here used to
-        /// collapse tenant scoping and over-grant access across tenants.
+        /// Resolves the (CA, tenant) scope that gates a certificate: the CA that owns it as a CA
+        /// certificate (current or superseded), else the CA that owns its issuer certificate
+        /// (current or superseded), per <see cref="IssuerChainResolver.OwnerOf(ModularCADbContext, CertificateEntity)"/>.
+        /// The console's list filters use the same ownership, so the two agree. Returning null
+        /// here used to collapse tenant scoping and over-grant access across tenants.
         /// </summary>
         private (Guid? caId, Guid? tenantId) ResolveCertScope(CertificateEntity cert)
         {
-            // CA certs: the cert IS a CA's own cert → scope by that CA. Leaf certs: resolve the issuing
-            // CA via IssuerCertificateId (= the CA's own CertificateId). The cert→CA navigation is a
-            // shadow FK that's never populated, which is why scope used to come back null.
-            var ca = _db.CertificateAuthorities.FirstOrDefault(a => a.CertificateId == cert.CertificateId);
-            if (ca == null && cert.IssuerCertificateId != null)
-                ca = _db.CertificateAuthorities.FirstOrDefault(a => a.CertificateId == cert.IssuerCertificateId);
-            return (ca?.Id, ca?.TenantId);
+            var owner = IssuerChainResolver.OwnerOf(_db, cert);
+            if (owner == null && cert.IssuerCertificateId is Guid issuerId && issuerId != cert.CertificateId)
+                owner = IssuerChainResolver.OwnerOf(_db, issuerId);
+            return (owner?.CaId, owner?.TenantId);
         }
 
         /// <summary>
