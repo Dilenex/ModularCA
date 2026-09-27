@@ -166,7 +166,7 @@ public class SetupDatabase
 {
     public string RootHost { get; set; } = "localhost";
     public int RootPort { get; set; } = 5432;
-    public string RootUsername { get; set; } = "root";
+    public string RootUsername { get; set; } = "postgres";
     public string RootPassword { get; set; } = string.Empty;
     public string AppDatabase { get; set; } = "modularca-app";
     public string AppUsername { get; set; } = "modularca_app";
@@ -174,11 +174,11 @@ public class SetupDatabase
     public string AuditUsername { get; set; } = "modularca_audit";
 
     /// <summary>
-    /// TLS mode for the MySQL connection selected by the operator in the setup wizard.
+    /// TLS mode for the PostgreSQL connection selected by the operator in the setup wizard.
     /// Propagates into <c>setup-database.yaml</c> and ultimately <c>db.yaml</c> so runtime
-    /// connections honor the same policy. Valid values: <c>"None"</c>, <c>"Preferred"</c>,
-    /// <c>"Required"</c>, <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to
-    /// <c>"Required"</c> to use encrypted transport on fresh installs.
+    /// connections honor the same policy. Valid values: <c>"Disable"</c>, <c>"Prefer"</c>,
+    /// <c>"Require"</c>, <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to
+    /// <c>"Require"</c> to use encrypted transport on fresh installs.
     /// </summary>
     public string SslMode { get; set; } = "Require";
 

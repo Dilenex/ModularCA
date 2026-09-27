@@ -8,8 +8,10 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { useAuth } from '../context/AuthContext';
+import { can, tenantsOf } from '../authz';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -30,6 +32,8 @@ function downloadText(content: string, filename: string) {
 const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = ({ refreshTrigger, onRefresh }) => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
+    const { capabilities } = useAuth();
+    const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
     const [keys, setKeys] = useState<any[]>([]);
     const [tenants, setTenants] = useState<any[]>([]);
     const [pendingCeremonies, setPendingCeremonies] = useState<any[]>([]);
@@ -48,12 +52,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
         Promise.all([
             apiGet<any>('/api/v1/admin/ssh/ca-keys'),
-            apiGet<any>('/api/v1/admin/tenants'),
+            isSystemAdmin ? apiGet<any>('/api/v1/admin/tenants').catch(() => null) : Promise.resolve(null),
             apiGet<any>('/api/v1/admin/ceremonies?status=Pending').catch(() => []),
         ]).then(([keyData, tenantData, ceremonyData]) => {
                 if (cancelled) return;
                 setKeys(Array.isArray(keyData) ? keyData : (keyData.items || keyData.keys || []));
-                setTenants(Array.isArray(tenantData) ? tenantData : (tenantData.items || tenantData.tenants || []));
+                setTenants(!tenantData ? tenantsOf(capabilities) : Array.isArray(tenantData) ? tenantData : (tenantData.items || tenantData.tenants || []));
                 const allCeremonies = Array.isArray(ceremonyData) ? ceremonyData : (ceremonyData.items || []);
                 setPendingCeremonies(allCeremonies.filter((c: any) =>
                     c.operationType === 'CreateSshCa' || c.operationType === 'DeleteSshCa'));
@@ -67,7 +71,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             });
 
         return () => { cancelled = true; };
-    }, [refreshTrigger]);
+    }, [refreshTrigger, isSystemAdmin, capabilities]);
 
     // A key that is neither a user nor a host CA is useless and the server would accept it anyway.
     const caRoleMissing = !genForm.isUserCa && !genForm.isHostCa;

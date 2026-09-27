@@ -18,26 +18,41 @@ import TenantModelDiagram from './pages/TenantModelDiagram';
 import ConfigLifecycle from './pages/ConfigLifecycle';
 import ApiCategoryPage from './pages/ApiCategoryPage';
 import { SourceNotice } from '@shared/components/SourceNotice';
+import { createAuthClient } from '@shared-auth/api/createClient';
+import { isApiError } from '@shared-auth/api/problem';
+import { createSessionGate } from './sessionGate';
 
-/** Check whether the user has a valid (non-expired) auth token in localStorage. */
-function isAuthenticated(): boolean {
-    const token = localStorage.getItem('authToken');
-    if (!token) return false;
+function loginUrl(): string {
+    return `/login?returnUrl=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+}
 
-    const expiresAt = localStorage.getItem('expiresAt');
-    if (expiresAt) {
-        const expiry = new Date(expiresAt).getTime();
-        if (expiry > 0 && expiry < Date.now()) return false;
+const authClient = createAuthClient({ basename: '/docs', loginPath: loginUrl });
+
+/**
+ * Server-verified gate. 200 and 403 (MFA setup pending, IP policy) may read the docs; a 401 is
+ * handled by the shared client (refresh, then sign-out and redirect); anything else is retryable
+ * and leaves the stored session alone.
+ */
+async function verifySession(): Promise<'ok' | 'redirecting' | 'error'> {
+    if (!authClient.getToken()) {
+        window.location.href = loginUrl();
+        return 'redirecting';
     }
-
-    return true;
+    try {
+        await authClient.apiBlob('/api/v1/me', { toast: false });
+        return 'ok';
+    } catch (e) {
+        if (isApiError(e) && e.status === 403) return 'ok';
+        if (!authClient.getToken()) return 'redirecting';
+        return 'error';
+    }
 }
 
-/** Redirect to the console's sign-in page, preserving the current docs path as returnUrl. */
-function redirectToLogin(): void {
-    const returnUrl = window.location.pathname + window.location.search;
-    window.location.href = `/login?returnUrl=${encodeURIComponent(returnUrl)}`;
-}
+const sessionGate = createSessionGate({
+    hasToken: () => !!authClient.getToken(),
+    verify: verifySession,
+    redirectToLogin: () => { window.location.href = loginUrl(); },
+});
 
 interface NavItem {
     label: string;
@@ -53,45 +68,45 @@ const navSections: NavSection[] = [
     {
         title: 'Getting Started',
         items: [
-            { label: 'Overview', to: '/docs/overview' },
-            { label: 'Setup Guide', to: '/docs/setup-guide' },
+            { label: 'Overview', to: '/overview' },
+            { label: 'Setup Guide', to: '/setup-guide' },
         ],
     },
     {
         title: 'API Reference',
         items: [
-            { label: 'Authentication', to: '/docs/api/authentication' },
-            { label: 'Certificates', to: '/docs/api/certificates' },
-            { label: 'Certificate Requests', to: '/docs/api/certificate-requests' },
-            { label: 'CA Management', to: '/docs/api/ca-management' },
-            { label: 'SSH CA', to: '/docs/api/ssh-ca' },
-            { label: 'Profiles', to: '/docs/api/profiles' },
-            { label: 'Groups & Permissions', to: '/docs/api/groups-permissions' },
-            { label: 'Users & Accounts', to: '/docs/api/users-accounts' },
-            { label: 'Audit & Compliance', to: '/docs/api/audit-compliance' },
-            { label: 'Protocols', to: '/docs/api/protocols' },
-            { label: 'Integration', to: '/docs/api/integration' },
-            { label: 'System', to: '/docs/api/system' },
-            { label: 'Setup', to: '/docs/api/setup' },
+            { label: 'Authentication', to: '/api/authentication' },
+            { label: 'Certificates', to: '/api/certificates' },
+            { label: 'Certificate Requests', to: '/api/certificate-requests' },
+            { label: 'CA Management', to: '/api/ca-management' },
+            { label: 'SSH CA', to: '/api/ssh-ca' },
+            { label: 'Profiles', to: '/api/profiles' },
+            { label: 'Groups & Permissions', to: '/api/groups-permissions' },
+            { label: 'Users & Accounts', to: '/api/users-accounts' },
+            { label: 'Audit & Compliance', to: '/api/audit-compliance' },
+            { label: 'Protocols', to: '/api/protocols' },
+            { label: 'Integration', to: '/api/integration' },
+            { label: 'System', to: '/api/system' },
+            { label: 'Setup', to: '/api/setup' },
         ],
     },
     {
         title: 'UI Guide',
         items: [
-            { label: 'Admin UI', to: '/docs/ui/admin' },
-            { label: 'User UI', to: '/docs/ui/user' },
-            { label: 'Public UI', to: '/docs/ui/public' },
-            { label: 'Setup UI', to: '/docs/ui/setup' },
+            { label: 'Admin UI', to: '/ui/admin' },
+            { label: 'User UI', to: '/ui/user' },
+            { label: 'Public UI', to: '/ui/public' },
+            { label: 'Setup UI', to: '/ui/setup' },
         ],
     },
     {
         title: 'Architecture',
         items: [
-            { label: 'Auth Flow', to: '/docs/architecture/auth-flow' },
-            { label: 'Certificate Issuance', to: '/docs/architecture/certificate-issuance' },
-            { label: 'CA Hierarchy', to: '/docs/architecture/ca-hierarchy' },
-            { label: 'Tenant Model', to: '/docs/architecture/tenant-model' },
-            { label: 'Config Lifecycle', to: '/docs/architecture/config-lifecycle' },
+            { label: 'Auth Flow', to: '/architecture/auth-flow' },
+            { label: 'Certificate Issuance', to: '/architecture/certificate-issuance' },
+            { label: 'CA Hierarchy', to: '/architecture/ca-hierarchy' },
+            { label: 'Tenant Model', to: '/architecture/tenant-model' },
+            { label: 'Config Lifecycle', to: '/architecture/config-lifecycle' },
         ],
     },
 ];
@@ -144,25 +159,67 @@ function NavSectionGroup({ section, collapsed, onToggle, onNavigate }: {
     );
 }
 
+function ApiIndex() {
+    const section = navSections.find((s) => s.title === 'API Reference')!;
+    return (
+        <div className="max-w-4xl mx-auto">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-6">API Reference</h1>
+            <ul className="grid gap-2 sm:grid-cols-2">
+                {section.items.map((item) => (
+                    <li key={item.to}>
+                        <Link
+                            to={item.to}
+                            className="block px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 text-gray-800 dark:text-gray-200 hover:border-blue-400 dark:hover:border-blue-500 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                        >
+                            {item.label}
+                        </Link>
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
+}
+
 function AppShell() {
     const { theme, toggleTheme } = useTheme();
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
-    const [authChecked, setAuthChecked] = useState(false);
+    const [authState, setAuthState] = useState<'checking' | 'ok' | 'error'>('checking');
+    const [authAttempt, setAuthAttempt] = useState(0);
     const location = useLocation();
 
-    // Check authentication on mount and whenever the route changes
     useEffect(() => {
-        if (!isAuthenticated()) {
-            redirectToLogin();
-            return;
-        }
-        setAuthChecked(true);
-    }, [location.pathname]);
+        let cancelled = false;
+        setAuthState('checking');
+        sessionGate.verify().then((result) => {
+            if (cancelled || result === 'redirecting') return;
+            setAuthState(result);
+        });
+        return () => { cancelled = true; };
+    }, [authAttempt]);
 
-    // Don't render anything until auth is verified
-    if (!authChecked) {
-        return null;
+    useEffect(() => sessionGate.watch(window, document), []);
+
+    useEffect(() => {
+        if (authState === 'ok') sessionGate.onNavigate();
+    }, [location.pathname, location.search, authState]);
+
+    if (authState !== 'ok') {
+        return (
+            <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-900 text-sm text-gray-600 dark:text-gray-400">
+                {authState === 'checking' ? 'Checking your session...' : (
+                    <div className="text-center">
+                        <p className="mb-3">Could not reach the server to verify your session.</p>
+                        <button
+                            onClick={() => setAuthAttempt((n) => n + 1)}
+                            className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
     }
 
     const toggleSection = (title: string) => {
@@ -175,7 +232,7 @@ function AppShell() {
         <aside className="flex flex-col h-full bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 dark:border-gray-800">
-                <Link to="/docs/overview" onClick={closeSidebar} className="flex items-center gap-2.5">
+                <Link to="/overview" onClick={closeSidebar} className="flex items-center gap-2.5">
                     <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center">
                         <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -254,6 +311,7 @@ function AppShell() {
                         <Route path="/setup-guide" element={<SetupGuide />} />
 
                         {/* API Reference */}
+                        <Route path="/api" element={<ApiIndex />} />
                         <Route path="/api/:category" element={<ApiCategoryPage />} />
 
                         {/* UI Guide */}
@@ -270,7 +328,7 @@ function AppShell() {
                         <Route path="/architecture/config-lifecycle" element={<ConfigLifecycle />} />
 
                         {/* Default redirect */}
-                        <Route path="*" element={<Navigate to="/docs/overview" replace />} />
+                        <Route path="*" element={<Navigate to="/overview" replace />} />
                     </Routes>
                 </main>
             </div>

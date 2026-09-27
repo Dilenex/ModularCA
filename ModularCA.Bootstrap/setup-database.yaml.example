@@ -3,7 +3,7 @@
 SqlRoot:
   Host: localhost
   Port: 5432
-  Username: root
+  Username: postgres
   Password: "your-root-password-here"
 
 SqlApp:

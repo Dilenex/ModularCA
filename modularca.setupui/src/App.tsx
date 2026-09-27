@@ -91,7 +91,7 @@ const initialData: WizardData = {
     database: {
         rootHost: 'localhost',
         rootPort: 5432,
-        rootUsername: 'root',
+        rootUsername: 'postgres',
         rootPassword: '',
         appDatabase: 'modularca-app',
         appUsername: 'modularca_app',

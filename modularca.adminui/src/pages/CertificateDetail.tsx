@@ -187,7 +187,7 @@ const CertificateDetail: React.FC = () => {
     };
     const handleDownloadChain = async () => {
         try {
-            const resp = await apiBlob(`/api/v1/user/certificates/${serial}/chain`);
+            const resp = await apiBlob(`/api/v1/admin/certificates/${serial}/chain`);
             downloadBlob(await resp.text(), `${getCertName(cert)}-fullchain.pem`, 'application/x-pem-file');
         } catch (err: any) { showToast('error', err.message || 'Download failed'); }
     };

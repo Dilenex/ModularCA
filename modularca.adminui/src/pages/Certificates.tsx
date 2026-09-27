@@ -190,7 +190,7 @@ const Certificates: React.FC = () => {
             .then((data) => {
                 if (cancelled) return;
                 const items = Array.isArray(data) ? data : (data.items || []);
-                const count = data.totalCount ?? items.length;
+                const count = data.total ?? items.length;
                 setTotalCount(count);
                 setTotalPages(data.totalPages || Math.ceil(count / pageSize) || 1);
                 for (const c of items) rowCache.current.set(certKey(c), c);
@@ -245,7 +245,7 @@ const Certificates: React.FC = () => {
         try {
             const first = await apiGet<any>(`/api/v1/admin/certificates?${buildParams(1, EXPORT_PAGE_SIZE)}`);
             let items: any[] = Array.isArray(first) ? first : (first.items || []);
-            const count = first.totalCount ?? items.length;
+            const count = first.total ?? items.length;
             const pages = first.totalPages || Math.ceil(count / EXPORT_PAGE_SIZE) || 1;
             const all: any[] = [...items];
             for (let pnum = 2; pnum <= pages && all.length < EXPORT_MAX_ROWS; pnum++) {

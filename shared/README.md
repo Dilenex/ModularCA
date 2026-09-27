@@ -14,7 +14,7 @@ security-key users out of every step-up action.
 | Module | Alias | Consumed by | Contents |
 |---|---|---|---|
 | `shared/common` | `@shared/*` | **all four** SPAs | Pure utilities, presentational primitives, and generated backend contracts. No auth, no API client, no session state. |
-| `shared/authenticated` | `@shared-auth/*` | `adminui` **only** | Auth-aware code: the API client factory, DPoP proofs, and the step-up MFA prompt. |
+| `shared/authenticated` | `@shared-auth/*` | `adminui` and `docsui` | Auth-aware code: the API client factory, DPoP proofs, and the step-up MFA prompt. |
 
 Inside `shared/common/src`:
 
@@ -27,9 +27,11 @@ Inside `shared/common/src`:
 | `context/ToastContext.tsx`, `components/cards/` | The toast provider and the `DetailField` / `StatusBadge` presentational pair. |
 | `generated/` | **Machine-generated. Do not edit.** DTO interfaces, enums, `StepUpOps`, and the X.509 usage vocabulary, all derived from C#. See below. |
 
-The split is enforced by wiring: `@shared-auth/*` is only aliased in the one SPA entitled to it, so
-`setupui` (which runs before authentication exists) and `docsui` (nearly static) cannot import auth
-machinery even by accident. The specifier simply will not resolve there.
+The split is enforced by wiring: `@shared-auth/*` is only aliased in the SPAs entitled to it. `docsui`
+is session-gated and verifies the session through the shared client, so a refresh from a docs tab and
+one from a console tab are serialised by the same cross-tab lock. `setupui` (which runs before
+authentication exists) and `publicui` (anonymous) cannot import auth machinery even by accident: the
+specifier simply will not resolve there.
 
 ## How it is wired
 
@@ -124,12 +126,13 @@ arithmetic — and that was the encoder producing the TOTP provisioning code use
 second factor. The library version is the shared one.
 
 It sits in `shared/authenticated`, not `shared/common`, for a mechanical reason worth recording:
-**it is the only shared file with a third-party dependency**, and all three anonymous SPAs list
+**it is the only shared file with a third-party dependency**, and the SPAs without it — the
+anonymous `setupui` and `publicui`, and the authenticated but QR-free `docsui` — list
 `../shared/common/src` in their tsconfig `include`, so every file there is typechecked by apps
-that do not have the package installed. Putting it in the authenticated tier scopes it to exactly
-the two apps that render a QR code. A future shared file with an npm dependency faces the same
-choice: put it where only its consumers compile it, or add the dependency and the alias to all
-five.
+that do not have the package installed. Putting it in the authenticated tier scopes it to the apps
+that compile `shared/authenticated` — today only `adminui`, which renders the QR code. A future
+shared file with an npm dependency faces the same choice: put it where only its consumers compile
+it, or add the dependency and the alias to all four.
 
 Phase 8 (done) — `AccountDetail` and `MySecurity` move to `shared/authenticated/src/pages/`,
 the first shared *pages*. The divergence here ran the opposite way from the DataTable one:
@@ -190,9 +193,9 @@ The claim that `@shared-auth` cannot be imported from an anonymous SPA is checka
 re-checking after any tooling change:
 
     # from an anonymous SPA, this must fail to resolve
-    echo "import { createAuthClient } from '@shared-auth/api/createClient';"       > modularca.docsui/src/_probe.ts
-    (cd modularca.docsui && node_modules/.bin/tsc -b --force)   # expect TS2307
-    rm modularca.docsui/src/_probe.ts
+    echo "import { createAuthClient } from '@shared-auth/api/createClient';"       > modularca.setupui/src/_probe.ts
+    (cd modularca.setupui && node_modules/.bin/tsc -b --force)   # expect TS2307
+    rm modularca.setupui/src/_probe.ts
 
 ## Generated code
 

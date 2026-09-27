@@ -65,7 +65,7 @@ export default function ApiCategoryPage() {
             {/* Breadcrumb */}
             <nav className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-6">
                 <Link
-                    to="/docs/api"
+                    to="/api"
                     className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                 >
                     API Reference
@@ -93,7 +93,7 @@ export default function ApiCategoryPage() {
                         No endpoints found for category "{decodedCategory}".
                     </p>
                     <Link
-                        to="/docs/api"
+                        to="/api"
                         className="text-blue-600 dark:text-blue-400 hover:underline text-sm"
                     >
                         Back to API Reference

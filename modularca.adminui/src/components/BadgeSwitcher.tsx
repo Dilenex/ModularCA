@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiPostWithMfa } from '../api/client';
+import { authClient, isStepUpRequired } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useStepUp } from './StepUpMfaContext';
 import ConfirmModal from './ConfirmModal';
@@ -14,22 +14,27 @@ import type { AccessBadgeSwitchResponse } from '@shared/generated';
  * Puts an access badge on or takes it off, and reloads so every part of the console re-derives
  * itself from the new token.
  *
- * Switching mints a new access token; the session's refresh token is sent along so later
- * refreshes keep the badge. Narrowing is immediate; the server answers a broadening (taking a
- * badge off, or switching to one that keeps more) with a step-up challenge, which the MFA-aware
- * client helper turns into the usual prompt.
+ * Switching mints a new access token (the refresh token is not rotated); the session's refresh
+ * token is sent along so later refreshes keep the badge. It is read and sent under the cross-tab
+ * refresh lock, so it cannot be one another tab has just rotated. Narrowing is immediate; a
+ * broadening (taking a badge off, or switching to one that keeps more) is answered with a step-up
+ * challenge, prompted for outside the lock and then retried.
  */
 export async function switchBadge(badgeId: string | null, requireStepUp: (operation: string, targetId?: string) => Promise<string>): Promise<void> {
-    const refreshToken = localStorage.getItem('refreshToken');
-    if (!refreshToken) throw new Error('No session refresh token; sign in again.');
-    const result = await apiPostWithMfa<AccessBadgeSwitchResponse>(
-        '/api/v1/auth/badge',
-        { badgeId, refreshToken },
-        requireStepUp,
-        StepUpOps.SwitchBadge,
-    );
-    localStorage.setItem('authToken', result.token);
-    localStorage.setItem('expiresAt', result.expiresAt);
+    const post = (mfaToken?: string) => authClient.withSessionRefreshToken(async (refreshToken, request) => {
+        const result = await request<AccessBadgeSwitchResponse>('/api/v1/auth/badge', {
+            method: 'POST',
+            body: JSON.stringify({ badgeId, refreshToken }),
+            headers: mfaToken ? { 'X-MFA-Token': mfaToken } : undefined,
+        });
+        authClient.storeAccessToken(result.token, result.expiresAt);
+    });
+    try {
+        await post();
+    } catch (err) {
+        if (!isStepUpRequired(err)) throw err;
+        await post(await requireStepUp(StepUpOps.SwitchBadge));
+    }
     window.location.reload();
 }
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, API_BASE } from '../../api/client';
+import { apiGet, apiBlob } from '../../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -74,10 +74,7 @@ const MySshCertificates: React.FC = () => {
 
     const handleDownload = async (cert: SshCertificate) => {
         try {
-            const resp = await fetch(`${API_BASE}/api/v1/user/ssh/certificates/${cert.id}/download`, {
-                headers: { Authorization: `Bearer ${localStorage.getItem('authToken')}` }
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const resp = await apiBlob(`/api/v1/user/ssh/certificates/${cert.id}/download`);
             const text = await resp.text();
             const blob = new Blob([text], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);

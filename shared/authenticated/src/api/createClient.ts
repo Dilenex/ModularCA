@@ -59,8 +59,8 @@ export interface AuthClientConfig {
      *  Used for same-origin detection. */
     basename: string;
     /** Where a 401 sends the browser. Defaults to `${basename}/login`; the console passes the
-     *  site-root `/login` its sign-in pages live at. */
-    loginPath?: string;
+     *  site-root `/login` its sign-in pages live at. A function is evaluated at redirect time. */
+    loginPath?: string | (() => string);
     /** Where a "set up MFA first" response sends the browser. Defaults to `${basename}/mfa-setup`. */
     mfaSetupPath?: string;
     /** Surface errors in the host app's notification system. Optional: omit and errors are
@@ -83,9 +83,36 @@ export interface LoginResponse {
   availableMethods?: string[];
 }
 
+/** Web Locks name shared by every SPA on the origin that rotates the refresh token. */
+export const REFRESH_LOCK_NAME = 'modularca-token-refresh';
+
+/** A refresh still pending after this long is abandoned so the cross-tab lock is released. */
+export const REFRESH_TIMEOUT_MS = 15_000;
+
+/** A refresh that failed transiently (network, timeout, 429, 5xx); the stored session is left intact. */
+export class SessionRefreshError extends Error {
+    readonly status?: number;
+    constructor(status?: number) {
+        super('Could not refresh your session. Check your connection and try again.');
+        this.name = 'SessionRefreshError';
+        this.status = status;
+        Object.setPrototypeOf(this, SessionRefreshError.prototype);
+    }
+}
+
+/** Work done under the refresh lock by {@link withSessionRefreshToken} ran past REFRESH_TIMEOUT_MS; the session is left intact. */
+export class SessionRequestTimeoutError extends Error {
+    constructor() {
+        super('The request timed out. Check your connection and try again.');
+        this.name = 'SessionRequestTimeoutError';
+        Object.setPrototypeOf(this, SessionRequestTimeoutError.prototype);
+    }
+}
+
 export function createAuthClient(config: AuthClientConfig) {
     const basename = config.basename;
-    const loginPath = config.loginPath ?? `${basename}/login`;
+    const loginPathConfig = config.loginPath ?? `${basename}/login`;
+    const loginPath = () => (typeof loginPathConfig === 'function' ? loginPathConfig() : loginPathConfig);
     const mfaSetupPath = config.mfaSetupPath ?? `${basename}/mfa-setup`;
     const globalToast: ToastFn = config.toast ?? (() => { /* no notifier configured */ });
 
@@ -149,61 +176,175 @@ export function createAuthClient(config: AuthClientConfig) {
      */
     let inflightRefresh: Promise<string | null> | null = null;
 
-    async function refreshIfNeeded(): Promise<string | null> {
-      const token = getToken();
+    /** The rotation actually executing in this tab; every rotate joins it, with or without Web Locks. */
+    let inflightRotate: Promise<string | null> | null = null;
+
+    function rotateOnce(intended: string, force = false): Promise<string | null> {
+      if (!inflightRotate) {
+        inflightRotate = rotate(intended, force).finally(() => { inflightRotate = null; });
+      }
+      return inflightRotate;
+    }
+
+    function inRefreshWindow(): boolean {
       const expiry = getExpiry();
-      const now = Date.now();
+      return !!getToken() && expiry > 0 && expiry - Date.now() < 5 * 60 * 1000;
+    }
 
-      // Only refresh inside the 5-minute pre-expiry window.
-      if (!token || expiry <= 0 || expiry - now >= 5 * 60 * 1000) {
-        return token;
-      }
+    /**
+     * Serialises refreshes across every tab of this origin. The server revokes the whole token
+     * family when a rotated refresh token is replayed, so two tabs racing with the same token
+     * would log out every tab. Without the Web Locks API this degrades to the in-tab guard only.
+     */
+    function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+      const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+      return locks?.request ? locks.request(REFRESH_LOCK_NAME, fn) : fn();
+    }
 
-      if (inflightRefresh) {
-        return inflightRefresh;
-      }
+    /**
+     * Rotates `intended` unless another tab already did (stored token changed or the access
+     * token is fresh again; `force` skips the freshness check). Only 400/401/403 end the session;
+     * anything else throws {@link SessionRefreshError} and leaves the shared tokens alone.
+     */
+    async function rotate(intended: string, force = false): Promise<string | null> {
+      const stored = getRefreshToken();
+      if (!stored || stored !== intended || (!force && !inRefreshWindow())) return getToken();
 
-      const refreshToken = getRefreshToken();
-      if (!refreshToken) {
-        return token;
-      }
+      const abort = new AbortController();
+      let timedOut!: () => void;
+      const deadline = new Promise<never>((_, reject) => {
+        timedOut = () => reject(new SessionRefreshError());
+      });
+      deadline.catch(() => undefined);
+      const timer = setTimeout(() => { abort.abort(); timedOut(); }, REFRESH_TIMEOUT_MS);
+      const bounded = <T>(p: Promise<T>) => Promise.race([p, deadline]);
 
-      inflightRefresh = (async () => {
+      try {
+        let resp: Response;
         try {
-          // Proof-of-possession: sign a DPoP proof with the device's non-extractable key so the
-          // server can confirm this refresh comes from the device the session was bound to.
           const refreshHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-          const proof = await createDpopProof('POST', `${API_BASE}/auth/refresh`);
+          const proof = await bounded(createDpopProof('POST', `${API_BASE}/auth/refresh`));
           if (proof) refreshHeaders['DPoP'] = proof;
-          const resp = await fetch(`${API_BASE}/auth/refresh`, {
+          resp = await bounded(fetch(`${API_BASE}/auth/refresh`, {
             method: 'POST',
             headers: refreshHeaders,
             credentials: 'same-origin',
-            body: JSON.stringify({ refreshToken }),
-          });
-
-          if (resp.ok) {
-            const data = await resp.json();
-            setTokens(data.token, data.expiresAt, data.refreshToken);
-            return data.token as string;
-          }
-
-          // A failed refresh used to silently fall back to the stale
-          // token; now we clear everything and force re-auth so the user does not get
-          // stuck in a 401 loop with widgets disagreeing on session state.
-          clearTokens();
-          window.location.href = loginPath;
-          return null;
+            body: JSON.stringify({ refreshToken: stored }),
+            signal: abort.signal,
+          }));
         } catch {
-          clearTokens();
-          window.location.href = loginPath;
-          return null;
-        } finally {
-          inflightRefresh = null;
+          throw new SessionRefreshError();
         }
-      })();
 
-      return inflightRefresh;
+        if (resp.ok) {
+          const data = await bounded(resp.json()).catch(() => null);
+          if (!data?.token || !data.expiresAt || !data.refreshToken) throw new SessionRefreshError(resp.status);
+          setTokens(data.token, data.expiresAt, data.refreshToken);
+          return data.token as string;
+        }
+
+        if (resp.status === 400 || resp.status === 401 || resp.status === 403) {
+          clearTokens();
+          window.location.href = loginPath();
+          return null;
+        }
+        throw new SessionRefreshError(resp.status);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function refreshIfNeeded(): Promise<string | null> {
+      const token = getToken();
+      if (!inRefreshWindow()) return token;
+
+      if (!inflightRefresh) {
+        const intended = getRefreshToken();
+        if (!intended) return token;
+        inflightRefresh = withRefreshLock(() => rotateOnce(intended))
+          .finally(() => { inflightRefresh = null; });
+      }
+
+      try {
+        return await inflightRefresh;
+      } catch (e) {
+        const current = getToken();
+        if (current && getExpiry() > Date.now()) return current;
+        throw e;
+      }
+    }
+
+    /**
+     * Rotates the refresh token now, whatever the local expiry says: for a caller whose access token
+     * the server rejected although this client thinks it valid (clock skew). Shares the lock and
+     * single-flight of every other rotation, so a token another tab just rotated is not re-sent.
+     * Resolves to the current access token, or null once the session has ended (tokens cleared and
+     * the browser sent to login); throws {@link SessionRefreshError} on a transient failure.
+     */
+    async function forceRefresh(): Promise<string | null> {
+      const intended = getRefreshToken();
+      if (!intended) return null;
+      if (inflightRefresh) await inflightRefresh.catch(() => undefined);
+      return withRefreshLock(() => rotateOnce(intended, true));
+    }
+
+    /**
+     * Runs `fn` holding the cross-tab refresh lock, after any due rotation, with the refresh token
+     * current at that moment, so an endpoint that takes the refresh token in its body can never be
+     * sent one another tab has already rotated. `request` is {@link api} minus the refresh step,
+     * which would otherwise wait on the lock held here. `fn` is bounded by REFRESH_TIMEOUT_MS: on
+     * expiry its requests are aborted, the lock is released and {@link SessionRequestTimeoutError}
+     * is thrown with the tokens untouched.
+     */
+    async function withSessionRefreshToken<T>(
+      fn: (refreshToken: string, request: <R = any>(path: string, options?: ApiRequestOptions) => Promise<R>) => Promise<T>,
+    ): Promise<T> {
+      if (inflightRefresh) await inflightRefresh.catch(() => undefined);
+      return withRefreshLock(async () => {
+        const intended = getRefreshToken();
+        if (intended && inRefreshWindow()) {
+          try {
+            await rotateOnce(intended);
+          } catch (e) {
+            if (!getToken() || getExpiry() <= Date.now()) throw e;
+          }
+        }
+        const refreshToken = getRefreshToken();
+        if (!refreshToken) throw new Error('No session refresh token; sign in again.');
+
+        const expired = new AbortController();
+        let timedOut!: (e: Error) => void;
+        const deadline = new Promise<never>((_, reject) => { timedOut = reject; });
+        deadline.catch(() => undefined);
+        const timer = setTimeout(() => { timedOut(new SessionRequestTimeoutError()); expired.abort(); }, REFRESH_TIMEOUT_MS);
+
+        const request = <R = any>(path: string, options: ApiRequestOptions = {}): Promise<R> => {
+          if (expired.signal.aborted) return Promise.reject(new SessionRequestTimeoutError());
+          const ctl = new AbortController();
+          const cancel = () => ctl.abort();
+          const outer = options.signal;
+          expired.signal.addEventListener('abort', cancel);
+          outer?.addEventListener('abort', cancel);
+          if (outer?.aborted) ctl.abort();
+          return send<R>(path, { ...options, signal: ctl.signal }, getToken()).finally(() => {
+            expired.signal.removeEventListener('abort', cancel);
+            outer?.removeEventListener('abort', cancel);
+          });
+        };
+
+        try {
+          return await Promise.race([fn(refreshToken, request), deadline]);
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+    }
+
+    /** Replaces the access token for the current session, keeping its refresh token. */
+    function storeAccessToken(token: string, expiresAt: string) {
+      const refreshToken = getRefreshToken();
+      if (!refreshToken) throw new Error('No session refresh token; sign in again.');
+      setTokens(token, expiresAt, refreshToken);
     }
 
     /**
@@ -225,8 +366,10 @@ export function createAuthClient(config: AuthClientConfig) {
     }
 
     async function api<T = any>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-      const token = await refreshIfNeeded();
+      return send<T>(path, options, await refreshIfNeeded());
+    }
 
+    async function send<T>(path: string, options: ApiRequestOptions, token: string | null): Promise<T> {
       const headers: Record<string, string> = {
         ...(options.headers as Record<string, string> || {}),
       };
@@ -257,7 +400,7 @@ export function createAuthClient(config: AuthClientConfig) {
         const isStepUp = path.includes('/verify-stepup');
         if (!isStepUp) {
           clearTokens();
-          window.location.href = loginPath;
+          window.location.href = loginPath();
         }
         const errBody = await resp.json().catch(() => ({ error: 'Unauthorized' }));
         throw new Error(errBody.error || 'Unauthorized');
@@ -380,7 +523,7 @@ export function createAuthClient(config: AuthClientConfig) {
 
       if (resp.status === 401) {
         clearTokens();
-        window.location.href = loginPath;
+        window.location.href = loginPath();
         throw new Error('Unauthorized');
       }
 
@@ -531,7 +674,7 @@ export function createAuthClient(config: AuthClientConfig) {
         // Ignore — we're logging out client-side either way.
       }
       clearTokens();
-      window.location.href = loginPath;
+      window.location.href = loginPath();
     }
 
     /// Checks whether an error indicates that step-up MFA is required.
@@ -613,6 +756,9 @@ export function createAuthClient(config: AuthClientConfig) {
         API_BASE,
         getToken,
         clearTokens,
+        forceRefresh,
+        withSessionRefreshToken,
+        storeAccessToken,
         readCsrfCookie,
         api,
         apiGet,

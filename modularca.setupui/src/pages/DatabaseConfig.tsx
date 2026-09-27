@@ -296,16 +296,16 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                 className={inputClass} />
                         </div>
                         <div>
-                            <label className={labelClass}>Root Username</label>
+                            <label className={labelClass}>Superuser Username</label>
                             <input type="text" value={data.rootUsername}
                                 onChange={e => onChange({ ...data, rootUsername: e.target.value })}
-                                placeholder="root" className={inputClass} />
+                                placeholder="postgres" className={inputClass} />
                         </div>
                         <div>
-                            <label className={labelClass}>Root Password</label>
+                            <label className={labelClass}>Superuser Password</label>
                             <input type="password" value={data.rootPassword}
                                 onChange={e => onChange({ ...data, rootPassword: e.target.value })}
-                                placeholder="Enter root password" className={inputClass} />
+                                placeholder="Enter superuser password" className={inputClass} />
                         </div>
                     </div>
 

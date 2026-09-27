@@ -3,7 +3,8 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link } from 'react-router-dom';
-import { apiGet } from '../api/client';
+import { apiGet, apiGetAllPages } from '../api/client';
+import { useScope } from '../context/ScopeContext';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 
 // ---------------------------------------------------------------------------
@@ -30,14 +31,6 @@ interface CertItem {
     extendedKeyUsages: string[];
     thumbprints: string | null;
     subjectAlternativeNames: string[];
-}
-
-interface PaginatedResponse {
-    total: number;
-    totalPages: number;
-    page: number;
-    pageSize: number;
-    items: CertItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -168,8 +161,10 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
 // ---------------------------------------------------------------------------
 
 interface HealthSummary {
+    total: number;
     averageScore: number;
-    gradeDistribution: Record<string, number>;
+    // Grade keys arrive camelCased ("a".."f").
+    distribution: Record<string, number>;
 }
 
 const gradeColors: Record<string, string> = {
@@ -193,46 +188,35 @@ const CertInventory: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [caFilter, setCaFilter] = useState<string | null>(null);
+    const [truncated, setTruncated] = useState(false);
+    const { caQuery } = useScope();
     const [healthSummary, setHealthSummary] = useState<HealthSummary | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
 
-    // Fetch ALL certs by paginating through the API
     useEffect(() => {
         let cancelled = false;
-        const fetchAll = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const all: CertItem[] = [];
-                let page = 1;
-                const pageSize = 100;
-                let totalPages = 1;
-                while (page <= totalPages) {
-                    const data = await apiGet<PaginatedResponse>(
-                        `/api/v1/admin/certificates?page=${page}&pageSize=${pageSize}`
-                    );
-                    if (cancelled) return;
-                    const items = Array.isArray(data) ? (data as any as CertItem[]) : (data.items || []);
-                    all.push(...items);
-                    totalPages = (data as any).totalPages ?? 1;
-                    page++;
-                }
-                setCerts(all);
-            } catch (e: any) {
-                if (!cancelled) setError(errorNotice(e, 'Failed to load certificates'));
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        };
-        fetchAll();
+        setLoading(true);
+        setError(null);
+        setCaFilter(null);
+        setTruncated(false);
+        setCerts([]);
+        apiGetAllPages<CertItem>(`/api/v1/admin/certificates${caQuery()}`)
+            .then(({ items, truncated }) => {
+                if (cancelled) return;
+                setCerts(items);
+                setTruncated(truncated);
+            })
+            .catch((e) => { if (!cancelled) setError(errorNotice(e, 'Failed to load certificates')); })
+            .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    }, []);
+    }, [caQuery]);
 
     // Fetch health scores summary
     useEffect(() => {
         let cancelled = false;
         setHealthLoading(true);
-        apiGet<HealthSummary>('/api/v1/admin/certificates/health/summary')
+        setHealthSummary(null);
+        apiGet<HealthSummary>(`/api/v1/admin/certificates/health/summary${caQuery()}`)
             .then((data) => {
                 if (!cancelled) setHealthSummary(data);
             })
@@ -243,7 +227,7 @@ const CertInventory: React.FC = () => {
                 if (!cancelled) setHealthLoading(false);
             });
         return () => { cancelled = true; };
-    }, []);
+    }, [caQuery]);
 
     // ----- Computed stats -----
     const filtered = useMemo(() => {
@@ -401,6 +385,9 @@ const CertInventory: React.FC = () => {
                     </button>
                 )}
             </div>
+            {truncated && (
+                <p className="text-xs text-amber-800 dark:text-amber-400">Showing the first {certs.length} certificates; the counts, charts and per-CA breakdown below cover only these. Health scores are computed over every certificate in scope.</p>
+            )}
 
             {/* 1. Summary Stats Bar. The expiry bands are exclusive (a certificate lands in exactly
                 one), unlike the cumulative "within N days" rows on Compliance, so the labels say so. */}
@@ -434,7 +421,8 @@ const CertInventory: React.FC = () => {
                             <span className="text-xs text-gray-600 dark:text-gray-400 mb-2 block">Grade Distribution</span>
                             {(() => {
                                 const grades = ['A', 'B', 'C', 'D', 'F'];
-                                const dist = healthSummary.gradeDistribution || {};
+                                const raw = healthSummary.distribution || {};
+                                const dist: Record<string, number> = Object.fromEntries(grades.map(g => [g, raw[g.toLowerCase()] ?? raw[g] ?? 0]));
                                 const total = grades.reduce((s, g) => s + (dist[g] || 0), 0);
                                 if (total === 0) return <span className="text-sm text-gray-600">No data</span>;
                                 return (

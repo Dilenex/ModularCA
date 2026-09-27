@@ -85,7 +85,8 @@ const SELF_SERVICE_ONLY: ReadonlySet<Capability> = new Set([Capabilities.CertReq
 export function canUseAdminConsole(caps: EffectiveCapabilities | null | undefined): boolean {
     if (!caps) return false;
     const beyond = (c: Capability) => !SELF_SERVICE_ONLY.has(c);
-    return caps.system.some(beyond) || caps.cas.some(ca => ca.capabilities.some(beyond));
+    return caps.system.some(beyond) || caps.cas.some(ca => ca.capabilities.some(beyond))
+        || (caps.tenants ?? []).some(t => t.capabilities.some(beyond));
 }
 
 /** The CAs the user may pick as a console scope: those with a console capability on them. */
@@ -109,9 +110,10 @@ export function tenantsOf(caps: EffectiveCapabilities | null | undefined): Tenan
     return [...seen.values()];
 }
 
-/** Whether `capability` is held on any CA of the tenant. */
+/** Whether `capability` is held tenant-wide or on any CA of the tenant. */
 export function canInTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
     if (!caps) return false;
+    if (caps.tenants?.some(t => t.id === tenantId && t.capabilities.includes(capability))) return true;
     return caps.cas.some(c => c.tenantId === tenantId && c.capabilities.includes(capability));
 }
 

@@ -20,7 +20,7 @@ const ScopeSwitcher: React.FC = () => {
     const { scope, setScope, cas, tenants, canScopeToAll } = useScope();
 
     if (PORTAL !== 'admin') return null;
-    if (cas.length === 0 && !canScopeToAll) return null;
+    if (cas.length === 0 && tenants.length === 0 && !canScopeToAll) return null;
 
     const value = scope.kind === 'ca' ? caValue(scope.caId)
         : scope.kind === 'tenant' ? tenantValue(scope.tenantId)

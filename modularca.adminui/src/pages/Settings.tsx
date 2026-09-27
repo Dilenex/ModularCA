@@ -4,7 +4,7 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { Link, useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa } from '../api/client';
+import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa, getToken, forceRefresh, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -202,25 +202,93 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     // dismissed by reflex.
     const [confirmRestart, setConfirmRestart] = useState(false);
 
+    const restartPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const restartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const restartRun = useRef(0);
+    const stopRestartPoll = () => {
+        restartRun.current++;
+        if (restartPoll.current) clearTimeout(restartPoll.current);
+        if (restartTimeout.current) clearTimeout(restartTimeout.current);
+        restartPoll.current = null;
+        restartTimeout.current = null;
+    };
+    useEffect(() => stopRestartPoll, []);
+
+    // Raw fetch with the current token: no refresh attempt and no 401 logout while the server is down.
+    // Returns the process start on the server's clock (ms), null if the server answered without
+    // an uptime, 'unauthorized' on a 401, or throws if it did not answer.
+    const readServerStart = async (): Promise<number | null | 'unauthorized'> => {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/health/ready`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            cache: 'no-store',
+        });
+        if (res.status >= 502 && res.status <= 504 && !res.headers.get('content-type')?.includes('json')) throw new Error('gateway');
+        if (res.status === 401) return 'unauthorized';
+        const body = await res.json().catch(() => null);
+        if (typeof body?.uptimeSeconds !== 'number' || typeof body?.timestamp !== 'string') return null;
+        const now = Date.parse(body.timestamp.replace(/(\.\d{3})\d+/, '$1'));
+        return Number.isNaN(now) ? null : now - body.uptimeSeconds * 1000;
+    };
+
     const doRestart = async () => {
         setConfirmRestart(false);
         setRestarting(true);
         try {
+            const first = await readServerStart().catch(() => null);
+            const baseline = typeof first === 'number' ? first : null;
             await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, StepUpOps.Restart);
-            setSuccessMsg('Restart initiated. Reconnecting...');
-            const poll = setInterval(async () => {
-                try {
-                    await apiGet('/api/v1/admin/config');
-                    clearInterval(poll);
-                    setRestarting(false);
-                    setSuccessMsg('Server restarted successfully');
-                    load();
-                } catch { /* still restarting */ }
-            }, 2000);
-            setTimeout(() => {
-                clearInterval(poll);
+            setSuccessMsg('Restart initiated. Waiting for the server to come back...');
+            stopRestartPoll();
+            const run = restartRun.current;
+            let sawDown = false;
+            const finish = () => {
+                stopRestartPoll();
                 setRestarting(false);
-            }, 60000);
+                setSuccessMsg('Server restarted successfully');
+                load();
+            };
+            // One request in flight at a time. With a baseline, success is a reply from a process that
+            // started after it; without one (no uptime visible to this user), fall back to down-then-up.
+            const tick = async () => {
+                try {
+                    let start = await readServerStart();
+                    if (run !== restartRun.current) return;
+                    if (start === 'unauthorized') {
+                        start = null;
+                        // One forced rotation per attempt, whatever the local expiry says (clock skew).
+                        // A transient failure keeps the tokens; a definitive rejection ends the session.
+                        if (getToken()) {
+                            const token = await forceRefresh().catch(() => undefined);
+                            if (run !== restartRun.current) return;
+                            if (!getToken()) { stopRestartPoll(); return; }
+                            if (token) {
+                                const retried = await readServerStart();
+                                if (run !== restartRun.current) return;
+                                start = retried === 'unauthorized' ? null : retried;
+                            }
+                        }
+                    }
+                    if (baseline != null ? (start != null && start > baseline + 1000) : sawDown) {
+                        finish();
+                        return;
+                    }
+                } catch {
+                    if (run !== restartRun.current) return;
+                    if (!sawDown) setSuccessMsg('Server is down. Reconnecting...');
+                    sawDown = true;
+                }
+                restartPoll.current = setTimeout(tick, 1000);
+            };
+            restartPoll.current = setTimeout(tick, 1000);
+            restartTimeout.current = setTimeout(() => {
+                stopRestartPoll();
+                setRestarting(false);
+                setSuccessMsg(null);
+                showToast('error', sawDown
+                    ? 'The server did not come back within 2 minutes. Check the host, then reload this page.'
+                    : 'A restarted server was not observed within 2 minutes. Reload this page to check its state.');
+            }, 120000);
         } catch (err: any) {
             showToast('error', err.message || 'Failed to restart');
             setRestarting(false);

@@ -13,11 +13,12 @@ public static class YamlSetupDatabaseLoader
     /// Literal placeholder strings that ship in the <c>setup-database.yaml.example</c> /
     /// <c>BootstrapConfig.yaml.example</c> files. If an operator copies the example in place
     /// and forgets to edit the password line, the load-time validator below trips immediately
-    /// with a clear error instead of surfacing the bootstrap as a confusing MySQL "Access
-    /// denied" failure.
+    /// with a clear error instead of surfacing the bootstrap as a confusing PostgreSQL "password
+    /// authentication failed" error.
     /// </summary>
     private static readonly string[] PlaceholderPasswords = new[]
     {
+        "your-superuser-password-here",
         "your-root-password-here",
         "REPLACE-WITH-ROOT-PASSWORD",
         "changeme",
@@ -42,7 +43,7 @@ public static class YamlSetupDatabaseLoader
             throw new InvalidOperationException(
                 $"setup-database.yaml at '{path}' still contains the example placeholder " +
                 $"password ('{config.SqlRoot.Password}'). Replace SqlRoot.Password with the real " +
-                "root database credentials before running bootstrap.");
+                "superuser database credentials before running bootstrap.");
         }
         return config;
     }

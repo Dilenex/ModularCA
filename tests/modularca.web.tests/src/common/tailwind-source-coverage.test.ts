@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
- * Fails if an SPA renders a shared component without telling Tailwind to scan that shared tree.
+ * Fails if an SPA renders a shared component without telling Tailwind to scan it. Coverage is
+ * judged per file, following imports transitively, so an app may scan a narrower subtree (or none)
+ * when what it imports carries no class names — docsui imports only `@shared-auth/api`.
  *
  * This exists because of a bug that shipped silently. Tailwind v4 generates a rule only for class
  * names it finds by scanning source files, and its automatic detection covers the package the
@@ -30,13 +32,13 @@ import { join, resolve } from 'node:path';
  * for classes a test already knows to look for. Checking the declaration is cheap, runs everywhere,
  * and fails on the cause instead of one of its symptoms.
  */
-describe('every SPA scans the shared trees it imports from', () => {
+describe('every SPA scans the shared code it renders', () => {
     const ROOT = resolve(__dirname, '../../../..');
 
     /** Import alias → the shared directory it resolves to, as written in vite.config.ts. */
     const TREES: ReadonlyArray<{ alias: string; dir: string }> = [
-        { alias: '@shared/', dir: 'common' },
-        { alias: '@shared-auth/', dir: 'authenticated' },
+        { alias: '@shared/', dir: join(ROOT, 'shared', 'common', 'src') },
+        { alias: '@shared-auth/', dir: join(ROOT, 'shared', 'authenticated', 'src') },
     ];
 
     const apps = readdirSync(ROOT)
@@ -56,28 +58,73 @@ describe('every SPA scans the shared trees it imports from', () => {
         return out;
     }
 
+    const specifiers = (text: string) =>
+        [...text.matchAll(/(?:from\s+|import\s*\(\s*|import\s+)["']([^"']+)["']/g)].map((m) => m[1]);
+
+    function resolveFile(base: string): string | null {
+        for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+            if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+        }
+        return null;
+    }
+
+    /** Resolves a specifier to a shared file, or null when it points anywhere else. */
+    function resolveShared(spec: string, fromFile: string | null): string | null {
+        for (const { alias, dir } of TREES) {
+            if (spec.startsWith(alias)) return resolveFile(join(dir, spec.slice(alias.length)));
+        }
+        if (fromFile && spec.startsWith('.')) return resolveFile(resolve(dirname(fromFile), spec));
+        return null;
+    }
+
+    /** Every shared file an app reaches, following aliases and relative imports transitively. */
+    function sharedClosure(app: string): string[] {
+        const seen = new Set<string>();
+        const queue: string[] = [];
+        for (const file of sources(join(ROOT, app, 'src'))) {
+            for (const spec of specifiers(readFileSync(file, 'utf8'))) {
+                const hit = resolveShared(spec, null);
+                if (hit) queue.push(hit);
+            }
+        }
+        while (queue.length) {
+            const file = queue.pop()!;
+            if (seen.has(file)) continue;
+            seen.add(file);
+            for (const spec of specifiers(readFileSync(file, 'utf8'))) {
+                const hit = resolveShared(spec, file);
+                if (hit) queue.push(hit);
+            }
+        }
+        return [...seen];
+    }
+
     it('finds the SPA packages', () => {
         // Guards the guard: a wrong ROOT would make every assertion below vacuously pass.
         // Four since the user portal merged into modularca.adminui (September 2026).
         expect(apps.length).toBeGreaterThanOrEqual(4);
     });
 
+    it('finds styled shared files reached from adminui', () => {
+        expect(sharedClosure('modularca.adminui').some((f) => /className/.test(readFileSync(f, 'utf8')))).toBe(true);
+    });
+
     it.each(apps)('%s', (app) => {
-        const css = readFileSync(join(ROOT, app, 'src', 'index.css'), 'utf8');
-        const src = sources(join(ROOT, app, 'src')).map((f) => readFileSync(f, 'utf8'));
+        const cssPath = join(ROOT, app, 'src', 'index.css');
+        const css = readFileSync(cssPath, 'utf8');
+        const scanned = [...css.matchAll(/@source\s+["']([^"']+)["']/g)]
+            .map((m) => resolve(dirname(cssPath), m[1]));
 
-        for (const { alias, dir } of TREES) {
-            if (!src.some((s) => s.includes(alias))) continue;
-
-            // Accept any quoting or trailing-slash spelling of the path — the point is that the
-            // tree is declared, not that it is spelled one particular way.
-            const declared = new RegExp(String.raw`@source\s+["'][^"']*shared/${dir}/src/?["']`);
-
+        for (const file of sharedClosure(app)) {
+            if (!/className/.test(readFileSync(file, 'utf8'))) continue;
+            const covered = scanned.some((dir) => {
+                const rel = relative(dir, file);
+                return !!rel && !rel.startsWith('..') && !isAbsolute(rel);
+            });
             expect(
-                declared.test(css),
-                `${app} imports from "${alias}" but ${app}/src/index.css has no ` +
-                `@source for shared/${dir}/src — every class used only by those components ` +
-                `will be missing from the bundle.`,
+                covered,
+                `${app} renders ${relative(ROOT, file)} but ${app}/src/index.css has no @source ` +
+                `covering it — every class used only there will be missing from the bundle.`,
             ).toBe(true);
         }
     });

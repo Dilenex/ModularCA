@@ -102,4 +102,13 @@ describe('canAtTenant', () => {
         const requesterOnly: EffectiveCapabilities = { system: [], cas: [], tenants: [{ id: 't4', name: 'Four', slug: 'four', capabilities: [Capabilities.CertRequest] }] };
         expect(tenantsOf(requesterOnly)).toEqual([]);
     });
+
+    it('lets a tenant administrator with no CA yet into the console and the tenant scope', () => {
+        const noCaYet: EffectiveCapabilities = { system: [], cas: [], tenants: [{ id: 't3', name: 'Tenant Three', slug: 'three', capabilities: [Capabilities.CaManage] }] };
+        expect(canUseAdminConsole(noCaYet)).toBe(true);
+        expect(canInTenant(noCaYet, Capabilities.CaManage, 't3')).toBe(true);
+        expect(canInTenant(noCaYet, Capabilities.CaManage, 't1')).toBe(false);
+        const requesterOnly: EffectiveCapabilities = { system: [], cas: [], tenants: [{ id: 't4', name: 'Four', slug: 'four', capabilities: [Capabilities.CertRequest, Capabilities.CertView] }] };
+        expect(canUseAdminConsole(requesterOnly)).toBe(false);
+    });
 });
