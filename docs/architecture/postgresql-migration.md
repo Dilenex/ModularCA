@@ -97,10 +97,10 @@ Two things worth recording because they were not in the plan:
   the model already declared, so the case fix does not buy a ten-thousand-character username.
 
 The type has to exist before the first `CREATE TABLE`, so `InitialCreate` opens with
-`CREATE EXTENSION IF NOT EXISTS citext` — and bootstrap creates it first anyway, on the privileged
-connection that just created the database, so the migration's own copy is a no-op. Leaving it to
-the migration alone would work, but only because PostgreSQL 13 marks `citext` trusted and the app
-role owns its database; an install should not rest on two facts it never states. This is the one
+`CREATE EXTENSION IF NOT EXISTS citext` — and bootstrap and the migration helper create it first
+anyway, as the app role (under `SET ROLE`), so the extension belongs to the database's owner and the
+migration's own copy is a no-op. That works because `citext` is a trusted extension (PostgreSQL 13
+and later) and the app role owns its database. This is the one
 new deployment requirement: `citext` ships in `postgresql-contrib`, and is available on every
 managed PostgreSQL service checked.
 
@@ -202,8 +202,9 @@ set of problems instead of discovering them one run at a time:
 - The source schema is 0.3.0 and nothing else. One schema to understand is what keeps this a script.
 - No CMP enrollment token is still live (see below).
 - No case collisions, swept per case-insensitive column against the source.
-- The server is PostgreSQL 13 or newer — where `citext` became trusted and `DROP DATABASE WITH
-  (FORCE)` arrived, which are the two facts the rest of the design rests on.
+- The server is PostgreSQL 14 or newer, the oldest release ModularCA supports. (13 is where
+  `citext` became trusted and `DROP DATABASE WITH (FORCE)` arrived, the two facts the rest of the
+  design rests on.)
 - `citext` is available in `pg_available_extensions`. Missing contrib is a packaging problem and
   insufficient rights are a permissions problem, and the two failures read nothing alike.
 - The administrative role has `CREATEDB` and `CREATEROLE`. Neither is transactional, so neither can
@@ -266,3 +267,319 @@ never written and identity columns always are, that the case-insensitive column 
 real table and column names, the type conversions — with the timestamp case called out, since
 stamping UTC rather than converting is the difference between every row surviving and every row
 shifting by the migrating machine's offset — and the enrollment token transform.
+
+## Who owns the schema
+
+From 0.4.0 one layout holds on every install path: bootstrap, the setup wizard, the recovery
+wizard and `modularca-migrate`. It is the layout `modularca-migrate` built for production and
+staging. The names:
+
+- **A**: `App.Username` in `db.yaml` (e.g. `modularca_app`).
+- **U**: `Audit.Username` (e.g. `modularca_audit`).
+- **O**: `<U>_owner` (e.g. `modularca_audit_owner`), a role with no login.
+- **R**: `SqlRoot` in `setup-database.yaml`, used by bootstrap only. It must be a PostgreSQL
+  superuser; bootstrap checks that first and refuses otherwise. `CREATEDB` and `CREATEROLE` are not
+  enough.
+
+The rule:
+
+1. A owns the application database, every table, index, sequence and `__EFMigrationsHistory` in its
+   `public` schema, and the `citext` extension.
+2. O owns the audit database. O has no login, no password and no member except superusers. U owns
+   every table and `__EFMigrationsHistory` in the audit database's `public` schema. U holds CONNECT
+   on the database and USAGE and CREATE on `public`, but no CREATE on the database, and is not a
+   member of O. So U applies its own migrations, and cannot drop the database, create a schema or
+   create an extension.
+3. A and U have no SUPERUSER, CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS, and are members of no
+   role.
+4. The control role applies migrations with exactly the `db.yaml` credentials. No administrative
+   credential ever reaches a ModularCA process, and nothing the service account can write is ever
+   run as root or as a PostgreSQL superuser.
+
+A fresh install also revokes PUBLIC's rights on both databases. A and U keep what they need, as
+owner and by grant. A monitoring or reporting role therefore needs its own
+`GRANT CONNECT ON DATABASE`. Production and staging were built before this change and keep PUBLIC's
+CONNECT unless an operator revokes it. Where `public` belongs to the superuser and PUBLIC may
+create tables in it (PostgreSQL 14, and a database pg_upgraded from 14 to a later release),
+bootstrap and `modularca-migrate` give `public` to the database owner and revoke PUBLIC's CREATE.
+They decide from the schema's actual owner and ACL, not from the server version; on a database
+created by PostgreSQL 15 or later there is nothing to do. PostgreSQL 14 is the oldest
+release supported: bootstrap, `modularca-migrate` and the startup check all refuse anything older.
+
+| Operation | Runs as |
+|---|---|
+| Startup check: presence, migration history, ownership (catalog reads only) | A on the application database, U on the audit database |
+| Migrations (control role only) | A and U, each on its own migration connection |
+| Bootstrap: roles, `CREATE` and `DROP DATABASE`, grants, adopting a preserved audit database | R |
+| Bootstrap: baselines, later migrations, seed data | A and U, through the code path the control role uses |
+| Backup (`pg_dump`), restore, factory reset | A and U |
+| Repairing an install made before 0.4.0 | the local `postgres` superuser, running the root-owned `/usr/share/modularca/sql/adopt-ownership.sql` |
+
+Bootstrap proves the layout before it writes any configuration. It checks, as A and as U, that
+each role owns its schema. That also proves `pg_hba.conf` lets both roles in, which bootstrap now
+needs as much as the service does.
+
+### The audit trail is tamper-evident, not tamper-proof
+
+**U owns the audit tables.** Anyone who holds its password can ALTER, DROP or TRUNCATE them, add a
+trigger or a rule, and write to their migration history. That includes anyone who controls the
+node. U also holds DELETE, which the retention job uses. What U cannot do is drop the audit
+database, create a schema or an extension, or become O.
+
+So privileges do not prevent tampering with audit history. The hash chain makes it evident:
+each record carries the SHA-256 of the record before it, and verification
+(`AuditHashChainService.VerifyAsync`) reports a record that was altered, removed or reordered.
+Restarts and retention prunes are themselves chained records, which it counts. The chain is not
+keyed, so someone holding U's password could rewrite a chain consistently from an edited record
+onward. Against U itself, tampering is evident only when the chain is compared with a copy kept
+outside the database, such as an earlier backup of the audit database. Describe the product as
+tamper-evident, never as tamper-proof. Production and staging have had this layout since they
+moved to PostgreSQL. 0.4.0 brings every other install into line with it.
+
+Preventing tampering is on the roadmap as **separated schema authority**:
+
+- a no-login table owner, distinct from the database owner;
+- a migrator that can only `SET ROLE` to that owner, with its credential held outside the node;
+- runtime roles with DML only: U gets SELECT, INSERT and DELETE, and only SELECT on its migration
+  history;
+- a bounded `SECURITY DEFINER` function for retention.
+
+It waits on two things. First, the payload under `/opt/modularca` must become root-owned, with
+`ReadWritePaths` narrowed. Second, credentials need a store outside `/opt/modularca`; today
+`/etc/modularca` is a symlink into it. The ownership check and the repair already take the target
+owner as a parameter, so the conversion will be one repair run.
+
+### Installs made by the wizard or `--bootstrap` before 0.4.0
+
+Before 0.4.0 the wizard and the CLI applied both baselines as SqlRoot. So the superuser owns every
+table in both databases, and the app role has no privilege on its own tables. Such an install
+cannot read its own application tables. From 0.4.0 the service refuses it at start with exit
+status 3. The refusal lists the objects and their owner and prints the repair:
+
+```bash
+sudo systemctl stop modularca modularca-signer
+sudo -u postgres psql -X -d 'modularca-app' -v kind=app -v target='modularca_app' -f /usr/share/modularca/sql/adopt-ownership.sql
+sudo -u postgres psql -X -d 'modularca-audit' -v kind=audit -v target='modularca_audit' -f /usr/share/modularca/sql/adopt-ownership.sql
+sudo systemctl start modularca
+```
+
+Use the database and role names from `db.yaml`; the refusal prints them. For a server that is not
+on port 5432, add `-p <port>`. On a database host without the package, take the script from the
+tarball's `share/sql/`. Run it as a superuser and never from a directory the service account can
+write.
+
+The script hands each object in `public` to the target role, one `ALTER ... OWNER TO` per object,
+in one transaction. It moves only objects that a superuser, a CREATEDB or CREATEROLE role, or the
+database owner created. Indexes and identity sequences move with their table, and extension members
+stay where they are. Objects owned by any other ordinary role are reported, never moved. It refuses,
+and changes nothing, unless all of these hold:
+
+- the database holds this product's frozen baseline in its migration history;
+- the target is a plain login role, with no SUPERUSER, CREATEDB, CREATEROLE, REPLICATION or
+  BYPASSRLS;
+- for `kind=app`, the target already owns the database;
+- for `kind=audit`, the target was granted CONNECT on the database and cannot become its owner.
+
+Running it again changes nothing. `REASSIGN OWNED` is avoided on purpose: PostgreSQL refuses it for
+`postgres`, and it would also move shared objects such as the audit database itself.
+
+**The `.deb` runs this repair itself** when PostgreSQL is local; `packaging/README-PACKAGING.md`
+says exactly when. A tarball install, a remote or managed server, and a failed automatic repair
+all get the refusal and the commands above. The other way out is to run the 0.4.0 bootstrap again.
+It re-owns a preserved audit database automatically, but it discards the application data.
+
+To see the same report without changing anything, run
+`sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check` as the service user, never as
+root. It exits 0 when both databases are sound and 3 when not.
+
+A restore still works on a repaired install. `citext` stays owned by the superuser that created it,
+because PostgreSQL has no `ALTER EXTENSION ... OWNER`. So the restore creates the extension as A
+when it is missing, and leaves the extension's entries out of the dump's table of contents rather
+than dropping and recreating it.
+
+## Schema changes after the baselines (0.4.0 on)
+
+The baselines are frozen: `20260919181506_InitialCreate` for the application context and
+`20260919181510_InitialAuditSchema` for the audit context, with their designer files. Production
+and staging applied them on 2026-09-19. Never regenerate or hand-edit them. The model snapshots
+change only through `dotnet ef migrations add`. Every schema change from 0.4.0 on is a new
+migration, with any data transformation written into it.
+
+### Adding a migration
+
+Run from the repository root. `ModularCA.Database` is both the target and the startup project,
+through its design-time factories (`ModularCADbContextFactory`, `AuditDbContextFactory`). No
+database server is needed.
+
+```bash
+dotnet ef migrations add <Name> --project ModularCA.Database --startup-project ModularCA.Database --context ModularCADbContext
+dotnet ef migrations add <Name> --project ModularCA.Database --startup-project ModularCA.Database --context AuditDbContext --output-dir Migrations/Audit
+```
+
+The audit context needs `--output-dir Migrations/Audit`, or its migration lands beside the
+application's in the wrong namespace. To check that the model matches the snapshots, and to list
+what each context knows:
+
+```bash
+dotnet ef migrations has-pending-model-changes --project ModularCA.Database --startup-project ModularCA.Database --context ModularCADbContext
+dotnet ef migrations has-pending-model-changes --project ModularCA.Database --startup-project ModularCA.Database --context AuditDbContext
+dotnet ef migrations list --project ModularCA.Database --startup-project ModularCA.Database --context ModularCADbContext --no-connect
+```
+
+`SchemaVersionGateTests` asserts the same thing in the unit suite, so a model change without its
+migration fails the build's tests.
+
+### Preconditions
+
+A migration that transforms data first states what must hold, with `FailIf` from
+`MigrationPreconditions`:
+
+```csharp
+migrationBuilder.FailIf(
+    "(SELECT count(*) FROM \"Tenants\" WHERE NOT \"IsSystemTenant\" AND NOT \"IsDeleted\") > 1",
+    "This instance has more than one organisation tenant. Split it before upgrading.");
+```
+
+It emits `DO $$ BEGIN IF (<condition>) THEN RAISE EXCEPTION '<message>'; END IF; END $$;`. The
+raise rolls back the migration's transaction. Do not use `suppressTransaction: true` in a
+migration that has a precondition.
+
+### Rules for migration authors
+
+Every migration runs as the runtime role that owns the database it changes (A or U, see "Who owns
+the schema"), on every install, with nothing else in reach. So a migration:
+
+- never names a role and never runs `SET ROLE`;
+- contains no `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES` or `OWNER TO`;
+- creates or drops no schema, role or database, and puts everything in `public`;
+- adds no extension to the audit context, and none except `citext` to the application context;
+- does not use `suppressTransaction: true` when it has a `FailIf` precondition.
+
+A migration that breaks one of these rules fails with 42501 on its first real upgrade, on every
+install at once. Long statements are fine. A migration runs with a `lock_timeout` of
+`Schema.MigrationLockTimeoutSeconds` (30 s) and a `statement_timeout` of
+`Schema.MigrationCommandTimeoutSeconds` (3600 s).
+
+### At startup
+
+`SchemaStartup` (ModularCA.API/Startup) checks every database a process uses before it writes to
+either. The control, enrollment and validation roles check the application and the audit database.
+The signer checks the application database, where its own audit goes. Setup mode and an
+ingress-only process are not checked. The check has four phases.
+
+1. **Read.** Each database is read as its own runtime role, on a dedicated connection that gives up
+   on a lock after 3 s, so a read never queues behind a migration. The read covers:
+   - whether the database exists and has tables;
+   - its migration history;
+   - from `pg_catalog` only, which objects in `public` the role does not own.
+2. **Decide.** Both databases are judged before anything is applied to either.
+   - **Exit status 3, for every role**, when the operator must act:
+     - a migration is recorded that this build does not know, so the schema is newer than the
+       build;
+     - there are tables but no migration history;
+     - a login or TLS failure, a `pg_hba.conf` refusal, or a missing privilege;
+     - an object the runtime role cannot even read (the pre-0.4.0 wizard layout);
+     - PostgreSQL older than 14.
+   - **Wait**, with backoff from 2 s to 30 s, when:
+     - the database cannot be reached;
+     - it is locked by a migration in progress;
+     - for a role other than control, migrations are pending that only the control role applies.
+
+     The wait keeps extending systemd's start timeout and logs at most once a minute. After
+     `Schema.WaitSeconds` (900) the process exits with **status 75**, and systemd retries it.
+   - **Ownership.** The control role refuses (status 3) to migrate a database whose runtime role
+     does not own every object in it. It refuses before anything is applied to either database, and
+     prints the repair. With nothing pending, the same finding is only a warning that the next
+     release carrying a migration will refuse.
+   - **Missing or empty.** A database that does not exist, or has no tables, is not refused. The
+     runtime never creates a database or a schema; bootstrap does.
+   - **Model.** Before applying anything, the control role checks that this build's model matches
+     its latest migration. If it does not, the build is defective, and the process exits 3 having
+     applied nothing.
+3. **Apply** (control role only). The application database's pending migrations go first, then the
+   audit database's. Each database gets its own migration connection, with a `lock_timeout` of
+   `Schema.MigrationLockTimeoutSeconds` (30) and a `statement_timeout` of
+   `Schema.MigrationCommandTimeoutSeconds` (3600; 0 means no limit). The start timeout is extended
+   every 20 s. Each migration commits on its own. If one fails, the message:
+   - names the first migration not applied;
+   - lists the migrations committed in this run;
+   - says whether statements the migration ran outside a transaction stayed applied.
+
+   A lock timeout, a deadlock, a serialization failure, a lost connection or a connection that
+   could not be opened is retried in the process: back to step 1 after a backoff from 2 s to
+   30 s, for up to `Schema.WaitSeconds` from the first such failure, and only then does it exit
+   75. A statement timeout exits 3: raise `Schema.MigrationCommandTimeoutSeconds`. Any other
+   failure exits 3. The start timeout is extended every 20 s throughout steps 1 to 4.
+4. **Verify.** Both databases are read again, and each must now be current.
+
+Both units carry `RestartPreventExitStatus=3`. A refusal therefore leaves the unit failed, with its
+reason in the journal, instead of being retried. Status 75 is retried, up to the unit's
+`StartLimitBurst` (5 in 300 s). `modularca-signer.service` is ordered after `modularca.service`,
+so on a shared host the signer starts once the node has migrated. Enrollment, validation and signer
+processes may be started together with control, and they wait for it. To recover from a refusal,
+fix the cause and start again, or restore the pre-upgrade dump and run the previous release.
+
+The time budgets live in `config.yaml`; these are the defaults:
+
+```yaml
+Schema:
+  WaitSeconds: 900
+  MigrationCommandTimeoutSeconds: 3600
+  MigrationLockTimeoutSeconds: 30
+```
+
+Take a dump before every upgrade (`pg_dump -Fc` of both databases). It is the recovery path.
+
+### The upgrade test harness
+
+`PostgresUpgradeHarnessTests` in `tests/ModularCA.Tests/Database` is opt-in and skipped unless its
+variables are set.
+
+**Fresh baseline.** `MODULARCA_TEST_PG` is a connection string to a server where the user may
+create and drop databases. The test creates two throwaway databases and applies the baselines
+only. It seeds a 0.3.x shape in SQL written against the baseline schema, then migrates to latest
+through `SchemaVersionGate.ApplyPendingAsync`, the code the control role runs. It then asserts,
+and drops both databases.
+
+```bash
+MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgres" \
+  dotnet test tests/ModularCA.Tests --filter "FullyQualifiedName~PostgresUpgradeHarnessTests"
+```
+
+A later stage that adds a data migration extends the seed with the rows its precondition and
+transformation care about, and extends the assertions. This test runs everything as the
+connection's user, so it does not exercise ownership. The rehearsal below does.
+
+**Rehearsal on a dump of staging.** Restore staging's dumps into disposable databases with the
+ownership staging has, then run the test as the service roles. Restoring as `postgres` with only
+`--no-owner` would leave the superuser owning every table, which hides exactly the failure a
+migration that alters a table would hit in production. The test migrates the copy in place, so
+never point it at a live database.
+
+```bash
+psql -h localhost -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE rehearsal_app LOGIN PASSWORD 'app-secret';
+CREATE ROLE rehearsal_audit LOGIN PASSWORD 'audit-secret';
+CREATE ROLE rehearsal_audit_owner NOLOGIN;
+SQL
+createdb -h localhost -U postgres -O rehearsal_app -E UTF8 -T template0 rehearsal_app
+createdb -h localhost -U postgres -O rehearsal_audit_owner -E UTF8 -T template0 rehearsal_audit
+psql -h localhost -U postgres -d rehearsal_audit -v ON_ERROR_STOP=1 <<'SQL'
+GRANT CONNECT ON DATABASE rehearsal_audit TO rehearsal_audit;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO rehearsal_audit;
+SQL
+pg_restore -h localhost -U postgres -d rehearsal_app --no-owner --no-privileges --role=rehearsal_app staging-app.dump
+pg_restore -h localhost -U postgres -d rehearsal_audit --no-owner --no-privileges --role=rehearsal_audit staging-audit.dump
+MODULARCA_TEST_PG_REHEARSAL="Host=localhost;Username=rehearsal_app;Password=app-secret;Database=rehearsal_app" \
+MODULARCA_TEST_PG_REHEARSAL_AUDIT="Host=localhost;Username=rehearsal_audit;Password=audit-secret;Database=rehearsal_audit" \
+  dotnet test tests/ModularCA.Tests --filter "FullyQualifiedName~A_restored_dump_migrates_to_latest"
+```
+
+`--role` makes `pg_restore` create every object as that role, so each role owns its tables, as on
+staging. `pg_hba.conf` must allow password logins for the two roles from localhost. Drop the two
+databases and the three roles afterwards.
+
+It checks that no migration is unknown to the build, and that every pending one applies. It also
+checks that tenant, CA, group, user, membership and certificate counts are unchanged, and that
+exactly one system tenant remains.

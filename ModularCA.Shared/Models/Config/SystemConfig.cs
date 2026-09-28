@@ -80,6 +80,59 @@ namespace ModularCA.Shared.Models.Config
         /// other control knobs.
         /// </summary>
         public AuditConfig Audit { get; set; } = new();
+
+        /// <summary>
+        /// Product-shape switches read from <c>config.yaml</c> at startup. Distinct from the
+        /// database feature flags an administrator toggles in the console.
+        /// </summary>
+        public FeaturesConfig Features { get; set; } = new();
+
+        /// <summary>
+        /// How long the startup schema check waits and how long the control role's migrations may
+        /// run. Read before the host starts.
+        /// </summary>
+        public SchemaConfig Schema { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Time budgets for the startup schema check and the control role's migrations.
+    /// </summary>
+    public class SchemaConfig
+    {
+        /// <summary>
+        /// How long a process waits, in seconds, for a database that cannot be reached, for a
+        /// migration another process is applying, or (a non-control role) for the control role to
+        /// apply this build's migrations, before it exits with status 75 so its supervisor retries.
+        /// </summary>
+        public int WaitSeconds { get; set; } = 900;
+
+        /// <summary>
+        /// The longest one migration statement may run, in seconds. 0 means no limit. A statement
+        /// that exceeds it stops the start with status 3.
+        /// </summary>
+        public int MigrationCommandTimeoutSeconds { get; set; } = 3600;
+
+        /// <summary>
+        /// How long a migration statement waits for a table lock, in seconds, before it gives up.
+        /// The migration is then retried in process until <see cref="WaitSeconds"/> runs out, and
+        /// only then does the process exit with status 75. 0 means wait indefinitely, which
+        /// blocks every reader of that table while it waits.
+        /// </summary>
+        public int MigrationLockTimeoutSeconds { get; set; } = 30;
+    }
+
+    /// <summary>
+    /// Product-shape switches that change what an instance may contain, not how it behaves.
+    /// </summary>
+    public class FeaturesConfig
+    {
+        /// <summary>
+        /// Whether this instance may hold more than one organisation tenant besides the system
+        /// tenant. Off by default: an instance is one organisation, and a further organisation is
+        /// a further instance. Bootstrap always creates the system tenant and the first
+        /// organisation regardless.
+        /// </summary>
+        public bool AllowMultipleOrganizations { get; set; } = false;
     }
 
     /// <summary>

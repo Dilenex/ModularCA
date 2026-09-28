@@ -5,11 +5,36 @@
 # and modes the payload cannot carry itself. The build host is frequently Windows, where a file's
 # mode means nothing, so every permission this install depends on is set here rather than inherited
 # from the package — the same reasoning packaging/install.sh has always used.
+#
+# The one database step: on a local PostgreSQL, db-ownership.sh hands the tables a pre-0.4.0 wizard
+# or CLI install left owned by the superuser to the runtime roles (see that script). It never fails
+# this script. MODULARCA_SKIP_DB_REPAIR=1 turns it off.
 set -e
 
 APP_DIR=/opt/modularca
 SERVICE_USER=modularca
 SERVICE_GROUP=modularca
+MARKERS=/run/modularca-upgrade
+UNITS="modularca.service modularca-signer.service"
+DB_OWNERSHIP=/usr/share/modularca/db-ownership.sh
+
+# Starts, without waiting, the units prerm recorded as running: the node before the signer. The
+# node applies migrations before it reports ready, which can take far longer than dpkg should wait.
+start_recorded() {
+    started=""
+    for unit in $UNITS; do
+        if [ -e "$MARKERS/restart-$unit" ]; then
+            systemctl start --no-block "$unit" >/dev/null 2>&1 || true
+            started="$started $unit"
+        fi
+    done
+    rm -rf "$MARKERS"
+    if [ -n "$started" ]; then
+        echo "ModularCA: starting$started." >&2
+    else
+        echo "ModularCA: no unit was running before the upgrade; none was started." >&2
+    fi
+}
 
 case "$1" in
 configure)
@@ -74,6 +99,31 @@ SHADOW
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || true
 
+        # An upgrade from a version whose prerm stopped only modularca.service and recorded
+        # nothing: bring the node back if it is enabled, and restart a signer that was left
+        # running so it runs the new binaries. Everything is stopped before the ownership step.
+        # The old prerm runs before this package's preinst, so nothing can tell whether the node
+        # was running; README-DEPLOY.md documents this one-time exception.
+        if [ -n "$2" ] && [ ! -d "$MARKERS" ]; then
+            mkdir -m 0700 "$MARKERS" 2>/dev/null || true
+            if systemctl is-enabled --quiet modularca.service 2>/dev/null; then
+                touch "$MARKERS/restart-modularca.service" 2>/dev/null || true
+            fi
+            if systemctl is-active --quiet modularca-signer.service 2>/dev/null; then
+                touch "$MARKERS/restart-modularca-signer.service" 2>/dev/null || true
+                systemctl stop modularca-signer.service >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
+
+    # ── Schema ownership (pre-0.4.0 wizard and CLI installs) ───────────────────
+    if [ "${MODULARCA_SKIP_DB_REPAIR:-0}" = "1" ]; then
+        echo "ModularCA: MODULARCA_SKIP_DB_REPAIR=1 - schema ownership not checked by the package." >&2
+    elif [ -f "$DB_OWNERSHIP" ]; then
+        sh "$DB_OWNERSHIP" repair || true
+    fi
+
+    if [ -d /run/systemd/system ]; then
         if [ -z "$2" ]; then
             # First install. Enable so the CA comes back after a reboot, but do NOT start: there
             # is no database, no keystore and no configuration yet, so starting would fail-loop
@@ -93,24 +143,34 @@ SHADOW
 
 FIRST
         else
-            # Upgrade. Restart only if it was already running; an operator who had it stopped
-            # meant it, and an upgrade is not the moment to overrule that.
-            if systemctl is-enabled --quiet modularca.service 2>/dev/null; then
-                systemctl try-restart modularca.service >/dev/null 2>&1 || true
-            fi
+            # Upgrade. prerm stopped both units and recorded which were running; start exactly
+            # those. An operator who had one stopped meant it, and an upgrade does not overrule that.
+            start_recorded
             cat <<'UPGRADED'
 
-  ModularCA upgraded. Migrations are applied by the service on start, not by this package:
+  ModularCA upgraded. The service checks both databases and applies migrations itself when it
+  starts, not this package, so a start can take a while. Follow it with:
 
-      systemctl status modularca
-      journalctl -u modularca -n 50
+      journalctl -u modularca -f
+
+  A start the service refuses exits with status 3, prints the reason and the fix, and is not
+  retried. A database that is unreachable or locked, or a migration that fails on a lock, a
+  deadlock or a lost connection, is waited for and retried inside the service for up to
+  Schema.WaitSeconds; only then does it exit with status 75, and systemd retries it.
 
 UPGRADED
         fi
     fi
     ;;
 
-abort-upgrade|abort-remove|abort-deconfigure)
+abort-upgrade)
+    # The upgrade failed after this version's prerm stopped the units: start them again.
+    if [ -d /run/systemd/system ] && [ -d "$MARKERS" ]; then
+        start_recorded
+    fi
+    ;;
+
+abort-remove|abort-deconfigure)
     :
     ;;
 esac

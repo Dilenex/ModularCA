@@ -1,0 +1,221 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using ModularCA.Database;
+using Npgsql;
+using Xunit;
+
+namespace ModularCA.Tests.Database;
+
+/// <summary>
+/// A <see cref="FactAttribute"/> that runs only when <see cref="Variable"/> is set, and is
+/// otherwise reported as skipped with the reason.
+/// </summary>
+public sealed class RequiresEnvironmentFactAttribute : FactAttribute
+{
+    /// <summary>The environment variable that must hold a value for the test to run.</summary>
+    public string Variable { get; }
+
+    /// <summary>Skips the test unless <paramref name="variable"/> is set.</summary>
+    public RequiresEnvironmentFactAttribute(string variable)
+    {
+        Variable = variable;
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(variable)))
+            Skip = $"Opt-in: set {variable} to run.";
+    }
+}
+
+/// <summary>
+/// Opt-in upgrade tests against a real PostgreSQL server. Skipped unless an environment variable
+/// names a server.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>MODULARCA_TEST_PG</c> holds a connection string to a server where the user may create and
+/// drop databases (the <c>Database</c> in it is only used to connect). The fresh-install test
+/// creates two throwaway databases, applies the frozen baselines only, seeds the 0.3.x shape
+/// with SQL written against the baseline schema (not through the current model, which later
+/// migrations change), then applies every later migration through the same code the control
+/// role uses and checks the result. The databases are dropped afterwards.
+/// </para>
+/// <para>
+/// <c>MODULARCA_TEST_PG_REHEARSAL</c> holds a connection string to a copy of a real
+/// application database, restored from a dump of staging. That test migrates the copy to latest
+/// and checks that nothing was lost. It changes the database it is pointed at, so point it only
+/// at a disposable restore. <c>MODULARCA_TEST_PG_REHEARSAL_AUDIT</c> optionally does the same
+/// for the audit database. See docs/architecture/postgresql-migration.md.
+/// </para>
+/// </remarks>
+[Trait("Category", "PostgreSQL")]
+public class PostgresUpgradeHarnessTests
+{
+    /// <summary>The application context's frozen baseline, applied by production on 2026-09-19.</summary>
+    public const string AppBaseline = "20260919181506_InitialCreate";
+
+    /// <summary>The audit context's frozen baseline, applied by production on 2026-09-19.</summary>
+    public const string AuditBaseline = "20260919181510_InitialAuditSchema";
+
+    private const string ServerVariable = "MODULARCA_TEST_PG";
+    private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
+    private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
+
+    private static readonly Guid SystemTenant = Guid.Parse("00000000-0000-0000-0000-00000000a001");
+    private static readonly Guid OrgTenant = Guid.Parse("00000000-0000-0000-0000-00000000a002");
+    private static readonly Guid RootCa = Guid.Parse("00000000-0000-0000-0000-00000000b001");
+    private static readonly Guid SystemGroup = Guid.Parse("00000000-0000-0000-0000-00000000c001");
+    private static readonly Guid OrgAdminGroup = Guid.Parse("00000000-0000-0000-0000-00000000c002");
+    private static readonly Guid CaAdminGroup = Guid.Parse("00000000-0000-0000-0000-00000000c003");
+    private static readonly Guid Operator = Guid.Parse("00000000-0000-0000-0000-00000000d001");
+
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task Baseline_with_a_030_shape_migrates_to_latest()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var suffix = Guid.NewGuid().ToString("N")[..12];
+        var appName = $"modularca_upgrade_app_{suffix}";
+        var auditName = $"modularca_upgrade_audit_{suffix}";
+
+        await CreateDatabaseAsync(server, appName);
+        await CreateDatabaseAsync(server, auditName);
+        try
+        {
+            await using (var app = CreateApp(WithDatabase(server, appName)))
+            {
+                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
+
+                await app.Database.ExecuteSqlRawAsync(Seed030Sql);
+
+                await MigrateToLatestAsync(app, "application");
+
+                var tenants = await app.Tenants.IgnoreQueryFilters().AsNoTracking().ToListAsync();
+                Assert.Equal(2, tenants.Count);
+                Assert.Single(tenants, t => t.IsSystemTenant && t.Id == SystemTenant);
+                Assert.Single(tenants, t => !t.IsSystemTenant && t.Id == OrgTenant);
+                var ca = await app.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking().SingleAsync();
+                Assert.Equal(OrgTenant, ca.TenantId);
+                Assert.Equal(3, await app.CaGroups.IgnoreQueryFilters().CountAsync());
+                Assert.Equal(1, await app.Users.IgnoreQueryFilters().CountAsync(u => u.Id == Operator));
+                Assert.Equal(2, await app.CaGroupMembers.CountAsync(m => m.UserId == Operator));
+            }
+
+            await using (var audit = CreateAudit(WithDatabase(server, auditName)))
+            {
+                await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
+                Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
+                await MigrateToLatestAsync(audit, "audit");
+            }
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+            await DropDatabaseAsync(server, auditName);
+        }
+    }
+
+    [RequiresEnvironmentFact(RehearsalVariable)]
+    public async Task A_restored_dump_migrates_to_latest_without_losing_rows()
+    {
+        await using var app = CreateApp(Environment.GetEnvironmentVariable(RehearsalVariable)!);
+        var ownership = await SchemaOwnership.ProbeAsync(app.Database.GetDbConnection(), DatabaseKind.Application);
+        Assert.True(ownership.IsSound,
+            "The rehearsal copy does not reproduce staging's ownership; restore it with pg_restore --role=<service role> "
+            + "and connect as the service role. " + SchemaOwnership.RefusalMessage(ownership, null));
+
+        var before = await CountsAsync(app);
+        await MigrateToLatestAsync(app, "application");
+        var after = await CountsAsync(app);
+
+        Assert.Equal(before, after);
+        Assert.Equal(1, await app.Tenants.IgnoreQueryFilters().CountAsync(t => t.IsSystemTenant));
+
+        var auditConnection = Environment.GetEnvironmentVariable(RehearsalAuditVariable);
+        if (!string.IsNullOrWhiteSpace(auditConnection))
+        {
+            await using var audit = CreateAudit(auditConnection);
+            var auditOwnership = await SchemaOwnership.ProbeAsync(audit.Database.GetDbConnection(), DatabaseKind.Audit);
+            Assert.True(auditOwnership.IsSound, SchemaOwnership.RefusalMessage(auditOwnership, null));
+            await MigrateToLatestAsync(audit, "audit");
+        }
+    }
+
+    /// <summary>
+    /// Brings <paramref name="db"/> to the latest migration through the control role's code path
+    /// and asserts the schema is then current.
+    /// </summary>
+    private static async Task MigrateToLatestAsync(DbContext db, string name)
+    {
+        var state = await SchemaVersionGate.ReadAsync(db);
+        Assert.Empty(state.Unknown);
+        var failure = await SchemaVersionGate.ApplyPendingAsync(db, state);
+        Assert.True(failure is null,
+            failure is { } f ? SchemaVersionGate.MigrationFailedMessage(name, f.Migration, f.Error) : null);
+
+        var after = await SchemaVersionGate.ReadAsync(db);
+        Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(after, appliesMigrations: false));
+    }
+
+    private static async Task<(int Tenants, int Cas, int Groups, int Users, int Members, int Certificates)> CountsAsync(ModularCADbContext db) => (
+        await db.Tenants.IgnoreQueryFilters().CountAsync(),
+        await db.CertificateAuthorities.IgnoreQueryFilters().CountAsync(),
+        await db.CaGroups.IgnoreQueryFilters().CountAsync(),
+        await db.Users.IgnoreQueryFilters().CountAsync(),
+        await db.CaGroupMembers.IgnoreQueryFilters().CountAsync(),
+        await db.Certificates.IgnoreQueryFilters().CountAsync());
+
+    private static ModularCADbContext CreateApp(string connectionString) =>
+        new(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connectionString).Options);
+
+    private static AuditDbContext CreateAudit(string connectionString) =>
+        new(new DbContextOptionsBuilder<AuditDbContext>().UseNpgsql(connectionString).Options);
+
+    private static string WithDatabase(string connectionString, string database) =>
+        new NpgsqlConnectionStringBuilder(connectionString) { Database = database, Pooling = false }.ConnectionString;
+
+    private static async Task CreateDatabaseAsync(string server, string name)
+    {
+        await using var connection = new NpgsqlConnection(server);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand($"CREATE DATABASE \"{name}\"", connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task DropDatabaseAsync(string server, string name)
+    {
+        await using var connection = new NpgsqlConnection(server);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)", connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// A 0.3.x instance as bootstrap leaves it, written against the baseline schema: the system
+    /// tenant and one organisation tenant, a root CA in the organisation, a system group, a
+    /// tenant-wide and a CA-scoped group, and one operator in two of them.
+    /// </summary>
+    internal static string Seed030Sql => $"""
+        INSERT INTO "Tenants" ("Id","Name","Slug","Description","IsEnabled","IsSystemTenant","CanBeDeleted","CreatedAt",
+            "MaxCertificateAuthorities","MaxCertificatesTotal","MaxUsers","MaxValidityDays","ValidityCeilingBehavior",
+            "RequireKeyCeremony","CeremonyRequiredApprovals","IsDeleted")
+        VALUES ('{SystemTenant}','System','system','Internal system tenant',true,true,false,now(),0,0,0,0,0,false,0,false),
+               ('{OrgTenant}','Acme','acme','Primary tenant for Acme',true,false,false,now(),0,0,0,0,0,false,0,false);
+
+        INSERT INTO "CertificateAuthorities" ("Id","Name","Label","IsDefault","Type","IsEnabled","KeyStorageType","IsSshCa","TenantId","IsDeleted")
+        VALUES ('{RootCa}','Acme Root CA','acme-root',true,'Root',true,'Software',false,'{OrgTenant}',false);
+
+        INSERT INTO "CaGroups" ("Id","Name","DisplayName","CertificateAuthorityId","TemplateName","IsSystemGroup","IsSystemTierSuper",
+            "IsAutoGenerated","RequiredQuorum","MaxCertificates","MaxPendingRequests","CreatedAt","TenantId")
+        VALUES ('{SystemGroup}','system-super','System Super',NULL,'Administrator',true,true,true,1,0,0,now(),'{SystemTenant}'),
+               ('{OrgAdminGroup}','org-acme-admin','Org Acme Admin',NULL,'Administrator',false,false,true,1,0,0,now(),'{OrgTenant}'),
+               ('{CaAdminGroup}','ca-acme-root-admin','CA acme-root Admin','{RootCa}','Administrator',false,false,true,1,0,0,now(),'{OrgTenant}');
+
+        INSERT INTO "Users" ("Id","Username","Email","PasswordHash","PasswordNeverExpires","PasswordChangeOnNextLogon","FirstName",
+            "LastName","IsActive","IsServiceIdentity","IsLocked","FailedLoginAttempts","CreatedAt","SecurityStamp","IsDeleted")
+        VALUES ('{Operator}','operator','operator@acme.example','not-a-hash',false,false,'Op','Erator',true,false,false,0,now(),'stamp',false);
+
+        INSERT INTO "CaGroupMembers" ("Id","GroupId","UserId","AddedAt")
+        VALUES (gen_random_uuid(),'{OrgAdminGroup}','{Operator}',now()),
+               (gen_random_uuid(),'{CaAdminGroup}','{Operator}',now());
+        """;
+}

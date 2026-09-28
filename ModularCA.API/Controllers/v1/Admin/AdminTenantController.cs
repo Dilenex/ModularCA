@@ -13,7 +13,9 @@ using ModularCA.Shared.Entities;
 using ModularCA.Bootstrap;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Errors;
 using ModularCA.Shared.Licensing;
+using ModularCA.Shared.Models.Config;
 using Serilog;
 using System.Text.RegularExpressions;
 using ModularCA.API.Startup;
@@ -37,9 +39,11 @@ public partial class AdminTenantController(
     ICaGroupAuthorizationService groupAuth,
     ITenantPolicyChangeService tenantPolicyChangeService,
     IControlledUserCeremonyService controlledUserSvc,
-    IEntitlementService entitlements) : ControllerBase
+    IEntitlementService entitlements,
+    SystemConfig config) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
+    private readonly SystemConfig _config = config;
     private readonly IEntitlementService _entitlements = entitlements;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IAuditService _audit = audit;
@@ -143,7 +147,10 @@ public partial class AdminTenantController(
     }
 
     /// <summary>
-    /// Creates a new tenant. The slug is auto-generated from the name if not provided.
+    /// Creates a new tenant. The slug is auto-generated from the name if not provided. Refused
+    /// with MCA-CFG-017, naming the blocking organisation, when an organisation tenant (enabled or
+    /// disabled, not soft-deleted) already exists and <c>Features.AllowMultipleOrganizations</c>
+    /// is off, then subject to the licence gate.
     /// </summary>
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateTenantRequest request)
@@ -165,16 +172,19 @@ public partial class AdminTenantController(
         if (slugExists)
             return Conflict(new { error = $"A tenant with slug '{slug}' already exists" });
 
-        // Licence gate. Placed after the shape and uniqueness checks so a malformed request is
-        // still reported as malformed rather than as a licensing problem — telling an operator
-        // to buy something when they actually typed a duplicate name would be a poor trade.
-        var refusal = TenantCreationGate.Evaluate(
-            _entitlements, await _db.Tenants.CountAsync());
+        // Single-organisation mode, then the licence. Both after the shape and uniqueness checks so
+        // a malformed request is still reported as malformed.
+        var organizations = _db.Tenants.IgnoreQueryFilters().Where(t => !t.IsSystemTenant && !t.IsDeleted);
+        var organizationCount = await organizations.CountAsync();
+        var blocking = organizationCount > 0
+            ? await organizations.OrderBy(t => t.Name).Select(t => new { t.Name, t.IsEnabled }).FirstAsync()
+            : null;
+        var refusal = (RequestValidationException?)TenantCreationGate.EvaluateOrganizationMode(
+                _config.Features.AllowMultipleOrganizations, organizationCount, blocking?.Name, blocking is { IsEnabled: false })
+            ?? TenantCreationGate.Evaluate(_entitlements, await _db.Tenants.CountAsync());
         if (refusal is not null)
         {
-            // Audited before it is thrown. A refused attempt to exceed a licence limit is the
-            // event a commercial dispute later turns on, so it is recorded whether or not the
-            // operator ever reads the message.
+            // Audited before it is thrown, whether or not the operator ever reads the message.
             await _audit.LogAsync(
                 AuditActionType.TenantCreated,
                 _currentUser.User?.Id, _currentUser.User?.Username,

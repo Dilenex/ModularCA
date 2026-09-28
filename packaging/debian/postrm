@@ -66,14 +66,23 @@ purge)
   unverifiable and unrevocable: no further CRL can be signed and no OCSP response produced.
   There is no recovery without a backup of these files.
 
-  The database is also untouched. It holds the issuance record, revocation state and audit
-  trail, and must be dropped separately.
+  The PostgreSQL databases and roles are also untouched. They hold the issuance record,
+  revocation state and audit trail, and must be dropped separately.
 
-  If you are certain, remove them by hand:
+  If you are certain, remove them by hand. The database and role names are in
+  $APP_DIR/config/db.yaml (App and Audit); the audit database is owned by the NOLOGIN role
+  <Audit.Username>_owner. With the default names, drop the databases and roles first:
+
+      sudo -u postgres psql -X -v ON_ERROR_STOP=1 \\
+          -c 'DROP DATABASE IF EXISTS "modularca-app" WITH (FORCE)' \\
+          -c 'DROP DATABASE IF EXISTS "modularca-audit" WITH (FORCE)' \\
+          -c 'DROP ROLE IF EXISTS "modularca_app"' \\
+          -c 'DROP ROLE IF EXISTS "modularca_audit"' \\
+          -c 'DROP ROLE IF EXISTS "modularca_audit_owner"'
+
+  and then the files:
 
       sudo rm -rf $APP_DIR
-      # and, for the database, e.g.:
-      # mysql -e 'DROP DATABASE modularca; DROP DATABASE modularca_audit;'
 
   To have a future purge do this automatically (lab and CI only):
 

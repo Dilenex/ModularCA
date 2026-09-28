@@ -61,6 +61,15 @@ Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 # override it.
 Restart=always
 RestartSec=5s
+# Exit status 3 is the startup schema check refusing: something only an operator can fix (a schema
+# newer than this build, a wrong password or pg_hba rule, tables the runtime role does not own, a
+# migration that failed for good). A restart cannot fix it, so the unit stops as failed at once
+# instead of using up its start limit. Transient conditions are waited for or retried inside the
+# process, not by restarts: an unreachable database, a migration in progress, and a migration that
+# failed on a lock timeout, a deadlock or a lost connection. Status 75 means that went on for
+# longer than Schema.WaitSeconds (900 s); systemd retries it, and each such restart takes at least
+# that long, so the start limit below is not reached by a database that is merely slow to come back.
+RestartPreventExitStatus=3
 
 # CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
 # move Http.Port/Https.Port to 80/443. Defaults are 8080/8443, which need no capability
@@ -98,6 +107,10 @@ ReadWritePaths=/opt/modularca
 LimitCORE=0
 
 LimitNOFILE=65535
+# The schema check runs before READY=1. Throughout it (reading, waiting, retrying, migrating) a
+# heartbeat extends this every 20 s with EXTEND_TIMEOUT_USEC (systemd 236 or later), so it bounds
+# a start that hangs elsewhere, not the check. The check's own connect and command timeouts,
+# Schema.WaitSeconds and Schema.MigrationCommandTimeoutSeconds in config.yaml bound that.
 TimeoutStartSec=120
 TimeoutStopSec=30
 KillSignal=SIGTERM

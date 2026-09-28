@@ -82,3 +82,8 @@ packaging/debian/* text eol=lf
 # Config templates are copied to the target verbatim. modularca.env.example is sourced by a
 # shell, where a trailing CR becomes part of the value.
 config/*.example text eol=lf
+
+# SQL is run by psql on Linux hosts, and the schema-ownership repair SQL is embedded in
+# ModularCA.Database and shipped under /usr/share/modularca/sql; both copies must be the same
+# bytes on every checkout platform.
+*.sql text eol=lf

@@ -133,6 +133,7 @@ const TenantsAndQuotas: React.FC = () => {
     const [totals, setTotals] = useState<{ totalTenants: number; totalCAs: number; casAtLimit: number; casNearLimit: number } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
+    const [allowMultipleOrganizations, setAllowMultipleOrganizations] = useState(true);
 
     // create-tenant form
     const [showCreate, setShowCreate] = useState(false);
@@ -142,12 +143,19 @@ const TenantsAndQuotas: React.FC = () => {
     const load = useCallback(() => {
         setLoading(true);
         apiGet<any>('/api/v1/admin/quotas/by-tenant')
-            .then((data) => { setTenants(data.tenants || []); setTotals(data.totals || null); setError(null); })
+            .then((data) => {
+                setTenants(data.tenants || []);
+                setTotals(data.totals || null);
+                setAllowMultipleOrganizations(data.allowMultipleOrganizations !== false);
+                setError(null);
+            })
             .catch((err) => setError(errorNotice(err, 'Failed to load')))
             .finally(() => setLoading(false));
     }, []);
 
     useEffect(() => { load(); }, [load]);
+
+    const canCreate = allowMultipleOrganizations || !tenants.some((t) => !t.isSystemTenant);
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -211,9 +219,15 @@ const TenantsAndQuotas: React.FC = () => {
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Tenants &amp; Quotas</h1>
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Tenant rows are org-level ceilings (max CAs / certs / users). Open a tenant to edit ceilings and set per-CA issuance quotas.</p>
                 </div>
-                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Tenant'}
-                </button>
+                {canCreate ? (
+                    <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                        {showCreate ? 'Cancel' : 'Create Tenant'}
+                    </button>
+                ) : (
+                    <p className="text-xs text-gray-600 dark:text-gray-400 max-w-xs">
+                        Single-organisation mode: this instance holds one organisation. Set Features.AllowMultipleOrganizations in config.yaml to add more.
+                    </p>
+                )}
             </div>
 
             {/* summary tiles */}
@@ -233,7 +247,7 @@ const TenantsAndQuotas: React.FC = () => {
                 </div>
             )}
 
-            {showCreate && (
+            {showCreate && canCreate && (
                 <form onSubmit={handleCreate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white">New Tenant</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

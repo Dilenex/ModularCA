@@ -55,6 +55,7 @@ HttpsApi:
 
 SqlRoot:
   # Admin DB credentials — used only during bootstrap, never saved to config.yaml.
+  # Must be a PostgreSQL superuser (e.g. postgres); CREATEDB and CREATEROLE are not enough.
   Host: "localhost"
   Port: 5432
   Username: "postgres"
@@ -66,6 +67,7 @@ SqlApp:
   Username: "modularca_app"
 
 SqlAudit:
-  # Audit database. Dedicated user auto-created with append-only permissions.
+  # Audit database. Dedicated user auto-created; it owns the audit tables (tamper-evident through
+  # the hash chain, not tamper-proof) but not the database, which a NOLOGIN <user>_owner role owns.
   Database: "modularca-audit"
   Username: "modularca_audit"

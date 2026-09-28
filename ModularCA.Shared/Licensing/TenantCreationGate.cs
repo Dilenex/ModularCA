@@ -4,7 +4,8 @@ using ModularCA.Shared.Interfaces;
 namespace ModularCA.Shared.Licensing;
 
 /// <summary>
-/// Decides whether this installation may create another tenant.
+/// Decides whether this installation may create another tenant: first single-organisation mode
+/// (<see cref="EvaluateOrganizationMode"/>), then the licence (<see cref="Evaluate"/>).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -78,5 +79,56 @@ public static class TenantCreationGate
         return FeatureGate.RequireHeadroom(
             entitlements, LicenseLimits.MaxTenants, existingTenantCount,
             "tenant", unaffected);
+    }
+
+    /// <summary>
+    /// Single-organisation mode: returns the refusal to throw when an organisation tenant already
+    /// exists and <paramref name="allowMultipleOrganizations"/> is false, or <see langword="null"/>
+    /// when creation may proceed. Evaluated before <see cref="Evaluate"/>; it is configuration,
+    /// not licensing. A disabled organisation counts, because disabling is what the tenant delete
+    /// endpoint does; only a soft-deleted one does not.
+    /// </summary>
+    /// <param name="allowMultipleOrganizations"><c>Features.AllowMultipleOrganizations</c> from config.yaml.</param>
+    /// <param name="existingOrganizationCount">How many non-system, non-deleted tenants already exist, disabled ones included.</param>
+    /// <param name="blockingOrganization">The name of an existing organisation, for the message, or null.</param>
+    /// <param name="blockingOrganizationDisabled">Whether that organisation is disabled.</param>
+    public static ConfigurationValidationException? EvaluateOrganizationMode(
+        bool allowMultipleOrganizations, int existingOrganizationCount,
+        string? blockingOrganization = null, bool blockingOrganizationDisabled = false)
+    {
+        if (allowMultipleOrganizations || existingOrganizationCount < 1)
+            return null;
+
+        var existing = blockingOrganization is null
+            ? "an organisation tenant"
+            : $"organisation tenant '{blockingOrganization}'"
+              + (blockingOrganizationDisabled ? " (disabled; a disabled organisation still counts)" : "");
+        return new ConfigurationValidationException(
+            $"This instance is in single-organisation mode and already has {existing}. "
+            + "A further organisation is meant to be a further instance.",
+            ErrorCodes.MultipleOrganizationsDisabled,
+            "To hold several organisations in this instance: stop the service, set "
+            + "Features.AllowMultipleOrganizations: true in config.yaml, then start it again. "
+            + "Stop the service before editing config.yaml, or a running node may write its own copy over the edit.");
+    }
+
+    /// <summary>
+    /// The warning the control role logs at startup when single-organisation mode is on but the
+    /// instance already holds more than one organisation, or <see langword="null"/> when there is
+    /// nothing to say. The mode refuses a new organisation; it never removes existing ones.
+    /// </summary>
+    /// <param name="allowMultipleOrganizations"><c>Features.AllowMultipleOrganizations</c> from config.yaml.</param>
+    /// <param name="organizations">The non-system, non-deleted tenants, disabled ones included.</param>
+    public static string? SingleOrganizationStartupWarning(
+        bool allowMultipleOrganizations, IReadOnlyList<(string Name, bool IsEnabled)> organizations)
+    {
+        if (allowMultipleOrganizations || organizations.Count <= 1)
+            return null;
+
+        var listed = string.Join(", ", organizations.Select(o => o.IsEnabled ? $"'{o.Name}'" : $"'{o.Name}' (disabled)"));
+        return $"Single-organisation mode (Features.AllowMultipleOrganizations: false), but this instance holds "
+            + $"{organizations.Count} organisations: {listed}. They keep working; creating another is refused "
+            + $"({ErrorCodes.MultipleOrganizationsDisabled}). To keep several deliberately, stop the service, set "
+            + "Features.AllowMultipleOrganizations: true in config.yaml and start it.";
     }
 }

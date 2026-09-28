@@ -34,6 +34,18 @@ jobs:
   build:
     name: Build and publish distribution
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +75,23 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
         id: version
 
+      # Nothing is packaged unless the tests pass, including the PostgreSQL upgrade harness
+      # against the service container below. Same restore/build/test shape as build.yml.
+      - name: Restore
+        run: |
+          dotnet restore tests/ModularCA.Tests/ModularCA.Tests.csproj
+          dotnet restore ModularCA.API/ModularCA.API.csproj
+
+      - name: Build for tests
+        run: |
+          dotnet build tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-restore
+          dotnet build ModularCA.API/ModularCA.API.csproj -c Debug --no-restore
+
+      - name: Test
+        env:
+          MODULARCA_TEST_PG: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres
+        run: dotnet test tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-build --logger "console;verbosity=normal"
+
       - name: Build linux-x64 distribution
         run: bash scripts/build-linux-dist.sh
 
@@ -75,8 +104,7 @@ jobs:
       - name: Container image tags
         id: image
         run: |
-          version="$(tr -d ' 
-' < VERSION)"
+          version="$(tr -d ' \r\n' < VERSION)"
           repo="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/modularca"
           tags="$repo:$version"
           case "$version" in *-*) ;; *) tags="$tags,$repo:latest" ;; esac

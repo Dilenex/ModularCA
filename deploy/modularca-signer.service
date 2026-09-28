@@ -21,11 +21,13 @@
 Description=ModularCA Signer (keystore and signing service)
 Documentation=https://github.com/edphemeral/modularCA
 # The signer classifies keys, verifies ceremonies and writes its audit through the database.
-After=network-online.target postgresql.service
+# After the node, not before it: the node's control role applies migrations before it reports
+# ready, and the signer waits for them in-process (Schema.WaitSeconds). Ordered first, a waiting
+# signer held up the node's start job while the node was what it waited for. The node refuses
+# enrollment while the signer is unreachable and reconnects on its own, so it needs nothing from
+# the signer to start. This is ordering only.
+After=network-online.target postgresql.service modularca.service
 Wants=network-online.target
-# The node refuses enrollment while the signer is unreachable and reconnects on its own, so
-# this is ordering only: start the signer first, and let the node find it.
-Before=modularca.service
 
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -45,6 +47,9 @@ Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 
 Restart=always
 RestartSec=5s
+# Exit status 3: the startup schema check refused, which only an operator can fix; not retried.
+# Status 75: it waited Schema.WaitSeconds for the database or the node's migrations; retried.
+RestartPreventExitStatus=3
 
 # The signer listens on loopback 8446 by default (Signer.Listen); no privileged port.
 CapabilityBoundingSet=
@@ -81,6 +86,8 @@ ReadWritePaths=/opt/modularca/keystores /opt/modularca/logs
 LimitCORE=0
 
 LimitNOFILE=8192
+# While the schema check waits it extends this with EXTEND_TIMEOUT_USEC (systemd 236 or later), so
+# this bounds a start that hangs; Schema.WaitSeconds bounds the wait.
 TimeoutStartSec=120
 TimeoutStopSec=30
 KillSignal=SIGTERM

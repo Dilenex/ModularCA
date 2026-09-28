@@ -413,3 +413,24 @@ Https:
 # Msae:
 #   TemplateOidArc: "1.3.6.1.4.1.66874.1.1"
 #   MoveGeneratedTemplateOids: true
+
+# Startup schema check and migrations ("At startup" in docs/architecture/postgresql-migration.md).
+# WaitSeconds: how long a process waits for a database it cannot reach, for a migration in
+# progress, or (enrollment, validation, signer) for the control role's migrations, and how long the
+# control role keeps retrying a migration that failed on a lock timeout, a deadlock or a lost
+# connection, before it exits with status 75 so systemd retries it. MigrationCommandTimeoutSeconds:
+# the longest one migration statement may run, 0 for no limit; a statement that exceeds it stops
+# the start with status 3. MigrationLockTimeoutSeconds: how long a migration waits for a table lock
+# before that attempt fails and is retried; a longer wait blocks every reader of that table
+# meanwhile. These are the defaults.
+# Schema:
+#   WaitSeconds: 900
+#   MigrationCommandTimeoutSeconds: 3600
+#   MigrationLockTimeoutSeconds: 30
+
+# Single-organisation mode. An instance holds the system tenant and one organisation tenant, both
+# created by bootstrap. Creating a further organisation is refused (MCA-CFG-017) unless this is
+# true. A further organisation is meant to be a further instance. A disabled organisation still
+# counts; only a deleted one does not. Stop the service before editing this file, then start it.
+Features:
+  AllowMultipleOrganizations: false

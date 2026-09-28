@@ -26,12 +26,12 @@ namespace ModularCA.Migrate;
 public sealed class Preflight
 {
     /// <summary>
-    /// The oldest PostgreSQL this helper targets. 13 is where <c>citext</c> became a trusted
-    /// extension, so a database owner can create it without being a superuser, and where
-    /// <c>DROP DATABASE ... WITH (FORCE)</c> arrived, which is what makes the failure path able to
-    /// clean up after itself.
+    /// The oldest PostgreSQL this helper targets: the product's supported minimum, 14. 13 is where
+    /// <c>citext</c> became a trusted extension, so a database owner can create it without being a
+    /// superuser, and where <c>DROP DATABASE ... WITH (FORCE)</c> arrived, which is what makes the
+    /// failure path able to clean up after itself; 14 is the oldest release the node supports.
     /// </summary>
-    public const int MinimumServerVersionNum = 130000;
+    public const int MinimumServerVersionNum = ModularCA.Database.PostgresRoleLayout.MinimumServerVersionNum;
 
     /// <summary>
     /// The last migration a 0.3.0 MariaDB schema has applied, and the only schema this helper
@@ -273,9 +273,8 @@ public sealed class Preflight
         if (versionNum < MinimumServerVersionNum)
             _refusals.Add(
                 $"PostgreSQL {versionText} is older than the minimum this helper supports "
-                + $"({MinimumServerVersionNum / 10000}). citext is not a trusted extension before 13, so the "
-                + "application role could not create it, and DROP DATABASE WITH (FORCE) does not exist, so a "
-                + "failed run could not clean up after itself.");
+                + $"({MinimumServerVersionNum / 10000}), which is the oldest PostgreSQL ModularCA supports. Upgrade the "
+                + "server first.");
 
         // citext availability is a packaging question, not a permissions one, and the two failures
         // read nothing alike. Asking pg_available_extensions separates them before either bites.

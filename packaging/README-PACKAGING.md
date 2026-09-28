@@ -45,7 +45,9 @@ sudo apt install ./dist/modularca_0.1.0~rc3-1_amd64.deb
 ## Layout, and why it is not FHS
 
 Everything lives under `/opt/modularca`, with `/etc/modularca` and `/var/log/modularca` as
-symlinks into it.
+symlinks into it. The exception is `/usr/share/modularca`: the schema-ownership repair SQL and the
+script that runs it, which run as the PostgreSQL superuser and as root, so they stay root-owned
+and outside the tree `postinst` chowns to the service account.
 
 That is a consequence of the application, not a packaging preference. Config, keystores, logs and
 backups all resolve from `AppContext.BaseDirectory` — **84 call sites**, with no override — and the
@@ -83,16 +85,77 @@ silently — the old unit keeps running and every change to the new one appears 
 
 On **first install** the service is enabled but **not started**: there is no database, keystore or
 configuration yet, so starting would fail-loop and `StartLimitBurst` would then block the
-operator's own first start. On **upgrade** it restarts only if it was already enabled.
+operator's own first start.
+
+On **upgrade**, `prerm` records in `/run/modularca-upgrade` which of `modularca.service` and
+`modularca-signer.service` were running, then stops both. `postinst` starts exactly those again,
+the node before the signer, without waiting for them to become ready. A unit the operator had
+stopped stays stopped. An upgrade from a version whose `prerm` recorded nothing starts the node if
+it is enabled, and restarts a signer that was left running. Earlier versions left the CA stopped
+after every upgrade: `prerm` stopped it, and `postinst`'s `try-restart` then found nothing to
+restart. The signer was never stopped at all.
 
 ## Migrations happen in the service, not the package
 
-The application calls `Database.MigrateAsync()` at startup. `postinst` deliberately does not run
-migrations.
+The service's control role checks both databases and applies pending migrations when it starts
+(`SchemaStartup`; see "At startup" in `docs/architecture/postgresql-migration.md`). `postinst`
+never runs migrations.
 
 The consequence is worth knowing: `apt upgrade` reports success, then the schema changes when the
-service restarts. A migration failure appears in `journalctl -u modularca`, not in apt's output.
-`preinst` warns about this on upgrade and tells you to back up first.
+service starts. A migration failure or a refusal appears in `journalctl -u modularca`, not in apt's
+output. A refusal exits with status 3 and is not retried (`RestartPreventExitStatus=3`); status 75
+is a wait, or in-process retries of a migration that failed on a transient error, that ran out
+after `Schema.WaitSeconds`, and systemd retries it. `preinst` warns about this on upgrade and tells you
+to back up first.
+
+## The one database step the package takes: schema ownership
+
+Before 0.4.0 the setup wizard and `--bootstrap` built PostgreSQL installs whose tables the
+superuser owns. The runtime roles cannot migrate those tables, and the app role cannot even read
+them, so 0.4.0's service refuses to start on them. On a local PostgreSQL, `postinst` repairs this
+itself on every configure, with `/usr/share/modularca/db-ownership.sh repair`. The script is
+root-owned and shipped by this package.
+
+It acts on a database only when all of these hold:
+
+- the database's `Host` in `db.yaml` is local: `localhost`, `127.0.0.1`, `::1`, or one of the
+  socket directories `/var/run/postgresql`, `/run/postgresql` and `/tmp` (no other directory:
+  `db.yaml` is writable by the service account);
+- the database and role names and the port read from `db.yaml` match a strict pattern (letters,
+  digits, `_` and `-`, at most 63, not starting with `-`);
+- a read-only probe, run first as the `postgres` OS user over peer authentication, finds objects
+  the runtime role cannot alter that a superuser, a CREATEDB or CREATEROLE role, or the database
+  owner created.
+
+When they hold, it stops whichever ModularCA units are running and runs the root-owned
+`/usr/share/modularca/sql/adopt-ownership.sql` as `postgres` for each such database. It then probes
+again and starts the units it stopped. Where systemd is not running (a container, say) it cannot
+stop anything, so it repairs only when `pgrep` confirms no `ModularCA.API` process is running;
+otherwise it skips the repair, prints the command to run by hand, and the install continues. The SQL carries its own guards, listed under "Installs made
+by the wizard or `--bootstrap` before 0.4.0" in `docs/architecture/postgresql-migration.md`.
+
+Why it is safe to run as root, given that `db.yaml` is writable by the service account:
+
+- `db.yaml` is read as the service account, never opened by root;
+- no value from it is evaluated or put into a shell command or SQL text; each reaches `psql` only
+  as a `-v` variable (`\connect :"db"`, `:'role'`);
+- `psql` runs with an empty environment and a timeout, and connects first to the `postgres`
+  maintenance database;
+- nothing under `/opt/modularca` is executed;
+- no credential is read or stored;
+- the only log output goes to the terminal and the journal (`journalctl -t modularca-db-ownership`),
+  never to `/var/log/modularca`, which is a symlink into the service account's tree.
+
+On a Migrate-built host, such as production or staging, the probe finds nothing and the step only
+logs that both databases are sound.
+
+It never fails the package install. If the repair cannot run or does not complete, it prints the
+manual command, and the service keeps refusing to start with the same command until someone runs
+it. `sh /usr/share/modularca/db-ownership.sh check` reports without changing anything.
+`MODULARCA_SKIP_DB_REPAIR=1` in the environment of `apt` or `dpkg` turns the step off
+(`sudo MODULARCA_SKIP_DB_REPAIR=1 apt install ./modularca_<version>_amd64.deb`). A remote
+or managed PostgreSQL is never touched: the service's refusal prints the command to run on the
+database host.
 
 ## Uninstall: purge does not delete the CA
 

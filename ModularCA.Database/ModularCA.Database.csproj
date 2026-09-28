@@ -32,5 +32,9 @@
     <ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Sql\adopt-ownership.sql" LogicalName="ModularCA.Database.Sql.adopt-ownership.sql" />
+  </ItemGroup>
+
 </Project>
 

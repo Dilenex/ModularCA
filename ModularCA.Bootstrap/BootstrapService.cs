@@ -13,7 +13,6 @@ using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
-using System.Data;
 using System.Text.Json;
 using static ModularCA.Keystore.Services.KeystoreService;
 
@@ -30,6 +29,12 @@ public class BootstrapService
     /// <summary>
     /// Executes the full bootstrap procedure using values from a web setup request.
     /// Returns a <see cref="SetupResponse"/> with success/error info and the generated admin password.
+    /// The databases are provisioned as SqlRoot (a PostgreSQL superuser, checked first) through
+    /// <see cref="BootstrapDatabaseSetup.ProvisionAsync"/>; the keystores are deleted only after
+    /// that succeeds; both schemas are applied and the data seeded as the runtime roles; the
+    /// ownership rule is proved before any configuration is written. A refusal, a runtime role
+    /// refused by pg_hba, or an MCA- coded validation failure is returned verbatim (none carries
+    /// a secret); anything else returns only a correlation id.
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves
     /// <see cref="IWhitelistService"/> after seeding and calls <c>ReloadAsync</c> so the live
     /// singleton snapshot picks up the freshly-seeded rows before the wizard returns.
@@ -111,75 +116,28 @@ public class BootstrapService
                 }
             };
 
-            var rootConfig = !string.IsNullOrWhiteSpace(setupDbConfig.SqlRoot.Password)
-                ? setupDbConfig.SqlRoot
-                : setupDbConfig.SqlApp;
+            // SqlRoot only, never a fallback to SqlApp: provisioning needs a superuser.
+            var rootConfig = setupDbConfig.SqlRoot;
 
-            // Apply the operator-selected TLS mode for the setup-wizard superuser pass.
-            // Defaults to Require when no choice was provided.
-            var rootConnStr = PostgresConnection.Build(
-                rootConfig.Host, rootConfig.Port, setupDbConfig.SqlApp.Database,
-                rootConfig.Username, rootConfig.Password, selectedSslModeString);
-
-            // === Clean state — ensure fresh database schema ===
+            // === Provision, fail-fast, then delete the keystores, then the schema as the runtime roles ===
+            // The application database is dropped and recreated deliberately: the wizard only runs
+            // when IsConfigured() is false, so there is no install to protect. The audit database
+            // is preserved unless the operator ticked the wipe box.
+            var wipeAudit = request.Database?.WipeAuditDatabase ?? false;
+            var databases = BootstrapDatabaseSetup.ProvisionAsync(
+                rootConfig, setupDbConfig, wipeAudit, selectedSslModeString, selectedSslModeString,
+                Console.WriteLine).GetAwaiter().GetResult();
             BootstrapModularCA.DeleteArtifacts(certPath, trustPath);
+            BootstrapDatabaseSetup.ApplySchemasAsync(databases, Console.WriteLine).GetAwaiter().GetResult();
 
-            // Drop and recreate DB to ensure clean schema (handles partial previous setups).
-            // Unlike the migration-failure paths, this drop is deliberate: the setup wizard only
-            // runs when IsConfigured() is false, i.e. there is no install to protect. It is NOT
-            // error recovery and must not become it.
-            {
-                using var tempCtx = BootstrapModularCA.CreateDbContext(rootConnStr);
-                tempCtx.Database.EnsureDeleted();
-                Console.WriteLine("✓ Database cleaned for fresh setup");
-            }
-
-            // Create database with clean migrations
-            var (dbContext, dbConnection) = BootstrapModularCA.CreateDatabaseConnection(rootConnStr);
+            using var dbContext = BootstrapModularCA.CreateDbContext(PostgresConnection.Build(databases.App));
 
             // === Tenants ===
-            var systemTenant = dbContext.Tenants.FirstOrDefault(t => t.IsSystemTenant);
-            if (systemTenant == null)
-            {
-                systemTenant = new TenantEntity
-                {
-                    Name = "System",
-                    Slug = "system",
-                    Description = "Internal system tenant for infrastructure CAs and system groups",
-                    IsSystemTenant = true,
-                    CanBeDeleted = false,
-                    IsEnabled = true,
-                };
-                dbContext.Tenants.Add(systemTenant);
-                dbContext.SaveChanges();
-            }
-
-            // === Tenant-level permission groups for system tenant ===
-            BootstrapModularCA.CreateTenantGroups(dbContext, systemTenant);
-
             var orgName = request.Organization.Name;
             if (string.IsNullOrWhiteSpace(orgName)) orgName = request.RootCa.Organization;
             if (string.IsNullOrWhiteSpace(orgName)) orgName = "Default";
-            var orgSlug = orgName.ToLowerInvariant().Replace(" ", "-").Replace(".", "-");
-            var orgTenant = dbContext.Tenants.FirstOrDefault(t => t.Slug == orgSlug);
-            if (orgTenant == null)
-            {
-                orgTenant = new TenantEntity
-                {
-                    Name = orgName,
-                    Slug = orgSlug,
-                    Description = !string.IsNullOrWhiteSpace(request.Organization.Description)
-                        ? request.Organization.Description
-                        : $"Primary tenant for {orgName} certificate authorities",
-                    CanBeDeleted = false,
-                    IsEnabled = true,
-                };
-                dbContext.Tenants.Add(orgTenant);
-                dbContext.SaveChanges();
-            }
-
-            // === Tenant-level permission groups for org tenant ===
-            BootstrapModularCA.CreateTenantGroups(dbContext, orgTenant);
+            var (systemTenant, orgTenant) = BootstrapModularCA.EnsureBootstrapTenants(
+                dbContext, orgName, request.Organization.Description);
 
             // === Built-in Roles & System Groups ===
             BootstrapProfileSeeder.SeedBuiltInRoles(dbContext);
@@ -517,9 +475,6 @@ public class BootstrapService
             sysCertEntity.CertificateAuthority = sysCertCaEntity;
             dbContext.SaveChanges();
 
-            if (dbConnection.State == ConnectionState.Open)
-                dbConnection.Close();
-
             // ── Web TLS certificate profile resolution ──────────────────────────────
             // The Web TLS cert is issued using:
             //   • Request profile: the seeded "Web TLS (Internal)" profile — purpose-built for
@@ -621,13 +576,9 @@ public class BootstrapService
             var pendingSans = webTlsRequest.Sans ?? new List<string>();
             var pendingValidityDays = webTlsRequest.ValidityDays;
 
-            // === Create dedicated MySQL users and generate config.yaml ===
-            // Preserve audit history unless the operator ticked the wipe box in the wizard.
-            var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(
-                rootConfig, setupDbConfig, request.Database?.WipeAuditDatabase ?? false);
-
-            // === Apply audit database migrations using root credentials ===
-            BootstrapModularCA.CreateAuditDatabase(rootConfig, setupDbConfig.SqlAudit.Database);
+            // === Prove the ownership rule, then write config.yaml and db.yaml ===
+            BootstrapDatabaseSetup.VerifyOwnershipAsync(databases, Console.WriteLine).GetAwaiter().GetResult();
+            var (appUserPassword, auditUserPassword) = (databases.App.Password, databases.Audit.Password);
 
             BootstrapDatabaseSetup.WriteConfigFile(configDir, rootConfig, setupDbConfig, bootstrapConfig, appUserPassword, auditUserPassword,
                 pfxPassword: "", // No PFX yet — Stage 2 generates it
@@ -645,30 +596,27 @@ public class BootstrapService
                 pendingKeySize: webTlsRequest.KeySize);
 
             // === Write db.yaml with generated app credentials ===
+            // The instances bootstrap just connected with, carrying the operator-selected TLS mode.
             var dbYamlPath = Path.Combine(configDir, "db.yaml");
-            var appUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlApp.Username);
-            var auditUser = BootstrapDatabaseSetup.ResolveRoleName(setupDbConfig.SqlAudit.Username);
             YamlDbConfigLoader.Write(dbYamlPath, new YamlDbConfigLoader.DbYamlConfig
             {
                 App = new YamlDbConfigLoader.DbInstanceConfig
                 {
-                    Host = rootConfig.Host,
-                    Port = rootConfig.Port,
-                    Database = setupDbConfig.SqlApp.Database,
-                    Username = appUser,
+                    Host = databases.App.Host,
+                    Port = databases.App.Port,
+                    Database = databases.App.Database,
+                    Username = databases.App.Username,
                     Password = appUserPassword,
-                    // Propagate the operator-selected TLS mode into
-                    // db.yaml so runtime app/audit connections honor the same policy.
-                    SslMode = selectedSslModeString
+                    SslMode = databases.App.SslMode
                 },
                 Audit = new YamlDbConfigLoader.DbInstanceConfig
                 {
-                    Host = rootConfig.Host,
-                    Port = rootConfig.Port,
-                    Database = setupDbConfig.SqlAudit.Database,
-                    Username = auditUser,
+                    Host = databases.Audit.Host,
+                    Port = databases.Audit.Port,
+                    Database = databases.Audit.Database,
+                    Username = databases.Audit.Username,
                     Password = auditUserPassword,
-                    SslMode = selectedSslModeString
+                    SslMode = databases.Audit.SslMode
                 }
             });
 
@@ -676,7 +624,7 @@ public class BootstrapService
             SeedPolicyFiles(configDir);
 
             // ICF-10: Delete setup-database.yaml — root credentials are no longer needed
-            // after bootstrap creates the dedicated app/audit MySQL users.
+            // after bootstrap creates the dedicated app/audit PostgreSQL roles.
             var setupDbPath = Path.Combine(configDir, "setup-database.yaml");
             if (File.Exists(setupDbPath))
             {
@@ -709,6 +657,28 @@ public class BootstrapService
                 Message = "ModularCA setup completed successfully.",
                 AdminUsername = adminUsername,
                 AdminPassword = adminPassword,
+                Warnings = warnings
+            };
+        }
+        catch (PostgresLayoutRefusedException ex)
+        {
+            // Refused before any change. The reasons name roles, databases and the statement to
+            // run, never a password, so they reach the wizard verbatim.
+            Serilog.Log.Warning("Bootstrap setup refused: {Reasons}", string.Join(" ", ex.Reasons));
+            return new SetupResponse { Success = false, Message = ex.Message, Warnings = warnings };
+        }
+        catch (BootstrapLoginRefusedException ex)
+        {
+            Serilog.Log.Warning(ex, "Bootstrap setup stopped: a runtime role could not log in");
+            return new SetupResponse { Success = false, Message = ex.Message, Warnings = warnings };
+        }
+        catch (ModularCA.Shared.Errors.RequestValidationException ex)
+        {
+            Serilog.Log.Warning(ex, "Bootstrap setup refused [{Code}]", ex.Code);
+            return new SetupResponse
+            {
+                Success = false,
+                Message = $"Setup refused [{ex.Code}]: {ex.Message} {ex.Remediation}".TrimEnd(),
                 Warnings = warnings
             };
         }

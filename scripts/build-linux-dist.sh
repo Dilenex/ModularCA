@@ -84,8 +84,14 @@ dotnet publish ModularCA.Migrate/ModularCA.Migrate.csproj \
     -o "$STAGE" -v minimal --nologo
 
 note "staging config, deploy files and installer"
-mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy"
+mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy" "$STAGE/share/sql"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true
+# The schema-ownership repair, run as the PostgreSQL superuser. install.sh and the .deb install it
+# root-owned under /usr/share/modularca/sql and never under /opt/modularca, which the service
+# account owns. The byte-for-byte copy of what ModularCA.Database embeds.
+cp ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql"
+cmp -s ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql" \
+    || { echo "REFUSING: the staged adopt-ownership.sql differs from ModularCA.Database/Sql" >&2; exit 1; }
 # deploy/ is gitignored (operator-specific), so tolerate its absence on a clean clone.
 if [[ -d deploy ]]; then
     cp deploy/modularca.service deploy/modularca-signer.service \
@@ -120,7 +126,7 @@ chmod 0755 "$STAGE/install.sh" 2>/dev/null || true
 note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/public/index.html \
-                wwwroot/setup/index.html wwwroot/docs/index.html; do
+                wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done
 if compgen -G "$STAGE/*.exe" > /dev/null; then

@@ -56,10 +56,12 @@ public class AdminQuotaController(
     /// quota nested underneath, for the combined Tenants &amp; Quotas view. Includes tenant-level
     /// ceilings (max CAs / certs / users) and per-CA issued/pending usage so limits can be read as
     /// they cascade tenant → CA. Gated to SystemAdmin (tenant configuration is admin-only).
+    /// <c>allowMultipleOrganizations</c> carries <c>Features.AllowMultipleOrganizations</c> so the
+    /// view can withhold "Create Tenant" in single-organisation mode.
     /// </summary>
     [HttpGet("by-tenant")]
     [Authorize(Policy = "SystemAdmin")]
-    public async Task<IActionResult> GetQuotasByTenant()
+    public async Task<IActionResult> GetQuotasByTenant([FromServices] ModularCA.Shared.Models.Config.SystemConfig config)
     {
         // Per-CA quota usage (issued/pending computed live), keyed by CaId. Only enabled CAs appear
         // in the summary, so disabled CAs nest with a null quota below.
@@ -150,7 +152,8 @@ public class AdminQuotaController(
                 totalCAs = summary.CaQuotas.Count,
                 casAtLimit = summary.ExceededCount,
                 casNearLimit = summary.WarningCount
-            }
+            },
+            allowMultipleOrganizations = config.Features.AllowMultipleOrganizations
         });
     }
 

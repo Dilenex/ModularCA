@@ -13,6 +13,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `wwwroot/` | The five built SPAs: admin, user, public, setup, docs. |
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
 | `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. |
+| `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
 
 ## Permissions are set by the installer, not the archive
 
@@ -22,14 +23,22 @@ flags. `install.sh` sets them explicitly:
 - `ModularCA.API` and `ModularCA.Keystore.Unlocker` → `0755`
 - `config/` and `keystores/` → `0700`, files `0600` — they hold database credentials, the
   secondary keystore passphrase, and the CA private keys
-- everything owned by the `modularca` service account
+- everything under `/opt/modularca` owned by the `modularca` service account
+- `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
+  superuser, so it must not live where the service account can rewrite it.
 
 Extracting the tarball and running the binary directly, without the installer, gives you a
 non-executable apphost and world-readable secrets. Use the installer.
 
 ## First install
 
-1. Create the PostgreSQL cluster and a superuser credential for setup.
+1. Create the PostgreSQL cluster (14 or later) and a superuser credential for setup. It must be a
+   real `SUPERUSER`: bootstrap checks this first and refuses a role that only has `CREATEDB` and
+   `CREATEROLE`. It is used only during setup, and `setup-database.yaml` is deleted afterwards.
+   Bootstrap creates the app and audit roles and then logs in as them to build the schema, so
+   `pg_hba.conf` must allow password logins for both from this host, as the service needs anyway.
+   It also revokes PUBLIC's rights on both databases. A monitoring role needs its own
+   `GRANT CONNECT ON DATABASE`.
 2. Fill in `/opt/modularca/config/setup-database.yaml` from the `.example`.
 3. `sudo systemctl enable --now modularca`
 4. Complete the setup wizard. It is reachable only while the install is unconfigured and closes
@@ -41,10 +50,68 @@ The wizard prints a one-time setup token to the service log:
 
 ## Upgrading
 
-Re-run `install.sh`. It stops the service, replaces binaries and `wwwroot`, leaves `config/` and
-`keystores/` alone, and restarts. Database migrations are applied automatically on start.
+Re-run `install.sh`. It stops `modularca` and `modularca-signer` if they are running, replaces
+binaries and `wwwroot`, leaves `config/` and `keystores/` alone, and starts again the units that
+were running. Database migrations are applied by the service when it starts.
 
-Take a backup first — the CA private keys are the part you cannot recreate.
+Take a backup first — the CA private keys are the part you cannot recreate. Dump both databases
+too (`pg_dump -Fc`); the dump is how you go back if a migration cannot be completed.
+
+### What the service checks when it starts
+
+Before it serves anything, the service reads both databases as its own roles and decides; see
+"At startup" in `docs/architecture/postgresql-migration.md` for the full sequence. What an
+operator sees:
+
+| Outcome | Exit status | What happens |
+|---|---|---|
+| Everything current, or the control role applied the pending migrations | — | starts |
+| Database unreachable, locked by a migration, or (enrollment, validation, signer) waiting for the control role's migrations | — then **75** | waits up to `Schema.WaitSeconds` (900 s), then exits and systemd retries |
+| A migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
+| Schema newer than this build, tables without history, wrong password, `pg_hba.conf` refusal, TLS failure, tables the runtime role does not own, a migration that failed for good, PostgreSQL older than 14 | **3** | not retried (`RestartPreventExitStatus=3`); the journal says why and prints the fix |
+
+    journalctl -u modularca -n 100
+
+After fixing the cause, `sudo systemctl start modularca`. A failed start also counts against the
+unit's start limit, so reset it first with `sudo systemctl reset-failed modularca` if systemd
+says the start request was repeated too quickly.
+
+To check schema ownership read-only at any time, as the service user and never as root:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check
+
+It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
+
+### Upgrading to 0.4.0
+
+- **Installs built by `modularca-migrate`**, which is every install that came from MariaDB 0.3.0,
+  and production and staging: nothing to do. The runtime roles already own their schemas, and the
+  service confirms it on every start.
+- **PostgreSQL installs made by the setup wizard or `--bootstrap` before 0.4.0.** The superuser owns
+  their tables, and the service refuses to start (status 3) until ownership is repaired once. The
+  `.deb` does the repair itself when PostgreSQL is local: see `README-PACKAGING.md`. For a tarball
+  install, or a database on another host, run the commands the refusal prints on the database host,
+  with both units stopped. They are also in `docs/architecture/postgresql-migration.md`:
+
+      sudo systemctl stop modularca modularca-signer
+      sudo -u postgres psql -X -d '<app database>' -v kind=app -v target='<app role>' -f /usr/share/modularca/sql/adopt-ownership.sql
+      sudo -u postgres psql -X -d '<audit database>' -v kind=audit -v target='<audit role>' -f /usr/share/modularca/sql/adopt-ownership.sql
+      sudo systemctl start modularca
+
+  Run the file from `/usr/share/modularca/sql`, or from the tarball's `share/sql` on a host
+  without the install. Never run it from a copy under `/opt/modularca`, which the service account
+  can rewrite.
+- **The `.deb` upgrade from 0.3.x, once.** The 0.3.x package's `prerm` stops `modularca` and records
+  nothing, and dpkg runs it before any script of the new package, so not even the new `preinst`
+  can see whether the node was running. On this one upgrade `postinst` therefore starts `modularca`
+  whenever it is enabled, even if an operator had stopped it, and restarts `modularca-signer` only
+  if it was running. If the node was stopped on purpose, stop it again afterwards
+  (`sudo systemctl stop modularca`), or `systemctl disable modularca` before upgrading. From 0.4.0
+  on, `prerm` records which units were running and the upgrade starts exactly those.
+
+The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
+hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
+`docs/architecture/postgresql-migration.md`.
 
 ## Firewall and ports
 
@@ -149,15 +216,19 @@ and `config/keystore.yaml` exist.
 
    On one host both sections live in the same file; each process reads the keys for its role.
 
-4. Point the node's unit at the node role and start the signer first, then the node:
+4. Point the node's unit at the node role, then start the node and the signer:
 
        sudo mkdir -p /etc/systemd/system/modularca.service.d
        printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role node\n' \
            | sudo tee /etc/systemd/system/modularca.service.d/role.conf
        sudo cp /opt/modularca/deploy/modularca-signer.service /etc/systemd/system/
        sudo systemctl daemon-reload
-       sudo systemctl enable --now modularca-signer
        sudo systemctl start modularca
+       sudo systemctl enable --now modularca-signer
+
+   The signer unit is ordered after the node. At boot and after an upgrade, the node's control role
+   applies migrations before it reports ready, and the signer starts after that. A signer started
+   on its own waits for those migrations in-process.
 
    `journalctl -u modularca-signer` shows the listener and the pins it holds; `/health/ready`
    on the node shows the signer as a step. While the signer is down the node answers 503 on

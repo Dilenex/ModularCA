@@ -120,7 +120,7 @@ public class ErrorCodeCatalogTests
             "MCA-CFG-000", "MCA-CFG-001", "MCA-CFG-002", "MCA-CFG-003", "MCA-CFG-004",
             "MCA-CFG-005", "MCA-CFG-006", "MCA-CFG-007", "MCA-CFG-008", "MCA-CFG-009",
             "MCA-CFG-010", "MCA-CFG-011", "MCA-CFG-012", "MCA-CFG-013", "MCA-CFG-014",
-            "MCA-CFG-015", "MCA-CFG-016",
+            "MCA-CFG-015", "MCA-CFG-016", "MCA-CFG-017", "MCA-CFG-018",
             "MCA-ISS-000", "MCA-ISS-001", "MCA-ISS-002", "MCA-ISS-003",
             "MCA-LIC-000", "MCA-LIC-001", "MCA-LIC-002", "MCA-LIC-003",
             "MCA-POL-000", "MCA-POL-001",

@@ -1,8 +1,15 @@
 # Superuser database credentials for initial setup.
 # This file is deleted after successful setup (the superuser password is no longer needed).
 #
-# PostgreSQL only. The account named here must be able to CREATE DATABASE and CREATE ROLE;
-# on a default installation that is the "postgres" superuser.
+# PostgreSQL 14 or later. SqlRoot must be a PostgreSQL SUPERUSER (on a default installation, the
+# "postgres" role). CREATEDB and CREATEROLE are not enough: bootstrap hands each database to its
+# owner role and adopts a preserved audit database, which only a superuser can do. Bootstrap checks
+# this before it changes anything and refuses otherwise. SqlRoot is used only during bootstrap;
+# the node itself runs as the SqlApp and SqlAudit roles, which bootstrap creates.
+#
+# Bootstrap builds the schema by logging in as SqlApp and SqlAudit, so that each owns its tables,
+# so pg_hba.conf must allow password logins for both from this host, as the node needs anyway. It
+# revokes PUBLIC's rights on both databases; a monitoring role needs its own GRANT CONNECT.
 SqlRoot:
   Host: localhost
   Port: 5432

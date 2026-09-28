@@ -88,6 +88,12 @@ BINDIR="$WORK/bin"
 mkdir -p "$BINDIR"
 mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$STAGE/modularca-migrate" "$BINDIR/"
 
+# share/ goes to /usr/share/modularca, root-owned, never under /opt/modularca: its SQL is run as
+# the PostgreSQL superuser, and postinst chowns /opt/modularca to the service account.
+SHAREDIR="$WORK/share"
+[[ -f "$STAGE/share/sql/adopt-ownership.sql" ]] || die "payload is missing share/sql/adopt-ownership.sql"
+mv "$STAGE/share" "$SHAREDIR"
+
 # Refuse to ship a maintainer script with CRLF line endings.
 #
 # dpkg runs these from inside the package, after unpacking, so a carriage return in the shebang
@@ -97,7 +103,7 @@ mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$STAGE/modularca
 # rule does not reach them. Check the bytes rather than trusting the configuration.
 note "checking maintainer scripts"
 CR="$(printf '\r')"
-for script in preinst postinst prerm postrm; do
+for script in preinst postinst prerm postrm db-ownership.sh; do
     path="packaging/debian/$script"
     [[ -f "$path" ]] || die "missing maintainer script: $path"
     # -U (--binary) is required: on MSYS/git-bash grep reads text mode and strips the CR
@@ -125,14 +131,17 @@ fi
 
 if command -v cygpath >/dev/null 2>&1; then
     BINDIR_NATIVE="$(cygpath -m "$BINDIR")"
+    SHAREDIR_NATIVE="$(cygpath -m "$SHAREDIR")"
 else
     BINDIR_NATIVE="$BINDIR"
+    SHAREDIR_NATIVE="$SHAREDIR"
 fi
 
 RENDERED="$WORK/nfpm.yaml"
 sed -e "s|\${DEB_VERSION}|${DEB_VERSION}|g" \
     -e "s|\${STAGE}|${STAGE_NATIVE}|g" \
     -e "s|\${BINDIR}|${BINDIR_NATIVE}|g" \
+    -e "s|\${SHAREDIR}|${SHAREDIR_NATIVE}|g" \
     packaging/nfpm.yaml > "$RENDERED"
 grep -q '\${' "$RENDERED" && die "unsubstituted placeholder left in the rendered nfpm config"
 

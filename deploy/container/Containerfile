@@ -17,10 +17,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system modularca && useradd --system --gid modularca --home-dir /opt/modularca --shell /usr/sbin/nologin modularca
 
+# share/ holds the schema-ownership repair SQL, which is run as the PostgreSQL superuser: it stays
+# root-owned under /usr/share/modularca, out of the tree chowned to the service account.
 COPY ${DIST} /tmp/dist.tar.gz
-RUN mkdir -p /opt/modularca /var/lib/modularca \
+RUN mkdir -p /opt/modularca /var/lib/modularca /usr/share/modularca \
  && tar -xzf /tmp/dist.tar.gz --strip-components=1 -C /opt/modularca \
  && rm /tmp/dist.tar.gz \
+ && mv /opt/modularca/share/sql /usr/share/modularca/sql && rmdir /opt/modularca/share \
+ && chown -R root:root /usr/share/modularca && chmod -R u=rwX,go=rX /usr/share/modularca \
  && chown -R modularca:modularca /opt/modularca /var/lib/modularca
 
 COPY deploy/container/entrypoint.sh /usr/local/bin/modularca-entrypoint

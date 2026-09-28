@@ -1,16 +1,36 @@
-﻿using System.Security.Cryptography;
-using ModularCA.Auth.Utils;
+﻿using Microsoft.EntityFrameworkCore;
+using ModularCA.Database;
+using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
 using Npgsql;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
-using ModularCA.Database.Conventions;
 
 namespace ModularCA.Bootstrap;
 
+/// <summary>The two databases bootstrap provisioned, as the node will connect to them.</summary>
+/// <param name="App">The application database as the app role, with the password provisioning set.</param>
+/// <param name="Audit">The audit database as the audit role, with the password provisioning set.</param>
+public sealed record ProvisionedDatabases(DbInstance App, DbInstance Audit);
+
 /// <summary>
-/// Handles PostgreSQL role and database creation, runtime config.yaml generation,
-/// and SQL identifier validation during the bootstrap process.
+/// PostgreSQL refused a runtime role's login from this host during bootstrap. Carries no secret.
+/// </summary>
+public sealed class BootstrapLoginRefusedException : InvalidOperationException
+{
+    /// <summary>Creates the exception for <paramref name="role"/> connecting to <paramref name="host"/>.</summary>
+    public BootstrapLoginRefusedException(string role, string host, Exception inner)
+        : base($"PostgreSQL refused login for role '{role}' from this host (server {host}); allow it in pg_hba.conf "
+            + "and run bootstrap again. Nothing was written to the configuration.", inner)
+    {
+    }
+}
+
+/// <summary>
+/// The database half of bootstrap: provisions the roles and databases through
+/// <see cref="PostgresRoleLayout"/> as the SqlRoot superuser, applies both schemas as the runtime
+/// roles, proves the ownership rule, and writes the runtime config.yaml. Also validates SQL
+/// identifiers.
 /// </summary>
 public static class BootstrapDatabaseSetup
 {
@@ -46,200 +66,236 @@ public static class BootstrapDatabaseSetup
     }
 
     /// <summary>
-    /// Creates dedicated PostgreSQL roles and databases for the application and audit stores.
-    /// The app role owns its database outright; the audit role gets append-mostly rights on the
-    /// audit database and is explicitly denied the ability to drop its tables. Guards against
-    /// accidentally dropping and recreating the superuser role. Returns the generated passwords
-    /// for both roles.
-    /// <para>
-    /// The MySQL version of this method created users with <c>CREATE USER 'u'@'host'</c> and
-    /// granted <c>ON `db`.*</c>. Neither exists in PostgreSQL. What replaces them:
-    /// </para>
-    /// <list type="bullet">
-    ///   <item><description>
-    ///     <c>CREATE ROLE ... LOGIN PASSWORD ...</c> — cluster-wide, no host component.
-    ///   </description></item>
-    ///   <item><description>
-    ///     The application database is created <c>OWNER</c> the app role. Ownership, rather than
-    ///     a grant list, is what gives EF Core migrations the right to create and alter tables:
-    ///     PostgreSQL grants apply to objects that already exist, so an enumerated grant cannot
-    ///     cover a table a future migration has not created yet. This is also why bootstrap can
-    ///     no longer be re-run to "top up" permissions — it does not need to be.
-    ///   </description></item>
-    ///   <item><description>
-    ///     The audit database is owned by the superuser, and the audit role gets CONNECT on the
-    ///     database, USAGE plus CREATE on its schema (so migrations can add tables), and default
-    ///     privileges of SELECT, INSERT, UPDATE and DELETE on tables it creates. It never gets
-    ///     ownership of the database, which is what keeps DROP DATABASE out of its reach.
-    ///   </description></item>
-    ///   <item><description>
-    ///     There is no <c>FLUSH PRIVILEGES</c>. PostgreSQL grants take effect on commit.
-    ///   </description></item>
-    /// </list>
+    /// SqlRoot's connection string to the maintenance database. Refuses a SqlRoot with no
+    /// username or password: bootstrap never falls back to the application role.
     /// </summary>
-    /// <param name="wipeAuditDatabase">
-    /// When true, the audit database is dropped and recreated. Default false, which preserves it.
-    /// <para>
-    /// This used to be unconditional, and it made three separate operator-facing statements
-    /// false: the comment below saying "audit schema survives --reset --force", the
-    /// <c>--reset</c> usage text, and the reset banner's "Historical audit rows will persist
-    /// into the next install." Technically <c>--reset</c> never dropped it — the next bootstrap
-    /// did, from here, three lines above the comment promising otherwise. Withholding DROP from
-    /// the audit user achieves nothing when this pass runs as root.
-    /// </para>
-    /// <para>
-    /// An audit trail that a reinstall silently erases is not tamper-evidence. Preserving it by
-    /// default is what the rest of the system already claims; wiping is now something an
-    /// operator has to ask for.
-    /// </para>
-    /// </param>
-    public static (string appPassword, string auditPassword) CreateDatabaseUsers(
+    /// <param name="rootConfig">SqlRoot from setup-database.yaml.</param>
+    /// <exception cref="PostgresLayoutRefusedException">SqlRoot has no username or password.</exception>
+    public static string AdminConnectionString(YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig)
+    {
+        ArgumentNullException.ThrowIfNull(rootConfig);
+        if (string.IsNullOrWhiteSpace(rootConfig.Username) || string.IsNullOrWhiteSpace(rootConfig.Password))
+            throw new PostgresLayoutRefusedException(
+            [
+                "SqlRoot in setup-database.yaml has no username or password. Bootstrap connects as a PostgreSQL "
+                + "superuser (for example postgres) and never falls back to the application role.",
+            ]);
+        return PostgresConnection.BuildMaintenance(
+            rootConfig.Host, rootConfig.Port, rootConfig.Username.Trim(), rootConfig.Password, rootConfig.SslMode);
+    }
+
+    /// <summary>The role and database names setup-database.yaml gives, with any <c>@host</c> suffix removed.</summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    public static PostgresLayoutNames LayoutNames(
+        YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig) =>
+        new(rootConfig.Username.Trim(),
+            ResolveRoleName(setupDbConfig.SqlApp.Username).Trim(),
+            ResolveRoleName(setupDbConfig.SqlAudit.Username).Trim(),
+            setupDbConfig.SqlApp.Database,
+            setupDbConfig.SqlAudit.Database);
+
+    /// <summary>
+    /// Read-only: connects as SqlRoot, reads the cluster, and throws
+    /// <see cref="PostgresLayoutRefusedException"/> with every reason provisioning would refuse
+    /// (a SqlRoot that is not a superuser first among them). Changes nothing, so the CLI can run
+    /// it before asking the operator to confirm anything.
+    /// </summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    /// <param name="wipeAuditDatabase">Whether the audit database will be dropped rather than preserved.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task<ClusterFacts> CheckProvisioningAsync(
         YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig,
         YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
-        bool wipeAuditDatabase = false)
+        bool wipeAuditDatabase,
+        CancellationToken ct = default)
     {
-        var appPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
-        var auditPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
-        var appDbName = setupDbConfig.SqlApp.Database;
-        var auditDbName = setupDbConfig.SqlAudit.Database;
+        var admin = AdminConnectionString(rootConfig);
+        var names = LayoutNames(rootConfig, setupDbConfig);
+        var problems = PostgresRoleLayout.ValidateNames(names);
+        if (problems.Count > 0)
+            throw new PostgresLayoutRefusedException(problems);
+        var facts = await PostgresRoleLayout.ProbeAsync(admin, names, ct);
+        var reasons = PostgresRoleLayout.Refusals(facts, names, new ProvisioningMode(ResetApp: true, WipeAudit: wipeAuditDatabase));
+        if (reasons.Count > 0)
+            throw new PostgresLayoutRefusedException(reasons);
+        return facts;
+    }
 
-        var appUser = ResolveRoleName(setupDbConfig.SqlApp.Username);
-        var auditUser = ResolveRoleName(setupDbConfig.SqlAudit.Username);
+    /// <summary>
+    /// Provisions both databases as SqlRoot through <see cref="PostgresRoleLayout.ProvisionAsync"/>:
+    /// the application database is dropped and recreated owned by the app role, the audit database
+    /// is preserved and handed to the NOLOGIN <c>&lt;audit&gt;_owner</c> role unless
+    /// <paramref name="wipeAuditDatabase"/>, and both runtime roles get fresh passwords. Fail-fast:
+    /// it refuses before any DDL, and any later failure propagates. Creates no table.
+    /// </summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    /// <param name="wipeAuditDatabase">Drop the audit database instead of preserving it.</param>
+    /// <param name="appSslMode">The TLS mode the node will use for the application database.</param>
+    /// <param name="auditSslMode">The TLS mode the node will use for the audit database.</param>
+    /// <param name="say">Progress output; never receives a password.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The two databases as the runtime roles, with their new passwords.</returns>
+    public static async Task<ProvisionedDatabases> ProvisionAsync(
+        YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig,
+        YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
+        bool wipeAuditDatabase,
+        string? appSslMode,
+        string? auditSslMode,
+        Action<string>? say,
+        CancellationToken ct = default)
+    {
+        var admin = AdminConnectionString(rootConfig);
+        var names = LayoutNames(rootConfig, setupDbConfig);
 
-        // Validate all identifiers before any SQL execution. Still worth doing even though every
-        // identifier below is also quoted: a role or database name outside this alphabet is a
-        // configuration mistake worth reporting by name rather than passing through to the
-        // server and reading back whatever it says about it.
-        ValidateIdentifier(appUser, "app username");
-        ValidateIdentifier(appDbName, "app database name");
-        ValidateIdentifier(auditUser, "audit username");
-        ValidateIdentifier(auditDbName, "audit database name");
+        NpgsqlConnection.ClearAllPools();
+        var (appPassword, auditPassword) = await PostgresRoleLayout.ProvisionAsync(
+            admin, names, new ProvisioningMode(ResetApp: true, WipeAudit: wipeAuditDatabase),
+            line => say?.Invoke($"✓ {line}"), ct);
+        NpgsqlConnection.ClearAllPools();
 
-        // Guard: prevent dropping/recreating the root user
-        var rootUser = rootConfig.Username.Trim();
-        if (string.Equals(appUser, rootUser, StringComparison.OrdinalIgnoreCase))
+        return new ProvisionedDatabases(
+            new DbInstance
+            {
+                Host = rootConfig.Host, Port = rootConfig.Port, Database = names.AppDatabase,
+                Username = names.AppRole, Password = appPassword,
+                SslMode = PostgresConnection.ParseSslMode(appSslMode).ToString(),
+            },
+            new DbInstance
+            {
+                Host = rootConfig.Host, Port = rootConfig.Port, Database = names.AuditDatabase,
+                Username = names.AuditRole, Password = auditPassword,
+                SslMode = PostgresConnection.ParseSslMode(auditSslMode).ToString(),
+            });
+    }
+
+    /// <summary>
+    /// Applies both schemas as the runtime roles, over unpooled migration connections with the
+    /// default <see cref="SchemaConfig"/> lock and statement timeouts: every migration, the frozen
+    /// baseline first, on the new application database; on the audit database the same when it
+    /// is empty, or the migrations a preserved audit database lacks. The only schema writes
+    /// bootstrap makes; nothing here runs as SqlRoot.
+    /// </summary>
+    /// <param name="databases">The provisioned databases.</param>
+    /// <param name="say">Progress output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task ApplySchemasAsync(ProvisionedDatabases databases, Action<string>? say, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(databases);
+        var schema = new SchemaConfig();
+
+        await AsRuntimeRoleAsync(databases.App, async () =>
         {
-            Console.WriteLine($"❌ SqlApp.Username '{appUser}' matches the SqlRoot admin role '{rootUser}'.");
-            Console.WriteLine("   This would drop and recreate your admin account. Change SqlApp.Username in setup-database.yaml.");
-            throw new InvalidOperationException($"SqlApp.Username must differ from SqlRoot.Username (both are '{rootUser}')");
-        }
-        if (string.Equals(auditUser, rootUser, StringComparison.OrdinalIgnoreCase))
+            await using var app = CreateMigrationContext(DatabaseKind.Application, databases.App, schema);
+            ThrowIfFailed(databases.App, "application", await SchemaVersionGate.ApplyAllForBootstrapAsync(app, ct), schema);
+        });
+        say?.Invoke($"✓ Application schema applied as '{databases.App.Username}'.");
+
+        await AsRuntimeRoleAsync(databases.Audit, async () =>
         {
-            Console.WriteLine($"❌ SqlAudit.Username '{auditUser}' matches the SqlRoot admin role '{rootUser}'.");
-            Console.WriteLine("   This would drop and recreate your admin account. Change SqlAudit.Username in setup-database.yaml.");
-            throw new InvalidOperationException($"SqlAudit.Username must differ from SqlRoot.Username (both are '{rootUser}')");
-        }
+            await using var audit = CreateMigrationContext(DatabaseKind.Audit, databases.Audit, schema);
+            var state = await SchemaVersionGate.ReadAsync(audit, ct);
+            var verdict = SchemaVersionGate.Evaluate(state, appliesMigrations: true);
+            if (state.Presence == DatabasePresence.Empty)
+                ThrowIfFailed(databases.Audit, "audit", await SchemaVersionGate.ApplyAllForBootstrapAsync(audit, ct), schema);
+            else if (verdict == SchemaVerdict.ApplyPending)
+                ThrowIfFailed(databases.Audit, "audit", await SchemaVersionGate.ApplyPendingAsync(audit, state, ct), schema);
+            else if (verdict != SchemaVerdict.Current)
+                throw new InvalidOperationException(
+                    $"The audit database is {state.Presence} ({verdict}) after provisioning; bootstrap stopped before seeding. "
+                    + (SchemaVersionGate.RefusalMessage(verdict, state, "audit") ?? ""));
+            say?.Invoke(state.Presence == DatabasePresence.Empty
+                ? $"✓ Audit schema applied as '{databases.Audit.Username}'."
+                : $"✓ Preserved audit schema brought up to date as '{databases.Audit.Username}' ({state.Pending.Count} migration(s)).");
+        });
+    }
 
-        // The superuser DB-setup pass runs over TLS. The operator-selected mode from the setup
-        // wizard is stored on rootConfig.SslMode; unparseable / missing values clamp back to
-        // Require so a typo can't silently disable TLS.
-        //
-        // Connects to the maintenance database rather than to either application database,
-        // because CREATE DATABASE and DROP DATABASE cannot run from inside the database they
-        // name. MySQL had no such rule, which is why the old code did everything on one
-        // connection.
-        var serverConnStr = PostgresConnection.BuildMaintenance(
-            rootConfig.Host, rootConfig.Port, rootConfig.Username, rootConfig.Password, rootConfig.SslMode);
-        using var conn = new NpgsqlConnection(serverConnStr);
-        conn.Open();
-
-        var qAppDb = PostgresConnection.QuoteIdentifier(appDbName);
-        var qAuditDb = PostgresConnection.QuoteIdentifier(auditDbName);
-        var qAppRole = PostgresConnection.QuoteIdentifier(appUser);
-        var qAuditRole = PostgresConnection.QuoteIdentifier(auditUser);
-
-        // Roles first: a database can be created OWNER a role only once that role exists.
-        // An existing role has its password rotated rather than being dropped and recreated —
-        // see CreateLoginRole for why the MySQL DROP USER / CREATE USER pair does not port.
-        CreateLoginRole(conn, qAppRole, appUser, appPassword);
-        CreateLoginRole(conn, qAuditRole, auditUser, auditPassword);
-
-        // Application database, owned by the app role. Ownership rather than an enumerated
-        // grant list, because EF Core migrations create tables that do not exist yet and a
-        // grant cannot name them.
-        if (!DatabaseExists(conn, appDbName))
+    /// <summary>
+    /// Proves the ownership rule the next upgrade depends on, as each runtime role on its own
+    /// connection: it owns every object in its schema and can create tables. Throws when either
+    /// database breaks it, so bootstrap fails before any configuration is written. Prints the
+    /// standing warnings (such as other members of the audit database's owner).
+    /// </summary>
+    /// <param name="databases">The provisioned databases.</param>
+    /// <param name="say">Progress output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task VerifyOwnershipAsync(ProvisionedDatabases databases, Action<string>? say, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(databases);
+        foreach (var (kind, instance) in new[] { (DatabaseKind.Application, databases.App), (DatabaseKind.Audit, databases.Audit) })
         {
-            ExecuteSql(conn, $"CREATE DATABASE {qAppDb} OWNER {qAppRole}");
-            Console.WriteLine($"✓ Application database '{appDbName}' created, owned by role '{appUser}'.");
+            var report = await AsRuntimeRoleAsync(instance, async () =>
+            {
+                await using var conn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance))
+                {
+                    Pooling = false,
+                }.ConnectionString);
+                return await SchemaOwnership.ProbeAsync(conn, kind, ct);
+            });
+            if (!report.IsSound)
+                throw new InvalidOperationException(
+                    $"The {(kind == DatabaseKind.Application ? "application" : "audit")} database '{report.Database}' breaks the "
+                    + $"ownership rule after bootstrap: role '{report.Role}' does not own {report.NotOwned.Count} object(s) "
+                    + $"({string.Join(", ", report.NotOwned.Take(10).Select(o => $"{o.Object} owned by {o.Owner}"))}) "
+                    + $"or cannot create tables (can create: {(report.CanCreateTables ? "yes" : "no")}). "
+                    + "Setup did not complete and no configuration was written.");
+            foreach (var warning in SchemaOwnership.Warnings(report))
+                say?.Invoke($"⚠  {warning}");
+            say?.Invoke($"✓ '{report.Role}' owns the schema of '{report.Database}'.");
         }
-        else
-        {
-            ExecuteSql(conn, $"ALTER DATABASE {qAppDb} OWNER TO {qAppRole}");
-            Console.WriteLine($"✓ Application database '{appDbName}' already present; ownership confirmed for role '{appUser}'.");
-        }
+    }
 
-        // citext has to exist before the first migration runs: the application schema declares its
-        // identifier columns with that type (see TextCaseSensitivity), and a type that does not
-        // exist yet is a CREATE TABLE that fails on its first line. InitialCreate carries its own
-        // CREATE EXTENSION IF NOT EXISTS, but that one runs as the application role and succeeds
-        // only because PostgreSQL 13 marks citext trusted and the role owns the database. Creating
-        // it here, on the privileged connection that just created the database, makes the
-        // migration's copy a no-op and leaves the install standing on neither of those facts.
-        var appAdminConnStr = PostgresConnection.BuildMaintenance(
-            rootConfig.Host, rootConfig.Port, rootConfig.Username, rootConfig.Password,
-            rootConfig.SslMode, appDbName);
-        using (var appConn = new NpgsqlConnection(appAdminConnStr))
+    /// <summary>
+    /// A context of <paramref name="kind"/> on the migration connection for
+    /// <paramref name="instance"/>: unpooled, with the server-side lock and statement timeouts of
+    /// <paramref name="schema"/> and a client timeout slightly longer. The same shape the control
+    /// role migrates with at startup.
+    /// </summary>
+    private static DbContext CreateMigrationContext(DatabaseKind kind, DbInstance instance, SchemaConfig schema)
+    {
+        var clientTimeout = schema.MigrationCommandTimeoutSeconds > 0 ? schema.MigrationCommandTimeoutSeconds + 30 : 0;
+        var connectionString = new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance))
         {
-            appConn.Open();
-            ExecuteSql(appConn, $"CREATE EXTENSION IF NOT EXISTS {TextCaseSensitivity.Extension}");
-        }
-        Console.WriteLine($"✓ '{TextCaseSensitivity.Extension}' extension present in '{appDbName}' — usernames, CA labels and hostnames compare without regard to case.");
+            Pooling = false,
+            CommandTimeout = clientTimeout,
+            Options = $"-c lock_timeout={Math.Max(0, schema.MigrationLockTimeoutSeconds) * 1000L} "
+                + $"-c statement_timeout={Math.Max(0, schema.MigrationCommandTimeoutSeconds) * 1000L}",
+        }.ConnectionString;
+        return kind == DatabaseKind.Application
+            ? new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+                .UseNpgsql(connectionString, o => o.CommandTimeout(clientTimeout)).Options)
+            : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                .UseNpgsql(connectionString, o => o.CommandTimeout(clientTimeout)).Options);
+    }
 
-        // Audit database: preserved unless the operator explicitly asked for a wipe.
-        if (wipeAuditDatabase)
-        {
-            Console.WriteLine($"⚠  Wiping audit database '{auditDbName}' — every historical audit row is being destroyed.");
-            // WITH (FORCE) terminates other sessions on the database; without it a single
-            // leftover connection from a previous run turns the wipe into an error the operator
-            // cannot act on.
-            ExecuteSql(conn, $"DROP DATABASE IF EXISTS {qAuditDb} WITH (FORCE)");
-            ExecuteSql(conn, $"CREATE DATABASE {qAuditDb}");
-            Console.WriteLine($"✓ Audit database '{auditDbName}' dropped and recreated.");
-        }
-        else if (!DatabaseExists(conn, auditDbName))
-        {
-            // A first install still creates it. An existing audit database is left untouched;
-            // StartModularCA migrates it forward on the next start, so a schema from an earlier
-            // version is brought up to date rather than discarded.
-            ExecuteSql(conn, $"CREATE DATABASE {qAuditDb}");
-            Console.WriteLine($"✓ Audit database '{auditDbName}' created.");
-        }
-        else
-        {
-            Console.WriteLine($"✓ Audit database '{auditDbName}' ready (existing rows preserved — pass --wipe-audit to discard).");
-        }
+    /// <summary>Throws the operator-facing migration failure, or the login refusal it hides, when <paramref name="failure"/> is set.</summary>
+    private static void ThrowIfFailed(DbInstance instance, string contextName, MigrationFailure? failure, SchemaConfig schema)
+    {
+        if (failure is null)
+            return;
+        if (SchemaFailure.SqlState(failure.Error) is "28P01" or "28000")
+            throw new BootstrapLoginRefusedException(instance.Username, instance.Host, failure.Error);
+        throw new InvalidOperationException(
+            SchemaVersionGate.MigrationFailedMessage(contextName, failure, schema.MigrationCommandTimeoutSeconds), failure.Error);
+    }
 
-        // The audit role's rights have to be granted from inside the audit database: schema and
-        // default privileges are per-database objects, so a connection to the maintenance
-        // database cannot see them.
-        //
-        // DELETE is granted so the AuditRetentionJob can prune old rows per the configured
-        // retention window. Ownership of the database is deliberately NOT granted, which is what
-        // puts DROP DATABASE beyond the running application's reach — the guarantee the MySQL
-        // version stated but did not hold, because that setup pass ran as root and dropped the
-        // audit database itself a few lines earlier.
-        var auditAdminConnStr = PostgresConnection.BuildMaintenance(
-            rootConfig.Host, rootConfig.Port, rootConfig.Username, rootConfig.Password,
-            rootConfig.SslMode, auditDbName);
-        using (var auditConn = new NpgsqlConnection(auditAdminConnStr))
+    /// <summary>Runs <paramref name="work"/> as a runtime role, turning a refused login into <see cref="BootstrapLoginRefusedException"/>.</summary>
+    private static async Task AsRuntimeRoleAsync(DbInstance instance, Func<Task> work) =>
+        await AsRuntimeRoleAsync(instance, async () => { await work(); return true; });
+
+    /// <summary>Runs <paramref name="work"/> as a runtime role, turning a refused login into <see cref="BootstrapLoginRefusedException"/>.</summary>
+    private static async Task<T> AsRuntimeRoleAsync<T>(DbInstance instance, Func<Task<T>> work)
+    {
+        try
         {
-            auditConn.Open();
-            ExecuteSql(auditConn, $"GRANT CONNECT ON DATABASE {qAuditDb} TO {qAuditRole}");
-            // CREATE on the schema is what lets the audit context apply its own migrations.
-            ExecuteSql(auditConn, $"GRANT USAGE, CREATE ON SCHEMA public TO {qAuditRole}");
-            ExecuteSql(auditConn, $"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {qAuditRole}");
-            ExecuteSql(auditConn, $"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {qAuditRole}");
-            // ALTER DEFAULT PRIVILEGES covers tables created later — by a migration, or by the
-            // superuser during a restore — without which the role would lose access to every
-            // table added after this point.
-            ExecuteSql(auditConn, $"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {qAuditRole}");
-            ExecuteSql(auditConn, $"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {qAuditRole}");
+            return await work();
         }
-        Console.WriteLine($"✓ PostgreSQL role '{auditUser}' granted audit rights on '{auditDbName}' (SELECT, INSERT, UPDATE, DELETE — not owner, so no DROP DATABASE).");
-
-        // No FLUSH PRIVILEGES: PostgreSQL grants are transactional and take effect on commit.
-
-        return (appPassword, auditPassword);
+        catch (Exception ex) when (ex is not BootstrapLoginRefusedException && SchemaFailure.SqlState(ex) is "28P01" or "28000")
+        {
+            throw new BootstrapLoginRefusedException(instance.Username, instance.Host, ex);
+        }
     }
 
     /// <summary>
@@ -408,79 +464,5 @@ public static class BootstrapDatabaseSetup
 
         Console.WriteLine($"\n📝 Runtime configuration written to: {yamlPath}");
         Console.WriteLine("   (Contains DB credentials and JWT secret — protect this file)");
-    }
-
-    /// <summary>
-    /// Executes a single SQL statement on the given connection.
-    /// </summary>
-    /// <param name="conn">An open connection.</param>
-    /// <param name="sql">The statement to run.</param>
-    private static void ExecuteSql(NpgsqlConnection conn, string sql)
-    {
-        using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.ExecuteNonQuery();
-    }
-
-    /// <summary>
-    /// Returns true when a database of the given name exists in the cluster.
-    /// <para>
-    /// PostgreSQL has no <c>CREATE DATABASE IF NOT EXISTS</c> and no <c>DO</c> block that can
-    /// contain one (CREATE DATABASE cannot run inside a transaction or a function body), so the
-    /// existence test is a query rather than a clause.
-    /// </para>
-    /// </summary>
-    /// <param name="conn">An open connection to the maintenance database.</param>
-    /// <param name="databaseName">The database to look for.</param>
-    /// <returns>True when <c>pg_database</c> holds a row with that name.</returns>
-    private static bool DatabaseExists(NpgsqlConnection conn, string databaseName)
-    {
-        using var cmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @name", conn);
-        cmd.Parameters.AddWithValue("name", databaseName);
-        return cmd.ExecuteScalar() != null;
-    }
-
-    /// <summary>
-    /// Returns true when a role of the given name exists in the cluster.
-    /// </summary>
-    /// <param name="conn">An open connection.</param>
-    /// <param name="roleName">The role to look for.</param>
-    /// <returns>True when <c>pg_roles</c> holds a row with that name.</returns>
-    private static bool RoleExists(NpgsqlConnection conn, string roleName)
-    {
-        using var cmd = new NpgsqlCommand("SELECT 1 FROM pg_roles WHERE rolname = @name", conn);
-        cmd.Parameters.AddWithValue("name", roleName);
-        return cmd.ExecuteScalar() != null;
-    }
-
-    /// <summary>
-    /// Creates a login role, or resets the password of an existing one.
-    /// <para>
-    /// Not a drop-and-recreate: DROP ROLE fails while the role owns any object, so on a re-run
-    /// against an existing install it would fail on the app role and leave the bootstrap
-    /// half-done. ALTER ROLE ... PASSWORD achieves the one thing that actually has to happen —
-    /// the freshly generated password becomes the role's password — and is idempotent.
-    /// </para>
-    /// </summary>
-    /// <param name="conn">An open connection to the maintenance database.</param>
-    /// <param name="quotedRole">The role name, already quoted for DDL.</param>
-    /// <param name="roleName">The raw role name, for the existence check and for logging.</param>
-    /// <param name="password">The generated password to set.</param>
-    private static void CreateLoginRole(NpgsqlConnection conn, string quotedRole, string roleName, string password)
-    {
-        // PostgreSQL will not take the password as a bound parameter in CREATE/ALTER ROLE, so it
-        // is quoted as a string literal. Doubling the single quote is the whole of the escaping
-        // PostgreSQL standard-conforming strings require — there are no backslash escapes to
-        // worry about, which is why the MySQL-specific EscapeSql helper this replaces is gone.
-        var quotedPassword = PostgresConnection.QuoteLiteral(password);
-        if (RoleExists(conn, roleName))
-        {
-            ExecuteSql(conn, $"ALTER ROLE {quotedRole} WITH LOGIN PASSWORD {quotedPassword}");
-            Console.WriteLine($"✓ PostgreSQL role '{roleName}' already existed; password rotated.");
-        }
-        else
-        {
-            ExecuteSql(conn, $"CREATE ROLE {quotedRole} WITH LOGIN PASSWORD {quotedPassword}");
-            Console.WriteLine($"✓ PostgreSQL role '{roleName}' created.");
-        }
     }
 }

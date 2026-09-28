@@ -112,6 +112,18 @@ public static class ErrorCodes
     /// <summary>No certificate authority record names the issuing CA certificate.</summary>
     public const string IssuingCaUnregistered = "MCA-CFG-016";
 
+    /// <summary>
+    /// A second organisation tenant was requested on an instance in single-organisation mode
+    /// (<c>Features.AllowMultipleOrganizations</c> is false).
+    /// </summary>
+    public const string MultipleOrganizationsDisabled = "MCA-CFG-017";
+
+    /// <summary>
+    /// Bootstrap found an organisation tenant already in the database it was about to seed, so the
+    /// database reset before it did not happen.
+    /// </summary>
+    public const string BootstrapDatabaseNotEmpty = "MCA-CFG-018";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>

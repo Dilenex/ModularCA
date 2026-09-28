@@ -692,8 +692,7 @@ public static class BackupRestore
                 try
                 {
                     var (exit, err) = await RestoreDumpFileAsync(
-                        restoreAppPass, backupConfig.DB.App.Host, backupConfig.DB.App.Port,
-                        backupConfig.DB.App.Username, backupConfig.DB.App.Database, appDump);
+                        restoreAppPass, backupConfig.DB.App, appDump, ensureCitext: true);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
@@ -710,8 +709,7 @@ public static class BackupRestore
                 try
                 {
                     var (exit, err) = await RestoreDumpFileAsync(
-                        restoreAuditPass, backupConfig.DB.Audit.Host, backupConfig.DB.Audit.Port,
-                        backupConfig.DB.Audit.Username, backupConfig.DB.Audit.Database, auditDump);
+                        restoreAuditPass, backupConfig.DB.Audit, auditDump, ensureCitext: false);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
@@ -976,33 +974,74 @@ public static class BackupRestore
     /// atomic — a failure halfway leaves the database exactly as it was. The MySQL version had
     /// none of these properties: it piped a script into the client statement by statement.
     /// </para>
+    /// <para>
+    /// Everything runs as the runtime role that owns the database, never as a superuser. The
+    /// dump's extension entries are left out of the restore (<c>pg_restore --list</c>, filtered,
+    /// then <c>--use-list</c>): with <c>--clean</c> they would drop and recreate <c>citext</c>,
+    /// which fails for any role but the extension's owner, and on a repaired pre-0.4.0 install the
+    /// owner is the superuser that bootstrapped it. For the application database the extension is
+    /// instead ensured first, as the runtime role.
+    /// </para>
     /// </summary>
     /// <param name="pgPassFile">Path to the pgpass file holding the credentials.</param>
-    /// <param name="host">Server hostname.</param>
-    /// <param name="port">Server port.</param>
-    /// <param name="username">Role to connect as.</param>
-    /// <param name="database">The target database name (must be pre-validated).</param>
+    /// <param name="instance">The database and runtime role to restore into (name pre-validated).</param>
     /// <param name="dumpFile">Path to the custom-format archive to restore.</param>
+    /// <param name="ensureCitext">Create <c>citext</c> as the runtime role first, if it is missing.</param>
     /// <returns>A tuple of (exitCode, errorOutput).</returns>
     private static async Task<(int ExitCode, string Stderr)> RestoreDumpFileAsync(
-        string pgPassFile, string host, int port, string username, string database, string dumpFile)
+        string pgPassFile, ModularCA.Shared.Models.Config.DbInstance instance, string dumpFile, bool ensureCitext)
     {
+        if (ensureCitext)
+        {
+            try
+            {
+                await using var conn = new NpgsqlConnection(PostgresConnection.Build(instance));
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(ModularCA.Database.PostgresRoleLayout.ExtensionSql, conn);
+                await cmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex)
+            {
+                return (1, $"could not ensure the citext extension as '{instance.Username}': {ex.Message}");
+            }
+        }
+
+        var (listExit, listing, listErr) = await RunPostgresToolAsync("pg_restore", new[] { "--list", dumpFile }, pgPassFile, 120000);
+        if (listExit != 0)
+            return (listExit, listErr);
+        var listFile = dumpFile + ".list";
+        await File.WriteAllLinesAsync(listFile, WithoutExtensionEntries(listing));
+
         var (exit, _, stderr) = await RunPostgresToolAsync("pg_restore", new[]
         {
-            "--host", host,
-            "--port", port.ToString(),
-            "--username", username,
+            "--host", instance.Host,
+            "--port", instance.Port.ToString(),
+            "--username", instance.Username,
             "--no-password",
-            "--dbname", database,
+            "--dbname", instance.Database,
             "--clean",
             "--if-exists",
             "--no-owner",
             "--no-privileges",
             "--single-transaction",
+            "--use-list", listFile,
             dumpFile,
         }, pgPassFile, 120000);
         return (exit, stderr);
     }
+
+    /// <summary>
+    /// The lines of a <c>pg_restore --list</c> table of contents without its <c>EXTENSION</c> and
+    /// <c>COMMENT - EXTENSION</c> entries, which only the extension's owner may drop or recreate.
+    /// </summary>
+    /// <param name="listing">The table of contents as <c>pg_restore --list</c> prints it.</param>
+    internal static IEnumerable<string> WithoutExtensionEntries(string listing) =>
+        listing.Split('\n')
+            .Select(line => line.TrimEnd('\r'))
+            .Where(line => !ExtensionTocEntry.IsMatch(line));
+
+    private static readonly System.Text.RegularExpressions.Regex ExtensionTocEntry =
+        new(@"^\s*\d+;\s*\d+\s+\d+\s+(?:EXTENSION|COMMENT - EXTENSION)\s", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Runs one of the PostgreSQL command-line tools with the credentials supplied through a

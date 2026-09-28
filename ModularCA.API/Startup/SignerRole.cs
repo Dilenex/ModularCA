@@ -25,7 +25,11 @@ public static class SignerRole
 {
     /// <summary>
     /// Runs the signer role to completion and returns the process exit code. Setup mode has
-    /// no keystore to serve and is refused.
+    /// no keystore to serve and is refused. The signer applies no migrations: before it listens
+    /// it checks the application database, which its audit sink writes to, through
+    /// <see cref="SchemaStartup.EnforceAllAsync"/>. It waits, extending the systemd start
+    /// timeout, while the control role migrates or the database is unreachable, and refuses a
+    /// schema this build does not match.
     /// </summary>
     /// <param name="config">The loaded configuration, database credentials already applied.</param>
     /// <param name="appConnStr">The application database connection string.</param>
@@ -39,6 +43,14 @@ public static class SignerRole
             Console.Error.WriteLine("        Complete the setup wizard as a single process first, then split the roles.");
             return 1;
         }
+
+        var schemaExit = await SchemaStartup.EnforceAllAsync(
+            [new SchemaTarget("application", DatabaseKind.Application, config.DB.App)],
+            appliesMigrations: false,
+            config.Schema,
+            new Microsoft.Extensions.Hosting.Systemd.SystemdNotifier());
+        if (schemaExit is int code)
+            return code;
 
         var baseDirectory = AppContext.BaseDirectory;
         var signerConfig = config.Signer;

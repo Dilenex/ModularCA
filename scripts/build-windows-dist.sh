@@ -60,8 +60,10 @@ dotnet publish ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj \
     -o "$STAGE" -v minimal --nologo
 
 note "staging config, licences and the run guide"
-mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs"
+mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/sql"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true
+# The schema-ownership repair. The service's refusal on Windows names this path beside the binary.
+cp ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/sql/adopt-ownership.sql"
 
 # Same licence obligation as the tarball: this is a binary distribution of AGPL-3.0 software with
 # MIT/BSD/Apache-2.0 components, each of which permits redistribution only with its notice.
@@ -116,7 +118,7 @@ GUIDE
 note "verifying payload"
 EXE_EXT=".exe"
 for required in "ModularCA.API${EXE_EXT}" "ModularCA.Keystore.Unlocker${EXE_EXT}" \
-                LICENSE THIRD-PARTY-NOTICES.md RUN-WINDOWS.md \
+                LICENSE THIRD-PARTY-NOTICES.md RUN-WINDOWS.md sql/adopt-ownership.sql \
                 wwwroot/admin/index.html wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }

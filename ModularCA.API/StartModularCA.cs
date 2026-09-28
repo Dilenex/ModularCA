@@ -167,7 +167,20 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
         Console.WriteLine("⚠  --wipe-audit: existing audit history will be DESTROYED, not preserved.\n");
     }
 
-    var exitCode = BootstrapModularCA.Run(wipeAudit);
+    int exitCode;
+    try
+    {
+        exitCode = BootstrapModularCA.Run(wipeAudit);
+    }
+    catch (RequestValidationException ex)
+    {
+        Log.Error("Bootstrap refused [{Code}]: {Message}", ex.Code, ex.Message);
+        Console.WriteLine($"❌ Bootstrap refused [{ex.Code}]: {ex.Message}");
+        if (!string.IsNullOrWhiteSpace(ex.Remediation))
+            Console.WriteLine($"   {ex.Remediation}");
+        exitCode = 1;
+    }
+    await Log.CloseAndFlushAsync();
     Environment.Exit(exitCode);
 }
 // The command-line backup and restore run before the node's container exists, so the keystore
@@ -340,6 +353,41 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
     // idempotent by discarding the DbContext without SaveChanges.
     Environment.Exit(report.Failed.Count == 0 ? 0 : 1);
 }
+// Read-only: probes schema ownership as the db.yaml roles and prints the report and the repair.
+// Runs as the service user; it needs no administrative credential and changes nothing.
+if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
+{
+    var ownershipVerb = args.SkipWhile(a => !a.Equals("--db-ownership", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    if (!string.Equals(ownershipVerb, "check", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("Usage: --db-ownership check   (read-only; run as the service user, never as root)");
+        Environment.Exit(1);
+    }
+    var ownershipDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (ownershipDbYaml == null)
+    {
+        Console.Error.WriteLine("db.yaml not found: bootstrap must complete before ownership can be checked.");
+        Environment.Exit(1);
+    }
+    var ownershipConfig = new SystemConfig();
+    foreach (var (target, source) in new[] { (ownershipConfig.DB.App, ownershipDbYaml.App), (ownershipConfig.DB.Audit, ownershipDbYaml.Audit) })
+    {
+        target.Host = source.Host;
+        target.Port = source.Port;
+        target.Database = source.Database;
+        target.Username = source.Username;
+        target.Password = source.Password;
+        target.SslMode = source.SslMode;
+    }
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(ownershipConfig);
+    var ownershipTargets = new List<ModularCA.API.Startup.SchemaTarget>
+    {
+        new("application", DatabaseKind.Application, ownershipConfig.DB.App),
+    };
+    if (!string.IsNullOrWhiteSpace(ownershipConfig.DB.Audit.Database))
+        ownershipTargets.Add(new("audit", DatabaseKind.Audit, ownershipConfig.DB.Audit));
+    Environment.Exit(await ModularCA.API.Startup.SchemaStartup.CheckOwnershipAsync(ownershipTargets));
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSystemd();
@@ -472,40 +520,14 @@ if (!isSetupMode)
 }
 
 // === Serilog structured logging ===
-// Quick feature flag lookup for logging sinks (before DI is available).
+// Quick feature flag lookup for logging sinks (before DI is available), filled in once the
+// schema check below has passed. The UseSerilog callback reads it when the host is built.
 // emit a warning when the lookup fails so operators running on cached defaults can see it;
 // emit a warning when the metrics flag is explicitly disabled so silent monitoring loss is
 // visible in SIEM.
 var sinkFlags = new Dictionary<string, bool>();
 var sinkFlagsQueryFailed = false;
 Exception? sinkFlagsQueryError = null;
-// Skip the DB query entirely in setup mode — tables don't exist yet and the errors
-// bury the setup token in the console output.
-if (!isSetupMode)
-{
-    try
-    {
-        var flagConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
-        using var flagConn = new Npgsql.NpgsqlConnection(flagConnStr);
-        flagConn.Open();
-        // Quoted identifiers: EF created these as "FeatureFlags"."Name", and PostgreSQL folds
-        // unquoted identifiers to lower case, so an unquoted copy of this query would look for
-        // a table called featureflags and fail.
-        using var flagCmd = new Npgsql.NpgsqlCommand(
-            """SELECT "Name", "Enabled" FROM "FeatureFlags" WHERE "Name" IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')""",
-            flagConn);
-        using var reader = flagCmd.ExecuteReader();
-        while (reader.Read())
-            sinkFlags[reader.GetString(0)] = reader.GetBoolean(1);
-    }
-    catch (Exception ex)
-    {
-        // DB may not exist yet (first run before bootstrap). Remember so we can log a
-        // warning after the host logger is wired up.
-        sinkFlagsQueryFailed = true;
-        sinkFlagsQueryError = ex;
-    }
-}
 
 var serilogMinLevel = config.Logging.MinLevel?.ToLowerInvariant() switch
 {
@@ -745,6 +767,56 @@ Console.WriteLine($"[ROLES] This process runs: {string.Join(", ", activeRoles.Na
         : ingressOnly ? " (no signer: the ingress holds no key)"
         : " (signer as Signer.Mode says)"));
 Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
+
+// Schema check for the application and audit databases (SchemaStartup.EnforceAllAsync), before
+// this process reads either: the sink flags just below, the keystore unlock and the HSM signers,
+// the tenant hostname certificates and routes, the mTLS and EST anchors and the CMP check in
+// the listener setup all read the application database. Both are read, and ownership checked,
+// before either is written. The control role applies pending migrations; every other role waits
+// for it. An unreachable database, a migration in progress or a migration that failed on a
+// transient error is waited for or retried up to Schema.WaitSeconds, extending the systemd start
+// timeout, then the process exits 75 to be retried; anything the operator must fix exits 3. A
+// missing or empty database is left to setup recovery below. Setup mode skips the check:
+// bootstrap creates the schema. An ingress-only process reads the application database (tenant
+// hostnames and their certificates) and never the audit database, and applies no migration.
+if (!isSetupMode)
+{
+    var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
+    {
+        new("application", DatabaseKind.Application, config.DB.App),
+    };
+    if (!ingressOnly && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+        schemaTargets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
+    var schemaExit = await ModularCA.API.Startup.SchemaStartup.EnforceAllAsync(
+        schemaTargets, controlActive, config.Schema, new SystemdNotifier());
+    if (schemaExit is int code)
+    {
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(code);
+    }
+
+    try
+    {
+        using var flagConn = new Npgsql.NpgsqlConnection(appConnStr);
+        flagConn.Open();
+        // Quoted identifiers: EF created these as "FeatureFlags"."Name", and PostgreSQL folds
+        // unquoted identifiers to lower case, so an unquoted copy of this query would look for
+        // a table called featureflags and fail.
+        using var flagCmd = new Npgsql.NpgsqlCommand(
+            """SELECT "Name", "Enabled" FROM "FeatureFlags" WHERE "Name" IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')""",
+            flagConn);
+        using var reader = flagCmd.ExecuteReader();
+        while (reader.Read())
+            sinkFlags[reader.GetString(0)] = reader.GetBoolean(1);
+    }
+    catch (Exception ex)
+    {
+        // DB may not exist yet (first run before bootstrap). Remember so we can log a
+        // warning after the host logger is wired up.
+        sinkFlagsQueryFailed = true;
+        sinkFlagsQueryError = ex;
+    }
+}
 
 // EF Core command interceptor measuring db query duration.
 // Shared singleton instance — interceptor itself is stateless and thread-safe.
@@ -2524,63 +2596,44 @@ if (hsmSession != null)
 //trustStore.LoadFromFile("ca-trust.keystore"); // adjust path if needed
 
 
-// Apply pending EF Core migrations for the main database on startup
-// In setup mode, skip migrations entirely — the setup wizard handles schema creation
-// via BootstrapService.Initialize() which calls Migrate() with root credentials.
-//
-// Everything in this block writes: migrations, the template OID repair, the feature-flag
-// backfill, the audit migrations further down, the policy sync and the audit replay at the
-// end. Those are the control plane's; an enrollment or validation process reads the schema
-// the control plane maintains and changes nothing at startup.
+// The schema check ran before the first database read, after the process roles were resolved.
+// The startup repairs below write: the template OID repair, the feature-flag backfill, the
+// policy sync and the audit replay at the end. Those are the control plane's; an enrollment or
+// validation process changes nothing at startup.
 if (!isSetupMode && !controlActive)
 {
     Console.WriteLine("[STARTUP] Migrations and startup repairs are the control role's; this process applies none.");
 }
-if (!isSetupMode && controlActive)
+
+// Single-organisation mode refuses a new organisation; it does not remove existing ones. An
+// instance already holding several (disabled ones count) is told so at every start.
+if (!isSetupMode && controlActive && !config.Features.AllowMultipleOrganizations)
 {
     try
     {
-        using var scope = app.Services.CreateScope();
-        var mainDb = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-        var pendingMigrations = await mainDb.Database.GetPendingMigrationsAsync();
-        if (pendingMigrations.Any())
+        using var orgScope = app.Services.CreateScope();
+        var orgDb = orgScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var organisations = await orgDb.Tenants.IgnoreQueryFilters()
+            .Where(t => !t.IsSystemTenant && !t.IsDeleted)
+            .OrderBy(t => t.Name)
+            .Select(t => new { t.Name, t.IsEnabled })
+            .ToListAsync();
+        var organisationWarning = ModularCA.Shared.Licensing.TenantCreationGate.SingleOrganizationStartupWarning(
+            config.Features.AllowMultipleOrganizations,
+            organisations.Select(o => (o.Name, o.IsEnabled)).ToList());
+        if (organisationWarning is not null)
         {
-            var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-            logger.LogInformation("Applying {Count} pending migration(s): {Migrations}",
-                pendingMigrations.Count(), string.Join(", ", pendingMigrations));
-            try
-            {
-                await mainDb.Database.MigrateAsync();
-                logger.LogInformation("Database migrations applied successfully.");
-            }
-            catch (Exception migrateEx)
-            {
-                // This used to "recover" by calling EnsureDeletedAsync() — an unconditional DROP
-                // of the live application schema — and then retrying. The catch was unqualified,
-                // so a lock-wait timeout, a GRANT the app user lacks for one DDL statement, or a
-                // connection drop mid-migration was indistinguishable from the dirty-schema case
-                // it was written for. A second catch then swallowed the rebuild failure and let
-                // the process continue booting on an empty database, so the first sign of trouble
-                // was an operational CA with no certificates, no revocations, and no users.
-                //
-                // Startup never destroys data. A failed migration leaves the existing schema
-                // untouched and is surfaced loudly; recovering from a genuinely dirty schema is a
-                // deliberate operator action (`--reset --force`), not something a service does to
-                // itself at 3am because a lock timed out.
-                logger.LogError(migrateEx,
-                    "Database migration failed. The existing schema has been left untouched. " +
-                    "If this is a transient fault (lock timeout, connection drop) retry the start. " +
-                    "If the schema predates migrations, run the bootstrap reset deliberately — " +
-                    "the service will not drop the database on its own.");
-            }
+            Log.Warning("{SingleOrganizationWarning}", organisationWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {organisationWarning}");
         }
     }
     catch (Exception ex)
     {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-        logger.LogWarning(ex, "Failed to check/apply migrations — the database may not exist yet. Setup wizard will handle initialization.");
+        Console.WriteLine($"[STARTUP] Organisation count check skipped: {ex.Message}");
     }
-
+}
+if (!isSetupMode && controlActive)
+{
     // New templates are minted under this product's own arc with nothing configured. Identifiers
     // generated by an older build move to it only when Msae:MoveGeneratedTemplateOids says so,
     // in one pass, so a template's identifier changes exactly once: a Windows client recognises a
@@ -2697,33 +2750,6 @@ if (!isSetupMode)
 else
 {
     Console.WriteLine("[STARTUP] IWhitelistService warmup skipped (setup mode) — middleware will use the hardcoded fallback for /setup paths.");
-}
-
-// Apply pending audit database migrations on startup (skip in setup mode; the control role's)
-if (!isSetupMode && controlActive)
-{
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var auditDb = scope.ServiceProvider.GetService<AuditDbContext>();
-        if (auditDb != null)
-        {
-            var pendingAudit = await auditDb.Database.GetPendingMigrationsAsync();
-            if (pendingAudit.Any())
-            {
-                var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-                logger.LogInformation("Applying {Count} pending audit migration(s): {Migrations}",
-                    pendingAudit.Count(), string.Join(", ", pendingAudit));
-                await auditDb.Database.MigrateAsync();
-                logger.LogInformation("Audit database migrations applied successfully.");
-            }
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-        logger.LogWarning(ex, "Failed to apply audit migrations — the database may not exist yet.");
-    }
 }
 
 // Determine if the system needs setup (no CAs exist)

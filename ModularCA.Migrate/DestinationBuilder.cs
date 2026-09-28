@@ -1,7 +1,5 @@
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
-using ModularCA.Database.Conventions;
 using ModularCA.Shared.Utils;
 using Npgsql;
 
@@ -9,7 +7,15 @@ namespace ModularCA.Migrate;
 
 /// <summary>
 /// Creates everything the destination needs, in the order that makes each step reversible until
-/// the last one: roles, then databases, then the citext extension, then both schemas.
+/// the last one: roles, then databases, then the citext extension and the audit grants, then both
+/// schemas, then a check of who owns them.
+/// <para>
+/// The SQL comes from <see cref="PostgresRoleLayout"/>, the same builders bootstrap provisions
+/// with, so a migrated install and a fresh one share one layout: the app role owns the
+/// application database and every object in it; the audit database is owned by a NOLOGIN role,
+/// and the audit role owns every table in it but cannot drop the database; PUBLIC has no access
+/// to either.
+/// </para>
 /// <para>
 /// Nothing here is a copy. When this class finishes, the destination holds two empty ModularCA
 /// databases with the right owners and grants, and if anything after it fails those two databases
@@ -24,7 +30,8 @@ namespace ModularCA.Migrate;
 /// OWNER x</c> requires the creator to be able to <c>SET ROLE</c> to <c>x</c>. A <c>CREATEROLE</c>
 /// account is granted the roles it creates, but on PostgreSQL 16 that grant does not carry the
 /// <c>SET</c> option by default, so creating a role and then handing it a database fails with
-/// <c>must be able to SET ROLE</c>. The grant is therefore made explicit.
+/// <c>must be able to SET ROLE</c>. The grant is therefore made explicit, and revoked again at the
+/// end of a successful run (<see cref="RevokeAdministratorMembershipsAsync"/>).
 /// </para>
 /// <para>
 /// <b>A role cannot be dropped while anything still points at it.</b> That includes databases and
@@ -46,6 +53,7 @@ public sealed class DestinationBuilder
     private readonly MigrationOptions _options;
     private readonly Action<string> _say;
     private int _serverVersion;
+    private bool _adminIsSuperuser;
 
     /// <summary>Creates a builder for the given options.</summary>
     /// <param name="options">The parsed command line.</param>
@@ -57,78 +65,106 @@ public sealed class DestinationBuilder
     }
 
     /// <summary>The password generated for the application role.</summary>
-    public string AppPassword { get; } = GeneratePassword();
+    public string AppPassword { get; } = PostgresRoleLayout.GeneratePassword();
 
     /// <summary>The password generated for the audit role.</summary>
-    public string AuditPassword { get; } = GeneratePassword();
+    public string AuditPassword { get; } = PostgresRoleLayout.GeneratePassword();
+
+    /// <summary>The role and database names this run creates, in the shared layout's terms.</summary>
+    private PostgresLayoutNames Names => new(
+        _options.TargetAdminUser, _options.TargetAppRole, _options.TargetAuditRole,
+        _options.TargetAppDatabase, _options.TargetAuditDatabase);
 
     /// <summary>
-    /// Creates the roles, the databases, the extension and both schemas.
+    /// Creates the roles, the databases, the extension and the audit grants, revokes PUBLIC's
+    /// access, applies both schemas as the runtime roles, and proves each role owns its schema
+    /// before anything is copied.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     public async Task BuildAsync(CancellationToken ct)
     {
+        var names = Names;
         await using (var admin = new NpgsqlConnection(_options.TargetConnectionString()))
         {
             await admin.OpenAsync(ct);
-            _serverVersion = await ServerVersionAsync(admin, ct);
+            (_serverVersion, _adminIsSuperuser) = await ServerFactsAsync(admin, ct);
 
             // Roles before databases: a database can be created OWNER a role only once that role
             // exists. Preflight has already established that none of the three names is taken.
-            await CreateLoginRoleAsync(admin, _options.TargetAppRole, AppPassword, ct);
-            await CreateLoginRoleAsync(admin, _options.TargetAuditRole, AuditPassword, ct);
+            await ExecuteAsync(admin, PostgresRoleLayout.LoginRoleSql(names.AppRole, AppPassword, exists: false), ct);
+            _say($"  role '{names.AppRole}' created");
+            await ExecuteAsync(admin, PostgresRoleLayout.LoginRoleSql(names.AuditRole, AuditPassword, exists: false), ct);
+            _say($"  role '{names.AuditRole}' created");
 
-            // The audit database's owner, and the reason it is a role of its own. The audit
-            // database must not be owned by the account the node connects with, or the node could
-            // drop its own audit — the guarantee the MySQL setup claimed and did not hold. It
-            // cannot be owned by the administrative account either, because that account may be
-            // the temporary one, and a database would keep it alive. So it is owned by a role that
-            // can never log in and has no password to steal.
-            await CreateOwnerRoleAsync(admin, _options.TargetAuditOwnerRole, ct);
+            // The audit database's owner can never log in, so neither the node nor anyone holding
+            // its credentials can drop the audit database.
+            await ExecuteAsync(admin, PostgresRoleLayout.OwnerRoleSql(_options.TargetAuditOwnerRole), ct);
+            _say($"  role '{_options.TargetAuditOwnerRole}' created (no login — it exists to own the audit database)");
 
-            // Explicit membership, because CREATE DATABASE ... OWNER needs SET ROLE and the
-            // implicit grant a CREATEROLE account receives does not provide it on 16.
-            foreach (var role in new[]
-                     { _options.TargetAppRole, _options.TargetAuditRole, _options.TargetAuditOwnerRole })
-            {
+            foreach (var role in new[] { names.AppRole, names.AuditRole, _options.TargetAuditOwnerRole })
                 await GrantMembershipAsync(admin, role, ct);
-            }
 
-            // TEMPLATE template0 with an explicit encoding, rather than inheriting template1.
-            // template1 is whatever a previous administrator left it as, and the encoding is not a
-            // detail here: citext folds case through lower(), which is locale-dependent, so the
-            // case rules the model declares are only true if the database agrees with it.
-            await CreateDatabaseAsync(admin, _options.TargetAppDatabase, _options.TargetAppRole, ct);
-            await CreateDatabaseAsync(admin, _options.TargetAuditDatabase, _options.TargetAuditOwnerRole, ct);
+            await ExecuteAsync(admin, PostgresRoleLayout.CreateDatabaseSql(names.AppDatabase, names.AppRole), ct);
+            _say($"  database '{names.AppDatabase}' created, owned by '{names.AppRole}'");
+            await ExecuteAsync(admin, PostgresRoleLayout.CreateDatabaseSql(names.AuditDatabase, _options.TargetAuditOwnerRole), ct);
+            _say($"  database '{names.AuditDatabase}' created, owned by '{_options.TargetAuditOwnerRole}'");
         }
 
         await ReportCollationAsync(ct);
-        await CreateExtensionAsync(ct);
+        await PrepareApplicationDatabaseAsync(ct);
         await GrantAuditRightsAsync(ct);
+        await RevokePublicAccessAsync(ct);
         await ApplySchemasAsync(ct);
+        await VerifyOwnershipAsync(ct);
     }
 
-    private static async Task<int> ServerVersionAsync(NpgsqlConnection conn, CancellationToken ct)
+    /// <summary>
+    /// The statement that takes back the memberships <see cref="BuildAsync"/> gave the
+    /// administrative account, for printing when it cannot be run.
+    /// </summary>
+    /// <param name="options">The options naming the roles.</param>
+    public static string AdministratorMembershipRevokeSql(MigrationOptions options) =>
+        $"REVOKE {PostgresConnection.QuoteIdentifier(options.TargetAppRole)}, "
+        + $"{PostgresConnection.QuoteIdentifier(options.TargetAuditRole)}, "
+        + $"{PostgresConnection.QuoteIdentifier(options.TargetAuditOwnerRole)} "
+        + $"FROM {PostgresConnection.QuoteIdentifier(options.TargetAdminUser)}";
+
+    /// <summary>
+    /// Takes back the app, audit and audit-owner memberships the administrative account was given
+    /// to build the destination. Run at the end of a successful run when that account is durable
+    /// rather than the borrowed temporary role: left in place, it could <c>SET ROLE</c> to the
+    /// audit database's owner and drop the audit database.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task RevokeAdministratorMembershipsAsync(CancellationToken ct)
     {
-        await using var cmd = new NpgsqlCommand("SHOW server_version_num", conn);
-        return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+        await using var admin = new NpgsqlConnection(_options.TargetConnectionString());
+        await admin.OpenAsync(ct);
+        await ExecuteAsync(admin, AdministratorMembershipRevokeSql(_options), ct);
     }
 
-    private async Task CreateLoginRoleAsync(
-        NpgsqlConnection conn, string role, string password, CancellationToken ct)
+    /// <summary>The server version and whether the administrative account is a superuser.</summary>
+    private static async Task<(int Version, bool Superuser)> ServerFactsAsync(NpgsqlConnection conn, CancellationToken ct)
     {
-        await ExecuteAsync(conn,
-            $"CREATE ROLE {PostgresConnection.QuoteIdentifier(role)} WITH LOGIN PASSWORD "
-            + PostgresConnection.QuoteLiteral(password), ct);
-        _say($"  role '{role}' created");
+        await using var cmd = new NpgsqlCommand(
+            "SELECT current_setting('server_version_num')::int, "
+            + "(SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user)", conn);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        return (reader.GetInt32(0), !reader.IsDBNull(1) && reader.GetBoolean(1));
     }
 
-    private async Task CreateOwnerRoleAsync(NpgsqlConnection conn, string role, CancellationToken ct)
+    /// <summary>Whether schema <c>public</c> of <paramref name="conn"/>'s database is owned by <c>pg_database_owner</c> or <paramref name="role"/>.</summary>
+    private static async Task<bool> PublicSchemaOwnedByAsync(NpgsqlConnection conn, string role, CancellationToken ct)
     {
-        await ExecuteAsync(conn, $"CREATE ROLE {PostgresConnection.QuoteIdentifier(role)} WITH NOLOGIN", ct);
-        _say($"  role '{role}' created (no login — it exists to own the audit database)");
+        await using var cmd = new NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner "
+            + "WHERE n.nspname = 'public' AND r.rolname IN ('pg_database_owner', @role))", conn);
+        cmd.Parameters.AddWithValue("role", role);
+        return await cmd.ExecuteScalarAsync(ct) is true;
     }
 
+    /// <summary>Makes the administrative account a member of <paramref name="role"/> with the right to SET ROLE to it.</summary>
     private async Task GrantMembershipAsync(NpgsqlConnection conn, string role, CancellationToken ct)
     {
         // WITH SET TRUE is 16 syntax and is what the version check is for; before 16 a plain role
@@ -139,15 +175,7 @@ public sealed class DestinationBuilder
             + $"{PostgresConnection.QuoteIdentifier(_options.TargetAdminUser)}{options}", ct);
     }
 
-    private async Task CreateDatabaseAsync(
-        NpgsqlConnection conn, string database, string owner, CancellationToken ct)
-    {
-        await ExecuteAsync(conn,
-            $"CREATE DATABASE {PostgresConnection.QuoteIdentifier(database)} "
-            + $"OWNER {PostgresConnection.QuoteIdentifier(owner)} ENCODING 'UTF8' TEMPLATE template0", ct);
-        _say($"  database '{database}' created, owned by '{owner}'");
-    }
-
+    /// <summary>Prints the application database's encoding and collation.</summary>
     private async Task ReportCollationAsync(CancellationToken ct)
     {
         await using var conn = new NpgsqlConnection(_options.TargetConnectionString());
@@ -160,74 +188,120 @@ public sealed class DestinationBuilder
             _say($"  encoding {reader.GetString(0)}, collation {reader.GetString(1)}, ctype {reader.GetString(2)}");
     }
 
-    private async Task CreateExtensionAsync(CancellationToken ct)
+    /// <summary>
+    /// Creates <c>citext</c> as the app role. When the administrator is a superuser (only a
+    /// superuser can) and schema <c>public</c> is owned by neither <c>pg_database_owner</c> nor
+    /// the app role, as on PostgreSQL 14 or a cluster pg_upgraded from it, hands it to the app
+    /// role and removes PUBLIC's CREATE; decided from the catalog, not the server version.
+    /// </summary>
+    private async Task PrepareApplicationDatabaseAsync(CancellationToken ct)
     {
-        // citext has to exist before the first migration runs: the application schema declares its
-        // identifier columns with that type (see TextCaseSensitivity), and a type that does not
-        // exist yet is a CREATE TABLE that fails on its first line.
-        //
-        // Created as the application role rather than as the administrator, because an extension
-        // records an owner and the administrator may be a temporary role this run is about to drop.
-        // The application role owns the database and citext is a trusted extension, so it is
-        // allowed to do this itself — which is also exactly what happens on a fresh install.
-        await using var conn = new NpgsqlConnection(_options.TargetConnectionString(_options.TargetAppDatabase));
+        var names = Names;
+        await using var conn = new NpgsqlConnection(_options.TargetConnectionString(names.AppDatabase));
         await conn.OpenAsync(ct);
-        await AsRoleAsync(conn, _options.TargetAppRole,
-            $"CREATE EXTENSION IF NOT EXISTS {TextCaseSensitivity.Extension}", ct);
-        _say($"  {TextCaseSensitivity.Extension} extension created in '{_options.TargetAppDatabase}'");
+
+        if (_adminIsSuperuser)
+        {
+            await ExecuteAsync(conn, PostgresRoleLayout.PublicSchemaSql(names.AppRole), ct);
+            _say($"  schema public of '{names.AppDatabase}' owned by '{names.AppRole}' or the database owner; PUBLIC may not create in it");
+        }
+        else if (!await PublicSchemaOwnedByAsync(conn, names.AppRole, ct))
+        {
+            _say($"  schema public of '{names.AppDatabase}' stays with the bootstrap superuser (non-superuser "
+                + "administrator); the app role creates its tables through PUBLIC's CREATE");
+        }
+
+        // citext has to exist before the first migration runs: the application schema declares its
+        // identifier columns with that type. Created as the app role, so the extension belongs to
+        // the database's owner rather than to an administrator this run may be about to drop.
+        await AsRoleAsync(conn, names.AppRole, [PostgresRoleLayout.ExtensionSql], ct);
+        _say($"  citext extension created in '{names.AppDatabase}', owned by '{names.AppRole}'");
     }
 
+    /// <summary>
+    /// Grants the audit role CONNECT on the audit database and USAGE and CREATE on its schema, as
+    /// the audit database's owner, so the grantor is a durable role. When the administrator is a
+    /// superuser, schema <c>public</c> is first handed to that owner if <c>pg_database_owner</c>
+    /// does not already own it, decided from the catalog.
+    /// </summary>
     private async Task GrantAuditRightsAsync(CancellationToken ct)
     {
-        // Granted from inside the audit database: schema rights and default privileges are
-        // per-database objects, so a connection to the maintenance database cannot see them.
-        //
-        // Every statement runs as the database's owner. A privilege records who granted it, so
-        // granting these as the administrator would leave the audit database pointing at an
-        // account this run intends to drop, and the drop would fail.
-        var qRole = PostgresConnection.QuoteIdentifier(_options.TargetAuditRole);
-        var qDb = PostgresConnection.QuoteIdentifier(_options.TargetAuditDatabase);
-
-        await using var conn = new NpgsqlConnection(_options.TargetConnectionString(_options.TargetAuditDatabase));
+        var names = Names;
+        await using var conn = new NpgsqlConnection(_options.TargetConnectionString(names.AuditDatabase));
         await conn.OpenAsync(ct);
 
-        await AsRoleAsync(conn, _options.TargetAuditOwnerRole,
-        [
-            $"GRANT CONNECT ON DATABASE {qDb} TO {qRole}",
-            // CREATE on the schema is what lets the audit context apply its own migrations.
-            $"GRANT USAGE, CREATE ON SCHEMA public TO {qRole}",
-            $"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {qRole}",
-            $"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {qRole}",
-            // Covers tables created later by the owner — during a restore, say — without which the
-            // role would lose access to everything added after this point.
-            $"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {qRole}",
-            $"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {qRole}",
-        ], ct);
+        if (_adminIsSuperuser)
+            await ExecuteAsync(conn, PostgresRoleLayout.PublicSchemaSql(_options.TargetAuditOwnerRole), ct);
 
-        _say($"  audit role '{_options.TargetAuditRole}' granted rights on '{_options.TargetAuditDatabase}'");
+        await AsRoleAsync(conn, _options.TargetAuditOwnerRole,
+            [PostgresRoleLayout.AuditConnectSql(names), .. PostgresRoleLayout.AuditSchemaGrantSql(names)], ct);
+        _say($"  audit role '{names.AuditRole}' may connect to '{names.AuditDatabase}' and create its tables there");
     }
 
+    /// <summary>
+    /// Removes PUBLIC's default CONNECT and TEMPORARY on both databases, each as its owner. Runs
+    /// after the administrator's last session in either database.
+    /// </summary>
+    private async Task RevokePublicAccessAsync(CancellationToken ct)
+    {
+        var names = Names;
+        await using var admin = new NpgsqlConnection(_options.TargetConnectionString());
+        await admin.OpenAsync(ct);
+        await AsRoleAsync(admin, names.AppRole, [PostgresRoleLayout.RevokePublicSql(names.AppDatabase)], ct);
+        await AsRoleAsync(admin, _options.TargetAuditOwnerRole, [PostgresRoleLayout.RevokePublicSql(names.AuditDatabase)], ct);
+        _say("  PUBLIC access to both databases revoked");
+    }
+
+    /// <summary>
+    /// Applies both schemas, the frozen baseline first, as the runtime roles through
+    /// <see cref="SchemaVersionGate.ApplyAllForBootstrapAsync"/>, the one path that applies a
+    /// baseline. Running as the roles the node uses is what makes them own what they will later
+    /// migrate.
+    /// </summary>
     private async Task ApplySchemasAsync(CancellationToken ct)
     {
-        // The application schema, applied as the application role rather than as the
-        // administrator. Running it as the owner the node will actually use is what proves the
-        // node can apply its own migrations on the next upgrade, rather than discovering months
-        // later that only the administrator ever could.
         await using (var app = AppContext(_options.AppInstance(AppPassword)))
         {
-            await app.Database.MigrateAsync(ct);
+            ThrowIfFailed("application", await SchemaVersionGate.ApplyAllForBootstrapAsync(app, ct));
         }
         _say($"  application schema applied as '{_options.TargetAppRole}'");
 
-        // The audit schema, applied as the audit role — which is the narrowest guess in the whole
-        // cutover. The audit role deliberately owns nothing and holds everything by grant, and
-        // whether that grant set is enough for its own migrations has never been executed before
-        // this line. If it is not, this is where it says so, with nothing yet copied.
         await using (var audit = AuditContext(_options.AuditInstance(AuditPassword)))
         {
-            await audit.Database.MigrateAsync(ct);
+            ThrowIfFailed("audit", await SchemaVersionGate.ApplyAllForBootstrapAsync(audit, ct));
         }
-        _say($"  audit schema applied as '{_options.TargetAuditRole}' — its grants are sufficient");
+        _say($"  audit schema applied as '{_options.TargetAuditRole}', which owns its tables");
+    }
+
+    /// <summary>
+    /// Reads the ownership report as each runtime role and fails the run, before anything is
+    /// copied, unless each owns every object in its schema and can create tables.
+    /// </summary>
+    private async Task VerifyOwnershipAsync(CancellationToken ct)
+    {
+        foreach (var (kind, instance) in new[]
+                 {
+                     (DatabaseKind.Application, _options.AppInstance(AppPassword)),
+                     (DatabaseKind.Audit, _options.AuditInstance(AuditPassword)),
+                 })
+        {
+            await using var conn = new NpgsqlConnection(PostgresConnection.Build(instance));
+            var report = await SchemaOwnership.ProbeAsync(conn, kind, ct);
+            if (!report.IsSound)
+                throw new MigrationFailedException(
+                    $"'{report.Role}' does not own the schema of '{report.Database}': "
+                    + $"{report.NotOwned.Count} object(s) owned by another role "
+                    + $"({string.Join(", ", report.NotOwned.Take(10).Select(o => $"{o.Object} owned by {o.Owner}"))}), "
+                    + $"can create tables: {(report.CanCreateTables ? "yes" : "no")}. Nothing was copied.");
+            _say($"  '{report.Role}' owns every object in '{report.Database}'");
+        }
+    }
+
+    /// <summary>Throws the operator-facing message for a failed schema application.</summary>
+    private static void ThrowIfFailed(string contextName, MigrationFailure? failure)
+    {
+        if (failure is not null)
+            throw new MigrationFailedException(SchemaVersionGate.MigrationFailedMessage(contextName, failure));
     }
 
     /// <summary>Opens an application context against the destination as a given account.</summary>
@@ -294,15 +368,14 @@ public sealed class DestinationBuilder
         }
     }
 
-    private static Task AsRoleAsync(NpgsqlConnection conn, string role, string statement, CancellationToken ct) =>
-        AsRoleAsync(conn, role, [statement], ct);
-
+    /// <summary>Runs one statement.</summary>
     private static async Task ExecuteAsync(NpgsqlConnection conn, string sql, CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(sql, conn);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>Runs one cleanup statement, reporting rather than throwing a failure.</summary>
     private static async Task TryExecuteAsync(
         NpgsqlConnection conn, string sql, Action<string> say, CancellationToken ct)
     {
@@ -315,8 +388,4 @@ public sealed class DestinationBuilder
             say($"  (!) cleanup step failed, continuing: {ex.Message}");
         }
     }
-
-    private static string GeneratePassword() =>
-        Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
-            .Replace("+", "-").Replace("/", "_").TrimEnd('=');
 }

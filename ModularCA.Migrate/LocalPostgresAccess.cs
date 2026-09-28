@@ -100,19 +100,43 @@ public sealed class LocalPostgresAccess : IAsyncDisposable
         return new LocalPostgresAccess(TemporaryRole, password, say) { _created = true };
     }
 
-    /// <summary>Drops the temporary role. Safe to call more than once.</summary>
-    /// <returns>A task that completes when the role is gone.</returns>
-    public async ValueTask DisposeAsync()
+    /// <summary>
+    /// Drops the temporary role. Safe to call more than once.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The role could not be dropped. It can still create databases and roles, so the caller fails
+    /// the run and the message carries the statement to run.
+    /// </exception>
+    public async Task ReleaseAsync()
     {
         if (!_created)
             return;
         _created = false;
 
         var drop = await PsqlAsync($"DROP ROLE IF EXISTS {TemporaryRole}", CancellationToken.None);
-        if (drop.ExitCode == 0)
-            _say($"  temporary role '{TemporaryRole}' removed");
-        else
-            _say($"  (!) could not remove the temporary role '{TemporaryRole}'; drop it by hand");
+        if (drop.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"The temporary role '{TemporaryRole}' could not be dropped"
+                + (string.IsNullOrWhiteSpace(drop.Error) ? "" : $" ({drop.Error.Trim()})")
+                + $". It can create databases and roles; drop it now: sudo -u postgres psql -c \"DROP ROLE {TemporaryRole};\"");
+        _say($"  temporary role '{TemporaryRole}' removed");
+    }
+
+    /// <summary>
+    /// Drops the temporary role if <see cref="ReleaseAsync"/> has not, reporting rather than
+    /// throwing a failure: the path that reaches here is already failing.
+    /// </summary>
+    /// <returns>A task that completes when the attempt is over.</returns>
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await ReleaseAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            _say($"  (!) {ex.Message}");
+        }
     }
 
     private static async Task<(int ExitCode, string Output, string Error)> PsqlAsync(string sql, CancellationToken ct)

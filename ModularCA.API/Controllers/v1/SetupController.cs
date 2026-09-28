@@ -927,19 +927,13 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     }
 
     /// <summary>
-    /// Checks whether the system is already configured by querying the database for existing CAs.
-    /// Returns false if the database is unreachable or the CertificateAuthorities table doesn't exist yet.
-    /// Uses a raw information_schema probe first so EF Core doesn't log failed commands at ERR level
-    /// on every setup-status poll before the schema has been created.
-    ///
-    /// Also returns false when <c>config/config.yaml</c> is missing — that on-disk state means
-    /// we're in setup mode, so any leftover CertificateAuthorities rows are considered stale and
-    /// the wizard's recovery flow should be reachable. The middleware applies the same rule.
-    /// </summary>
-    /// <summary>
-    /// Checks whether the system has been fully configured (config.yaml exists and at
-    /// least one CA is present). Uses a raw NpgsqlConnection to avoid EF Core logging
-    /// full stack traces when the database is unreachable.
+    /// Checks whether the system has been fully configured: config.yaml exists and the
+    /// application database holds at least one CA. Returns false when config.yaml is missing,
+    /// when the database does not exist (SQLSTATE 3D000), when the CertificateAuthorities table
+    /// does not exist, or when it holds no live CA; a missing database is treated like an empty
+    /// one so the recovery wizard can be reached. Any other failure (unreachable server, refused
+    /// login) returns true so the setup endpoints stay closed. Uses a raw NpgsqlConnection so EF
+    /// Core does not log failed commands on every setup-status poll.
     /// </summary>
     private bool IsConfigured()
     {
@@ -970,6 +964,11 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             using var caCheck = conn.CreateCommand();
             caCheck.CommandText = """SELECT EXISTS(SELECT 1 FROM public."CertificateAuthorities" WHERE "IsDeleted" = FALSE)""";
             return caCheck.ExecuteScalar() is bool found && found;
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == Npgsql.PostgresErrorCodes.InvalidCatalogName)
+        {
+            Log.Warning("Setup wizard: the application database does not exist; treating the system as not configured.");
+            return false;
         }
         catch (Exception ex)
         {

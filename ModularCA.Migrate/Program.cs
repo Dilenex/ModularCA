@@ -55,15 +55,32 @@ internal static class Program
         if (borrowed is null && options.TargetAdminUser.Length == 0)
             return 2;
 
+        int result;
         try
         {
-            return await RunAsync(options, cancellation.Token);
+            result = await RunAsync(options, borrowedAdmin: borrowed is not null, cancellation.Token);
         }
         catch (OperationCanceledException)
         {
             Console.Error.WriteLine("\n(!) Cancelled.");
-            return 130;
+            result = 130;
         }
+
+        // A temporary role that outlives the run can still create databases and roles, so failing
+        // to drop it fails the run, even one that otherwise succeeded.
+        if (borrowed is not null)
+        {
+            try
+            {
+                await borrowed.ReleaseAsync();
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine($"(!) {ex.Message}");
+                return result == 0 ? 1 : result;
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -128,7 +145,16 @@ internal static class Program
         }
     }
 
-    private static async Task<int> RunAsync(MigrationOptions options, CancellationToken ct)
+    /// <summary>
+    /// Preflight, build, copy, verify and configure, rolling back everything this run created on
+    /// any failure before the configuration is written. After that point nothing rolls back: a
+    /// durable administrative account (one not borrowed for the run) then has the memberships it
+    /// was given taken back, and a failure to do so is reported with the statement to run.
+    /// </summary>
+    /// <param name="options">The resolved options.</param>
+    /// <param name="borrowedAdmin">Whether the administrative account is the temporary role, which is dropped afterwards.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private static async Task<int> RunAsync(MigrationOptions options, bool borrowedAdmin, CancellationToken ct)
     {
         void Say(string line) => Console.WriteLine(line);
 
@@ -228,7 +254,6 @@ internal static class Program
 
             Say("");
             Report(options, builder, appResults, auditResults, config, Say);
-            return 0;
         }
         catch (Exception ex)
         {
@@ -256,6 +281,38 @@ internal static class Program
             Console.Error.WriteLine("    Removing anything this run created:");
             await DestinationBuilder.RollbackAsync(options, l => Console.Error.WriteLine($"  {l}"), CancellationToken.None);
             Console.Error.WriteLine("    The source was not touched. Fix the problem above and run again.");
+            return 1;
+        }
+
+        // Past the point of no return: the destination is verified and configured, so nothing
+        // below may roll it back.
+        return borrowedAdmin ? 0 : await RevokeAdministratorMembershipsAsync(options, builder, Say);
+    }
+
+    /// <summary>
+    /// Takes back the app, audit and audit-owner memberships a durable administrative account was
+    /// given to build the destination. Returns 0, or 1 with the statement to run by hand when the
+    /// revoke fails; the migration itself stays in place either way.
+    /// </summary>
+    /// <param name="options">The resolved options.</param>
+    /// <param name="builder">The builder that granted the memberships.</param>
+    /// <param name="say">Progress sink.</param>
+    private static async Task<int> RevokeAdministratorMembershipsAsync(
+        MigrationOptions options, DestinationBuilder builder, Action<string> say)
+    {
+        try
+        {
+            await builder.RevokeAdministratorMembershipsAsync(CancellationToken.None);
+            say($"  '{options.TargetAdminUser}' no longer holds the application, audit or audit-owner roles.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("");
+            Console.Error.WriteLine($"(!) The migration is complete, but '{options.TargetAdminUser}' still holds the roles it was "
+                + $"given, including '{options.TargetAuditOwnerRole}', which owns the audit database: {ex.Message}");
+            Console.Error.WriteLine("    Take them back as a PostgreSQL superuser:");
+            Console.Error.WriteLine($"      {DestinationBuilder.AdministratorMembershipRevokeSql(options)};");
             return 1;
         }
     }
