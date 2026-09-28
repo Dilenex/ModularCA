@@ -108,6 +108,20 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
   if it was running. If the node was stopped on purpose, stop it again afterwards
   (`sudo systemctl stop modularca`), or `systemctl disable modularca` before upgrading. From 0.4.0
   on, `prerm` records which units were running and the upgrade starts exactly those.
+- **Tenant hostnames are gone.** 0.4.0 serves only the instance's own names, under its web TLS
+  certificate. Its first migration, `RetireTenantHostnames`, drops the `TenantHostnames` table and
+  refuses (status 3, nothing applied) while the table has any row; the journal says how many.
+  Before upgrading, delete every name under Tenants, Hostnames with the build you run now, or
+  serve those names through the instance's public domain or a reverse proxy in front of it. The
+  `Ingress.Routes` in `config.yaml` are unaffected; `Ingress.RouteRefreshSeconds` is no longer
+  read and can be removed.
+
+  The certificates those names were served under stay on disk, one PKCS#12 file per name under
+  `config/tenant-tls/` in the install directory (`/opt/modularca/config/tenant-tls/*.pfx`),
+  protected by `Https.CertificatePassword`. Nothing reads them any more, and neither the upgrade
+  nor the package removes them. Once the upgrade has succeeded they can be deleted:
+
+      sudo rm -r /opt/modularca/config/tenant-tls
 
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
@@ -347,23 +361,20 @@ is the one to know: `--role signer --issue-node-identity --apply config/config.y
 the earlier steps in this file have you transcribe, and takes a `.pre-signer-*.bak` copy of the
 file first.
 
-## The ingress in front of tenant nodes
+## The ingress in front of nodes
 
 The ingress role is what makes a split install reachable under its names: one process
-terminates TLS for every hostname the system knows (the public domain with the web TLS
-certificate, each tenant hostname with its own, chosen by SNI from the same table the node
-uses) and forwards each name to the node that serves it. Plain HTTP on port 80 is routed by
-Host as well, so a tenant's CRL and OCSP URLs reach that tenant's node without a redirect.
-The route table is `Ingress.Routes` in `config.yaml` merged with the tenant hostnames whose
-`NodeUpstream` is set (a configured route wins for the same host); a name with no upstream
-anywhere is served by the ingress process's own roles, which is why a single process with
-every role and no route behaves exactly as before the role existed.
+terminates TLS for every hostname under the instance's web TLS certificate and forwards each
+name listed in `Ingress.Routes` in `config.yaml` to the node that serves it. Plain HTTP on
+port 80 is routed by Host as well, so a routed name's CRL and OCSP URLs reach its node without
+a redirect. The route table is read at startup; a name with no route is served by the ingress
+process's own roles, which is why a single process with every role and no route behaves
+exactly as before the role existed.
 
-The layout this is for is one node per tenant: the ingress on 443 and 80, each tenant's node
-on a loopback port of its own with `--role node`, the signer as a separate unit, and each
-tenant hostname carrying the address of its node.
+The layout this is for is the ingress on 443 and 80, each node on a loopback port of its own
+with `--role node`, the signer as a separate unit, and a route per name naming its node.
 
-    ingress (--role ingress)         443, 80          Ingress.Routes + TenantHostnames.NodeUpstream
+    ingress (--role ingress)         443, 80          Ingress.Routes
     node A (--role node)             127.0.0.1:8443   Https.Port 8443, Http.Port 8080, Signer: Remote
     node B (--role node)             127.0.0.1:8453   Https.Port 8453, Http.Port 8090, Signer: Remote
     signer (--role signer)           127.0.0.1:8446   one client certificate per node
@@ -372,38 +383,30 @@ Every node is its own install directory (two node processes cannot share one: th
 bind the same ports), each with the same database, the same `JWT.Secret`, and a `Signer:`
 section naming the signer with its own client certificate from `--issue-node-identity`. The
 ingress is one more install directory on the same or another host; it needs the database
-(to read the hostnames and their certificates), `Https.CertificatePath` for the public
-domain, and the tenant hostname PKCS#12 files under `Https.CertificatePassword`, but no
-keystore, no keystore password and no signer client certificate.
+(the startup schema check and the listener's trust anchors read it) and the web TLS
+certificate, whose names must cover every routed name, but no keystore, no keystore password
+and no signer client certificate.
 
-1. Complete the first install as a single process and split the signer out as above. Give
-   each tenant its hostname in the console (Tenants, Hostnames) so its certificate exists.
+1. Complete the first install as a single process and split the signer out as above.
 
-2. Install each tenant's node in its own directory with its own ports, `--role node` in the
-   unit drop-in, and `Signer.Mode: Remote`. The node trusts forwarded headers from loopback
-   by default; an ingress on another host must be listed in `Http.TrustedProxyCidrs` on the
+2. Install each node in its own directory with its own ports, `--role node` in the unit
+   drop-in, and `Signer.Mode: Remote`. The node trusts forwarded headers from loopback by
+   default; an ingress on another host must be listed in `Http.TrustedProxyCidrs` on the
    node, or the node records the ingress as the client.
 
-3. Tell the ingress where each name goes, by either source:
-
-   - in the ingress's `config.yaml`, for a spike or for nodes on other hosts:
+3. Tell the ingress where each name goes, in its `config.yaml`:
 
          Ingress:
            Routes:
-             - Host: "ca.customer-a.example"
+             - Host: "ca-a.example"
                Upstream: "https://127.0.0.1:8443"
                PlainHttpUpstream: "http://127.0.0.1:8080"
-             - Host: "ca.customer-b.example"
+             - Host: "ca-b.example"
                Upstream: "https://127.0.0.1:8453"
                PlainHttpUpstream: "http://127.0.0.1:8090"
            DangerousAcceptAnyUpstreamCertificate: true   # loopback upstreams only; refused otherwise
 
-   - or on the hostname row, through the tenant hostnames API (no console change is needed):
-
-         PUT /api/v1/admin/tenants/{tenantId}/hostnames/{id}/upstream
-         { "nodeUpstream": "https://127.0.0.1:8443" }
-
-     The ingress re-reads the table every `Ingress.RouteRefreshSeconds` (30 by default).
+   A change to the routes takes effect when the ingress restarts.
 
    Upstream TLS: a node reached by address presents a certificate for its public name, so
    the ingress cannot validate it as a browser would. Pin it (`PinnedSpki` on the route: the
@@ -421,9 +424,8 @@ keystore, no keystore password and no signer client certificate.
        sudo systemctl daemon-reload && sudo systemctl restart modularca
 
    The startup log lists every route (`[INGRESS] 2 route(s): ...`). `/health/ready` on the
-   ingress carries an `ingress` entry: whether the table is built, whether the database
-   answered, the routes by source, and per upstream what the active probe (`/health/live`
-   every `HealthCheckIntervalSeconds`) last found. A node that stops answering is marked down
+   ingress carries an `ingress` entry: the number of routes, and per upstream what the active
+   probe (`/health/live` every `HealthCheckIntervalSeconds`) last found. A node that stops answering is marked down
    and every request for its hostname is answered 503 with a body naming the host until it
    is back; the other hostnames are unaffected.
 

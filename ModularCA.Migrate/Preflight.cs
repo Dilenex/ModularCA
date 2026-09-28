@@ -119,6 +119,7 @@ public sealed class Preflight
         }
 
         await CheckLiveCmpTokensAsync(conn, ct);
+        await CheckTenantHostnamesAsync(conn, ct);
         await CheckCaseCollisionsAsync(conn, ct);
 
         await using var auditConn = new MySqlConnection(_options.SourceConnectionString(_options.SourceAuditDatabase));
@@ -167,6 +168,37 @@ public sealed class Preflight
             + "stored in the clear on 0.3.0 and wrapped by the signer on 0.3.1, and this helper does not hold a "
             + "signer, so it cannot carry one across. Revoke them in the console and issue replacements after the "
             + "migration, then re-run. Revoked and expired CMP rows migrate normally.");
+    }
+
+    /// <summary>
+    /// Refuses while the source still has tenant hostnames. 0.4.0 retired them and its schema has
+    /// no table for them, so the copy would leave them behind without a word; a PostgreSQL install
+    /// refuses the same rows in the <c>RetireTenantHostnames</c> migration.
+    /// </summary>
+    private async Task CheckTenantHostnamesAsync(MySqlConnection conn, CancellationToken ct)
+    {
+        long rows;
+        try
+        {
+            await using var cmd = new MySqlCommand("SELECT COUNT(*) FROM TenantHostnames", conn);
+            rows = Convert.ToInt64(await cmd.ExecuteScalarAsync(ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _refusals.Add($"Could not count the source's tenant hostnames ({ex.Message}); refusing rather than risk "
+                + "leaving them behind. Check the source account can read TenantHostnames, then re-run.");
+            return;
+        }
+        if (rows == 0)
+        {
+            _notes.Add("Tenant hostnames: none");
+            return;
+        }
+
+        _refusals.Add(
+            $"{rows} tenant hostname(s) exist. This release no longer serves tenant hostnames and has no table for "
+            + "them, so they would not be copied. Remove them in the 0.3.0 console, or move those names to the "
+            + "instance's public domain or to a reverse proxy, then re-run.");
     }
 
     /// <summary>

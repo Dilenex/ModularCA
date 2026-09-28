@@ -1,13 +1,11 @@
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
-/// The ingress role: TLS termination for every name the system knows, and routing by name to
-/// the node that serves it. The route table has two sources, merged: <see cref="Routes"/> here
-/// (for a spike, and for nodes on other hosts), and the tenant hostnames table, where a row
-/// with <c>NodeUpstream</c> set is routed to that node. A configured route wins over the
-/// database row for the same host. A name with no upstream anywhere is served by this
-/// process's own roles, which is how the default single process (ingress and node together)
-/// routes nothing and serves everything, exactly as before the role existed.
+/// The ingress role: TLS termination under the instance's web TLS certificate, and routing by
+/// name to the node that serves it. The route table is <see cref="Routes"/>, read once at
+/// startup. A name with no route is served by this process's own roles, which is how the
+/// default single process (ingress and node together) routes nothing and serves everything,
+/// exactly as before the role existed.
 /// </summary>
 /// <remarks>
 /// Upstream TLS trust, when an upstream is <c>https://</c>: a route may pin the node's SPKI
@@ -32,9 +30,6 @@ public class IngressConfig
     /// <summary>The path probed on each upstream; the node answers it anonymously on both listeners.</summary>
     public string HealthCheckPath { get; set; } = "/health/live";
 
-    /// <summary>Seconds between re-reads of the tenant hostnames table for routes added or changed elsewhere.</summary>
-    public int RouteRefreshSeconds { get; set; } = 30;
-
     /// <summary>
     /// PEM file of the CA that issued the upstreams' TLS certificates, resolved against the
     /// application base directory when relative. Empty means the system trust store, unless a
@@ -44,8 +39,7 @@ public class IngressConfig
 
     /// <summary>
     /// Accept any certificate from an upstream on loopback. Refused at startup when any
-    /// <c>https://</c> route in <see cref="Routes"/> is not loopback; a database route that
-    /// is not loopback never gets this treatment, whatever the flag says.
+    /// <c>https://</c> route in <see cref="Routes"/> is not loopback.
     /// </summary>
     public bool DangerousAcceptAnyUpstreamCertificate { get; set; }
 
@@ -64,8 +58,6 @@ public class IngressConfig
             problems.Add($"Ingress.HealthCheckIntervalSeconds must be at least {MinimumHealthCheckIntervalSeconds}.");
         if (HealthCheckTimeoutSeconds < 1)
             problems.Add("Ingress.HealthCheckTimeoutSeconds must be at least 1.");
-        if (RouteRefreshSeconds < 1)
-            problems.Add("Ingress.RouteRefreshSeconds must be at least 1.");
         if (string.IsNullOrWhiteSpace(HealthCheckPath) || !HealthCheckPath.StartsWith('/'))
             problems.Add("Ingress.HealthCheckPath must be an absolute path such as /health/live.");
         if (!string.IsNullOrWhiteSpace(UpstreamCaCertificatePath) && baseDirectory != null)
@@ -113,12 +105,12 @@ public class IngressConfig
 /// <summary>
 /// One configured route: requests for <see cref="Host"/> go to <see cref="Upstream"/>, and
 /// requests that arrived on the plain-HTTP listener go to <see cref="PlainHttpUpstream"/>
-/// when it is set (the node's own plain-HTTP listener, so revocation URLs on the tenant's
+/// when it is set (the node's own plain-HTTP listener, so revocation URLs on the routed
 /// name reach that node's CRL and OCSP without a redirect), else to <see cref="Upstream"/>.
 /// </summary>
 public class IngressRouteConfig
 {
-    /// <summary>The DNS name requests arrive for; the public domain or a tenant hostname.</summary>
+    /// <summary>The DNS name requests arrive for.</summary>
     public string Host { get; set; } = string.Empty;
 
     /// <summary>The node's address, <c>https://host:port</c> or <c>http://host:port</c>.</summary>

@@ -63,19 +63,10 @@ namespace ModularCA.API.Middleware
         /// </summary>
         /// <param name="next">The next delegate in the request pipeline.</param>
         /// <param name="config">The system configuration supplying the HTTP and HTTPS listener ports.</param>
-        private readonly ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache? _tenantHostnames;
-
-        /// <param name="tenantHostnames">
-        /// The names this service presents a tenant certificate for. A request that arrived on one
-        /// of them is sent to HTTPS on that same name; every other host is sent to the public
-        /// domain, so the header still cannot steer the redirect anywhere the service is not.
-        /// </param>
-        public HttpSchemeEnforcementMiddleware(RequestDelegate next, SystemConfig config,
-            ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache? tenantHostnames = null)
+        public HttpSchemeEnforcementMiddleware(RequestDelegate next, SystemConfig config)
         {
             _next = next;
             _config = config;
-            _tenantHostnames = tenantHostnames;
         }
 
         /// <summary>
@@ -118,7 +109,7 @@ namespace ModularCA.API.Middleware
             // Location. Fall back to request host only if PublicDomain is
             // unset (operators are warned at startup).
             var target = ModularCA.Core.Services.Hostnames.HttpsRedirectTarget.Build(
-                context.Request.Host.Host, $"{context.Request.Path}{context.Request.QueryString}", _config, _tenantHostnames);
+                context.Request.Host.Host, $"{context.Request.Path}{context.Request.QueryString}", _config);
 
             context.Response.StatusCode = 308;
             context.Response.Headers.Location = target;

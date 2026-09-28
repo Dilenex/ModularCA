@@ -138,7 +138,6 @@ public class ModularCADbContext : DbContext
     /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
     public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
     public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
-    public DbSet<TenantHostnameEntity> TenantHostnames { get; set; }
 
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
@@ -869,24 +868,6 @@ public class ModularCADbContext : DbContext
                   .WithMany(r => r.Keys)
                   .HasForeignKey(e => e.RealmId)
                   .OnDelete(DeleteBehavior.Cascade);
-        });
-
-        modelBuilder.Entity<TenantHostnameEntity>(entity =>
-        {
-            entity.HasIndex(e => e.Hostname).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            entity.HasOne(e => e.Tenant)
-                  .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.IssuingCa)
-                  .WithMany()
-                  .HasForeignKey(e => e.IssuingCaId)
-                  .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.Certificate)
-                  .WithMany()
-                  .HasForeignKey(e => e.CertificateId)
-                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>

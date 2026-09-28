@@ -142,6 +142,53 @@ namespace ModularCA.Tests.Database
             Assert.True((await f.OwnershipAsync(DatabaseKind.Audit)).IsSound);
         }
 
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [InlineData(OwnershipLayout.Migrated)]
+        [InlineData(OwnershipLayout.Fresh)]
+        [InlineData(OwnershipLayout.Legacy)]
+        public async Task The_tenant_hostname_retirement_refuses_while_a_row_remains_then_applies_as_the_runtime_role(OwnershipLayout layout)
+        {
+            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+            using var log = new CapturedSerilog();
+            const string retire = "RetireTenantHostnames";
+            var history = "SELECT count(*) FROM public.\"__EFMigrationsHistory\"";
+            var tableExists = "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames' AND relnamespace = 'public'::regnamespace";
+
+            if (layout == OwnershipLayout.Legacy)
+            {
+                await f.RepairAsync(DatabaseKind.Application);
+                await f.RepairAsync(DatabaseKind.Audit);
+            }
+            else
+            {
+                // Bootstrap and the migration tool apply every migration; step back to the 0.3.x
+                // schema as the runtime role, so the upgrade below is the one a live install makes.
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
+                Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
+                await using var runtime = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+                    .UseNpgsql(f.RuntimeConnectionString(f.App, f.AppDatabase)).Options);
+                await runtime.GetService<IMigrator>().MigrateAsync(PostgresUpgradeHarnessTests.AppBaseline);
+            }
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, tableExists));
+            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+
+            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedTenantHostnameSql);
+            Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+            Assert.True(Logged(log, "This instance has 1 tenant hostname(s)"), Dump(log));
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"TenantHostnames\""));
+
+            await f.ExecuteAsRuntimeAsync(f.App, "DELETE FROM \"TenantHostnames\"");
+            var exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
+
+            Assert.True(exit is null, Dump(log));
+            Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
+            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"Tenants\""));
+        }
+
         [RequiresEnvironmentFact(ServerVariable)]
         public async Task The_repair_refuses_what_is_not_its_to_change()
         {

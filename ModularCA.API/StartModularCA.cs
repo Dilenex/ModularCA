@@ -770,15 +770,15 @@ Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 
 // Schema check for the application and audit databases (SchemaStartup.EnforceAllAsync), before
 // this process reads either: the sink flags just below, the keystore unlock and the HSM signers,
-// the tenant hostname certificates and routes, the mTLS and EST anchors and the CMP check in
-// the listener setup all read the application database. Both are read, and ownership checked,
+// the mTLS and EST anchors and the CMP check in the listener setup all read the application
+// database. Both are read, and ownership checked,
 // before either is written. The control role applies pending migrations; every other role waits
 // for it. An unreachable database, a migration in progress or a migration that failed on a
 // transient error is waited for or retried up to Schema.WaitSeconds, extending the systemd start
 // timeout, then the process exits 75 to be retried; anything the operator must fix exits 3. A
 // missing or empty database is left to setup recovery below. Setup mode skips the check:
-// bootstrap creates the schema. An ingress-only process reads the application database (tenant
-// hostnames and their certificates) and never the audit database, and applies no migration.
+// bootstrap creates the schema. An ingress-only process reads the application database (the
+// listener's trust anchors) and never the audit database, and applies no migration.
 if (!isSetupMode)
 {
     var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
@@ -1594,11 +1594,8 @@ builder.Services.AddScoped<CertificateTemplateService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
 builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
-// Names this service is known by: the public domain plus each tenant's own hostnames, and the
-// endpoint certificates those names are served under.
+// The name this service is known by: the public domain.
 builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.IPublicNameResolver, ModularCA.Core.Services.Hostnames.PublicNameResolver>();
-builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.ITenantHostnameCertificateIssuer, ModularCA.Core.Services.Hostnames.TenantHostnameCertificateService>();
-builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.TenantHostnameService>();
 builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
@@ -1662,34 +1659,12 @@ builder.Services.AddCors(options =>
 var apiCertProvider = new ApiCertificateProvider();
 builder.Services.AddSingleton(apiCertProvider);
 
-// Tenant hostnames: each name a tenant is reached by carries its own certificate, picked by SNI
-// on the same listener. The cache is filled once the listener is configured (below) and
-// rebuilt by the hostname service after every change; a five-minute TTL catches changes
-// made elsewhere. In setup mode there is no database and no tenant, so it stays empty.
-var tenantHostnameDbOptions = new Lazy<DbContextOptions<ModularCADbContext>>(() =>
-    new DbContextOptionsBuilder<ModularCADbContext>()
-        .UseNpgsql(appConnStr)
-        .Options);
-var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache(
-    () =>
-    {
-        if (isSetupMode)
-            return new Dictionary<string, System.Security.Cryptography.X509Certificates.X509Certificate2>();
-        using var hostnameDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
-        return ModularCA.Core.Services.Hostnames.TenantHostnamePfxStore.LoadAll(
-            hostnameDb, config.Https.CertificatePassword ?? string.Empty,
-            message => Log.Warning("[TLS] Tenant hostname certificate: {Message}", message));
-    },
-    TimeSpan.FromMinutes(5),
-    message => Log.Warning("[TLS] Tenant hostname certificate reload failed: {Message}", message));
-builder.Services.AddSingleton(tenantHostnameCerts);
 builder.Services.AddSchedulerJob<TlsRenewalJob>(activeRoles);
 
-// The ingress route table: Ingress.Routes merged with the tenant hostnames whose NodeUpstream
-// is set, re-read on a short interval and after every change the hostname service makes in
-// this process. A name with no upstream is served here, so a single process with no route
-// configured routes nothing. The section is validated first: a route the ingress could not
-// honour safely (the dangerous flag on a node that is not loopback) stops startup.
+// The ingress route table: Ingress.Routes, built once. A name with no upstream is served here,
+// so a single process with no route configured routes nothing. The section is validated
+// first: a route the ingress could not honour safely (the dangerous flag on a node that is
+// not loopback) stops startup.
 ModularCA.Core.Services.Ingress.IngressRouteTableService? ingressRoutes = null;
 if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
 {
@@ -1714,16 +1689,6 @@ if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
     }
     ingressRoutes = new ModularCA.Core.Services.Ingress.IngressRouteTableService(
         config.Ingress,
-        () =>
-        {
-            if (isSetupMode)
-                return Array.Empty<ModularCA.Core.Services.Ingress.TenantHostnameUpstream>();
-            using var routeDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
-            return routeDb.TenantHostnames.AsNoTracking()
-                .Select(h => new ModularCA.Core.Services.Ingress.TenantHostnameUpstream(h.Hostname, h.NodeUpstream))
-                .ToList();
-        },
-        TimeSpan.FromSeconds(config.Ingress.RouteRefreshSeconds),
         message => Log.Warning("[INGRESS] {Message}", message));
     ModularCA.API.Ingress.IngressHosting.AddIngress(builder.Services, config.Ingress, ingressRoutes, ingressTrust);
 }
@@ -2262,12 +2227,6 @@ else
                 Environment.Exit(1);
             }
 
-            // Tenant hostname certificates for SNI selection. Never fatal: a name whose file is
-            // missing is answered with the console's certificate and reported in the log.
-            var tenantHostnameCount = tenantHostnameCerts.LoadNow();
-            if (tenantHostnameCount > 0)
-                Console.WriteLine($"[TLS] {tenantHostnameCount} tenant hostname certificate(s) loaded for SNI selection: {string.Join(", ", tenantHostnameCerts.Hostnames)}");
-
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
@@ -2286,11 +2245,9 @@ else
 
                         var options = new System.Net.Security.SslServerAuthenticationOptions
                         {
-                            // A tenant hostname gets its own certificate by exact SNI match; the
-                            // public domain, unknown names and clients that send no SNI get the
-                            // console's certificate, whichever mode supplied it.
-                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(
-                                sni, tenantHostnameCerts, apiCertProvider.GetCertificate()),
+                            // Every name, and a client that sends no SNI, gets the instance's web
+                            // TLS certificate, whichever mode supplied it.
+                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(sni, apiCertProvider),
                             EnabledSslProtocols = sslProtocols,
 
                             // True on the EST subdomain as well, but it means something different
@@ -2982,12 +2939,12 @@ app.UseForwardedHeaders(forwardedOptions);
 // after the forwarded headers from any proxy in front of this one are honoured and before
 // any local middleware: no scheme redirect, security header, rate limit or authentication of
 // this process touches it, since the node it reaches applies its own. Plain-HTTP arrivals go
-// to the node's plain-HTTP listener when the route names one, so a tenant's CRL and OCSP URLs
-// are answered there. A host with no upstream, the public domain included, continues down
-// the local pipeline exactly as before the role existed.
+// to the node's plain-HTTP listener when the route names one, so the routed name's CRL and
+// OCSP URLs are answered there. A host with no upstream, the public domain included, continues
+// down the local pipeline exactly as before the role existed.
 if (ingressRoutes != null)
 {
-    var ingressRouteCount = ingressRoutes.LoadNow();
+    var ingressRouteCount = ingressRoutes.Routes.Count;
     Console.WriteLine(ingressRouteCount == 0
         ? "[INGRESS] No route has an upstream; every name is served by this process."
         : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));

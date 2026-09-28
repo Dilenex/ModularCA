@@ -3242,54 +3242,6 @@ namespace ModularCA.Database.Migrations
                         });
                 });
 
-            modelBuilder.Entity("ModularCA.Shared.Entities.TenantHostnameEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("CertificateId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Hostname")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("citext");
-
-                    b.Property<Guid>("IssuingCaId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("NodeUpstream")
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CertificateId");
-
-                    b.HasIndex("Hostname")
-                        .IsUnique();
-
-                    b.HasIndex("IssuingCaId");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("TenantHostnames", t =>
-                        {
-                            t.HasCheckConstraint("CK_TenantHostnames_Hostname_Length", "length(\"Hostname\") <= 255");
-                        });
-                });
-
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4365,32 +4317,6 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("SshCaKey");
-                });
-
-            modelBuilder.Entity("ModularCA.Shared.Entities.TenantHostnameEntity", b =>
-                {
-                    b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "Certificate")
-                        .WithMany()
-                        .HasForeignKey("CertificateId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", "IssuingCa")
-                        .WithMany()
-                        .HasForeignKey("IssuingCaId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Certificate");
-
-                    b.Navigation("IssuingCa");
-
-                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>

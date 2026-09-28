@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using ModularCA.Database;
+using ModularCA.Shared.Models.Config;
 using Npgsql;
 using Xunit;
 
@@ -55,6 +56,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The audit context's frozen baseline, applied by production on 2026-09-19.</summary>
     public const string AuditBaseline = "20260919181510_InitialAuditSchema";
 
+    /// <summary>The name of the 0.4.0 S2 migration that retires tenant hostnames.</summary>
+    public const string RetireTenantHostnames = "RetireTenantHostnames";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -85,8 +89,12 @@ public class PostgresUpgradeHarnessTests
                 Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
 
                 await app.Database.ExecuteSqlRawAsync(Seed030Sql);
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
 
                 await MigrateToLatestAsync(app, "application");
+
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames'"));
+                Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + RetireTenantHostnames, StringComparison.Ordinal));
 
                 var tenants = await app.Tenants.IgnoreQueryFilters().AsNoTracking().ToListAsync();
                 Assert.Equal(2, tenants.Count);
@@ -111,6 +119,43 @@ public class PostgresUpgradeHarnessTests
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, appName);
             await DropDatabaseAsync(server, auditName);
+        }
+    }
+
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task A_tenant_hostname_row_stops_the_upgrade_with_3_through_the_startup_gate_and_nothing_is_applied()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var suffix = Guid.NewGuid().ToString("N")[..12];
+        var appName = $"modularca_upgrade_app_{suffix}";
+
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            var connection = WithDatabase(server, appName);
+            await using (var app = CreateApp(connection))
+            {
+                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                await app.Database.ExecuteSqlRawAsync(Seed030Sql + SeedTenantHostnameSql);
+            }
+
+            using var log = new CapturedSerilog();
+            var exit = await SchemaStartupApi.EnforceAllAsync(
+                [("application", DatabaseKind.Application, Instance(connection))], true, new SchemaConfig { WaitSeconds = 1 });
+
+            Assert.Equal(3, exit);
+            Assert.True(log.Events.Any(e => e.Text.Contains("This instance has 1 tenant hostname(s)", StringComparison.Ordinal)),
+                string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}")));
+            await using (var app = CreateApp(connection))
+            {
+                Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
+            }
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
         }
     }
 
@@ -163,6 +208,34 @@ public class PostgresUpgradeHarnessTests
         await db.Users.IgnoreQueryFilters().CountAsync(),
         await db.CaGroupMembers.IgnoreQueryFilters().CountAsync(),
         await db.Certificates.IgnoreQueryFilters().CountAsync());
+
+    /// <summary>The first column of the first row of <paramref name="sql"/>.</summary>
+    internal static async Task<long> ScalarAsync(DbContext db, string sql)
+    {
+        var connection = db.Database.GetDbConnection();
+        await db.Database.OpenConnectionAsync();
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(await command.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>A <c>db.yaml</c> instance for <paramref name="connectionString"/>.</summary>
+    private static DbInstance Instance(string connectionString)
+    {
+        var b = new NpgsqlConnectionStringBuilder(connectionString);
+        return new DbInstance
+        {
+            Host = b.Host ?? "localhost", Port = b.Port, Database = b.Database!, Username = b.Username ?? "postgres",
+            Password = b.Password ?? "", SslMode = b.SslMode.ToString(),
+        };
+    }
 
     private static ModularCADbContext CreateApp(string connectionString) =>
         new(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connectionString).Options);
@@ -217,5 +290,16 @@ public class PostgresUpgradeHarnessTests
         INSERT INTO "CaGroupMembers" ("Id","GroupId","UserId","AddedAt")
         VALUES (gen_random_uuid(),'{OrgAdminGroup}','{Operator}',now()),
                (gen_random_uuid(),'{CaAdminGroup}','{Operator}',now());
+        """;
+
+    /// <summary>
+    /// One tenant hostname on the organisation tenant, issued by its root CA, with no certificate
+    /// yet and routed nowhere: the row the 0.4.0 S2 migration refuses to drop. Run after
+    /// <see cref="Seed030Sql"/>.
+    /// </summary>
+    internal static string SeedTenantHostnameSql => $"""
+
+        INSERT INTO "TenantHostnames" ("Id","TenantId","Hostname","IssuingCaId","CertificateId","CreatedAt","Notes","NodeUpstream")
+        VALUES (gen_random_uuid(),'{OrgTenant}','ca.acme.example','{RootCa}',NULL,now(),NULL,NULL);
         """;
 }

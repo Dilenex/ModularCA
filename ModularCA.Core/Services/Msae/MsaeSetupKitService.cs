@@ -52,11 +52,11 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
         if (ca == null || realm == null || realm.TenantId != ca.TenantId) return null;
 
         // The name in the kit is the one the forest issues tickets for, taken from the binding's
-        // service principal, when it is a name this service is known by for the tenant; otherwise
-        // the public domain, and the readiness check says why.
-        var known = await names.ResolveAsync(PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal), ca.TenantId, cancellation);
-        var host = known?.Host ?? config.Https.PublicDomain;
-        var baseUrl = names.BaseUrl(known?.Host);
+        // service principal, when it is a name this service is known by; otherwise the public
+        // domain, and the readiness check says why.
+        var known = names.Resolve(PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal));
+        var host = known ?? config.Https.PublicDomain;
+        var baseUrl = names.BaseUrl(known);
         var cepUrl = $"{baseUrl}/msae/{ca.Label}/cep";
         var policyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}";
         var friendlyName = $"{ca.Name} (ModularCA)";

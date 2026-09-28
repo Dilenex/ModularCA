@@ -441,7 +441,21 @@ migrationBuilder.FailIf(
 ```
 
 It emits `DO $$ BEGIN IF (<condition>) THEN RAISE EXCEPTION '<message>'; END IF; END $$;`. The
-raise rolls back the migration's transaction. Do not use `suppressTransaction: true` in a
+raise rolls back the migration's transaction.
+
+A message can name values the database computes when the check fails: `{0}`, `{1}` and so on
+stand for SQL expressions passed after the message.
+
+```csharp
+migrationBuilder.FailIf(
+    "EXISTS (SELECT 1 FROM \"TenantHostnames\")",
+    "This instance has {0} tenant hostname(s)...",
+    "(SELECT count(*) FROM \"TenantHostnames\")");
+```
+
+A message with values is raised as `RAISE EXCEPTION USING MESSAGE = concat(...)` rather than as a
+format string, because RAISE's own `%` placeholders cannot put a value next to a literal `%` or
+next to another value. Quotes are escaped and `%` is always literal, with or without values. Do not use `suppressTransaction: true` in a
 migration that has a precondition.
 
 ### Rules for migration authors

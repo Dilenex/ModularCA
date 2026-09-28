@@ -7,11 +7,10 @@ using Yarp.ReverseProxy.Model;
 namespace ModularCA.API.HealthChecks;
 
 /// <summary>
-/// The ingress role's entry on <c>/health/ready</c>: whether the route table has been built,
-/// whether the tenant hostnames table answered on the last rebuild, how many routes there
-/// are and from which source, and per upstream what the active probe last found. The entry
-/// is unhealthy only when the table was never built; a node that is down is reported, not
-/// made the whole ingress's failure, since the other hosts are still served.
+/// The ingress role's entry on <c>/health/ready</c>: how many configured routes there are, and
+/// per upstream what the active probe last found. The entry is always healthy; a node that is
+/// down is reported, not made the whole ingress's failure, since the other hosts are still
+/// served.
 /// </summary>
 public sealed class IngressHealthCheck : IHealthCheck
 {
@@ -51,18 +50,12 @@ public sealed class IngressHealthCheck : IHealthCheck
 
         var report = new Dictionary<string, object>(StringComparer.Ordinal)
         {
-            ["routesLoaded"] = _table.Loaded,
-            ["databaseReachable"] = _table.DatabaseReachable,
             ["routeCount"] = routes.Count,
-            ["fromConfiguration"] = routes.Count(r => r.Source == IngressRouteSource.Configuration),
-            ["fromDatabase"] = routes.Count(r => r.Source == IngressRouteSource.Database),
             ["upstreams"] = upstreams,
             ["down"] = down,
         };
         var data = new Dictionary<string, object>(StringComparer.Ordinal) { ["ingress"] = report };
 
-        if (!_table.Loaded)
-            return Task.FromResult(HealthCheckResult.Unhealthy("The ingress route table has not been built", data: data));
         var summary = routes.Count == 0
             ? "The ingress routes nothing; every name is served here"
             : down.Count == 0

@@ -19,8 +19,6 @@ public static class StepUpOps
     public const string SwitchBadge = "switch-badge";
     /// <summary>Creating, changing, keying or deleting a Kerberos realm binding for Windows autoenrollment.</summary>
     public const string ManageKerberosRealm = "manage-kerberos-realm";
-    /// <summary>Adding, removing or reissuing the certificate of a hostname a tenant is reached by.</summary>
-    public const string ManageTenantHostname = "manage-tenant-hostname";
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
@@ -229,7 +227,7 @@ public static class StepUpOps
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         SwitchBadge,
-        ManageKerberosRealm, ManageTenantHostname,
+        ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
         RevokeSelfCert,
         ReissueCert,

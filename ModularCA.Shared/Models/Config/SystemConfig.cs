@@ -767,8 +767,8 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>
         /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
-        /// process serves on the same listener as <see cref="PublicDomain"/>: a tenant hostname,
-        /// for instance. The port rule is the public one, since every name shares the listener.
+        /// process serves on the same listener as <see cref="PublicDomain"/>. The port rule is
+        /// the public one, since every name shares the listener.
         /// </summary>
         public string GetHttpsBaseUrlFor(string host)
         {

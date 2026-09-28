@@ -28,10 +28,9 @@ public enum ProcessRole
     Signer = 8,
 
     /// <summary>
-    /// TLS termination for every hostname the system knows (the public domain with the API
-    /// certificate, each tenant hostname with its own, by SNI) and routing by name to the node
-    /// that serves it, on HTTPS and on the plain-HTTP listener. A hostname with no upstream is
-    /// served by this process's own roles.
+    /// TLS termination under the instance's web TLS certificate and routing by name, per
+    /// <c>Ingress.Routes</c>, to the node that serves it, on HTTPS and on the plain-HTTP
+    /// listener. A hostname with no route is served by this process's own roles.
     /// </summary>
     Ingress = 16,
 

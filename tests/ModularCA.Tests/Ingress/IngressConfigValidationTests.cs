@@ -120,9 +120,9 @@ public sealed class IngressConfigValidationTests
     [Fact]
     public void Intervals_below_one_second_and_a_relative_health_path_are_refused()
     {
-        var config = new IngressConfig { HealthCheckIntervalSeconds = 0, HealthCheckTimeoutSeconds = 0, RouteRefreshSeconds = 0, HealthCheckPath = "health" };
+        var config = new IngressConfig { HealthCheckIntervalSeconds = 0, HealthCheckTimeoutSeconds = 0, HealthCheckPath = "health" };
         var problems = config.Validate();
-        Assert.Equal(4, problems.Count);
+        Assert.Equal(3, problems.Count);
     }
 
     [Fact]

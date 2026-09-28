@@ -1,52 +1,40 @@
-using Microsoft.EntityFrameworkCore;
-using ModularCA.Database;
-using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.Config;
 
 namespace ModularCA.Core.Services.Hostnames;
 
 /// <summary>
-/// A name this process answers to for a given tenant: the console's public domain, or one of the
-/// tenant's own hostnames.
-/// </summary>
-/// <param name="Host">The name, lower-case, without trailing dot.</param>
-/// <param name="IsPublicDomain">True when the name is <c>Https.PublicDomain</c>.</param>
-/// <param name="TenantHostname">The tenant hostname row when the name is one; null for the public domain.</param>
-public sealed record KnownHostname(string Host, bool IsPublicDomain, TenantHostnameEntity? TenantHostname);
-
-/// <summary>
-/// Decides which name to advertise in URLs that point back at this service. A request's Host
-/// header is used only when it is a name this process is known by for the tenant in question;
-/// anything else falls back to the configured public domain, so an arbitrary Host header can
-/// never steer a client somewhere else.
+/// Decides which name to advertise in URLs that point back at this service. The instance is
+/// known by its configured public domain (<c>Https.PublicDomain</c>); a request's Host header or
+/// a service principal's host is used only when it is that name, and anything else falls back
+/// to the public domain, so an arbitrary Host header can never steer a client somewhere else.
 /// </summary>
 public interface IPublicNameResolver
 {
     /// <summary>
-    /// The known name that <paramref name="host"/> is for <paramref name="tenantId"/>, or null. The
-    /// public domain is known for every tenant; a tenant hostname only for its own tenant.
+    /// The known name <paramref name="host"/> is, lower-case without trailing dot, or null when
+    /// it is not the instance's public domain.
     /// </summary>
-    Task<KnownHostname?> ResolveAsync(string? host, Guid tenantId, CancellationToken cancellation = default);
+    string? Resolve(string? host);
 
     /// <summary>
     /// The HTTPS base URL (no trailing slash) to advertise to a client whose request arrived on
-    /// <paramref name="requestHost"/>: that host when it is known for the tenant, else the public one.
+    /// <paramref name="requestHost"/>: that host when it is known, else the public one.
     /// </summary>
-    Task<string> BaseUrlForRequestAsync(string? requestHost, Guid tenantId, CancellationToken cancellation = default);
+    string BaseUrlForRequest(string? requestHost);
 
     /// <summary>
     /// The HTTPS base URL derived from a realm binding's service principal (<c>HTTP/host</c>): the
-    /// principal's host when it is known for the tenant, else the public one. For callers that
-    /// have no request, such as readiness and the setup kit.
+    /// principal's host when it is known, else the public one. For callers that have no request,
+    /// such as readiness and the setup kit.
     /// </summary>
-    Task<string> BaseUrlForServicePrincipalAsync(string? servicePrincipal, Guid tenantId, CancellationToken cancellation = default);
+    string BaseUrlForServicePrincipal(string? servicePrincipal);
 
     /// <summary>The HTTPS base URL for a known name, with the public port rule; the public base URL when null.</summary>
     string BaseUrl(string? knownHost);
 }
 
-/// <summary>Resolves names against <c>Https.PublicDomain</c> and the <c>TenantHostnames</c> table.</summary>
-public sealed class PublicNameResolver(ModularCADbContext db, SystemConfig config) : IPublicNameResolver
+/// <summary>Resolves names against <c>Https.PublicDomain</c>.</summary>
+public sealed class PublicNameResolver(SystemConfig config) : IPublicNameResolver
 {
     /// <summary>
     /// The host part of a Kerberos service principal such as <c>HTTP/ca.example.test</c> or
@@ -75,28 +63,20 @@ public sealed class PublicNameResolver(ModularCADbContext db, SystemConfig confi
     }
 
     /// <inheritdoc />
-    public async Task<KnownHostname?> ResolveAsync(string? host, Guid tenantId, CancellationToken cancellation = default)
+    public string? Resolve(string? host)
     {
         var h = Normalize(host);
         if (h == null) return null;
-
         var publicDomain = Normalize(config.Https.PublicDomain);
-        if (publicDomain != null && string.Equals(h, publicDomain, StringComparison.Ordinal))
-            return new KnownHostname(publicDomain, true, null);
-
-        if (tenantId == Guid.Empty) return null;
-        var row = await db.TenantHostnames.AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Hostname == h && t.TenantId == tenantId, cancellation);
-        return row == null ? null : new KnownHostname(row.Hostname, false, row);
+        return publicDomain != null && string.Equals(h, publicDomain, StringComparison.Ordinal) ? publicDomain : null;
     }
 
     /// <inheritdoc />
-    public async Task<string> BaseUrlForRequestAsync(string? requestHost, Guid tenantId, CancellationToken cancellation = default)
-        => BaseUrl((await ResolveAsync(requestHost, tenantId, cancellation))?.Host);
+    public string BaseUrlForRequest(string? requestHost) => BaseUrl(Resolve(requestHost));
 
     /// <inheritdoc />
-    public async Task<string> BaseUrlForServicePrincipalAsync(string? servicePrincipal, Guid tenantId, CancellationToken cancellation = default)
-        => BaseUrl((await ResolveAsync(HostFromServicePrincipal(servicePrincipal), tenantId, cancellation))?.Host);
+    public string BaseUrlForServicePrincipal(string? servicePrincipal)
+        => BaseUrl(Resolve(HostFromServicePrincipal(servicePrincipal)));
 
     /// <inheritdoc />
     public string BaseUrl(string? knownHost)

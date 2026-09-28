@@ -21,7 +21,7 @@ public sealed class IngressProxyConfigProviderTests
     }
 
     private static IReadOnlyList<IngressRoute> Table(params IngressRouteConfig[] configured)
-        => IngressRouteTable.Merge(configured, new[] { new TenantHostnameUpstream("local.test", null) });
+        => IngressRouteTable.Build(configured);
 
     [Fact]
     public void One_route_and_one_cluster_per_host_with_an_upstream_and_none_for_a_host_without()
@@ -81,12 +81,12 @@ public sealed class IngressProxyConfigProviderTests
     }
 
     [Fact]
-    public void The_metadata_carries_the_host_the_pin_the_loopback_fact_and_the_source()
+    public void The_metadata_carries_the_host_the_pin_and_the_loopback_fact()
     {
         var pin = new string('b', 64);
-        var table = IngressRouteTable.Merge(
-            new[] { new IngressRouteConfig { Host = "pinned.test", Upstream = "https://10.0.0.5:8443", PinnedSpki = pin } },
-            new[] { new TenantHostnameUpstream("db.test", "https://127.0.0.1:8443") });
+        var table = Table(
+            new IngressRouteConfig { Host = "pinned.test", Upstream = "https://10.0.0.5:8443", PinnedSpki = pin },
+            new IngressRouteConfig { Host = "loop.test", Upstream = "https://127.0.0.1:8443" });
 
         var (_, clusters) = Build(table);
 
@@ -94,12 +94,12 @@ public sealed class IngressProxyConfigProviderTests
         Assert.Equal("pinned.test", pinned[IngressApi.ProviderConstant("HostMetadata")]);
         Assert.Equal(pin, pinned[IngressApi.ProviderConstant("PinMetadata")]);
         Assert.Equal("false", pinned[IngressApi.ProviderConstant("LoopbackMetadata")]);
-        Assert.Equal("Configuration", pinned[IngressApi.ProviderConstant("SourceMetadata")]);
+        Assert.Equal(3, pinned.Count);
 
-        var db = clusters.Single(c => c.ClusterId == "ingress:db.test").Metadata!;
-        Assert.False(db.ContainsKey(IngressApi.ProviderConstant("PinMetadata")));
-        Assert.Equal("true", db[IngressApi.ProviderConstant("LoopbackMetadata")]);
-        Assert.Equal("Database", db[IngressApi.ProviderConstant("SourceMetadata")]);
+        var loop = clusters.Single(c => c.ClusterId == "ingress:loop.test").Metadata!;
+        Assert.False(loop.ContainsKey(IngressApi.ProviderConstant("PinMetadata")));
+        Assert.Equal("true", loop[IngressApi.ProviderConstant("LoopbackMetadata")]);
+        Assert.Equal(2, loop.Count);
     }
 
     [Fact]
@@ -111,23 +111,18 @@ public sealed class IngressProxyConfigProviderTests
     }
 
     [Fact]
-    public void The_provider_follows_the_table_and_signals_the_change()
+    public void The_provider_serves_the_configured_routes_under_a_token_that_can_carry_a_callback_and_never_fires()
     {
-        var rows = new List<TenantHostnameUpstream>();
-        var service = new IngressRouteTableService(new IngressConfig(), () => rows.ToList(), TimeSpan.FromMinutes(5));
-        service.LoadNow();
-        var provider = (IProxyConfigProvider)Activator.CreateInstance(IngressApi.Provider, service, new IngressConfig())!;
+        var config = new IngressConfig { Routes = { new IngressRouteConfig { Host = "new.test", Upstream = "https://127.0.0.1:8443" } } };
+        var service = new IngressRouteTableService(config);
+        var provider = (IProxyConfigProvider)Activator.CreateInstance(IngressApi.Provider, service, config)!;
 
         var first = provider.GetConfig();
-        Assert.Empty(first.Routes);
+        Assert.Equal("ingress:new.test", Assert.Single(first.Routes).RouteId);
+        Assert.Equal("ingress:new.test", Assert.Single(first.Clusters).ClusterId);
+        Assert.True(first.ChangeToken.ActiveChangeCallbacks);
         Assert.False(first.ChangeToken.HasChanged);
-
-        rows.Add(new TenantHostnameUpstream("new.test", "https://127.0.0.1:8443"));
-        service.Reload();
-
-        Assert.True(first.ChangeToken.HasChanged);
-        var second = provider.GetConfig();
-        Assert.Equal("ingress:new.test", Assert.Single(second.Routes).RouteId);
+        Assert.Same(first, provider.GetConfig());
         (provider as IDisposable)?.Dispose();
     }
 }

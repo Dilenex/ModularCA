@@ -685,6 +685,11 @@ export interface EventLogConfig {
     logName: string;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface FeaturesConfig {
+    allowMultipleOrganizations: boolean;
+}
+
 /** From `ModularCA.Shared/Models/Csr/ValidateAgainstProfileRequest.cs`. */
 export interface FieldValidationResult {
     field: string;
@@ -795,7 +800,6 @@ export interface IngressConfig {
     healthCheckIntervalSeconds: number;
     healthCheckTimeoutSeconds: number;
     healthCheckPath: string;
-    routeRefreshSeconds: number;
     upstreamCaCertificatePath: string;
     dangerousAcceptAnyUpstreamCertificate: boolean;
 }
@@ -1159,6 +1163,13 @@ export interface SchedulerConfig {
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface SchemaConfig {
+    waitSeconds: number;
+    migrationCommandTimeoutSeconds: number;
+    migrationLockTimeoutSeconds: number;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface SecurityConfig {
     bindJwtToIp: E.JwtIpBindingMode;
     bindRefreshTokenToIp: boolean;
@@ -1443,6 +1454,8 @@ export interface SystemConfig {
     sourceCode: SourceCodeConfig;
     redis: RedisConfig;
     audit: AuditConfig;
+    features: FeaturesConfig;
+    schema: SchemaConfig;
 }
 
 /** From `ModularCA.Shared/Models/TenantPolicyChangeCeremonyParameters.cs`. */

@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services.Ingress;
 using ModularCA.Shared.Models.Config;
@@ -97,6 +98,7 @@ internal sealed class IngressHost : IAsyncDisposable
     public int SecurePort { get; }
     public int PlainPort { get; }
     public IngressRouteTableService Table { get; }
+    public IServiceProvider Services => _app.Services;
 
     private IngressHost(WebApplication app, int securePort, int plainPort, IngressRouteTableService table)
     {
@@ -120,8 +122,7 @@ internal sealed class IngressHost : IAsyncDisposable
     {
         var securePort = FreePort();
         var plainPort = FreePort();
-        var table = new IngressRouteTableService(config, () => Array.Empty<TenantHostnameUpstream>(), TimeSpan.FromMinutes(5));
-        table.LoadNow();
+        var table = new IngressRouteTableService(config);
         var trust = Activator.CreateInstance(IngressApi.TrustPolicy, null, false)!;
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = Array.Empty<string>() });
@@ -153,7 +154,8 @@ internal sealed class IngressHost : IAsyncDisposable
 /// The ingress in front of stub nodes: a host with an upstream is proxied with the forwarded
 /// headers added and the Kerberos headers untouched in both directions; a host without one
 /// is served locally; a plain-HTTP arrival reaches the node's plain listener when the route
-/// names one; a node that fails its probes is answered 503 with a body naming the host.
+/// names one; a node that fails its probes is answered 503 with a body naming the host; and the
+/// health entry reports the configured routes and what each probe found.
 /// </summary>
 public sealed class IngressProxyHostTests : IAsyncLifetime
 {
@@ -282,5 +284,57 @@ public sealed class IngressProxyHostTests : IAsyncLifetime
         Assert.Contains("down.test", body.GetProperty("error").GetString());
         Assert.Contains("health", body.GetProperty("error").GetString());
         Assert.Equal("10", response.Headers.RetryAfter!.Delta is { } d ? ((int)d.TotalSeconds).ToString() : response.Headers.RetryAfter.ToString());
+    }
+
+    /// <summary>The ingress's <c>/health/ready</c> entry, built from the running host's services.</summary>
+    private static IHealthCheck HealthCheckOf(IngressHost host)
+        => (IHealthCheck)ActivatorUtilities.CreateInstance(host.Services, ModularCA.Tests.Roles.ApiAssembly.TypeNamed("ModularCA.API.HealthChecks.IngressHealthCheck"));
+
+    private static JsonElement ReportOf(HealthCheckResult result)
+        => JsonDocument.Parse(JsonSerializer.Serialize(result.Data["ingress"])).RootElement;
+
+    [Fact]
+    public async Task With_only_configured_routes_the_health_entry_reports_each_route_and_what_its_probe_found()
+    {
+        var check = HealthCheckOf(_ingress);
+        var result = await check.CheckHealthAsync(new HealthCheckContext());
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var states = ReportOf(result).GetProperty("upstreams").EnumerateArray().Select(u => u.GetProperty("health").GetString()).ToList();
+            if (!states.Contains("unknown") && states.Contains("unhealthy"))
+                break;
+            await Task.Delay(250);
+            result = await check.CheckHealthAsync(new HealthCheckContext());
+        }
+
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+        var report = ReportOf(result);
+        Assert.Equal(new[] { "routeCount", "upstreams", "down" }, report.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(3, report.GetProperty("routeCount").GetInt32());
+
+        var upstreams = report.GetProperty("upstreams").EnumerateArray()
+            .Select(u => (Host: u.GetProperty("host").GetString()!, Destination: u.GetProperty("destination").GetString()!, Health: u.GetProperty("health").GetString()!))
+            .OrderBy(u => u.Host).ThenBy(u => u.Destination)
+            .ToList();
+        Assert.Equal(
+            new[] { ("both.test", "https", "healthy"), ("both.test", "plain", "healthy"), ("down.test", "https", "unhealthy"), ("one.test", "https", "healthy") },
+            upstreams.Select(u => (u.Host, u.Destination, u.Health)));
+        Assert.Equal("down.test (https)", Assert.Single(report.GetProperty("down").EnumerateArray()).GetString());
+        Assert.Equal("3 route(s), 1 upstream(s) down: down.test (https)", result.Description);
+    }
+
+    [Fact]
+    public async Task An_ingress_with_no_configured_route_serves_everything_locally_and_says_so_in_its_health_entry()
+    {
+        await using var empty = await IngressHost.StartAsync(new IngressConfig());
+
+        var response = await _client.SendAsync(Request(empty.SecurePort, "one.test", "/acme/directory"));
+        Assert.Equal("local:one.test", await response.Content.ReadAsStringAsync());
+
+        var result = await HealthCheckOf(empty).CheckHealthAsync(new HealthCheckContext());
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+        Assert.Equal("The ingress routes nothing; every name is served here", result.Description);
+        Assert.Equal(0, ReportOf(result).GetProperty("routeCount").GetInt32());
     }
 }

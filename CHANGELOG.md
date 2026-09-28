@@ -51,16 +51,18 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   backups) and ingress. `--role` or `Roles:` in the configuration selects any subset; a process
   hosts only its roles' endpoints and jobs, and `/health/ready` reports what each active role
   needs. The deploy readme describes the three-process layout.
-- **Ingress.** `--role ingress` terminates TLS for the public domain and every tenant hostname,
-  selected by SNI, and routes by hostname to tenant nodes with YARP, on plain HTTP as well so a
-  tenant's revocation URLs reach its node. Routes come from `Ingress.Routes` and from the tenant
-  hostnames table (`NodeUpstream`); a name with no upstream is served locally, which is how a
-  single process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that
-  fails its health checks answers 503 for its names.
-- **Tenant hostnames.** A tenant is reachable by its own names from one process: each name gets
-  an endpoint certificate from a CA of the tenant, presented by SNI and renewed with the console's
-  own; enrollment URLs derive from the name a request arrived on; the readiness check accepts any
-  name a tenant is reached by. The console and sign-in stay on the public domain.
+- **Ingress.** `--role ingress` terminates TLS with the instance's certificate and routes by
+  hostname to nodes with YARP, on plain HTTP as well so revocation URLs reach their node. Routes
+  come from `Ingress.Routes`; a name with no upstream is served locally, which is how a single
+  process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that fails
+  its health checks answers 503 for its names.
+
+### Removed
+
+- **Tenant hostnames (0.4.0).** The instance is the isolation boundary and serves its own names,
+  so per-tenant names, their SNI certificates and their database ingress routes are gone. The
+  `RetireTenantHostnames` migration drops the table and refuses while any hostname remains;
+  `Ingress.RouteRefreshSeconds` is no longer read. See "Upgrading to 0.4.0" in the deploy readme.
 
 ### Server-generated private keys are delivered once, as one PKCS#12
 

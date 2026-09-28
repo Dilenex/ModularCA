@@ -26,8 +26,8 @@ public enum UpstreamTrustMode
 /// anything on loopback under the dangerous flag, else the system store. The order is fixed
 /// (a pin beats the CA, the CA beats the flag) so a stricter setting on one route is never
 /// loosened by a looser global one. The dangerous flag never applies to a non-loopback
-/// destination: configuration validation refuses such a route, and a database route that is
-/// not loopback gets the system store instead, whatever the flag says.
+/// destination: configuration validation refuses such a route, and a destination that is not
+/// loopback gets the system store instead, whatever the flag says.
 /// </summary>
 public sealed class UpstreamTrustPolicy
 {

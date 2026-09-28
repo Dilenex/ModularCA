@@ -410,6 +410,14 @@ Follow-ups: a console field for `NodeUpstream` (the API and the audit row exist)
 and gRPC to upstreams are not needed today and not configured; the pod definition for the
 container tier with the ingress as its own container.
 
+**Since 0.4.0 S2 (2026-09-28)** tenant hostnames are gone (see `instance-tenancy.md`), and with
+them the database source above. `Ingress.Routes` is the only source, built once at startup:
+no refresh, no `RouteRefreshSeconds`, no `NodeUpstream`, no route source in the cluster
+metadata. Every name, on the ingress and on a node, is presented the instance's web TLS
+certificate. The `ingress` health entry carries the route count and the probe results. The
+branch, the destinations chosen by arrival, the upstream trust order and the header handling
+are unchanged.
+
 ## The pod as built (2026-09-19)
 
 Step 6 of the order of work: `deploy/container/modularca-pod.yaml`, a Kubernetes pod manifest

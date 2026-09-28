@@ -66,11 +66,10 @@ public static class TextCaseSensitivity
         new(typeof(UserEntity), nameof(UserEntity.Email)),
 
         // Names that appear in a URL, where the browser, the operator and the client each supply
-        // their own capitalisation: the tenant slug in a path, the CA label in /scep/{label} and
-        // /acme/{label}, and the hostname in a Host header or an SNI extension.
+        // their own capitalisation: the tenant slug in a path and the CA label in /scep/{label}
+        // and /acme/{label}.
         new(typeof(TenantEntity), nameof(TenantEntity.Slug)),
         new(typeof(CertificateAuthorityEntity), nameof(CertificateAuthorityEntity.Label)),
-        new(typeof(TenantHostnameEntity), nameof(TenantHostnameEntity.Hostname)),
 
         // Authorization subjects. Two roles or two groups differing only in case would each carry
         // half of somebody's rights.

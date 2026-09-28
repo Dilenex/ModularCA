@@ -293,7 +293,7 @@ public static class AuditActionType
     public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
     public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
 
-    // Tenant hostnames (names a tenant's enrollment endpoints are reached by, each under its own certificate)
+    // Tenant hostnames, retired in 0.4.0; kept because recorded audit rows name them
     /// <summary>A hostname was added to a tenant. Details name the host and the issuing CA.</summary>
     public const string TenantHostnameCreated = "TenantHostnameCreated";
     public const string TenantHostnameDeleted = "TenantHostnameDeleted";
