@@ -106,7 +106,7 @@ public static class ErrorCodes
     /// <summary>The issuing CA certificate is not yet valid or has expired.</summary>
     public const string IssuingCaOutsideValidity = "MCA-CFG-014";
 
-    /// <summary>The issuing CA (X.509 or SSH) is disabled or deleted.</summary>
+    /// <summary>The issuing CA (X.509 or SSH) is disabled or deleted, or the tenant that owns it no longer exists.</summary>
     public const string IssuingCaDisabled = "MCA-CFG-015";
 
     /// <summary>No certificate authority record names the issuing CA certificate.</summary>

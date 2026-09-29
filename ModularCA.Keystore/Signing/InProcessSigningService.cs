@@ -38,7 +38,7 @@ namespace ModularCA.Keystore.Signing;
 /// <para>
 /// A key the signer generates or imports has no certificate yet. It is held pending, in the
 /// signer's memory only, under a reference the signer mints, and signs only under the ceremony
-/// or bootstrap context it was created in: that is how a new CA self-signs, signs its CSR, and
+/// or infrastructure context it was created in: that is how a new CA self-signs, signs its CSR, and
 /// signs its infrastructure certificates before any row names it. <see cref="CommitKeyAsync"/>
 /// binds the pending key to the certificate row that now carries its public key, persists the
 /// pair through <see cref="ISignerKeyPersistence"/> and registers the identity; from then on the
@@ -208,8 +208,10 @@ public sealed class InProcessSigningService : ISigningService
     /// <remarks>
     /// Accepts PKCS#8 DER (<see cref="KeyMaterial.Pkcs8"/>) for a certificate row that already
     /// exists and carries the key's public half, which is what a restore or a migration has. The
-    /// pair is persisted and registered at once, so the key serves the policy for its kind from
-    /// this call on; the wrapped bytes are zeroed once parsed.
+    /// import is held to the scope of the CA that owns that certificate: a context stating another
+    /// scope is <see cref="SigningRefusalReason.TenantMismatch"/>, and that scope's ceremony policy
+    /// applies. The pair is persisted and registered at once, so the key serves the policy for its
+    /// kind from this call on; the wrapped bytes are zeroed once parsed.
     /// </remarks>
     public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -226,7 +228,7 @@ public sealed class InProcessSigningService : ISigningService
         if (refusal == null && !string.Equals(material.Format, KeyMaterial.Pkcs8, StringComparison.OrdinalIgnoreCase))
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"Key material in format '{material.Format}' cannot be imported; the signer accepts '{KeyMaterial.Pkcs8}'.");
-        refusal ??= await JudgeCeremonyAsync(context, cancellationToken);
+        refusal ??= await JudgeCeremonyAsync(context, cancellationToken, material.CertificateId);
 
         AsymmetricKeyParameter? privateKey = null;
         if (refusal == null)
@@ -269,13 +271,18 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// A key generated for a CA is committed only to a certificate that CA owns, and a key
+    /// managed under an infrastructure context only to the OCSP responder, TSA or CMP signer
+    /// certificate of the CA and scope the context names (<see cref="JudgeCommitOwnerAsync"/>).
+    /// </remarks>
     public async Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(context);
 
         var committed = new KeyRef(certificateId, key.Keystore);
-        var refusal = JudgeKeyManagement(context) ?? await JudgeCeremonyAsync(context, cancellationToken);
+        var refusal = JudgeKeyManagement(context) ?? await JudgeCeremonyAsync(context, cancellationToken, certificateId);
         PendingKey? pending = null;
         if (refusal == null && !_pending.TryGetValue(key.CertificateId, out pending))
             refusal = new SigningRefusedException(SigningRefusalReason.UnknownKey, $"No generated key awaits commit under {key}.");
@@ -290,6 +297,8 @@ public sealed class InProcessSigningService : ISigningService
         if (refusal == null && context.Purpose == SigningPurpose.Infrastructure && certificate!.GetBasicConstraints() != -1)
             refusal = new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
                 $"Certificate {certificateId} is a CA certificate; a key generated under an infrastructure context cannot become a CA key.");
+        if (refusal == null)
+            refusal = await JudgeCommitOwnerAsync(pending!, certificateId, context, committed, cancellationToken);
 
         if (refusal != null)
         {
@@ -637,7 +646,7 @@ public sealed class InProcessSigningService : ISigningService
 
     /// <summary>
     /// The policy for a key that has no certificate yet: it signs only under the purpose it was
-    /// generated under, ceremony or bootstrap, and only for the tenant and CA (when either was
+    /// generated under, ceremony or infrastructure, and only for the tenant and CA (when either was
     /// named) that generated it. It has no kind, so nothing else applies.
     /// </summary>
     private static SigningRefusedException? JudgePending(PendingKey pending, SigningContext context, KeyRef key)
@@ -654,44 +663,96 @@ public sealed class InProcessSigningService : ISigningService
 
     /// <summary>
     /// The rule every key-management operation shares: generation, import, commit and retire
-    /// happen only under a ceremony or bootstrap context, and never while locked.
+    /// happen only under a ceremony or infrastructure context, and never while locked.
+    /// <see cref="SigningPurpose.Bootstrap"/> manages no key: it would be held to no ceremony, so
+    /// it moves only whole keystore files (<see cref="JudgeKeystoreFile"/>).
     /// </summary>
     private SigningRefusedException? JudgeKeyManagement(SigningContext context)
     {
         if (!_unlocked)
             return new SigningRefusedException(SigningRefusalReason.SignerLocked, "The signer has not unlocked its keystore.");
-        if (context.Purpose is not (SigningPurpose.Ceremony or SigningPurpose.Bootstrap or SigningPurpose.Infrastructure))
+        if (context.Purpose is not (SigningPurpose.Ceremony or SigningPurpose.Infrastructure))
             return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
-                $"Keys are generated, imported, committed and retired only under a ceremony, bootstrap or infrastructure context, not {context.Purpose}.");
+                $"Keys are generated, imported, committed and retired only under a ceremony or infrastructure context, not {context.Purpose}.");
         return null;
     }
 
+    /// <summary>The ceremony operation types that manage a CA key; no other ceremony licenses a key operation.</summary>
+    private static readonly HashSet<string> KeyManagementCeremonies = new(StringComparer.Ordinal) { "CreateRootCA", "CreateIntermediateCA" };
+
     /// <summary>
-    /// Verifies the ceremony a <see cref="SigningPurpose.Ceremony"/> context names, against the
-    /// database and read-only: the ceremony exists, is approved, has not expired, names the
-    /// tenant the context names, and names no other CA than the one the context names.
-    /// Anything else is <see cref="SigningRefusalReason.CeremonyNotApproved"/>. A ceremony
-    /// context that names no ceremony is held to the tenant's own policy instead, by
-    /// <see cref="JudgeCeremonyRequirementAsync"/>: a tenant that requires ceremonies gets no
-    /// key without one, a tenant that does not creates its CAs directly, as before. Generation,
+    /// Holds a <see cref="SigningPurpose.Ceremony"/> context to a scope, then to the ceremony it
+    /// names or to that scope's policy. The scope is the one the context states (a tenant, or
+    /// <see cref="SigningContext.InstanceScope"/>), then the scope of the CA it names, then, with
+    /// <paramref name="boundCertificateId"/>, the scope of the CA that owns that certificate; any
+    /// two that disagree are <see cref="SigningRefusalReason.TenantMismatch"/>, and the owning CA's
+    /// scope is the one whose policy applies. A CA not yet committed (one being created) is
+    /// passed over when the context states its scope; a soft-deleted CA is not, and is held to its
+    /// scope like any other. A context with no scope from any of these,
+    /// or that states a tenant and the instance at once, is
+    /// <see cref="SigningRefusalReason.ContextRequired"/>; a missing tenant is never the instance.
+    /// A named ceremony must exist, be approved and unexpired, manage a key, name exactly this
+    /// scope (null equals null), and target no other CA than the context names; anything else is
+    /// <see cref="SigningRefusalReason.CeremonyNotApproved"/>. With no ceremony named,
+    /// <see cref="JudgeCeremonyRequirementAsync"/> applies the scope's policy. Generation,
     /// import and commit are held to this; retiring a pending key is the undo of a failed
-    /// ceremony and is not. A <see cref="SigningPurpose.Bootstrap"/> context is not held to
-    /// either: no tenant or ceremony exists yet when the node bootstraps.
+    /// ceremony and is not. An <see cref="SigningPurpose.Infrastructure"/> context is not held to
+    /// it: its keys never become CA keys, and <see cref="JudgeCommitOwnerAsync"/> holds their
+    /// commit to the CA whose delegated certificate they are bound to.
     /// </summary>
-    private async Task<SigningRefusedException?> JudgeCeremonyAsync(SigningContext context, CancellationToken cancellationToken)
+    private async Task<SigningRefusedException?> JudgeCeremonyAsync(SigningContext context, CancellationToken cancellationToken, Guid? boundCertificateId = null)
     {
         if (context.Purpose != SigningPurpose.Ceremony)
             return null;
-        if (context.CeremonyId is not Guid ceremonyId)
-            return await JudgeCeremonyRequirementAsync(context, cancellationToken);
+        if (context.InstanceScope && context.TenantId != null)
+            return new SigningRefusedException(SigningRefusalReason.ContextRequired,
+                $"The ceremony context states both the instance and tenant {context.TenantId}; it names one scope.");
 
-        KeyCeremonyEntity? ceremony;
-        using (var scope = _scopes.CreateScope())
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+
+        var stated = context.InstanceScope || context.TenantId != null;
+        var scopeTenant = context.TenantId;
+        if (context.CaId is Guid caId)
         {
-            var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-            ceremony = await db.KeyCeremonies.AsNoTracking().FirstOrDefaultAsync(c => c.Id == ceremonyId, cancellationToken);
+            var ca = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(c => c.Id == caId)
+                .Select(c => new { c.TenantId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (ca == null && !stated)
+                return new SigningRefusedException(SigningRefusalReason.ContextRequired,
+                    $"The context names CA {caId}, which the signer does not know, so the scope whose ceremony policy applies cannot be resolved.");
+            if (ca != null)
+            {
+                if (stated && ca.TenantId != scopeTenant)
+                    return new SigningRefusedException(SigningRefusalReason.TenantMismatch,
+                        $"CA {caId} belongs to {DescribeScope(ca.TenantId)}, not {DescribeScope(scopeTenant)}.");
+                (stated, scopeTenant) = (true, ca.TenantId);
+            }
         }
+        if (boundCertificateId is Guid certificateId)
+        {
+            var owner = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(c => c.CertificateId == certificateId || c.OcspResponderCertificateId == certificateId
+                         || c.TsaCertificateId == certificateId || c.CmpSigningCertificateId == certificateId)
+                .Select(c => new { c.Id, c.TenantId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (owner != null)
+            {
+                if (stated && owner.TenantId != scopeTenant)
+                    return new SigningRefusedException(SigningRefusalReason.TenantMismatch,
+                        $"Certificate {certificateId} belongs to CA {owner.Id} of {DescribeScope(owner.TenantId)}, not {DescribeScope(scopeTenant)}; the owning CA's ceremony policy applies.");
+                (stated, scopeTenant) = (true, owner.TenantId);
+            }
+        }
+        if (!stated)
+            return new SigningRefusedException(SigningRefusalReason.ContextRequired,
+                "Key management under a ceremony context states its scope, a tenant or the instance, or names the CA it is for; a context naming none cannot be held to a ceremony policy.");
 
+        if (context.CeremonyId is not Guid ceremonyId)
+            return await JudgeCeremonyRequirementAsync(db, scopeTenant, cancellationToken);
+
+        var ceremony = await db.KeyCeremonies.AsNoTracking().FirstOrDefaultAsync(c => c.Id == ceremonyId, cancellationToken);
         if (ceremony == null)
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
                 $"No ceremony {ceremonyId} exists; the signer manages keys under a ceremony it can verify.");
@@ -701,55 +762,39 @@ public sealed class InProcessSigningService : ISigningService
         if (ceremony.ExpiresAt <= DateTime.UtcNow)
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
                 $"Ceremony {ceremonyId} expired at {ceremony.ExpiresAt:O}; its approval no longer stands.");
-        if (context.TenantId != null && ceremony.TenantId != context.TenantId)
+        if (!KeyManagementCeremonies.Contains(ceremony.OperationType))
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
-                $"Ceremony {ceremonyId} was approved for tenant {ceremony.TenantId?.ToString() ?? "none"}, not tenant {context.TenantId}.");
+                $"Ceremony {ceremonyId} is a {ceremony.OperationType} ceremony, which manages no key.");
+        if (ceremony.TenantId != scopeTenant)
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"Ceremony {ceremonyId} was approved for {DescribeScope(ceremony.TenantId)}, not {DescribeScope(scopeTenant)}.");
         if (context.CaId != null && Guid.TryParse(ceremony.TargetEntityId, out var target) && target != Guid.Empty && target != context.CaId)
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
                 $"Ceremony {ceremonyId} targets CA {target}, not CA {context.CaId}.");
         return null;
     }
 
+    /// <summary>"the instance", or "tenant &lt;id&gt;", for refusal messages.</summary>
+    private static string DescribeScope(Guid? tenantId) => tenantId == null ? "the instance" : $"tenant {tenantId}";
+
     /// <summary>
-    /// Holds a ceremony context that names no ceremony to the tenant's own policy, read from
-    /// the database: the tenant the context names, or, when it names none, the tenant of the
-    /// CA it names. A tenant whose <c>RequireKeyCeremony</c> is set gets no key without a
-    /// ceremony, and neither does a tenant the signer cannot find, since no waiver can be
-    /// verified for it; both are <see cref="SigningRefusalReason.CeremonyRequired"/>. A
-    /// context naming neither tenant nor CA cannot be held to any tenant and is
-    /// <see cref="SigningRefusalReason.ContextRequired"/>. A tenant that does not require
-    /// ceremonies is allowed through, which is the stage-2 behaviour unchanged.
+    /// Holds a ceremony context that names no ceremony to the policy of the scope
+    /// <see cref="JudgeCeremonyAsync"/> resolved, read through <see cref="EffectivePolicyResolver"/>.
+    /// A scope whose <c>RequireKeyCeremony</c> is set gets no key without a ceremony, and neither
+    /// does a tenant the signer cannot find, since no waiver can be verified for it; both are
+    /// <see cref="SigningRefusalReason.CeremonyRequired"/>.
     /// </summary>
-    private async Task<SigningRefusedException?> JudgeCeremonyRequirementAsync(SigningContext context, CancellationToken cancellationToken)
+    private static async Task<SigningRefusedException?> JudgeCeremonyRequirementAsync(ModularCADbContext db, Guid? scopeTenant, CancellationToken cancellationToken)
     {
-        using var scope = _scopes.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-
-        var tenantId = context.TenantId;
-        if (tenantId == null && context.CaId is Guid caId)
-        {
-            tenantId = await db.CertificateAuthorities.AsNoTracking()
-                .Where(ca => ca.Id == caId)
-                .Select(ca => (Guid?)ca.TenantId)
-                .FirstOrDefaultAsync(cancellationToken);
-            if (tenantId == null)
-                return new SigningRefusedException(SigningRefusalReason.ContextRequired,
-                    $"The context names CA {caId}, which the signer does not know, so the tenant whose ceremony policy applies cannot be resolved.");
-        }
-        if (tenantId == null)
-            return new SigningRefusedException(SigningRefusalReason.ContextRequired,
-                "Key management without a ceremony names the tenant or the CA the key is for; a context naming neither cannot be held to a tenant's ceremony policy.");
-
-        var requirement = await db.Tenants.AsNoTracking()
-            .Where(t => t.Id == tenantId)
-            .Select(t => (bool?)t.RequireKeyCeremony)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (requirement == null)
+        var policy = await new EffectivePolicyResolver(db).ResolveAsync(scopeTenant, cancellationToken);
+        if (!policy.Found)
             return new SigningRefusedException(SigningRefusalReason.CeremonyRequired,
-                $"No tenant {tenantId} is known to the signer; a key is managed for it only under a ceremony the signer can verify.");
-        if (requirement.Value)
+                $"No tenant {scopeTenant} is known to the signer; a key is managed for it only under a ceremony the signer can verify.");
+        if (policy.RequireKeyCeremony)
             return new SigningRefusedException(SigningRefusalReason.CeremonyRequired,
-                $"Tenant {tenantId} requires a key ceremony and the context names none.");
+                policy.TenantId == null
+                    ? "The instance requires a key ceremony and the context names none."
+                    : $"Tenant {policy.TenantId} requires a key ceremony and the context names none.");
         return null;
     }
 
@@ -1165,14 +1210,16 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
-    /// Holds a pending key to the tenant and CA the generating context named, when it named
-    /// them and the operating context names them too.
+    /// Holds a pending key to the scope and CA the generating context named, when it named
+    /// them and the operating context names them too. A tenant and the instance never match.
     /// </summary>
     private static SigningRefusedException? HoldPendingToContext(PendingKey pending, SigningContext context, KeyRef key)
     {
-        if (pending.TenantId != null && context.TenantId != null && pending.TenantId != context.TenantId)
+        if ((pending.TenantId != null && context.TenantId != null && pending.TenantId != context.TenantId)
+            || (pending.InstanceScope && context.TenantId != null)
+            || (pending.TenantId != null && context.InstanceScope))
             return new SigningRefusedException(SigningRefusalReason.TenantMismatch,
-                $"The generated key {key} was generated for tenant {pending.TenantId}, not tenant {context.TenantId}.");
+                $"The generated key {key} was generated for {(pending.InstanceScope ? "the instance" : $"tenant {pending.TenantId}")}, not {(context.InstanceScope ? "the instance" : $"tenant {context.TenantId}")}.");
         if (pending.CaId != null && context.CaId != null && pending.CaId != context.CaId)
             return new SigningRefusedException(SigningRefusalReason.CaMismatch,
                 $"The generated key {key} was generated for CA {pending.CaId}, not CA {context.CaId}.");
@@ -1180,8 +1227,8 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
-    /// Holds a CA-owned key to its CA: the context must name the owning CA, and a tenant it
-    /// names must be the owning CA's tenant.
+    /// Holds a CA-owned key to its CA: the context must name the owning CA, and a scope it
+    /// states must be the owning CA's: its tenant, or the instance for an instance CA.
     /// </summary>
     private static SigningRefusedException? HoldToOwner(CachedOwner owner, SigningContext context, KeyRef key)
     {
@@ -1191,9 +1238,52 @@ public sealed class InProcessSigningService : ISigningService
         if (context.CaId != owner.CaId)
             return new SigningRefusedException(SigningRefusalReason.CaMismatch,
                 $"The {owner.Kind} key {key} belongs to CA {owner.CaId}, not CA {context.CaId}.");
-        if (context.TenantId != null && context.TenantId != owner.TenantId)
+        if ((context.TenantId != null && context.TenantId != owner.TenantId) || (context.InstanceScope && owner.TenantId != null))
             return new SigningRefusedException(SigningRefusalReason.TenantMismatch,
-                $"The {owner.Kind} key {key} belongs to tenant {owner.TenantId}, not tenant {context.TenantId}.");
+                $"The {owner.Kind} key {key} belongs to {DescribeScope(owner.TenantId)}, not {(context.InstanceScope ? "the instance" : $"tenant {context.TenantId}")}.");
+        return null;
+    }
+
+    /// <summary>
+    /// Holds a commit to the CA that owns <paramref name="certificateId"/>, soft-deleted or not.
+    /// A key generated for a CA binds only to a certificate of that CA
+    /// (<see cref="SigningRefusalReason.CaMismatch"/>). Under an infrastructure context the
+    /// certificate must be the OCSP responder, TSA or CMP signer certificate of a CA
+    /// (<see cref="SigningRefusalReason.PurposeNotPermitted"/> otherwise), and that CA is held to
+    /// the context as <see cref="HoldToOwner"/> holds a signing key: the context names it, and a
+    /// scope it states is that CA's.
+    /// </summary>
+    private async Task<SigningRefusedException?> JudgeCommitOwnerAsync(PendingKey pending, Guid certificateId, SigningContext context, KeyRef key, CancellationToken cancellationToken)
+    {
+        var infrastructure = context.Purpose == SigningPurpose.Infrastructure;
+        if (pending.CaId == null && !infrastructure)
+            return null;
+
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var owner = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.CertificateId == certificateId || c.OcspResponderCertificateId == certificateId
+                     || c.TsaCertificateId == certificateId || c.CmpSigningCertificateId == certificateId)
+            .Select(c => new { c.Id, c.TenantId, IsCaCertificate = c.CertificateId == certificateId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (pending.CaId is Guid pendingCa && owner?.Id != pendingCa)
+            return new SigningRefusedException(SigningRefusalReason.CaMismatch,
+                $"The generated key {key} was generated for CA {pendingCa}; certificate {certificateId} belongs to {(owner == null ? "no CA" : $"CA {owner.Id}")}.");
+        if (!infrastructure)
+            return null;
+        if (owner == null || owner.IsCaCertificate)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"Certificate {certificateId} is no CA's OCSP responder, TSA or CMP signer certificate; an infrastructure key binds only to one.");
+        if (context.CaId == null)
+            return new SigningRefusedException(SigningRefusalReason.ContextRequired,
+                $"Committing an infrastructure key requires the context to name the CA certificate {certificateId} belongs to.");
+        if (context.CaId != owner.Id)
+            return new SigningRefusedException(SigningRefusalReason.CaMismatch,
+                $"Certificate {certificateId} belongs to CA {owner.Id}, not CA {context.CaId}.");
+        if ((context.TenantId != null && context.TenantId != owner.TenantId) || (context.InstanceScope && owner.TenantId != null))
+            return new SigningRefusedException(SigningRefusalReason.TenantMismatch,
+                $"Certificate {certificateId} belongs to CA {owner.Id} of {DescribeScope(owner.TenantId)}, not {(context.InstanceScope ? "the instance" : $"tenant {context.TenantId}")}.");
         return null;
     }
 
@@ -1346,13 +1436,13 @@ public sealed class InProcessSigningService : ISigningService
     /// it signs with, its public half, and the context that generated it, which is the only
     /// context it signs under.
     /// </summary>
-    private sealed record PendingKey(KeyRef Ref, SoftwarePrivateKeyHandle Handle, byte[] PublicKeyDer, SigningPurpose Purpose, Guid? TenantId, Guid? CaId)
+    private sealed record PendingKey(KeyRef Ref, SoftwarePrivateKeyHandle Handle, byte[] PublicKeyDer, SigningPurpose Purpose, Guid? TenantId, Guid? CaId, bool InstanceScope)
     {
         /// <summary>Holds a fresh key pair pending under a new reference.</summary>
         public static PendingKey From(AsymmetricCipherKeyPair keyPair, SigningContext context) => new(
             new KeyRef(Guid.NewGuid()),
             new SoftwarePrivateKeyHandle(keyPair.Private),
             SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(keyPair.Public).GetDerEncoded(),
-            context.Purpose, context.TenantId, context.CaId);
+            context.Purpose, context.TenantId, context.CaId, context.InstanceScope);
     }
 }

@@ -6,18 +6,19 @@ import { consoleCas, tenantsOf, type EffectiveCapabilities } from './authz';
  *
  * Four kinds of value. `all` is every CA the caller may see, offered only to callers with a
  * system-scoped capability. `tenant` is every CA of one tenant. `ca` is one CA, named by label
- * within its tenant (labels are unique per tenant, not globally). `mine` is the self-service
- * view (my certificates, my requests), which is what the `/user` portal is.
+ * within its tenant (labels are unique per tenant, not globally), or an instance CA (no tenant),
+ * which the switcher groups under "Instance". `mine` is the self-service view (my certificates,
+ * my requests), which is what the `/user` portal is.
  *
- * The scope lives in the URL, as `?tenant=<slug>`, `?tenant=<slug>&ca=<label>` or
- * `?scope=mine`, so a link carries its scope and reload and the back button keep it. The last
+ * The scope lives in the URL, as `?tenant=<slug>`, `?tenant=<slug>&ca=<label>`, `?ca=<label>`
+ * (an instance CA) or `?scope=mine`, so a link carries its scope and reload and the back button keep it. The last
  * choice is also remembered per browser so a fresh navigation without a query string opens
  * where the user left off.
  */
 export type Scope =
     | { kind: 'all' }
     | { kind: 'tenant'; tenantId: string; slug: string; name: string }
-    | { kind: 'ca'; caId: string; label: string; tenantId: string; tenantSlug: string }
+    | { kind: 'ca'; caId: string; label: string; tenantId: string | null; tenantSlug: string }
     | { kind: 'mine' };
 
 export const ALL_SCOPE: Scope = { kind: 'all' };
@@ -28,15 +29,15 @@ export const SCOPE_CA_PARAM = 'ca';
 export const SCOPE_TENANT_PARAM = 'tenant';
 export const SCOPE_KIND_PARAM = 'scope';
 
-/** The CA scope for one administrable CA. */
-export function caScope(ca: { id: string; label: string; tenantId: string; tenantSlug: string }): Scope {
-    return { kind: 'ca', caId: ca.id, label: ca.label, tenantId: ca.tenantId, tenantSlug: ca.tenantSlug };
+/** The CA scope for one administrable CA; an instance CA has a null tenant and an empty slug. */
+export function caScope(ca: { id: string; label: string; tenantId: string | null; tenantSlug: string }): Scope {
+    return { kind: 'ca', caId: ca.id, label: ca.label, tenantId: ca.tenantId ?? null, tenantSlug: ca.tenantId == null ? '' : ca.tenantSlug };
 }
 
 /**
  * Reads a scope from a query string. `?ca=<label>` wins when the label names a CA the caller
- * may scope to (within `?tenant=<slug>` when given, since labels repeat across tenants);
- * `?tenant=<slug>` alone is a tenant scope; `?scope=mine` or `?scope=all` otherwise. Anything
+ * may scope to (within `?tenant=<slug>` when given, since labels repeat across tenants; without
+ * it an instance CA of that label comes first, then the first match); `?tenant=<slug>` alone is a tenant scope; `?scope=mine` or `?scope=all` otherwise. Anything
  * else (an unknown label or slug, a CA the caller cannot see, nothing at all) is `null`, so
  * the caller falls back to a default.
  */
@@ -47,7 +48,10 @@ export function parseScope(search: string | URLSearchParams, caps: EffectiveCapa
     if (slug && !tenant) return null;
     const label = params.get(SCOPE_CA_PARAM);
     if (label) {
-        const ca = consoleCas(caps).find(c => c.label === label && (!tenant || c.tenantId === tenant.id));
+        const cas = consoleCas(caps);
+        const ca = tenant
+            ? cas.find(c => c.label === label && c.tenantId === tenant.id)
+            : cas.find(c => c.label === label && c.tenantId == null) ?? cas.find(c => c.label === label);
         return ca ? caScope(ca) : null;
     }
     if (tenant) return { kind: 'tenant', tenantId: tenant.id, slug: tenant.slug, name: tenant.name };
@@ -64,7 +68,7 @@ export function withScope(search: string | URLSearchParams, scope: Scope): URLSe
     params.delete(SCOPE_TENANT_PARAM);
     params.delete(SCOPE_KIND_PARAM);
     if (scope.kind === 'ca') {
-        params.set(SCOPE_TENANT_PARAM, scope.tenantSlug);
+        if (scope.tenantId != null) params.set(SCOPE_TENANT_PARAM, scope.tenantSlug);
         params.set(SCOPE_CA_PARAM, scope.label);
     } else if (scope.kind === 'tenant') {
         params.set(SCOPE_TENANT_PARAM, scope.slug);
@@ -94,7 +98,7 @@ export function defaultScope(caps: EffectiveCapabilities): Scope {
     return MINE_SCOPE;
 }
 
-/** The tenant id a scope is confined to, or `null` when it spans tenants. */
+/** The tenant id a scope is confined to, or `null` when it spans tenants or is an instance CA. */
 export function scopeTenantId(scope: Scope): string | null {
     return scope.kind === 'tenant' ? scope.tenantId : scope.kind === 'ca' ? scope.tenantId : null;
 }

@@ -400,13 +400,13 @@ public class BootstrapModularCA
         using var dbContext = CreateDbContext(PostgresConnection.Build(databases.App));
 
         // === Tenants (must precede CA and group creation) ===
-        var (systemTenant, orgTenant) = EnsureBootstrapTenants(
+        var orgTenant = EnsureBootstrapTenants(
             dbContext, bootstrapConfig.CA.Subject.O ?? "Default", null);
-        Console.WriteLine($"✓ System tenant and organization tenant '{orgTenant.Name}' ready.");
+        Console.WriteLine($"✓ Organization tenant '{orgTenant.Name}' ready.");
 
         // === Built-in Roles & System Groups (must precede user creation) ===
         BootstrapProfileSeeder.SeedBuiltInRoles(dbContext);
-        BootstrapProfileSeeder.CreateSystemGroups(dbContext, systemTenant.Id);
+        BootstrapProfileSeeder.CreateSystemGroups(dbContext);
 
         // === OID Loading ===
         BootstrapProfileSeeder.LoadOidsToDb(dbContext, OIDConfig);
@@ -643,55 +643,17 @@ public class BootstrapModularCA
         }
 
         BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, tenantId: orgTenant.Id);
-        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: systemTenant.Id);
+        // The system signing CA is an instance CA: no tenant.
+        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: null);
 
         var caCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, caCertEntity.CertificateId);
         var sysCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, sysCertEntity.CertificateId);
 
         // === CA-Scoped Groups (must follow CA creation, precede admin user creation) ===
         BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgTenant.Id);
-        BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, systemTenant.Id);
+        BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, null);
 
-        // === Backfill tenant IDs for any CAs/groups created without one ===
-        var unassignedCas = dbContext.CertificateAuthorities
-            .Where(ca => ca.TenantId == Guid.Empty)
-            .ToList();
-        foreach (var ca in unassignedCas)
-        {
-            ca.TenantId = ca.Label == "system-signing-ca" ? systemTenant.Id : orgTenant.Id;
-        }
-        if (unassignedCas.Count > 0)
-        {
-            dbContext.SaveChanges();
-            Console.WriteLine($"✓ Backfilled TenantId on {unassignedCas.Count} CA(s).");
-        }
-
-        var unassignedGroups = dbContext.CaGroups
-            .Where(g => g.TenantId == Guid.Empty)
-            .ToList();
-        foreach (var group in unassignedGroups)
-        {
-            if (group.IsSystemGroup)
-            {
-                group.TenantId = systemTenant.Id;
-            }
-            else if (group.CertificateAuthorityId != null)
-            {
-                var ownerCa = dbContext.CertificateAuthorities.FirstOrDefault(ca => ca.Id == group.CertificateAuthorityId);
-                group.TenantId = ownerCa?.TenantId ?? orgTenant.Id;
-            }
-            else
-            {
-                group.TenantId = orgTenant.Id;
-            }
-        }
-        if (unassignedGroups.Count > 0)
-        {
-            dbContext.SaveChanges();
-            Console.WriteLine($"✓ Backfilled TenantId on {unassignedGroups.Count} group(s).");
-        }
-
-        // mTLS signing is a configured item — system-tenant groups never use mTLS, and
+        // mTLS signing is a configured item — instance (system) groups never use mTLS, and
         // mTLS signing CAs must be non-Root issuing/intermediate CAs (Root CAs don't
         // sign end-entity certs directly). Clear legacy mTLS assignments on system groups;
         // admins attach an mTLS signing CA to an org group after they've created one.
@@ -913,8 +875,9 @@ public class BootstrapModularCA
     }
 
     /// <summary>
-    /// Ensures the system tenant and the first organisation tenant exist, with their tenant-level
-    /// groups, for both bootstrap paths. Idempotent: a second run finds both and creates nothing.
+    /// Ensures the first organisation tenant exists, with its tenant-level groups, for both
+    /// bootstrap paths, and returns it. There is no system tenant: instance CAs and the system
+    /// groups have no tenant. Idempotent: a second run finds it and creates nothing.
     /// It never creates a second organisation. Bootstrap seeds a database it has just reset, so a
     /// different organisation tenant (enabled or disabled, not soft-deleted) means the reset did
     /// not happen: it throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/>
@@ -923,32 +886,15 @@ public class BootstrapModularCA
     /// <param name="dbContext">The bootstrap context.</param>
     /// <param name="orgName">The organisation's name; its slug is derived from it.</param>
     /// <param name="orgDescription">A description, or null for the default.</param>
-    public static (TenantEntity System, TenantEntity Organization) EnsureBootstrapTenants(
+    public static TenantEntity EnsureBootstrapTenants(
         ModularCADbContext dbContext, string orgName, string? orgDescription)
     {
-        var systemTenant = dbContext.Tenants.FirstOrDefault(t => t.IsSystemTenant);
-        if (systemTenant == null)
-        {
-            systemTenant = new TenantEntity
-            {
-                Name = "System",
-                Slug = "system",
-                Description = "Internal system tenant for infrastructure CAs and system groups",
-                IsSystemTenant = true,
-                CanBeDeleted = false,
-                IsEnabled = true,
-            };
-            dbContext.Tenants.Add(systemTenant);
-            dbContext.SaveChanges();
-        }
-        CreateTenantGroups(dbContext, systemTenant);
-
         var orgSlug = orgName.ToLowerInvariant().Replace(" ", "-").Replace(".", "-");
         var orgTenant = dbContext.Tenants.FirstOrDefault(t => t.Slug == orgSlug);
         if (orgTenant == null)
         {
             var existing = dbContext.Tenants.IgnoreQueryFilters()
-                .Where(t => !t.IsSystemTenant && !t.IsDeleted)
+                .Where(t => !t.IsDeleted)
                 .OrderBy(t => t.Name)
                 .FirstOrDefault();
             if (existing is not null)
@@ -975,7 +921,7 @@ public class BootstrapModularCA
         }
         CreateTenantGroups(dbContext, orgTenant);
 
-        return (systemTenant, orgTenant);
+        return orgTenant;
     }
 
     /// <summary>

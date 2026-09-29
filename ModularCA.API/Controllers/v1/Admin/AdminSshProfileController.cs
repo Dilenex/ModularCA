@@ -40,7 +40,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// pass. The 404-collapse policy is enforced at the call site to avoid disclosing
     /// existence of cross-tenant resources.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceBySshCaKeyAsync(Guid sshCaKeyId)
+    private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceBySshCaKeyAsync(Guid sshCaKeyId)
     {
         var key = await _db.SshCaKeys.AsNoTracking()
             .FirstOrDefaultAsync(k => k.Id == sshCaKeyId);
@@ -56,8 +56,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(ca.TenantId))
                 return null;
         }
         return (ca.Id, ca.TenantId);
@@ -69,7 +69,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// profile handlers, which carry a direct (optional) CA reference rather than going
     /// through an SSH CA key.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceByCaIdAsync(Guid caId)
+    private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceByCaIdAsync(Guid caId)
     {
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
@@ -80,8 +80,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(ca.TenantId))
                 return null;
         }
         return (ca.Id, ca.TenantId);
@@ -90,9 +90,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <summary>True when the caller is a system admin (cross-tenant access permitted).</summary>
     private bool IsSystemAdmin => HttpContext.Items["IsSystemAdmin"] is true;
 
-    /// <summary>Snapshot of tenants the current request may act on; empty set when none.</summary>
-    private HashSet<Guid> AccessibleTenantIds =>
-        (HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>) ?? new HashSet<Guid>();
+    /// <summary>The fence the current request may act within; an empty one (nothing) when none was resolved.</summary>
+    private TenantFence Fence =>
+        TenantFence.From(HttpContext) ?? TenantFence.Of([], instanceScope: false);
 
     // ── SSH Signing Profiles ───────────────────────────────────────────
 
@@ -123,17 +123,21 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return Ok(all);
         }
 
-        var tenantIds = AccessibleTenantIds;
-        if (tenantIds.Count == 0)
+        var fence = Fence;
+        if (fence.TenantIds.Count == 0 && !fence.InstanceScope)
             return Ok(Array.Empty<object>());
+        var tenantIds = fence.TenantIds;
+        var instance = fence.InstanceScope;
 
-        // Join SshSigningProfile → SshCaKey → CertificateAuthority and filter by tenant.
+        // Join SshSigningProfile → SshCaKey → CertificateAuthority and filter by tenant
+        // (SSH CAs are instance CAs, so instance scope is what admits them).
         var profiles = await (
             from p in _db.SshSigningProfiles.AsNoTracking()
             join k in _db.SshCaKeys.AsNoTracking() on p.SshCaKeyId equals k.Id
             join ca in _db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
                 on k.CertificateAuthorityId equals ca.Id
-            where !ca.IsDeleted && tenantIds.Contains(ca.TenantId)
+            where !ca.IsDeleted
+                && ((ca.TenantId == null && instance) || (ca.TenantId != null && tenantIds.Contains(ca.TenantId.Value)))
             orderby p.Name
             select new
             {
@@ -239,7 +243,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         if (entity == null) return NotFound();
 
         // Fence on the profile's existing CA key binding.
-        (Guid CaId, Guid TenantId)? fence = entity.SshCaKeyId is Guid existingKeyId
+        (Guid CaId, Guid? TenantId)? fence = entity.SshCaKeyId is Guid existingKeyId
             ? await ResolveAndFenceBySshCaKeyAsync(existingKeyId)
             : null;
         if (fence == null)
@@ -298,7 +302,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         var entity = await _db.SshSigningProfiles.FindAsync(id);
         if (entity == null) return NotFound();
 
-        (Guid CaId, Guid TenantId)? fence = entity.SshCaKeyId is Guid keyId
+        (Guid CaId, Guid? TenantId)? fence = entity.SshCaKeyId is Guid keyId
             ? await ResolveAndFenceBySshCaKeyAsync(keyId)
             : null;
         if (fence == null)
@@ -519,9 +523,11 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return Ok(all);
         }
 
-        var tenantIds = AccessibleTenantIds;
-        if (tenantIds.Count == 0)
+        var fence = Fence;
+        if (fence.TenantIds.Count == 0 && !fence.InstanceScope)
             return Ok(Array.Empty<object>());
+        var tenantIds = fence.TenantIds;
+        var instance = fence.InstanceScope;
 
         var profiles = await (
             from p in _db.SshRequestProfiles.AsNoTracking()
@@ -529,7 +535,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 on p.CertificateAuthorityId equals ca.Id
             where p.CertificateAuthorityId != null
                 && !ca.IsDeleted
-                && tenantIds.Contains(ca.TenantId)
+                && ((ca.TenantId == null && instance) || (ca.TenantId != null && tenantIds.Contains(ca.TenantId.Value)))
             orderby p.Name
             select new
             {
@@ -585,7 +591,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     {
         await _currentUser.EnsureLoadedAsync();
 
-        (Guid CaId, Guid TenantId)? fence = null;
+        (Guid CaId, Guid? TenantId)? fence = null;
         if (request.CertificateAuthorityId.HasValue)
         {
             fence = await ResolveAndFenceByCaIdAsync(request.CertificateAuthorityId.Value);
@@ -650,7 +656,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         }
 
         // Capture an audit anchor for the existing CA (may be null for system-wide rows).
-        (Guid CaId, Guid TenantId)? fence = entity.CertificateAuthorityId.HasValue
+        (Guid CaId, Guid? TenantId)? fence = entity.CertificateAuthorityId.HasValue
             ? await ResolveAndFenceByCaIdAsync(entity.CertificateAuthorityId.Value)
             : null;
 
@@ -708,7 +714,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return NotFound();
         }
 
-        (Guid CaId, Guid TenantId)? fence = entity.CertificateAuthorityId.HasValue
+        (Guid CaId, Guid? TenantId)? fence = entity.CertificateAuthorityId.HasValue
             ? await ResolveAndFenceByCaIdAsync(entity.CertificateAuthorityId.Value)
             : null;
 

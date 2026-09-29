@@ -18,14 +18,17 @@ public class KeyCeremonyService : IKeyCeremonyService
 {
     private readonly ModularCADbContext _db;
     private readonly IAuditService _audit;
+    private readonly IEffectivePolicyResolver _policies;
 
     /// <summary>
-    /// Initializes a new instance of <see cref="KeyCeremonyService"/>.
+    /// Initializes a new instance of <see cref="KeyCeremonyService"/>. <paramref name="policies"/>
+    /// resolves scope quorums and defaults to one over <paramref name="db"/>.
     /// </summary>
-    public KeyCeremonyService(ModularCADbContext db, IAuditService audit)
+    public KeyCeremonyService(ModularCADbContext db, IAuditService audit, IEffectivePolicyResolver? policies = null)
     {
         _db = db;
         _audit = audit;
+        _policies = policies ?? new EffectivePolicyResolver(db);
     }
 
     /// <inheritdoc />
@@ -301,11 +304,11 @@ public class KeyCeremonyService : IKeyCeremonyService
     }
 
     /// <inheritdoc />
-    public async Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null)
+    public async Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null, bool includeInstance = false)
     {
         var ids = tenantIds.ToList();
         var query = _db.KeyCeremonies.AsNoTracking()
-            .Where(c => c.TenantId != null && ids.Contains(c.TenantId.Value));
+            .Where(c => (c.TenantId == null && includeInstance) || (c.TenantId != null && ids.Contains(c.TenantId.Value)));
 
         if (!string.IsNullOrWhiteSpace(statusFilter))
             query = query.Where(c => c.Status == statusFilter);
@@ -341,20 +344,20 @@ public class KeyCeremonyService : IKeyCeremonyService
     }
 
     /// <summary>
-    /// Resolves the raw quorum from the tenant or CA admin group. The caller clamps the
-    /// result to a minimum of 2 (initiator + at least one approver, since self-approval
-    /// is blocked).
+    /// Resolves the raw quorum from the scope's policy or the CA admin group. For the scoped
+    /// operations a null tenant means the instance, whose own CeremonyRequiredApprovals applies.
+    /// The caller clamps the result to a minimum of 1.
     /// </summary>
     private async Task<int> ResolveQuorumAsync(string operationType, string targetEntityId, Guid? tenantId)
     {
-        // For new CA creation, use the tenant-level ceremony approval count
-        // since the target CA (and its admin group) don't exist yet. TenantPolicyChange
-        // is also tenant-scoped and uses the same tenant-level quorum.
-        if (operationType is "CreateRootCA" or "CreateIntermediateCA" or "CreateSshCa" or "DeleteSshCa" or "RevokeCa" or "TenantPolicyChange" && tenantId.HasValue)
+        // For new CA creation, use the scope-level ceremony approval count since the target CA
+        // (and its admin group) don't exist yet. TenantPolicyChange and InstancePolicyChange are
+        // scope-level too and use the same quorum.
+        if (operationType is "CreateRootCA" or "CreateIntermediateCA" or "CreateSshCa" or "DeleteSshCa" or "RevokeCa" or "TenantPolicyChange" or "InstancePolicyChange")
         {
-            var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
-            if (tenant != null)
-                return Math.Max(1, tenant.CeremonyRequiredApprovals);
+            var policy = await _policies.ResolveAsync(tenantId);
+            if (policy.Found)
+                return Math.Max(1, policy.CeremonyRequiredApprovals);
         }
 
         // For existing CA operations, use the CA's admin group quorum

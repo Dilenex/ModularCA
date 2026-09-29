@@ -220,7 +220,8 @@ public static class BootstrapCertCreator
 
     /// <summary>
     /// Creates a certificate authority entity in the database, linked to the given certificate.
-    /// Supports root, intermediate, and issuing CA types. Sets TenantId for multi-tenancy.
+    /// Supports root, intermediate, and issuing CA types. A null <paramref name="tenantId"/>
+    /// creates an instance CA, such as the system signing CA.
     /// </summary>
     public static void CreateCertificateAuthority(ModularCADbContext db, CertificateEntity caCertificateEntity,
         string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? tenantId = null)
@@ -238,7 +239,7 @@ public static class BootstrapCertCreator
             IsDefault = isDefault,
             Label = label ?? ToLabel(caName),
             ParentCaId = parentCaId,
-            TenantId = tenantId ?? db.Tenants.Select(t => t.Id).First(),
+            TenantId = tenantId,
         };
         db.CertificateAuthorities.Add(caEntity);
         db.SaveChanges();

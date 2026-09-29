@@ -152,12 +152,35 @@ public class SecurityPolicyEntity
     /// <summary>
     /// System-level "user quorum": the number of approvals required for controlled-user
     /// ceremonies (promote/demote/delete of an admin/operator/CA-admin) when the change is
-    /// system-scoped. CA/tenant-scoped changes prefer the tenant's
-    /// <see cref="TenantEntity.UserCeremonyRequiredApprovals"/> when set, falling back here.
+    /// system-scoped. CA- and tenant-scoped changes use their own scope's quorum instead.
     /// Distinct from the CA/key quorum. Default 1 (one other dominating approver; the
     /// initiator is always excluded). Clamped to a minimum of 1 on write.
     /// </summary>
     public int UserQuorum { get; set; } = 1;
+
+    // ── Instance CA policy (the instance's own scope; spaces keep theirs on TenantEntity) ──
+    /// <summary>
+    /// When true, creating, revoking or deleting an instance CA (one with no tenant) requires a
+    /// key ceremony. The instance counterpart of <see cref="TenantEntity.RequireKeyCeremony"/>.
+    /// </summary>
+    public bool RequireKeyCeremony { get; set; } = true;
+
+    /// <summary>Approvals required for key ceremonies on instance CAs. Default 2.</summary>
+    public int CeremonyRequiredApprovals { get; set; } = 2;
+
+    /// <summary>Longest leaf validity, in days, for instance CAs. 0 means unlimited.</summary>
+    public int MaxValidityDays { get; set; } = 0;
+
+    /// <summary>What happens when a request to an instance CA exceeds <see cref="MaxValidityDays"/>.</summary>
+    public ModularCA.Shared.Enums.ValidityCeilingBehavior ValidityCeilingBehavior { get; set; } = ModularCA.Shared.Enums.ValidityCeilingBehavior.Shorten;
+
+    /// <summary>
+    /// User quorum for controlled-user changes scoped to an instance CA, and the ceiling for
+    /// such a CA's own override. Null means 1. The instance counterpart of
+    /// <see cref="TenantEntity.UserCeremonyRequiredApprovals"/>; distinct from
+    /// <see cref="UserQuorum"/>, which governs instance-tier changes.
+    /// </summary>
+    public int? UserCeremonyRequiredApprovals { get; set; }
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

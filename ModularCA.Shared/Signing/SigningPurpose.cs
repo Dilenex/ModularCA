@@ -36,7 +36,7 @@ public enum SigningPurpose
     /// <summary>Export of an end-entity key to its holder.</summary>
     Export,
 
-    /// <summary>Initial bootstrap of the node, before any ceremony exists.</summary>
+    /// <summary>Initial bootstrap of the node, before any ceremony exists. It moves whole keystore files only and manages no individual key.</summary>
     Bootstrap,
 
     /// <summary>Restore of a backup: keystore files imported through the signer as the archive carries them.</summary>

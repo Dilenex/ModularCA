@@ -11,8 +11,8 @@ namespace ModularCA.Tests.Bootstrap;
 
 /// <summary>
 /// Single-organisation mode: a second organisation tenant is refused unless
-/// <c>Features.AllowMultipleOrganizations</c> is set, and bootstrap still creates the system
-/// tenant and the first organisation, idempotently.
+/// <c>Features.AllowMultipleOrganizations</c> is set, and bootstrap creates the first
+/// organisation, idempotently, and no system tenant.
 /// </summary>
 public class SingleOrganizationModeTests
 {
@@ -47,27 +47,41 @@ public class SingleOrganizationModeTests
     }
 
     [Fact]
-    public void Bootstrap_creates_the_system_tenant_and_one_organisation_idempotently()
+    public void Bootstrap_creates_one_organisation_and_no_system_tenant_idempotently()
     {
         var name = $"bootstrap-{Guid.NewGuid():N}";
         using (var db = InMemoryDbContextFactory.Create(name))
         {
-            var (system, org) = BootstrapModularCA.EnsureBootstrapTenants(db, "Acme Corp", null);
-            Assert.True(system.IsSystemTenant);
+            var org = BootstrapModularCA.EnsureBootstrapTenants(db, "Acme Corp", null);
             Assert.Equal("acme-corp", org.Slug);
         }
 
         using (var db = InMemoryDbContextFactory.Create(name))
         {
             var groupsBefore = db.CaGroups.Count();
-            var (system, org) = BootstrapModularCA.EnsureBootstrapTenants(db, "Acme Corp", null);
-            Assert.Equal(2, db.Tenants.IgnoreQueryFilters().Count());
-            Assert.Equal(1, db.Tenants.IgnoreQueryFilters().Count(t => t.IsSystemTenant));
+            var org = BootstrapModularCA.EnsureBootstrapTenants(db, "Acme Corp", null);
+            Assert.Equal(1, db.Tenants.IgnoreQueryFilters().Count());
             Assert.Equal(groupsBefore, db.CaGroups.Count());
-            Assert.Equal(8, groupsBefore);
+            Assert.Equal(4, groupsBefore);
+            Assert.DoesNotContain(db.CaGroups, g => g.Name.StartsWith("org-system-"));
             Assert.Equal("acme-corp", org.Slug);
-            Assert.True(system.IsSystemTenant);
         }
+    }
+
+    [Fact]
+    public void Bootstrap_system_groups_and_instance_ca_groups_have_no_tenant()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        BootstrapProfileSeeder.SeedBuiltInRoles(db);
+        BootstrapProfileSeeder.CreateSystemGroups(db);
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "System Signing CA", Label = "system-signing-ca", TenantId = null };
+        db.CertificateAuthorities.Add(ca);
+        db.SaveChanges();
+        BootstrapProfileSeeder.CreateCaGroups(db, ca, null);
+
+        Assert.All(db.CaGroups.ToList(), g => Assert.Null(g.TenantId));
+        Assert.Contains(db.CaGroups, g => g.Name == "system_system-signing-ca_admin" && g.CertificateAuthorityId == ca.Id);
+        Assert.Equal(4, db.CaGroups.Count(g => g.IsSystemGroup));
     }
 
     [Fact]
@@ -83,7 +97,7 @@ public class SingleOrganizationModeTests
         Assert.Contains("Existing", ex.Message);
         Assert.Contains("Other Org", ex.Message);
         Assert.DoesNotContain("AllowMultipleOrganizations", ex.Remediation);
-        Assert.Equal(1, db.Tenants.IgnoreQueryFilters().Count(t => !t.IsSystemTenant));
+        Assert.Equal(1, db.Tenants.IgnoreQueryFilters().Count());
     }
 
     [Fact]

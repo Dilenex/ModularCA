@@ -76,12 +76,10 @@ public class CaGroupEntity
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// The tenant this group belongs to. Required for all groups.
-    /// Inherited from the associated CA when auto-generated, or set explicitly for custom groups.
-    /// System groups use the System tenant.
+    /// The tenant this group belongs to, or null for an instance group: the system groups and
+    /// the groups of instance CAs. Inherited from the associated CA when auto-generated.
     /// </summary>
-    [Required]
-    public Guid TenantId { get; set; }
+    public Guid? TenantId { get; set; }
 
     /// <summary>
     /// The CA that signs mTLS client certificates for members of this group.

@@ -13,6 +13,10 @@ public class SshKeyCeremonyParameters
     public bool IsUserCa { get; set; }
     public bool IsHostCa { get; set; }
     public int MaxValidityHours { get; set; } = 720;
-    public Guid TenantId { get; set; }
+
+    /// <summary>The SSH CA's tenant; null for an instance SSH CA. <see cref="Guid.Empty"/> reads as null.</summary>
+    public Guid? TenantId { get => _tenantId; set => _tenantId = value == Guid.Empty ? null : value; }
+    private Guid? _tenantId;
+
     public Guid? SshCaKeyId { get; set; }
 }

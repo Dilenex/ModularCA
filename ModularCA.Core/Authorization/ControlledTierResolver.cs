@@ -86,11 +86,17 @@ public static class ControlledTierResolver
         return null;
     }
 
-    /// <summary>The tier a capability held through a group confers; the group's own scope applies.</summary>
-    public static ControlledTier? TierForGroupCapability(string capability, bool isSystemGroup, Guid groupTenantId, Guid? groupCaId) =>
-        isSystemGroup
-            ? TierFor(capability, null, null, null)
-            : TierFor(capability, groupTenantId, groupCaId, groupTenantId);
+    /// <summary>
+    /// The tier a capability held through a group confers; the group's own scope applies. Only
+    /// a system group confers a system tier: a non-system group with neither tenant nor CA
+    /// confers none, so a null tenant can never widen a group into system scope.
+    /// </summary>
+    public static ControlledTier? TierForGroupCapability(string capability, bool isSystemGroup, Guid? groupTenantId, Guid? groupCaId)
+    {
+        if (isSystemGroup) return TierFor(capability, null, null, null);
+        if (groupCaId == null && groupTenantId == null) return null;
+        return TierFor(capability, groupTenantId, groupCaId, groupTenantId);
+    }
 
     /// <summary>
     /// Of several tiers, the one that dominates the others (super &gt; system-admin &gt; org-admin &gt;
@@ -253,7 +259,7 @@ public static class ControlledTierResolver
             .Concat(userAssignments.Select(a => a.CertificateAuthorityId))
             .Where(id => id != null).Select(id => id!.Value).Distinct().ToList();
         var caTenants = caIds.Count == 0
-            ? new Dictionary<Guid, Guid>()
+            ? new Dictionary<Guid, Guid?>()
             : await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
                 .Where(c => caIds.Contains(c.Id))
                 .ToDictionaryAsync(c => c.Id, c => c.TenantId);

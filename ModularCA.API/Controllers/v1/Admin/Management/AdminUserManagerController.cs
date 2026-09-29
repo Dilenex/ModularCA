@@ -110,7 +110,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <remarks>
         /// Users carry no tenant of their own; tenancy is a property of the groups they belong to.
         /// An account is visible when at least one of its group memberships is in a group whose
-        /// tenant the caller can access. An account with no memberships at all is visible only to
+        /// tenant the caller can access, or in an instance group when the caller has instance
+        /// scope. An account with no memberships at all is visible only to
         /// system administrators, since nothing places it in any tenant.
         /// </remarks>
         private async Task<List<UserEntityDto>> ScopeToCallerAsync(List<UserEntityDto> users)
@@ -119,13 +120,16 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (tenantContext.IsSystemAdmin)
                 return users;
 
-            var accessible = tenantContext.AccessibleTenantIds;
-            if (accessible.Count == 0)
+            var accessible = tenantContext.AccessibleTenantIds.ToHashSet();
+            var instance = tenantContext.HasInstanceScope;
+            if (accessible.Count == 0 && !instance)
                 return [];
 
+            // Instance groups (no tenant) count for a caller with instance scope, as the System
+            // tenant's groups did for its members.
             var visibleGroupIds = await _dbContext.CaGroups
                 .AsNoTracking()
-                .Where(g => accessible.Contains(g.TenantId))
+                .Where(g => (g.TenantId == null && instance) || (g.TenantId != null && accessible.Contains(g.TenantId.Value)))
                 .Select(g => g.Id)
                 .ToHashSetAsync();
 

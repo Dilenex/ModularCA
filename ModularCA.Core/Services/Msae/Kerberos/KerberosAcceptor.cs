@@ -12,7 +12,7 @@ namespace ModularCA.Core.Services.Msae.Kerberos;
 /// database.
 /// </summary>
 /// <param name="Realm">Upper-case Kerberos realm, e.g. <c>CORP.CUSTOMER-A.LOCAL</c>.</param>
-/// <param name="TenantId">The tenant the forest belongs to; the isolation boundary.</param>
+/// <param name="TenantId">The tenant the forest belongs to, or null for an instance realm; the isolation boundary.</param>
 /// <param name="ServicePrincipal">The SPN registered in the forest, e.g. <c>HTTP/ca4.maroongang.net</c>. Tickets for any other name are refused.</param>
 /// <param name="DnsDomain">Lower-case DNS domain used to build machine names and UPNs.</param>
 /// <param name="EnrollmentUserId">The ModularCA user whose capabilities the forest's principals act with.</param>
@@ -22,7 +22,7 @@ namespace ModularCA.Core.Services.Msae.Kerberos;
 /// <param name="Keys">Every live key version for the service principal, newest first.</param>
 public sealed record KerberosRealmKeys(
     string Realm,
-    Guid TenantId,
+    Guid? TenantId,
     string ServicePrincipal,
     string DnsDomain,
     Guid EnrollmentUserId,
@@ -116,9 +116,10 @@ public sealed class KerberosAcceptor(
 
     /// <summary>
     /// Accepts <paramref name="token"/> (the bytes after <c>Negotiate </c> in the Authorization
-    /// header) for a request addressed to a CA of <paramref name="tenantId"/>.
+    /// header) for a request addressed to a CA of <paramref name="tenantId"/> (null for an
+    /// instance CA, which only an instance realm serves).
     /// </summary>
-    public async Task<KerberosAcceptResult> AcceptAsync(ReadOnlyMemory<byte> token, Guid tenantId, CancellationToken cancellation = default)
+    public async Task<KerberosAcceptResult> AcceptAsync(ReadOnlyMemory<byte> token, Guid? tenantId, CancellationToken cancellation = default)
     {
         KrbApReq apReq;
         string? spnegoMech;

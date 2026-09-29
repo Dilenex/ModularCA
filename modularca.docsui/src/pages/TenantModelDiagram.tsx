@@ -5,72 +5,68 @@ export default function TenantModelDiagram() {
                 Multi-Tenancy Model
             </h1>
             <p className="text-lg text-gray-600 dark:text-gray-400 leading-relaxed mb-8">
-                ModularCA supports multi-tenancy, allowing a single deployment to serve multiple organizations
-                with isolated CAs, users, and resource quotas. The tenant model is hierarchical: tenants own
-                CAs, CAs have groups, and groups contain users with role-based permissions. Bootstrap creates
-                two tenants: a "System" tenant (owns infrastructure CAs) and an organization tenant (from the
-                config's Organization name, owns the root CA).
+                A ModularCA deployment is one instance. The instance owns its own infrastructure CAs (the
+                System Signing CA and any SSH CAs) and the system groups; none of them belongs to a tenant.
+                Tenants (organizations) own the CAs created in them, CAs have groups, and groups contain
+                users with role-based permissions. Bootstrap creates one tenant, from the config's
+                Organization name, which owns the root CA. Since 0.4.0 there is no "System" tenant.
             </p>
 
             {/* Model Diagram */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Tenant Hierarchy</h2>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Instance and Tenants</h2>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm overflow-x-auto mb-4">
                     <pre className="text-gray-700 dark:text-gray-300">{`
   +----------------------------------------------------------------------+
-  |                       ModularCA Deployment                           |
+  |                    ModularCA Instance                                |
+  |   policy: SecurityPolicy (RequireKeyCeremony, approvals, ceiling)    |
   +----------------------------------------------------------------------+
   |                                                                      |
-  |  +--------------------------+   +-----------------------------+      |
-  |  |   System Tenant          |   |   Org Tenant "Acme"         |      |
-  |  |   (Built-in)             |   |   (Created by admin)        |      |
-  |  +------------+-------------+   +-------------+---------------+      |
-  |               |                               |                      |
-  |     +---------+---------+           +---------+---------+            |
-  |     |                   |           |                   |            |
-  |  +--+------+  +--------+--+     +--+------+  +--------+--+          |
-  |  | Root CA |  | System    |     | Acme   |  | Acme      |          |
-  |  |         |  | Signing   |     | Root   |  | Issuing   |          |
-  |  |         |  | CA        |     | CA     |  | CA        |          |
-  |  +----+----+  +--------+--+     +--------+  +-----+-----+          |
-  |       |                |                           |                |
-  |  +----+-------------+  |     +---------------------+----------+     |
-  |  | System Groups    |  |     | Auto-Generated Groups          |     |
-  |  | - system-super   |  |     | - AcmeIssuing-Admin    (lvl 1) |     |
-  |  | - system-admin   |  |     | - AcmeIssuing-Operator (lvl 2) |     |
-  |  | - system-operator|  |     | - AcmeIssuing-Auditor  (lvl 3) |     |
-  |  | - system-auditor |  |     | - AcmeIssuing-User     (lvl 4) |     |
-  |  +----+-------------+  |     +---------------------+----------+     |
-  |       |                |                           |                |
-  |  +----+--------+      |                    +-------+------+         |
-  |  | Users       |      |                    | Users        |         |
-  |  | - admin     |      |                    | - alice      |         |
-  |  | - operator  |      |                    | - bob        |         |
-  |  +-------------+      |                    +--------------+         |
-  |                        |                                            |
+  |  Instance CAs (no tenant)           +-----------------------------+  |
+  |  +------------+  +------------+     |   Tenant "Acme"             |  |
+  |  | System     |  | SSH CAs    |     |   policy: its own fields    |  |
+  |  | Signing CA |  |            |     +-------------+---------------+  |
+  |  +-----+------+  +------------+                   |                  |
+  |        |                             +------------+----------+       |
+  |  +-----+----------------------+      |                       |       |
+  |  | system_system-signing-ca_* |   +--+------+  +---------+---+       |
+  |  +----------------------------+   | Acme    |  | Acme      |         |
+  |                                   | Root CA |  | Issuing CA|         |
+  |  System groups (no tenant)        +---------+  +-----+-----+         |
+  |  - system-super                                      |               |
+  |  - system-admin                  +-------------------+----------+    |
+  |  - system-operator               | acme_issuing-ca_admin        |    |
+  |  - system-auditor                | acme_issuing-ca_operator ... |    |
+  |       |                          +-------------------+----------+    |
+  |  +----+--------+                               +-----+--------+      |
+  |  | Users       |                               | Users        |      |
+  |  | - admin     |                               | - alice      |      |
+  |  +-------------+                               +--------------+      |
   +----------------------------------------------------------------------+
 `}</pre>
                 </div>
             </section>
 
-            {/* System Tenant */}
+            {/* The Instance */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">System Tenant</h2>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">The Instance</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    The system tenant is created automatically during setup and cannot be deleted. It owns the
-                    root CA and the System Signing CA. System-level administrators belong to this tenant.
+                    Instance-wide settings belong to the instance, not to a tenant. A CA, group, Kerberos realm,
+                    grant or role assignment with no tenant is at instance scope.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
-                    <li>Always exists -- created during bootstrap</li>
-                    <li>Owns the root CA hierarchy created during setup</li>
-                    <li>Hosts system groups that grant cross-tenant access</li>
-                    <li>The initial admin account belongs to the system tenant</li>
-                    <li>Cannot be disabled or deleted</li>
+                    <li>The System Signing CA and SSH CAs are instance CAs: they have no tenant</li>
+                    <li>The system groups (system-super, system-admin, system-operator, system-auditor) have no tenant</li>
+                    <li>Instance CA policy lives on the <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">SecurityPolicy</code> row
+                        (Settings, Security Policy): RequireKeyCeremony, CeremonyRequiredApprovals, MaxValidityDays and ValidityCeilingBehavior</li>
+                    <li>Scopes are independent: the instance's policy governs instance CAs only, and a tenant's policy governs its own CAs only; nothing merges</li>
+                    <li>Members of a system group, or of an instance CA's group, see the instance CAs</li>
                 </ul>
                 <div className="border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-r">
                     <p className="text-gray-700 dark:text-gray-300 text-sm">
-                        <span className="font-semibold">Note:</span> Users in the system tenant with appropriate
-                        group roles can manage all other tenants. This is the platform-admin model.
+                        <span className="font-semibold">Upgrading from 0.3.x:</span> release 0.4.0 folds the former System
+                        tenant into the instance. Its values move to the instance's policy as they were, and its
+                        tenant-wide <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">org-system-*</code> groups are removed.
                     </p>
                 </div>
             </section>
@@ -109,7 +105,7 @@ export default function TenantModelDiagram() {
                     <tbody className="text-gray-700 dark:text-gray-300">
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4 font-mono text-sm">RequireKeyCeremony</td>
-                            <td className="py-2">When true, CA creation requires a multi-party key ceremony approval workflow</td>
+                            <td className="py-2">When true, creating, revoking or deleting one of this tenant's CAs requires a multi-party key ceremony (the instance has its own)</td>
                         </tr>
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4 font-mono text-sm">CeremonyRequiredApprovals</td>
@@ -126,10 +122,6 @@ export default function TenantModelDiagram() {
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4 font-mono text-sm">MaxUsers</td>
                             <td className="py-2">Maximum user accounts in this tenant's groups (0 = unlimited)</td>
-                        </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">IsSystemTenant</td>
-                            <td className="py-2">System tenants cannot be deleted or disabled</td>
                         </tr>
                         <tr>
                             <td className="py-2 pr-4 font-mono text-sm">CanBeDeleted</td>
@@ -149,7 +141,8 @@ export default function TenantModelDiagram() {
                     of the name so two tenants can own CAs with the same label without colliding on the unique
                     group-name index; the underscores remove the hyphen-boundary ambiguity in a name like
                     <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">modularca_modularca-root-cert-1_admin</code>.
-                    System-level groups use a <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-</code> prefix.
+                    Instance CAs have no tenant, so their groups use the slug <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system</code>,
+                    which no tenant may take. System-level groups use a <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-</code> prefix.
                 </p>
                 <table className="w-full border-collapse mb-4">
                     <thead>
@@ -169,6 +162,11 @@ export default function TenantModelDiagram() {
                             <td className="py-2 pr-4">CA-scoped</td>
                             <td className="py-2 pr-4 font-mono text-sm">{'{tenantSlug}_{caLabel}_'}</td>
                             <td className="py-2 font-mono text-sm">acme_webserver-ca_admin, acme_webserver-ca_operator</td>
+                        </tr>
+                        <tr className="border-b border-gray-100 dark:border-gray-800">
+                            <td className="py-2 pr-4">Instance CA</td>
+                            <td className="py-2 pr-4 font-mono text-sm">{'system_{caLabel}_'}</td>
+                            <td className="py-2 font-mono text-sm">system_system-signing-ca_admin</td>
                         </tr>
                         <tr>
                             <td className="py-2 pr-4">System (global)</td>
@@ -366,7 +364,7 @@ export default function TenantModelDiagram() {
                     certificates within their own tenant scope.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
-                    <li>Every entity (CA, certificate, user, group) has a tenant ID foreign key</li>
+                    <li>CAs and groups carry a tenant ID; instance CAs and system groups carry none</li>
                     <li>All queries include a tenant filter derived from the JWT <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">tenant</code> claim</li>
                     <li>Admin endpoints filter by tenant -- users only see CAs and certificates within their tenant</li>
                     <li>Cross-tenant access requires system-level groups (<code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-super</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-admin</code>, etc.)</li>

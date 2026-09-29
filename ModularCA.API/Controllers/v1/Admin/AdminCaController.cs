@@ -54,10 +54,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .AsNoTracking()
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null)
-                query = query.Where(ca => tenantIds.Contains(ca.TenantId));
+            // Filter CAs to only those belonging to the user's accessible tenants (or the instance)
+            var fence = TenantFence.From(HttpContext);
+            if (fence != null)
+                query = query.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
 
             var cas = await query.ToListAsync();
 
@@ -100,11 +100,12 @@ namespace ModularCA.API.Controllers.v1.Admin
             var caCerts = certs.Where(c => c.IsCA).ToList();
 
             // Apply tenant filtering for non-system-admins
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+            var fence = TenantFence.From(HttpContext);
+            if (fence != null && !fence.IsSystemAdmin)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
-                    .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                    .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                    .Where(ca => ca.CertificateId != null)
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
                 var accessibleCertIdSet = new HashSet<Guid>(accessibleCertIds);
@@ -217,10 +218,10 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /admin/ssh — keep them out of the X.509 hierarchy
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null)
-                caQuery = caQuery.Where(ca => tenantIds.Contains(ca.TenantId));
+            // Filter CAs to only those belonging to the user's accessible tenants (or the instance)
+            var fence = TenantFence.From(HttpContext);
+            if (fence != null)
+                caQuery = caQuery.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
 
             var cas = await caQuery.ToListAsync();
             var caIds = cas.Select(ca => ca.Id).ToHashSet();
@@ -391,7 +392,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// with a parent in that tenant or one the caller holds <c>ca.manage</c> on. The tenant
         /// and parent come from the body, so the check is made here rather than by a route policy
         /// (see <see cref="CaCreationAccess"/>). A parent that is disabled, revoked or outside its
-        /// validity is refused before any ceremony is opened.
+        /// validity is refused before any ceremony is opened. The body names the new CA's scope
+        /// explicitly, a tenant id or scope "instance"; neither is a 400.
         /// </summary>
         [HttpPost("create-intermediate")]
         [Authorize]
@@ -400,6 +402,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+            if (ModularCA.Shared.Models.KeyCeremonyParameters.ScopeError(request.TenantId, request.Scope) is string scopeError)
+                return BadRequest(new { error = scopeError });
 
             if (!await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, _currentUser.User.Id, request.TenantId, request.ParentCaId))
             {
@@ -433,9 +437,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
 
-            // Check ceremony-first enforcement for this tenant
-            var tenant = await _db.Tenants.FindAsync(request.TenantId);
-            if (tenant?.RequireKeyCeremony == true)
+            // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
+            var tenant = await new EffectivePolicyResolver(_db).ResolveAsync(request.TenantId);
+            if (!tenant.Found)
+                return NotFound(new { error = $"Tenant '{request.TenantId}' not found." });
+            if (tenant.RequireKeyCeremony)
             {
                 var parameters = new ModularCA.Shared.Models.KeyCeremonyParameters
                 {
@@ -449,6 +455,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     KeySize = request.KeySize,
                     ValidityYears = request.ValidityYears,
                     TenantId = request.TenantId,
+                    Scope = request.TenantId == null ? ModularCA.Shared.Models.KeyCeremonyParameters.InstanceScope : null,
                     ParentCaId = request.ParentCaId,
                     Label = request.Label,
                     PublicBaseUrl = request.PublicBaseUrl,
@@ -469,7 +476,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ceremonyId = ceremony.Id,
                     ceremony.Status,
                     ceremony.RequiredApprovals,
-                    message = $"Key ceremony required for tenant '{tenant.Name}'. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
+                    message = $"Key ceremony required for {tenant.Describe()}. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
                 });
             }
 
@@ -603,31 +610,32 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Shared tenant gate for CA certificate lookups. Returns true
-        /// when the caller is a system admin (all tenants), or when the owning CA's tenant
-        /// is in the caller's <c>AccessibleTenantIds</c>. Also returns true when the cert is
-        /// not attached to any CA record (legacy / standalone trust anchor).
+        /// when the caller is a system admin (all tenants), or when the owning CA's scope
+        /// is inside the caller's <see cref="TenantFence"/> (an instance CA needs instance scope).
+        /// An unbound cert is refused.
         /// </summary>
         private async Task<bool> CallerCanSeeCaCertAsync(Guid certificateId)
         {
             if (HttpContext.Items["IsSystemAdmin"] is true)
                 return true;
 
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null)
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null)
                 return false;
 
             // If the certificate is not bound to any CertificateAuthorities row, fall back
             // to denying — admin callers should never reach here through an unbound cert.
-            var caTenant = await _db.CertificateAuthorities
+            var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.CertificateId == certificateId)
-                .Select(c => (Guid?)c.TenantId)
+                .Select(c => new { c.TenantId })
                 .FirstOrDefaultAsync();
-            return caTenant.HasValue && tenantIds.Contains(caTenant.Value);
+            return ca != null && fence.Allows(ca.TenantId);
         }
 
         /// <summary>
-        /// Create a new self-signed root CA. Requires step-up MFA verification.
+        /// Create a new self-signed root CA. Requires step-up MFA verification. The body names the
+        /// CA's scope explicitly, a tenant id or scope "instance"; neither is a 400.
         /// </summary>
         [HttpPost("create-root")]
         [Authorize(Policy = "SystemAdmin")]
@@ -636,6 +644,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+            if (ModularCA.Shared.Models.KeyCeremonyParameters.ScopeError(request.TenantId, request.Scope) is string scopeError)
+                return BadRequest(new { error = scopeError });
 
             if (string.IsNullOrWhiteSpace(request.SubjectCN))
                 return BadRequest(new { error = "Common Name is required" });
@@ -644,9 +654,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
 
-            // Check ceremony-first enforcement for this tenant
-            var rootTenant = await _db.Tenants.FindAsync(request.TenantId);
-            if (rootTenant?.RequireKeyCeremony == true)
+            // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
+            var rootTenant = await new EffectivePolicyResolver(_db).ResolveAsync(request.TenantId);
+            if (!rootTenant.Found)
+                return NotFound(new { error = $"Tenant '{request.TenantId}' not found." });
+            if (rootTenant.RequireKeyCeremony)
             {
                 var parameters = new ModularCA.Shared.Models.KeyCeremonyParameters
                 {
@@ -660,6 +672,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     KeySize = request.KeySize,
                     ValidityYears = request.ValidityYears,
                     TenantId = request.TenantId,
+                    Scope = request.TenantId == null ? ModularCA.Shared.Models.KeyCeremonyParameters.InstanceScope : null,
                     Label = request.Label,
                     PublicBaseUrl = request.PublicBaseUrl,
                     NameConstraintsPermitted = request.NameConstraintsPermitted,
@@ -678,7 +691,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ceremonyId = ceremony.Id,
                     ceremony.Status,
                     ceremony.RequiredApprovals,
-                    message = $"Key ceremony required for tenant '{rootTenant.Name}'. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
+                    message = $"Key ceremony required for {rootTenant.Describe()}. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
                 });
             }
 
@@ -900,8 +913,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         public string? SubjectC { get; set; }
 
         public Guid ParentCaId { get; set; }
-        /// <summary>Tenant that owns this CA.</summary>
-        public Guid TenantId { get; set; }
+        /// <summary>Tenant that owns this CA. <see cref="Guid.Empty"/> reads as none; with none, <see cref="Scope"/> must be "instance".</summary>
+        public Guid? TenantId { get => _tenantId; set => _tenantId = value == Guid.Empty ? null : value; }
+        private Guid? _tenantId;
+        /// <summary>"instance" for an instance CA (no <see cref="TenantId"/>); omitted with a tenant.</summary>
+        [MaxLength(20)]
+        public string? Scope { get; set; }
 
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
@@ -959,8 +976,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         [MaxLength(256)]
         public string? SubjectC { get; set; }
 
-        /// <summary>Tenant that owns this CA.</summary>
-        public Guid TenantId { get; set; }
+        /// <summary>Tenant that owns this CA. <see cref="Guid.Empty"/> reads as none; with none, <see cref="Scope"/> must be "instance".</summary>
+        public Guid? TenantId { get => _tenantId; set => _tenantId = value == Guid.Empty ? null : value; }
+        private Guid? _tenantId;
+        /// <summary>"instance" for an instance CA (no <see cref="TenantId"/>); omitted with a tenant.</summary>
+        [MaxLength(20)]
+        public string? Scope { get; set; }
 
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";

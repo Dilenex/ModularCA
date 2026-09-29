@@ -6,6 +6,7 @@ import { Chevron } from '@shared/components/Chevron';
 import { Link, useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa, getToken, forceRefresh, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -187,6 +188,7 @@ const POLICY_FIELDS: Record<string, { label: string; hint: string }> = {
 /* --- Config Tab (accepts tab prop to determine which sections to show) --- */
 const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const { requireStepUp } = useStepUp();
+    const { user } = useAuth();
     const { showToast } = useToast();
     const [config, setConfig] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -444,9 +446,21 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const handleSaveSecurityPolicy = async () => {
         setSecurityPolicySaving(true);
         try {
-            await apiPutWithMfa('/api/v1/admin/security-policy', securityPolicy, requireStepUp, StepUpOps.UpdateConfig);
-            snap('securityPolicy', securityPolicy);
-            showToast('success', 'Security policy updated');
+            // A super turning the instance's ceremony requirement off applies it directly, so the
+            // server asks for the disable-ceremony-requirement step-up instead (KC-07).
+            const wasRequired = saved.current.securityPolicy ? JSON.parse(saved.current.securityPolicy).requireKeyCeremony !== false : true;
+            const op = user?.isSuper && wasRequired && securityPolicy.requireKeyCeremony === false
+                ? StepUpOps.DisableCeremonyRequirement : StepUpOps.UpdateConfig;
+            const result = await apiPutWithMfa<any>('/api/v1/admin/security-policy', securityPolicy, requireStepUp, op);
+            // 202 + ceremonyId: a non-super change to the instance's key-ceremony policy waits for
+            // an InstancePolicyChange ceremony; everything else was saved. Reload to show which.
+            if (result?.ceremonyId) {
+                showToast('info', 'Instance policy change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
+                loadSecurityPolicy();
+            } else {
+                snap('securityPolicy', securityPolicy);
+                showToast('success', 'Security policy updated');
+            }
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save security policy');
         } finally {
@@ -853,12 +867,29 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Controlled-User Ceremonies</h4>
                                         <p className="text-[11px] text-gray-500 dark:text-gray-500">
                                             <strong>User quorum</strong> = approvals required to promote / demote / delete a controlled user (admin / operator / CA-admin)
-                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (per-tenant CA-ceremony approvals, set in Tenants).
+                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per tenant in Tenants and for the instance below).
                                             The initiator is always excluded, so the effective minimum is 1 other approver.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1}
                                                 hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Tenants and CAs may set a lower figure, never a higher one." />
+                                        </div>
+                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Instance CA Policy</h4>
+                                        <p className="text-[11px] text-gray-500 dark:text-gray-500">
+                                            Governs the instance's own CAs only (no tenant: the system signing CA, SSH CAs). Each tenant keeps its own
+                                            policy, set in Tenants; the two are independent and nothing merges. System administrators only; a change to the
+                                            ceremony requirement or its approvals by anyone but a system super-administrator opens a ceremony.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <ConfigToggle label="Require Key Ceremony" checked={securityPolicy.requireKeyCeremony ?? true} onChange={(v) => updateSecurityPolicyField('requireKeyCeremony', v)}
+                                                hintTone={securityPolicy.requireKeyCeremony === false ? 'warn' : 'muted'}
+                                                hint="Creating, revoking or deleting an instance CA needs a key ceremony. Off lets an administrator do it directly." />
+                                            <ConfigNumber label="Ceremony Required Approvals (min 1)" value={securityPolicy.ceremonyRequiredApprovals} onChange={(v) => updateSecurityPolicyField('ceremonyRequiredApprovals', v)} fallback={2}
+                                                hint="Approvals from other people for a key ceremony on an instance CA. The initiator is never counted." />
+                                            <ConfigNumber label="Max Cert Validity (days, 0 = unlimited)" value={securityPolicy.maxValidityDays} onChange={(v) => updateSecurityPolicyField('maxValidityDays', v)}
+                                                hint="Longest validity a leaf issued by an instance CA may carry." />
+                                            <ConfigSelect label="Over the ceiling" value={securityPolicy.validityCeilingBehavior || 'Shorten'} options={['Shorten', 'Refuse']} onChange={(v) => updateSecurityPolicyField('validityCeilingBehavior', v)}
+                                                hint="Refuse applies to admin issuance only; enrollment protocols and automatic renewals always shorten." />
                                         </div>
                                         <SaveButton saving={securityPolicySaving} onClick={handleSaveSecurityPolicy} label="Save Security Policy" />
                                     </>

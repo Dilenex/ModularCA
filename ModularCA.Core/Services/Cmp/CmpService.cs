@@ -2014,7 +2014,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
             var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
             if (info != null)
-                return (signer.PublicCertificate, new CmpSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Cmp, info.TenantId, info.CaId)), null);
+                return (signer.PublicCertificate, new CmpSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, info.CaId!.Value, info.TenantId)), null);
         }
         return null;
     }

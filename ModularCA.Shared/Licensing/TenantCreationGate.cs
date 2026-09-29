@@ -30,18 +30,19 @@ namespace ModularCA.Shared.Licensing;
 public static class TenantCreationGate
 {
     /// <summary>
-    /// How many tenants the free edition may have.
+    /// How many tenants (organisations) the free edition may have.
     /// </summary>
     /// <remarks>
-    /// Bootstrap creates two on a fresh install — the system tenant and the operator's own
-    /// organisation — so this is three more than the product needs to run, deliberately. Separating
-    /// home, lab and a side project is three tenants and is nobody's commercial use of anything;
-    /// setting the ceiling where bootstrap happens to land caught exactly the self-hosting operator
-    /// the free edition exists for, which is the wrong person to send to a pricing page. An MSP
-    /// running forty client organisations is still obviously outside it, and that is the boundary
-    /// this is meant to draw.
+    /// Bootstrap creates one on a fresh install — the operator's own organisation; since 0.4.0
+    /// there is no system tenant to count — so this is three more than the product needs to run,
+    /// deliberately, the same three the ceiling of five allowed when the system tenant counted.
+    /// Separating home, lab and a side project is three tenants and is nobody's commercial use of
+    /// anything; setting the ceiling where bootstrap happens to land caught exactly the
+    /// self-hosting operator the free edition exists for, which is the wrong person to send to a
+    /// pricing page. An MSP running forty client organisations is still obviously outside it, and
+    /// that is the boundary this is meant to draw.
     /// </remarks>
-    public const int FreeEditionTenantCeiling = 5;
+    public const int FreeEditionTenantCeiling = 4;
 
     /// <summary>
     /// Returns the refusal to throw, or <see langword="null"/> when creation may proceed.
@@ -89,7 +90,7 @@ public static class TenantCreationGate
     /// endpoint does; only a soft-deleted one does not.
     /// </summary>
     /// <param name="allowMultipleOrganizations"><c>Features.AllowMultipleOrganizations</c> from config.yaml.</param>
-    /// <param name="existingOrganizationCount">How many non-system, non-deleted tenants already exist, disabled ones included.</param>
+    /// <param name="existingOrganizationCount">How many non-deleted tenants already exist, disabled ones included.</param>
     /// <param name="blockingOrganization">The name of an existing organisation, for the message, or null.</param>
     /// <param name="blockingOrganizationDisabled">Whether that organisation is disabled.</param>
     public static ConfigurationValidationException? EvaluateOrganizationMode(
@@ -118,7 +119,7 @@ public static class TenantCreationGate
     /// nothing to say. The mode refuses a new organisation; it never removes existing ones.
     /// </summary>
     /// <param name="allowMultipleOrganizations"><c>Features.AllowMultipleOrganizations</c> from config.yaml.</param>
-    /// <param name="organizations">The non-system, non-deleted tenants, disabled ones included.</param>
+    /// <param name="organizations">The non-deleted tenants, disabled ones included.</param>
     public static string? SingleOrganizationStartupWarning(
         bool allowMultipleOrganizations, IReadOnlyList<(string Name, bool IsEnabled)> organizations)
     {

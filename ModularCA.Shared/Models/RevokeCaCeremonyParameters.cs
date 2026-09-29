@@ -15,6 +15,7 @@ public class RevokeCaCeremonyParameters
     /// <summary>Revocation reason as a string (maps to <see cref="ModularCA.Shared.Enums.RevocationReason"/>).</summary>
     public string Reason { get; set; } = "Unspecified";
 
-    /// <summary>Tenant ID that owns the CA (used for quorum resolution).</summary>
-    public Guid TenantId { get; set; }
+    /// <summary>Tenant that owns the CA, or null for an instance CA. <see cref="Guid.Empty"/> reads as null.</summary>
+    public Guid? TenantId { get => _tenantId; set => _tenantId = value == Guid.Empty ? null : value; }
+    private Guid? _tenantId;
 }

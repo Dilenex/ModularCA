@@ -15,8 +15,13 @@ namespace ModularCA.Shared.Models;
 /// </remarks>
 public class TenantPolicyChangeCeremonyParameters
 {
-    /// <summary>The tenant whose policy fields this ceremony will update.</summary>
-    public Guid TenantId { get; set; }
+    /// <summary>
+    /// The tenant whose policy fields this ceremony will update, or null for the instance's
+    /// policy on <see cref="Entities.SecurityPolicyEntity"/> (an InstancePolicyChange ceremony).
+    /// <see cref="Guid.Empty"/> reads as null.
+    /// </summary>
+    public Guid? TenantId { get => _tenantId; set => _tenantId = value == Guid.Empty ? null : value; }
+    private Guid? _tenantId;
 
     /// <summary>Value of <c>RequireKeyCeremony</c> read from the tenant at initiation time.</summary>
     public bool CurrentRequireKeyCeremony { get; set; }

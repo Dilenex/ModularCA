@@ -46,7 +46,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// missing, the CA is unresolvable, or the request is cross-tenant. System admins
         /// always pass.
         /// </summary>
-        private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceScheduleAsync(Guid taskId)
+        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceScheduleAsync(Guid taskId)
         {
             var config = await _db.CrlConfigurations.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.TaskId == taskId);
@@ -62,8 +62,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             if (HttpContext.Items["IsSystemAdmin"] is not true)
             {
-                var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-                if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+                var fence = TenantFence.From(HttpContext);
+                if (fence == null || !fence.Allows(ca.TenantId))
                     return null;
             }
             return (ca.Id, ca.TenantId);
@@ -73,7 +73,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Resolves the CA + tenant for a Create request, where the CA is supplied by
         /// <paramref name="caCertificateId"/> rather than an existing schedule row.
         /// </summary>
-        private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId)
+        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId)
         {
             var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
@@ -84,8 +84,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             if (HttpContext.Items["IsSystemAdmin"] is not true)
             {
-                var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-                if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+                var fence = TenantFence.From(HttpContext);
+                if (fence == null || !fence.Allows(ca.TenantId))
                     return null;
             }
             return (ca.Id, ca.TenantId);
@@ -93,7 +93,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Lists every CRL scheduled job. Non-system admins receive only schedules whose
-        /// owning CA belongs to a tenant in their <c>AccessibleTenantIds</c>.
+        /// owning CA is inside their <see cref="TenantFence"/> (a space they belong to, or the
+        /// instance when they have instance scope).
         /// </summary>
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
@@ -103,17 +104,17 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             if (HttpContext.Items["IsSystemAdmin"] is not true)
             {
-                var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-                if (tenantIds == null || tenantIds.Count == 0)
+                var fence = TenantFence.From(HttpContext);
+                if (fence == null || (fence.TenantIds.Count == 0 && !fence.InstanceScope))
                     return Ok(Array.Empty<CrlConfigurationDto>());
 
                 var caCertIds = jobs.Select(j => j.CaCertificateId).Distinct().ToList();
                 var allowedCaCertIds = await _db.CertificateAuthorities
                     .AsNoTracking()
                     .IgnoreQueryFilters()
+                    .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
                     .Where(ca => ca.CertificateId != null
                                  && caCertIds.Contains(ca.CertificateId.Value)
-                                 && tenantIds.Contains(ca.TenantId)
                                  && !ca.IsDeleted)
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();

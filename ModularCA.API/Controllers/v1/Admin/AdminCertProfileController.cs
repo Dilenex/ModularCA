@@ -19,8 +19,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing certificate profiles (extension templates, validity constraints,
 /// algorithm restrictions, and CT log configuration).
-/// GetAll and Create resolve the profile/CA back to a tenant and enforce
-/// AccessibleTenantIds before returning or writing rows.
+/// GetAll and Create resolve the profile/CA back to a tenant and enforce the caller's
+/// <see cref="TenantFence"/> before returning or writing rows.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/cert-profiles")]
@@ -42,9 +42,10 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Returns all certificate profiles with resolved EKU friendly names.
-    /// Results are filtered to tenant-owned profiles + system-wide profiles (TenantId == null)
-    /// for non-system-admin callers. <c>IgnoreQueryFilters()</c> lets system admins see every
-    /// profile without triggering the global tenant fence.
+    /// Non-system-admin callers see profiles inside their <see cref="TenantFence"/>: their spaces'
+    /// profiles, the instance-wide ones (TenantId == null), and those bound to an instance CA only
+    /// with instance scope. A <paramref name="tenantId"/> view shows that space's profiles and the
+    /// instance-wide ones not bound to an instance CA.
     /// </summary>
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
     /// <param name="isCaProfile">Optional filter: true returns only CA profiles, false returns only leaf profiles, null returns all.</param>
@@ -55,12 +56,13 @@ public class AdminCertProfileController(
         await currentUser.EnsureLoadedAsync();
         var profiles = await certProfileService.GetAllAsync();
 
-        // The console's tenant scope: the tenant's own profiles plus the system-wide ones.
+        // The console's tenant scope: the tenant's own profiles plus the instance-wide ones not
+        // bound to an instance CA.
         if (tenantId.HasValue)
         {
             var inTenant = await db.CertProfiles
                 .AsNoTracking()
-                .Where(p => p.TenantId == null || p.TenantId == tenantId.Value)
+                .Where(p => (p.TenantId == null && p.CertificateAuthorityId == null) || p.TenantId == tenantId.Value)
                 .Select(p => p.Id)
                 .ToListAsync();
             var inTenantSet = new HashSet<Guid>(inTenant);
@@ -71,16 +73,18 @@ public class AdminCertProfileController(
         if (isCaProfile.HasValue)
             profiles = profiles.Where(p => p.IsCaProfile == isCaProfile.Value).ToList();
 
-        // Tenant fence. System admins see everything; other callers see
-        // only profiles that are system-wide (TenantId == null) or owned by a tenant in
-        // AccessibleTenantIds. The service already honors the global filter for CA-scoped
-        // profile lookups, but the GetAll path needs the explicit system-profile allowance.
+        // Tenant fence. System admins see everything; other callers see the instance-wide
+        // profiles, those bound to an instance CA only with instance scope, and those of a space
+        // inside their TenantFence.
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
+            var fence = TenantFence.From(HttpContext);
+            var tenantIds = fence?.TenantIds ?? new HashSet<Guid>();
+            var instanceScope = fence?.InstanceScope == true;
             var accessibleProfileIds = await db.CertProfiles
                 .AsNoTracking()
-                .Where(p => p.TenantId == null || (tenantIds != null && p.TenantId.HasValue && tenantIds.Contains(p.TenantId.Value)))
+                .Where(p => (p.TenantId == null && (p.CertificateAuthorityId == null || instanceScope))
+                         || (p.TenantId != null && tenantIds.Contains(p.TenantId.Value)))
                 .Select(p => p.Id)
                 .ToListAsync();
             var allowedSet = new HashSet<Guid>(accessibleProfileIds);
@@ -104,8 +108,8 @@ public class AdminCertProfileController(
     /// <summary>
     /// Creates a new certificate profile with key usage, EKU, validity, algorithm constraints,
     /// and optional inheritance configuration. Validates that the target
-    /// CA (when supplied) belongs to a tenant in the caller's <c>AccessibleTenantIds</c> and
-    /// populates <c>CertProfileEntity.TenantId</c> automatically.
+    /// CA (when supplied) is inside the caller's <see cref="TenantFence"/> and
+    /// populates <c>CertProfileEntity.TenantId</c> from it (null for an instance CA).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -124,8 +128,8 @@ public class AdminCertProfileController(
 
             if (HttpContext.Items["IsSystemAdmin"] is not true)
             {
-                var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-                if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+                var fence = TenantFence.From(HttpContext);
+                if (fence == null || !fence.Allows(ca.TenantId))
                     return NotFound(new { error = "CA not found" });
             }
             resolvedTenantId = ca.TenantId;

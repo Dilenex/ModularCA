@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
@@ -30,7 +31,7 @@ public class AdminCaServiceUrlController(
 {
     /// <summary>
     /// Resolves the CA owning a given CA-certificate id and verifies that
-    /// the caller's <c>AccessibleTenantIds</c> contains the CA's tenant. Returns the CA
+    /// the caller's <see cref="TenantFence"/> admits the CA's scope. Returns the CA
     /// entity (for audit-log enrichment) when access is granted, or null on deny.
     /// System admins bypass the tenant check.
     /// </summary>
@@ -46,8 +47,8 @@ public class AdminCaServiceUrlController(
         if (HttpContext.Items["IsSystemAdmin"] is true)
             return ca;
 
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && tenantIds.Contains(ca.TenantId))
+        var fence = TenantFence.From(HttpContext);
+        if (fence != null && fence.Allows(ca.TenantId))
             return ca;
 
         return null;
@@ -62,11 +63,12 @@ public class AdminCaServiceUrlController(
     {
         var all = await caServiceUrlService.GetAllAsync();
 
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+        var fence = TenantFence.From(HttpContext);
+        if (fence != null && !fence.IsSystemAdmin)
         {
             var accessibleCaCertIds = await db.CertificateAuthorities
-                .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                .Where(ca => ca.CertificateId != null)
                 .Select(ca => ca.CertificateId!.Value)
                 .ToListAsync();
             var accessibleCaCertIdSet = new HashSet<Guid>(accessibleCaCertIds);

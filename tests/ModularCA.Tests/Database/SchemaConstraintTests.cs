@@ -28,7 +28,7 @@ public class SchemaConstraintTests
 
     private static IEnumerable<string[]> UniqueIndexes<T>() =>
         Entity<T>().GetIndexes()
-            .Where(i => i.IsUnique)
+            .Where(i => i.IsUnique && i.GetFilter() == null)
             .Select(i => i.Properties.Select(p => p.Name).ToArray());
 
     private static bool HasUniqueIndexOver<T>(params string[] columns) =>
@@ -88,6 +88,33 @@ public class SchemaConstraintTests
 
         Assert.False(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.Name)),
             "a globally unique CA Name index must not exist");
+    }
+
+    [Theory]
+    [InlineData(nameof(CertificateAuthorityEntity.Label), "IX_CertificateAuthorities_Label_Instance")]
+    [InlineData(nameof(CertificateAuthorityEntity.Name), "IX_CertificateAuthorities_Name_Instance")]
+    public void Instance_ca_names_and_labels_are_unique_among_instance_cas(string column, string indexName)
+    {
+        // The composite (TenantId, x) indexes treat NULL tenants as distinct, so instance CAs
+        // (no tenant) need their own; NULLS NOT DISTINCT would need PostgreSQL 15.
+        var index = Assert.Single(Entity<CertificateAuthorityEntity>().GetIndexes(), i => i.GetDatabaseName() == indexName);
+        Assert.True(index.IsUnique);
+        Assert.Equal([column], index.Properties.Select(p => p.Name));
+        Assert.Equal("\"TenantId\" IS NULL", index.GetFilter());
+    }
+
+    [Theory]
+    [InlineData(typeof(KerberosRealmEntity))]
+    [InlineData(typeof(RoleEntity))]
+    [InlineData(typeof(RoleAssignmentEntity))]
+    [InlineData(typeof(UserCapabilityGrantEntity))]
+    [InlineData(typeof(CertificateAuthorityEntity))]
+    public void Deleting_a_tenant_is_restricted_never_cascaded_or_nulled(Type entity)
+    {
+        // A null tenant means instance scope: SET NULL on a deleted space would promote its grants
+        // to the instance, and CASCADE would take a realm or a CA with it.
+        var fk = Assert.Single(Model().FindEntityType(entity)!.GetForeignKeys(), f => f.PrincipalEntityType.ClrType == typeof(TenantEntity));
+        Assert.Equal(DeleteBehavior.Restrict, fk.DeleteBehavior);
     }
 
     [Fact]

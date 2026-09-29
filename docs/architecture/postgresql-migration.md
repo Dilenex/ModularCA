@@ -436,7 +436,7 @@ A migration that transforms data first states what must hold, with `FailIf` from
 
 ```csharp
 migrationBuilder.FailIf(
-    "(SELECT count(*) FROM \"Tenants\" WHERE NOT \"IsSystemTenant\" AND NOT \"IsDeleted\") > 1",
+    "(SELECT count(*) FROM \"Tenants\" WHERE NOT \"IsDeleted\") > 1",
     "This instance has more than one organisation tenant. Split it before upgrading.");
 ```
 
@@ -561,7 +561,18 @@ MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgr
 ```
 
 A later stage that adds a data migration extends the seed with the rows its precondition and
-transformation care about, and extends the assertions. This test runs everything as the
+transformation care about, and extends the assertions. For `FoldSystemTenant` (0.4.0 S3) the seed
+adds a system tenant and an organisation whose CA policies differ, the system signing CA and an SSH
+CA with their groups, the system groups, the four `org-system-*` groups (grants, no members), a
+Kerberos realm and a custom role on the system tenant, a CA-scoped user grant, a CA-bound profile,
+an enrollment token, an executed ceremony whose parameters name the system tenant, and a CA-scoped
+service identity. The test asserts that no system tenant and no `IsSystemTenant` column remain, that
+every row that named the system tenant now has a null tenant, that the `org-system-*` groups are
+gone, that `SecurityPolicy` holds the system tenant's values while the organisation keeps its own,
+that the tenant foreign keys are `ON DELETE RESTRICT`, and that the partial unique indexes refuse a
+second instance CA with the same label. One further test per precondition (P1 to P9) seeds the
+shape that precondition refuses and asserts its message and that nothing was applied, and a fresh
+database migrates without a `SecurityPolicy` row, which bootstrap then seeds. This test runs everything as the
 connection's user, so it does not exercise ownership. The rehearsal below does.
 
 **Rehearsal on a dump of staging.** Restore staging's dumps into disposable databases with the
@@ -595,5 +606,6 @@ staging. `pg_hba.conf` must allow password logins for the two roles from localho
 databases and the three roles afterwards.
 
 It checks that no migration is unknown to the build, and that every pending one applies. It also
-checks that tenant, CA, group, user, membership and certificate counts are unchanged, and that
-exactly one system tenant remains.
+checks that CA, user, membership and certificate counts are unchanged, that there is one tenant
+fewer (the system tenant) and four groups fewer (its `org-system-*` groups), that no group named
+`org-system-*` remains, and that the `IsSystemTenant` column is gone.

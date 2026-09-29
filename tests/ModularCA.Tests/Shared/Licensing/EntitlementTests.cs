@@ -358,7 +358,7 @@ public class EntitlementServiceTests
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
-    [InlineData(4)]
+    [InlineData(3)]
     public void The_free_edition_may_create_tenants_below_its_ceiling(int existing)
     {
         // The behaviour the ceiling constant describes. It used to be decoration: the gate consulted

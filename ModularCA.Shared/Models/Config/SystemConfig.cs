@@ -127,10 +127,10 @@ namespace ModularCA.Shared.Models.Config
     public class FeaturesConfig
     {
         /// <summary>
-        /// Whether this instance may hold more than one organisation tenant besides the system
-        /// tenant. Off by default: an instance is one organisation, and a further organisation is
-        /// a further instance. Bootstrap always creates the system tenant and the first
-        /// organisation regardless.
+        /// Whether this instance may hold more than one organisation tenant. Off by default: an
+        /// instance is one organisation, and a further organisation is a further instance.
+        /// Bootstrap always creates the first organisation regardless. The 0.4.0 upgrade refuses
+        /// an instance with more than one, whatever this says.
         /// </summary>
         public bool AllowMultipleOrganizations { get; set; } = false;
     }

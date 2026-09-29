@@ -104,7 +104,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             return EnforceTenantFence(info);
         }
 
-        private IActionResult? EnforceTenantFence((Guid CaId, Guid TenantId)? info)
+        private IActionResult? EnforceTenantFence((Guid CaId, Guid? TenantId)? info)
         {
             // System-wide signing profile with no CA link — treat as system-admin-only.
             if (info == null)
@@ -115,8 +115,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             }
             if (HttpContext.Items["IsSystemAdmin"] is true)
                 return null;
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(info.Value.TenantId))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(info.Value.TenantId))
                 return NotFound();
             return null;
         }
@@ -422,7 +422,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Resolves the CA ID and tenant ID from a signing profile via the CaProtocolConfig linkage.
         /// Returns null if the signing profile is not linked to a CA.
         /// </summary>
-        private async Task<(Guid CaId, Guid TenantId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
+        private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
         {
             if (signingProfileId == null) return null;
             var config = await _dbContext.CaProtocolConfigs

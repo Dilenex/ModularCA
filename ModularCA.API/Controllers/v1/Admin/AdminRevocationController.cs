@@ -492,24 +492,27 @@ public class AdminRevocationController(
 
     /// <summary>
     /// KC-06: checks whether a CA certificate revocation requires a key ceremony. If the CA's
-    /// tenant has <c>RequireKeyCeremony</c> set, creates a <c>RevokeCa</c> ceremony and returns
-    /// an <see cref="IActionResult"/> with the ceremony details. Returns null if no ceremony is
-    /// required, allowing the caller to proceed with direct revocation.
+    /// scope (its tenant, or the instance for an instance CA such as the system signing CA) has
+    /// <c>RequireKeyCeremony</c> set, creates a <c>RevokeCa</c> ceremony and returns an
+    /// <see cref="IActionResult"/> with the ceremony details. Returns null if no ceremony is
+    /// required, allowing the caller to proceed with direct revocation. A null tenant is never
+    /// read as "no policy".
     /// </summary>
     private async Task<IActionResult?> TryCreateRevokeCaCeremonyAsync(
         Shared.Entities.CertificateEntity cert, RevocationReason reason)
     {
-        // Find the CA entity that owns this certificate.
+        // Find the CA entity that owns this certificate, whatever the caller's query fence.
         var ca = await _dbContext.CertificateAuthorities
-            .Include(c => c.Tenant)
+            .IgnoreQueryFilters()
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId);
+            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId && !c.IsDeleted);
 
-        if (ca?.Tenant == null)
+        if (ca == null)
             return null; // No CA linkage — allow direct revocation.
 
-        if (!ca.Tenant.RequireKeyCeremony)
-            return null; // Tenant does not require ceremonies.
+        var policy = await new EffectivePolicyResolver(_dbContext).ResolveAsync(ca.TenantId);
+        if (!policy.RequireKeyCeremony)
+            return null; // The scope does not require ceremonies.
 
         // Create a RevokeCa ceremony.
         // camelCase so the stored blob matches the casing of the API envelope it is embedded in.
@@ -589,8 +592,8 @@ public class AdminRevocationController(
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
         if (config?.Ca == null) return NotFound();
 
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds == null || !tenantIds.Contains(config.Ca.TenantId))
+        var fence = TenantFence.From(HttpContext);
+        if (fence == null || !fence.Allows(config.Ca.TenantId))
             return NotFound();
         return null;
     }
@@ -633,7 +636,7 @@ public class AdminRevocationController(
     /// <summary>
     /// Resolves the CA ID and tenant ID from a certificate ID via its signing profile linkage.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveCaFromCertIdAsync(Guid certId)
+    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromCertIdAsync(Guid certId)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId);
         if (cert?.SigningProfileId == null) return null;
@@ -648,7 +651,7 @@ public class AdminRevocationController(
     /// <summary>
     /// Resolves the CA ID and tenant ID from a certificate serial number via its signing profile linkage.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveCaFromSerialAsync(string serial)
+    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromSerialAsync(string serial)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
         if (cert?.SigningProfileId == null) return null;

@@ -918,6 +918,7 @@ builder.Services.AddSingleton<IPqcKeyGenerationService, PqcKeyGenerationService>
 builder.Services.AddScoped<ICertPolicyService, CertPolicyService>();
 builder.Services.AddScoped<IQuotaService, QuotaService>();
 builder.Services.AddScoped<ITenantPolicyChangeService, TenantPolicyChangeService>();
+builder.Services.AddScoped<IEffectivePolicyResolver, EffectivePolicyResolver>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.IControlledUserCeremonyService, ModularCA.Auth.Authorization.ControlledUserCeremonyService>();
 builder.Services.AddScoped<ICertificateIssuanceService, CertificateIssuanceService>();
 builder.Services.AddScoped<ICertificateAccessService, CertificateAccessService>();
@@ -2571,7 +2572,7 @@ if (!isSetupMode && controlActive && !config.Features.AllowMultipleOrganizations
         using var orgScope = app.Services.CreateScope();
         var orgDb = orgScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
         var organisations = await orgDb.Tenants.IgnoreQueryFilters()
-            .Where(t => !t.IsSystemTenant && !t.IsDeleted)
+            .Where(t => !t.IsDeleted)
             .OrderBy(t => t.Name)
             .Select(t => new { t.Name, t.IsEnabled })
             .ToListAsync();
@@ -2679,11 +2680,39 @@ if (!isSetupMode && controlActive)
             if (restarted.Count > 0)
                 Console.WriteLine($"[STARTUP] Audit chain restarted for {restarted.Count} tenant chain(s): records before "
                     + "this start were hashed under the previous canonical form and stay link-checked only.");
+
+            // 0.4.0 S3: new records go to the instance chain; each per-tenant chain is sealed once,
+            // and its final hash anchored in the instance chain. The migration cannot reach the
+            // audit database, so the control role does it here.
+            var sealedChains = await chainService.SealRetiredChainsAsync(chainAuditDb);
+            if (sealedChains.Count > 0)
+                Console.WriteLine($"[STARTUP] Sealed {sealedChains.Count} retired tenant audit chain(s); their final hashes are anchored in the instance chain.");
         }
     }
     catch (Exception ex)
     {
         Console.WriteLine($"[STARTUP] Audit chain epoch check skipped; it runs again at the next start. {ex.Message}");
+    }
+}
+
+// An instance key-ceremony quorum no approver pool can meet locks the instance's CAs out of
+// every ceremony. Warn at each start; the operator lowers it or adds approvers.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var quorumScope = app.Services.CreateScope();
+        var quorumDb = quorumScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var quorumWarning = await ModularCA.Core.Services.InstanceQuorumCheck.WarningAsync(quorumDb);
+        if (quorumWarning is not null)
+        {
+            Log.Warning("{InstanceQuorumWarning}", quorumWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {quorumWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Instance ceremony quorum check skipped: {ex.Message}");
     }
 }
 

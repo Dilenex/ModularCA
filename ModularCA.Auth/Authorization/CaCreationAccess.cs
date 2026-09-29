@@ -22,15 +22,16 @@ namespace ModularCA.Auth.Authorization;
 public static class CaCreationAccess
 {
     /// <summary>
-    /// Whether the user may create an intermediate CA in <paramref name="tenantId"/> signed by
+    /// Whether the user may create an intermediate CA in <paramref name="tenantId"/> (null for an
+    /// instance CA, which needs <c>ca.manage</c> at system scope) signed by
     /// <paramref name="parentCaId"/>. False when the parent does not exist.
     /// </summary>
     public static async Task<bool> MayCreateIntermediateAsync(
-        ICaGroupAuthorizationService auth, ModularCADbContext db, Guid userId, Guid tenantId, Guid parentCaId)
+        ICaGroupAuthorizationService auth, ModularCADbContext db, Guid userId, Guid? tenantId, Guid parentCaId)
     {
         if (await auth.IsSystemAdminAsync(userId))
             return true;
-        if (!await auth.HasTenantCapabilityAsync(userId, tenantId, Capabilities.CaManage))
+        if (!await auth.HasScopeCapabilityAsync(userId, tenantId, Capabilities.CaManage))
             return false;
 
         var parent = await db.CertificateAuthorities
@@ -47,10 +48,11 @@ public static class CaCreationAccess
     }
 
     /// <summary>
-    /// Whether the user may create a root CA in <paramref name="tenantId"/>: only a holder of
-    /// <c>system.manage</c> at system scope. The tenant is accepted for symmetry with the
-    /// intermediate check and for callers that resolve the operation type at runtime.
+    /// Whether the user may create a root CA in <paramref name="tenantId"/> (null for the
+    /// instance): only a holder of <c>system.manage</c> at system scope. The tenant is accepted
+    /// for symmetry with the intermediate check and for callers that resolve the operation type
+    /// at runtime.
     /// </summary>
-    public static Task<bool> MayCreateRootAsync(ICaGroupAuthorizationService auth, Guid userId, Guid tenantId)
+    public static Task<bool> MayCreateRootAsync(ICaGroupAuthorizationService auth, Guid userId, Guid? tenantId)
         => auth.IsSystemAdminAsync(userId);
 }

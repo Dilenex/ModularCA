@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Auth.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
@@ -46,11 +47,12 @@ namespace ModularCA.API.Controllers.v1.User
                 .ToList();
 
             // Apply tenant filtering for non-system-admins
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+            var fence = TenantFence.From(HttpContext);
+            if (fence != null && !fence.IsSystemAdmin)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
-                    .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                    .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                    .Where(ca => ca.CertificateId != null)
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
                 var accessibleCertIdSet = new HashSet<Guid>(accessibleCertIds);
@@ -92,15 +94,15 @@ namespace ModularCA.API.Controllers.v1.User
         {
             if (HttpContext.Items["IsSystemAdmin"] is true)
                 return true;
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null)
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null)
                 return false;
-            var caTenant = await _db.CertificateAuthorities
+            var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.CertificateId == certificateId)
-                .Select(c => (Guid?)c.TenantId)
+                .Select(c => new { c.TenantId })
                 .FirstOrDefaultAsync();
-            return caTenant.HasValue && tenantIds.Contains(caTenant.Value);
+            return ca != null && fence.Allows(ca.TenantId);
         }
 
         [HttpGet("{serial}")]
@@ -175,7 +177,7 @@ namespace ModularCA.API.Controllers.v1.User
                 return NotFound();
 
             var isSystemAdmin = HttpContext.Items["IsSystemAdmin"] is true;
-            var accessibleTenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
+            var chainFence = TenantFence.From(HttpContext);
 
             var chainPems = new List<string> { caCert.Pem.Trim() };
 
@@ -212,7 +214,7 @@ namespace ModularCA.API.Controllers.v1.User
 
                     // Tenant check every hop — stop the walk at the first
                     // cross-tenant parent instead of adding that parent's PEM to the bundle.
-                    if (!isSystemAdmin && (accessibleTenantIds == null || !accessibleTenantIds.Contains(parentCa.TenantId)))
+                    if (!isSystemAdmin && (chainFence == null || !chainFence.Allows(parentCa.TenantId)))
                         break;
 
                     chainPems.Add(parentCa.Certificate.Pem.Trim());

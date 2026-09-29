@@ -8,6 +8,16 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ### Fixed
 
+- **Reissuing a CA's responder certificates works again.** Since 0.3.0, reissuing the OCSP,
+  TSA or CMP signing certificate of any CA whose scope requires a key ceremony (the default)
+  failed with CeremonyRequired: the new responder key was generated under the ceremony purpose
+  with no ceremony. It is now generated as infrastructure of that CA, and committed only to that
+  CA's own responder certificate.
+- **The signer is fail-closed on scope.** A key-management request that states no scope is
+  refused rather than read as instance-wide; the Bootstrap purpose manages keystore files only,
+  never individual keys; imports and commits are held to the CA that owns the certificate. The
+  signer audit records the scope each decision was made under.
+
 - **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
   configuration can name a request profile, and both protocols used that profile to choose the
   certificate profile and to validate the names a client asked for. Neither ever read the flag
@@ -63,6 +73,24 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   so per-tenant names, their SNI certificates and their database ingress routes are gone. The
   `RetireTenantHostnames` migration drops the table and refuses while any hostname remains;
   `Ingress.RouteRefreshSeconds` is no longer read. See "Upgrading to 0.4.0" in the deploy readme.
+
+- **The system tenant (0.4.0).** It is folded into the instance by the `FoldSystemTenant`
+  migration. The system signing CA, SSH CAs, the system groups and those CAs' groups now have no
+  tenant, which means instance scope. The instance's CA policy (key-ceremony requirement and
+  quorum, validity ceiling, CA-level user quorum) moves to the security policy, with the system
+  tenant's values copied as they were. Scopes are independent: the instance's policy governs
+  instance CAs only, and a space keeps its own. The `org-system-*` groups and the
+  `Tenants.IsSystemTenant` column are removed. A null tenant is never read as "no policy" any more,
+  so revoking the system signing CA or disabling an SSH CA now needs the instance's ceremony. The
+  upgrade refuses, changing nothing, while open ceremonies name the system tenant, while the
+  `org-system-*` groups have members or badge sources, while tenant-wide grants, role assignments,
+  service identities or unbound profiles on the system tenant would become instance-wide, or while
+  there is more than one organisation. New audit records go to one instance chain, and each
+  per-tenant chain is sealed at the first start, with its final hash anchored in the instance
+  chain (`GET /api/v1/admin/audit/verify/chains`). The free edition counts organisations only,
+  four of them. Instance policy changes by anyone but a system-super open an
+  `InstancePolicyChange` ceremony. Down is not supported: restore the pre-upgrade dump. See
+  "Upgrading to 0.4.0" in the deploy readme.
 
 ### Server-generated private keys are delivered once, as one PKCS#12
 

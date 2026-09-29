@@ -87,7 +87,7 @@ public sealed class MsaeReadinessService(
         var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Tenant).FirstOrDefaultAsync(c => c.Id == caId, cancellation);
         if (ca == null) return null;
 
-        var hasTenant = ca.TenantId != Guid.Empty;
+        var hasTenant = ca.TenantId != null;
         // The console's scope parser resolves ?tenant= by slug and ?ca= by label; an id there is
         // silently dropped and the linked page opens unscoped.
         var scope = hasTenant && !string.IsNullOrWhiteSpace(ca.Tenant?.Slug)
@@ -168,11 +168,9 @@ public sealed class MsaeReadinessService(
             Fix = kerberos ? null : protocolFix,
         });
 
-        // 4. Realm bindings on the tenant.
-        var realms = hasTenant
-            ? await db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
-                .Where(r => r.TenantId == ca.TenantId).OrderBy(r => r.Realm).ToListAsync(cancellation)
-            : new List<Shared.Entities.KerberosRealmEntity>();
+        // 4. Realm bindings on the tenant, or on the instance for an instance CA.
+        var realms = await db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
+            .Where(r => r.TenantId == ca.TenantId).OrderBy(r => r.Realm).ToListAsync(cancellation);
         var enabledRealms = realms.Where(r => r.IsEnabled).ToList();
         result.Realms = enabledRealms.Select(r => new MsaeReadinessRealm { Id = r.Id, Realm = r.Realm, DnsDomain = r.DnsDomain, ServicePrincipal = r.ServicePrincipal }).ToList();
 
@@ -186,16 +184,15 @@ public sealed class MsaeReadinessService(
             result.CepUrl = advertised[enabledRealms[0].Id];
         var realmFix = hasTenant
             ? new MsaeReadinessFix { Label = "Open the tenant's Kerberos realms", Path = $"/tenants/{ca.TenantId}?tab=kerberos" }
-            : new MsaeReadinessFix { Label = "Open Tenants", Path = "/tenants" };
+            : new MsaeReadinessFix { Label = "Open the instance's Kerberos realms", Path = "/tenants?tab=kerberos" };
+        var owner = hasTenant ? "tenant" : "instance";
         steps.Add(new MsaeReadinessStep
         {
-            Key = "realms", Title = "An Active Directory forest is bound to the tenant",
-            State = !hasTenant ? MsaeReadinessState.Fail : enabledRealms.Count > 0 ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
-            Detail = !hasTenant
-                ? "This CA belongs to no tenant, and realm bindings are owned by tenants."
-                : enabledRealms.Count > 0
-                    ? $"{enabledRealms.Count} enabled binding{(enabledRealms.Count == 1 ? "" : "s")}."
-                    : realms.Count > 0 ? "Every binding on the tenant is disabled." : "No forest is bound to this CA's tenant; tickets from any forest are refused.",
+            Key = "realms", Title = $"An Active Directory forest is bound to the {owner}",
+            State = enabledRealms.Count > 0 ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
+            Detail = enabledRealms.Count > 0
+                ? $"{enabledRealms.Count} enabled binding{(enabledRealms.Count == 1 ? "" : "s")}."
+                : realms.Count > 0 ? $"Every binding on the {owner} is disabled." : $"No forest is bound to this CA's {owner}; tickets from any forest are refused.",
             Items = realms.Select(r => $"{r.Realm}: {(r.IsEnabled ? "enabled" : "disabled")}, service principal {r.ServicePrincipal}").ToList(),
             Fix = enabledRealms.Count > 0 ? null : realmFix,
         });

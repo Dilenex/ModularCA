@@ -11,7 +11,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'operationType', type: 'string', required: true, description: 'Operation type: CreateRootCA or CreateIntermediateCA. Any other value returns 400' },
             { name: 'description', type: 'string', required: false, description: 'Human-readable description of the ceremony\'s purpose (max 1000 chars)' },
             { name: 'targetEntityId', type: 'string', required: false, description: 'Target entity ID (e.g., CA ID for revocation). Empty for new entity creation' },
-            { name: 'parameters', type: 'KeyCeremonyParameters', required: false, description: 'Structured CA creation parameters. Locked at initiation and cannot be modified after. Approvers review these parameters' },
+            { name: 'parameters', type: 'KeyCeremonyParameters', required: true, description: 'Structured CA creation parameters. Locked at initiation and cannot be modified after. Approvers review these parameters. They name the CA\'s scope: tenantId, or scope "instance" for an instance CA; neither (or both) is refused with 400' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },

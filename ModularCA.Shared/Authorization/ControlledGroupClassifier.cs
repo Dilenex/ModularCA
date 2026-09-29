@@ -15,7 +15,9 @@ public static class ControlledGroupClassifier
     /// The tier membership in <paramref name="group"/> confers, or <c>null</c> when the group is not
     /// privilege-controlled: system-super and system groups map to the system tiers, a CA
     /// <c>Administrator</c> group to CA-admin, tenant-wide <c>Administrator</c>/<c>Operator</c>
-    /// groups to the org tiers. CA operator groups are uncontrolled.
+    /// groups to the org tiers. CA operator groups are uncontrolled. A tenant-less, CA-less,
+    /// non-system Administrator or Operator group is classified at the system-admin tier, so
+    /// changing it needs a system-tier dominator; it confers no system capability.
     /// </summary>
     public static ControlledTier? Classify(CaGroupEntity group)
     {
@@ -32,8 +34,10 @@ public static class ControlledGroupClassifier
                 ? new ControlledTier(ControlledTierLevel.CaAdmin, group.CertificateAuthorityId) { TenantId = group.TenantId }
                 : null;
 
+        if (!isAdmin && !isOperator) return null;
+        // A non-system group with neither tenant nor CA should not exist; gate it at the system tier.
+        if (group.TenantId == null) return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
         if (isAdmin) return new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = group.TenantId };
-        if (isOperator) return new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = group.TenantId };
-        return null;
+        return new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = group.TenantId };
     }
 }

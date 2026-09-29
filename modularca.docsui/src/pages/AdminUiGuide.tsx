@@ -730,7 +730,7 @@ export default function AdminUiGuide() {
                     <li>Configure tenant-level quotas and limits</li>
                     <li>View tenant resource usage</li>
                     <li>Enable/disable tenants</li>
-                    <li>System tenant vs. organization tenants</li>
+                    <li>The instance (its own CAs, system groups and CA policy) vs. organization tenants</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
                     GET /api/v1/admin/tenants<br />

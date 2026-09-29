@@ -45,8 +45,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     }
 
     /// <summary>
-    /// Generates a new SSH CA key pair using ssh-keygen.
-    /// If the target tenant requires key ceremonies, initiates a ceremony instead.
+    /// Generates a new SSH CA key pair using ssh-keygen. SSH CAs are instance CAs: if the
+    /// instance requires key ceremonies, initiates a ceremony instead.
     /// </summary>
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
@@ -60,16 +60,13 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.CreateSshCa))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
-        // SSH CA keys are ALWAYS created under the System tenant (see SshCaService.GenerateKeyPairAsync,
-        // which ignores request.TenantId entirely). The ceremony requirement must therefore be
-        // evaluated against the System tenant — the tenant the key actually lands in — NOT
-        // request.TenantId. Keying the gate off request.TenantId allowed an SSH CA to be created
-        // directly, bypassing the ceremony, whenever the request omitted a ceremony-requiring tenant
-        // (e.g. sent no TenantId at all): the gate was skipped but the key was still minted into the
-        // System tenant, which requires ceremonies. We now resolve the System tenant up front and gate
-        // on its flag so the bypass is closed.
-        var sshTenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.IsSystemTenant);
-        if (sshTenant?.RequireKeyCeremony == true)
+        // SSH CA keys are ALWAYS instance CAs (see SshCaService.GenerateKeyPairAsync, which ignores
+        // request.TenantId entirely). The ceremony requirement is therefore the instance's — the
+        // scope the key actually lands in — NOT request.TenantId's. Keying the gate off
+        // request.TenantId once allowed an SSH CA to be created directly, bypassing the ceremony,
+        // whenever the request omitted a ceremony-requiring tenant.
+        var sshPolicy = await new EffectivePolicyResolver(db).ResolveAsync(null);
+        if (sshPolicy.RequireKeyCeremony)
         {
             var sshParams = new SshKeyCeremonyParameters
             {
@@ -79,7 +76,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 IsUserCa = request.IsUserCa ?? true,
                 IsHostCa = request.IsHostCa ?? false,
                 MaxValidityHours = request.MaxValidityHours ?? 24,
-                TenantId = sshTenant.Id
+                TenantId = null
             };
             var ceremony = await ceremonySvc.InitiateAsync(
                 "CreateSshCa",
@@ -370,7 +367,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
     /// <summary>
     /// Disables an SSH CA key and revokes all active certificates issued by it.
-    /// If the CA's tenant requires key ceremonies, initiates a ceremony instead.
+    /// If the CA's scope (the instance, for an SSH CA) requires key ceremonies, initiates a
+    /// ceremony instead.
     /// </summary>
     [HttpDelete("ca-keys/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -387,17 +385,17 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         var key = await db.SshCaKeys.Include(k => k.CertificateAuthority).FirstOrDefaultAsync(k => k.Id == id);
         if (key == null) return NotFound(new { error = "SSH CA key not found." });
 
-        // Check ceremony requirement via the CA's tenant
-        if (key.CertificateAuthority?.TenantId != null)
+        // Check the ceremony requirement of the CA's scope: its tenant, or the instance for an
+        // instance SSH CA (every SSH CA). A null tenant is never read as "no ceremony".
         {
-            var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == key.CertificateAuthority.TenantId);
-            if (tenant?.RequireKeyCeremony == true)
+            var policy = await new EffectivePolicyResolver(db).ResolveAsync(key.CertificateAuthority?.TenantId);
+            if (policy.RequireKeyCeremony)
             {
                 var sshParams = new SshKeyCeremonyParameters
                 {
                     SshCaKeyId = id,
                     Name = key.Name,
-                    TenantId = tenant.Id
+                    TenantId = policy.TenantId
                 };
                 var ceremony = await ceremonySvc.InitiateAsync(
                     "DeleteSshCa",

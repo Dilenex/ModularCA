@@ -169,8 +169,8 @@ public class UserCertSignRequestController(
                 .FirstOrDefaultAsync(c => c.CertificateId == signingProfile.IssuerId);
             if (ca != null)
             {
-                var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-                if (tenantIds != null && !tenantIds.Contains(ca.TenantId))
+                var fence = TenantFence.From(HttpContext);
+                if (fence != null && !fence.Allows(ca.TenantId))
                     return BadRequest(new { error = "You do not have access to the CA associated with this signing profile." });
             }
         }

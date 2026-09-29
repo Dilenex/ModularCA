@@ -22,14 +22,18 @@ public class TenantContext : ITenantContext
     public IReadOnlySet<Guid> AccessibleTenantIds { get; private set; } = EmptySet;
 
     /// <inheritdoc />
+    public bool HasInstanceScope { get; private set; }
+
+    /// <inheritdoc />
     public Guid? UserId { get; private set; }
 
     /// <inheritdoc />
-    public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin)
+    public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope)
     {
         UserId = userId;
         AccessibleTenantIds = accessibleTenantIds ?? EmptySet;
         IsSystemAdmin = isSystemAdmin;
+        HasInstanceScope = isSystemAdmin || hasInstanceScope;
         HasContext = true;
     }
 }

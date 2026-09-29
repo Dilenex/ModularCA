@@ -40,6 +40,9 @@ message SigningContext {
   string tenant_id = 3;
   string ca_id = 4;
   string ceremony_id = 5;
+  // True only when the caller states the operation is for the instance (tenant_id empty).
+  // An older client omits it, and an empty tenant_id alone is never read as the instance.
+  bool instance_scope = 6;
 }
 
 message SignRequest {

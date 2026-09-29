@@ -96,8 +96,8 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
 
     // ── Management ──
 
-    /// <summary>The tenant's bindings with their key versions, newest realm first.</summary>
-    public Task<List<KerberosRealmEntity>> ListAsync(Guid tenantId)
+    /// <summary>The tenant's bindings (the instance's for null) with their key versions, newest realm first.</summary>
+    public Task<List<KerberosRealmEntity>> ListAsync(Guid? tenantId)
         => db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
             .Where(r => r.TenantId == tenantId).OrderBy(r => r.Realm).ToListAsync();
 
@@ -105,8 +105,8 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
     public Task<KerberosRealmEntity?> GetAsync(Guid id)
         => db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser).FirstOrDefaultAsync(r => r.Id == id);
 
-    /// <summary>Creates a binding. The realm must be new across every tenant.</summary>
-    public async Task<KerberosRealmEntity> CreateAsync(Guid tenantId, KerberosRealmSpec spec)
+    /// <summary>Creates a binding for a tenant, or for the instance when null. The realm must be new across every tenant.</summary>
+    public async Task<KerberosRealmEntity> CreateAsync(Guid? tenantId, KerberosRealmSpec spec)
     {
         var realm = NormalizeRealm(spec.Realm);
         if (await db.KerberosRealms.AnyAsync(r => r.Realm == realm))

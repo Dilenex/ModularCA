@@ -15,10 +15,11 @@ export interface CaCapabilities {
     label: string;
     name: string;
     isSshCa: boolean;
-    /** The tenant the CA belongs to; the console's tenant scope groups CAs by it. */
-    tenantId: string;
+    /** The tenant the CA belongs to, or null for an instance CA; the console's tenant scope groups CAs by it. */
+    tenantId: string | null;
+    /** Empty for an instance CA. */
     tenantName: string;
-    /** What a tenant scope in a console URL names. */
+    /** What a tenant scope in a console URL names; empty for an instance CA. */
     tenantSlug: string;
     capabilities: Capability[];
 }
@@ -95,14 +96,19 @@ export function consoleCas(caps: EffectiveCapabilities | null | undefined): CaCa
     return caps.cas.filter(ca => ca.capabilities.some(c => !SELF_SERVICE_ONLY.has(c)));
 }
 
+/** The administrable CAs with no tenant: the instance's own (the system signing CA, SSH CAs). */
+export function instanceCas(caps: EffectiveCapabilities | null | undefined): CaCapabilities[] {
+    return consoleCas(caps).filter(ca => ca.tenantId == null);
+}
+
 /**
  * The tenants the user may scope to: those holding an administrable CA, in first-seen order,
- * then those administered tenant-wide that have no CA yet.
+ * then those administered tenant-wide that have no CA yet. Instance CAs belong to no tenant.
  */
 export function tenantsOf(caps: EffectiveCapabilities | null | undefined): TenantOption[] {
     const seen = new Map<string, TenantOption>();
     for (const ca of consoleCas(caps)) {
-        if (!seen.has(ca.tenantId)) seen.set(ca.tenantId, { id: ca.tenantId, name: ca.tenantName || ca.tenantSlug, slug: ca.tenantSlug });
+        if (ca.tenantId != null && !seen.has(ca.tenantId)) seen.set(ca.tenantId, { id: ca.tenantId, name: ca.tenantName || ca.tenantSlug, slug: ca.tenantSlug });
     }
     for (const t of caps?.tenants ?? []) {
         if (!seen.has(t.id) && t.capabilities.some(c => !SELF_SERVICE_ONLY.has(c))) seen.set(t.id, { id: t.id, name: t.name || t.slug, slug: t.slug });

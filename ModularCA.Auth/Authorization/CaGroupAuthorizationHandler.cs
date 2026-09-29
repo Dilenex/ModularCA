@@ -113,18 +113,22 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         // Some routes name a tenant rather than a CA: a key ceremony belongs to the tenant it
         // will create a CA in, and there is no CA yet. A tenant-wide holder of the capability
         // passes; a per-CA holder inside the tenant does not.
-        var tenantId = await ResolveTenantIdFromRouteAsync();
-        if (tenantId != null)
+        // An instance ceremony (no tenant) belongs to the instance: a system-scoped holder passes,
+        // as one passed on the System tenant's ceremonies; anyone else falls through to the
+        // system-only rules below, as a ceremony without a tenant always did.
+        var (ceremonyFound, tenantId) = await ResolveTenantIdFromRouteAsync();
+        if (ceremonyFound)
         {
-            if (await _authService.HasTenantCapabilityAsync(userId.Value, tenantId.Value, requirement.RequiredCapability))
+            if (await _authService.HasScopeCapabilityAsync(userId.Value, tenantId, requirement.RequiredCapability))
             {
                 context.Succeed(requirement);
+                return;
             }
-            else
+            if (tenantId != null)
             {
                 LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
+                return;
             }
-            return;
         }
 
         // A route identifier that matched several certificates is not a listing endpoint — it is a
@@ -412,27 +416,28 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
     /// <summary>
     /// Attempts to resolve a tenant, rather than a CA, from the route: currently the
     /// <c>{id}</c> of a key ceremony (<c>/admin/ceremonies/{id}/...</c>), which carries the
-    /// tenant it was initiated for. Only consulted when no CA could be resolved. A ceremony
-    /// with no tenant (a system-level operation) resolves to nothing, so the caller falls
-    /// through to the system-only rules.
+    /// tenant it was initiated for. Only consulted when no CA could be resolved. Found is false
+    /// when the route names no ceremony; a found ceremony with no tenant is an instance
+    /// ceremony, held to system scope.
     /// </summary>
-    private async Task<Guid?> ResolveTenantIdFromRouteAsync()
+    private async Task<(bool Found, Guid? TenantId)> ResolveTenantIdFromRouteAsync()
     {
         var httpContext = _httpContextAccessor.HttpContext;
         if (httpContext == null)
-            return null;
+            return (false, null);
 
         var path = httpContext.Request.Path.Value ?? "";
         if (!path.Contains("/ceremonies/", StringComparison.OrdinalIgnoreCase))
-            return null;
+            return (false, null);
         if (!TryGetGuid(httpContext.Request.RouteValues, "id", out var ceremonyId))
-            return null;
+            return (false, null);
 
-        return await _db.KeyCeremonies
+        var ceremony = await _db.KeyCeremonies
             .AsNoTracking()
             .Where(c => c.Id == ceremonyId)
-            .Select(c => c.TenantId)
+            .Select(c => new { c.TenantId })
             .FirstOrDefaultAsync();
+        return ceremony == null ? (false, null) : (true, ceremony.TenantId);
     }
 
     private async Task<Guid?> ResolveCaFromCertIdAsync(Guid certId)

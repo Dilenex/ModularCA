@@ -120,3 +120,31 @@ describe('tenant scope', () => {
         expect(scopeLabel(tenantOne)).toBe('Tenant One');
     });
 });
+
+describe('instance CA scope (no tenant)', () => {
+    const signing = { id: 'sys', label: 'system-signing-ca', name: 'System Signing CA', isSshCa: false, tenantId: null, tenantName: '', tenantSlug: '', capabilities: [Capabilities.CaManage] };
+    const sameLabel = { ...caC, id: 'c2', label: 'system-signing-ca' };
+    const caps: EffectiveCapabilities = { system: [], cas: [sameLabel, signing, caA] };
+    const instanceScope = { kind: 'ca' as const, caId: 'sys', label: 'system-signing-ca', tenantId: null, tenantSlug: '' };
+
+    it('has a null tenant and no slug', () => {
+        expect(caScope(signing)).toEqual(instanceScope);
+        expect(scopeTenantId(caScope(signing))).toBeNull();
+        expect(scopeCaId(caScope(signing))).toBe('sys');
+    });
+
+    it('is written as ?ca=<label> with no tenant, and read back', () => {
+        expect(withScope('?page=2', instanceScope).toString()).toBe('page=2&ca=system-signing-ca');
+        expect(parseScope(withScope('', instanceScope), caps)).toEqual(instanceScope);
+    });
+
+    it('wins a bare ?ca=<label> over a tenant CA of the same label, which needs its tenant', () => {
+        expect(parseScope('?ca=system-signing-ca', caps)).toEqual(instanceScope);
+        expect(parseScope('?tenant=two&ca=system-signing-ca', caps)).toEqual(caScope(sameLabel));
+    });
+
+    it('does not make the instance a tenant scope', () => {
+        expect(defaultScope({ system: [], cas: [signing] })).toEqual(instanceScope);
+        expect(parseScope('?tenant=', caps)).toBeNull();
+    });
+});

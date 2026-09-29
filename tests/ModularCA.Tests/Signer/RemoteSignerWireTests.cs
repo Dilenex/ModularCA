@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Google.Protobuf;
 using ModularCA.Keystore.Signing;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Signing;
@@ -143,6 +144,37 @@ public sealed class RemoteSignerWireTests
         using var db = world.OpenDb();
         var row = Assert.Single(db.SignerAudit);
         Assert.Equal(SignerAuditEntity.RefusedOutcome, row.Outcome);
+    }
+
+    /// <summary>
+    /// A client that predates the instance marker sends a context without it. An empty tenant
+    /// id from it reads as no stated scope, never as the instance, so the signer refuses its key
+    /// operation as having no context even where the instance waives ceremonies.
+    /// </summary>
+    [Fact]
+    public async Task An_omitted_instance_marker_is_no_scope_and_is_refused()
+    {
+        var oldClientBytes = new ModularCA.Signer.Wire.SigningContext { Caller = "old-node", Purpose = nameof(SigningPurpose.Ceremony) }.ToByteArray();
+        var parsed = ModularCA.Signer.Wire.WireMapping.FromWire(ModularCA.Signer.Wire.SigningContext.Parser.ParseFrom(oldClientBytes));
+        Assert.Null(parsed.TenantId);
+        Assert.False(parsed.InstanceScope);
+        Assert.True(ModularCA.Signer.Wire.WireMapping.FromWire(
+            ModularCA.Signer.Wire.WireMapping.ToWire(SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null))).InstanceScope);
+
+        var world = SignerTestWorld.Create();
+        using (var db = world.OpenDb())
+        {
+            db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = false });
+            db.SaveChanges();
+        }
+        await using var host = await HostedSigner.StartAsync(world);
+        using var client = host.Connect();
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), new SigningContext("old-node", SigningPurpose.Ceremony, null, null)));
+        Assert.Equal(SigningRefusalReason.ContextRequired, ex.Reason);
+        var generated = await client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null));
+        await client.RetireKeyAsync(generated.Key, SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null));
     }
 
     [Fact]

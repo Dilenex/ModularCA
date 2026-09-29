@@ -309,7 +309,7 @@ public class AuditRetentionJob : SingletonCronJob
         {
             _logger.LogError(markerEx,
                 "AuditRetentionJob: could not write the prune marker for audit chain {TenantId}; verification will report a break at its oldest record",
-                tenantId?.ToString() ?? "system");
+                tenantId?.ToString() ?? "instance");
         }
     }
 

@@ -22,7 +22,7 @@ public sealed record IssuerChain(List<byte[]> Chain, Guid? CaId, Guid? TenantId)
 /// </summary>
 public static class IssuerChainResolver
 {
-    private sealed record CaRef(Guid Id, Guid TenantId, Guid? ParentCertificateId);
+    private sealed record CaRef(Guid Id, Guid? TenantId, Guid? ParentCertificateId);
 
     private sealed record Hop(CertificateEntity Cert, Guid? ProfileIssuerId, CaRef? Ca);
 
@@ -179,10 +179,10 @@ public static class IssuerChainResolver
 
     /// <summary>A CA certificate's owning CA and that CA's tenant.</summary>
     /// <param name="CaId">The owning CA.</param>
-    /// <param name="TenantId">The owning CA's tenant.</param>
-    public sealed record CaOwner(Guid CaId, Guid TenantId);
+    /// <param name="TenantId">The owning CA's tenant; null for an instance CA.</param>
+    public sealed record CaOwner(Guid CaId, Guid? TenantId);
 
-    private sealed record OwnerCandidate(Guid Id, Guid TenantId, string SubjectDn, string? Issuer, string Pem);
+    private sealed record OwnerCandidate(Guid Id, Guid? TenantId, string SubjectDn, string? Issuer, string Pem);
 
     /// <summary>
     /// The CA that owns <paramref name="certificateId"/> as a CA certificate: the CA whose current
@@ -223,11 +223,11 @@ public static class IssuerChainResolver
         var profileIssuer = cert.SigningProfileId == null ? null
             : db.SigningProfiles.AsNoTracking().Where(sp => sp.Id == cert.SigningProfileId).Select(sp => sp.IssuerId).FirstOrDefault();
         var hintIds = TenantHintCertificateIds(cert, profileIssuer);
-        var hint = hintIds.Count == 0 ? null
+        var hintRow = hintIds.Count == 0 ? null
             : db.CertificateAuthorities.AsNoTracking()
                 .Where(ca => ca.CertificateId != null && hintIds.Contains(ca.CertificateId.Value))
-                .Select(ca => (Guid?)ca.TenantId).FirstOrDefault();
-        return PickSupersededOwner(cert, candidates, hint);
+                .Select(ca => new { ca.TenantId }).FirstOrDefault();
+        return PickSupersededOwner(cert, candidates, hintRow != null, hintRow?.TenantId);
     }
 
     /// <summary>
@@ -274,9 +274,10 @@ public static class IssuerChainResolver
                 continue;
             var profileIssuer = orphan.SigningProfileId is Guid spId ? profileIssuers.GetValueOrDefault(spId) : null;
             Guid? hint = null;
+            var hintKnown = false;
             foreach (var id in TenantHintCertificateIds(orphan, profileIssuer))
-                if (owners.TryGetValue(id, out var o)) { hint = o.TenantId; break; }
-            if (PickSupersededOwner(orphan, candidates, hint) is { } owner)
+                if (owners.TryGetValue(id, out var o)) { hint = o.TenantId; hintKnown = true; break; }
+            if (PickSupersededOwner(orphan, candidates, hintKnown, hint) is { } owner)
                 owners[orphan.CertificateId] = owner;
         }
         return owners;
@@ -355,12 +356,12 @@ public static class IssuerChainResolver
     /// same subject. A public key or subject key identifier match ranks first; failing that, the
     /// same issuer DN, which is only trusted within the certificate's own tenant because a
     /// same-named CA in another tenant is exactly what it cannot tell apart. Either tier is
-    /// restricted to <paramref name="tenantHint"/> when it is known, and more than one match in a
-    /// tier is refused rather than guessed.
+    /// restricted to <paramref name="tenantHint"/> when <paramref name="hintKnown"/> (a null hint
+    /// then means the instance), and more than one match in a tier is refused rather than guessed.
     /// </summary>
-    private static CaOwner? PickSupersededOwner(CertificateEntity superseded, IReadOnlyList<OwnerCandidate> candidates, Guid? tenantHint)
+    private static CaOwner? PickSupersededOwner(CertificateEntity superseded, IReadOnlyList<OwnerCandidate> candidates, bool hintKnown, Guid? tenantHint)
     {
-        var scoped = tenantHint is Guid t ? candidates.Where(c => c.TenantId == t).ToList() : candidates.ToList();
+        var scoped = hintKnown ? candidates.Where(c => c.TenantId == tenantHint).ToList() : candidates.ToList();
 
         var key = PublicKey(superseded.Pem);
         var ski = SubjectKeyIdentifier(superseded.Pem);
@@ -371,7 +372,7 @@ public static class IssuerChainResolver
             .ToList();
         if (keyMatches.Count == 1)
             return new CaOwner(keyMatches[0].Id, keyMatches[0].TenantId);
-        if (keyMatches.Count > 1 || tenantHint == null)
+        if (keyMatches.Count > 1 || !hintKnown)
             return null;
 
         var dnMatches = scoped

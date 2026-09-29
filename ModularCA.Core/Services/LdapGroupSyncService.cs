@@ -84,9 +84,9 @@ public class LdapGroupSyncService : ILdapGroupSyncService
     /// <summary>
     /// Synchronizes a user's CA group memberships from LDAP groups.
     /// Matches LDAP group names (via the configured mappings, or directly when none are configured)
-    /// against CaGroupEntity.Name, restricted to groups in the user's own enabled tenant(s), never the
-    /// System tenant or a disabled one. Only an account with no memberships at all falls back to the
-    /// single enabled non-system tenant, when exactly one exists. System and privilege-controlled groups are
+    /// against CaGroupEntity.Name, restricted to groups in the user's own enabled tenant(s), never an
+    /// instance group (no tenant) or a disabled tenant's. Only an account with no memberships at all
+    /// falls back to the single enabled tenant, when exactly one exists. System and privilege-controlled groups are
     /// skipped with a warning, and their memberships are never removed by sync. A <c>null</c> group
     /// list means the directory lookup failed, so nothing is changed.
     /// </summary>
@@ -126,11 +126,10 @@ public class LdapGroupSyncService : ILdapGroupSyncService
                 targetGroupNames.Add(lg);
         }
 
-        var systemTenantIds = await _db.Tenants.Where(t => t.IsSystemTenant).Select(t => t.Id).ToListAsync();
-        var enabledOrgTenantIds = (await _db.Tenants.Where(t => !t.IsSystemTenant && t.IsEnabled).Select(t => t.Id).ToListAsync()).ToHashSet();
+        var enabledOrgTenantIds = (await _db.Tenants.Where(t => t.IsEnabled).Select(t => t.Id).ToListAsync()).ToHashSet();
         var userTenantIds = user.GroupMemberships
-            .Where(gm => gm.Group != null && !gm.Group.IsSystemGroup && enabledOrgTenantIds.Contains(gm.Group.TenantId))
-            .Select(gm => gm.Group.TenantId)
+            .Where(gm => gm.Group != null && !gm.Group.IsSystemGroup && gm.Group.TenantId is Guid t && enabledOrgTenantIds.Contains(t))
+            .Select(gm => gm.Group.TenantId!.Value)
             .ToHashSet();
         // The single-tenant fallback is for brand-new accounts only; an account that already has
         // memberships (system groups or a disabled tenant included) is never placed in a tenant by sync.
@@ -151,7 +150,8 @@ public class LdapGroupSyncService : ILdapGroupSyncService
                     group.Name, user.Username);
                 continue;
             }
-            if (systemTenantIds.Contains(group.TenantId) || !enabledOrgTenantIds.Contains(group.TenantId) || !userTenantIds.Contains(group.TenantId))
+            // Instance groups (no tenant) are never synced, as the system tenant's groups were not.
+            if (group.TenantId is not Guid groupTenantId || !enabledOrgTenantIds.Contains(groupTenantId) || !userTenantIds.Contains(groupTenantId))
             {
                 _logger.LogWarning("LDAP sync: skipping group {GroupName} for user {Username}: group is outside the user's tenant",
                     group.Name, user.Username);

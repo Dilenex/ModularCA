@@ -71,9 +71,10 @@ public interface IKeyCeremonyService
     Task<List<KeyCeremonyEntity>> ListAsync(string? statusFilter = null);
 
     /// <summary>
-    /// Lists ceremonies filtered to specific tenant IDs, optionally filtered by status.
+    /// Lists ceremonies filtered to specific tenant IDs, plus the instance's (no tenant) when
+    /// <paramref name="includeInstance"/>, optionally filtered by status.
     /// </summary>
-    Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null);
+    Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null, bool includeInstance = false);
 
     /// <summary>
     /// Expires all pending ceremonies whose ExpiresAt has passed.

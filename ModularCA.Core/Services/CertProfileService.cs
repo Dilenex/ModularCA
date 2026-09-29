@@ -50,6 +50,7 @@ namespace ModularCA.Core.Services
         /// </summary>
         public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? tenantId = null)
         {
+            await EnsureParentVisibleAsync(request.InheritsFromId, null, tenantId);
             var profile = new CertProfileEntity
             {
                 Name = request.Name,
@@ -84,6 +85,8 @@ namespace ModularCA.Core.Services
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null) throw new KeyNotFoundException("Profile not found");
+            if (request.InheritsFromId != profile.InheritsFromId)
+                await EnsureParentVisibleAsync(request.InheritsFromId, id, profile.TenantId);
 
             profile.Name = request.Name;
             profile.Description = request.Description;
@@ -104,6 +107,31 @@ namespace ModularCA.Core.Services
             profile.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Refuses an inheritance parent the caller cannot see: the lookup runs under the caller's
+        /// tenant query filter, so a profile of another space, or one bound to an instance CA
+        /// for a caller without instance scope, is not found. A profile is not its own parent.
+        /// A visible parent must also be in the child's own scope (<paramref name="childTenantId"/>,
+        /// null for the instance) or be instance-wide (no tenant, no CA); a caller in two spaces
+        /// cannot make one space's profile inherit from the other's
+        /// (<see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/>).
+        /// </summary>
+        private async Task EnsureParentVisibleAsync(Guid? parentId, Guid? childId, Guid? childTenantId)
+        {
+            if (parentId is not Guid id)
+                return;
+            var parent = id == childId ? null : await _db.CertProfiles.AsNoTracking()
+                .Where(p => p.Id == id)
+                .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                .FirstOrDefaultAsync();
+            if (parent == null)
+                throw new ModularCA.Shared.Errors.ResourceNotFoundException(
+                    "Certificate profile", $"Parent certificate profile '{id}' not found.", id.ToString());
+            if (parent.TenantId != childTenantId && !(parent.TenantId == null && parent.CertificateAuthorityId == null))
+                throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                    $"Parent certificate profile '{id}' belongs to another scope; a profile inherits only from its own scope's profiles or an instance-wide one.");
         }
 
         /// <summary>

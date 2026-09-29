@@ -17,6 +17,9 @@ import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
+/** The tenant selector's value for an instance CA (no tenant); sent as scope "instance". */
+const INSTANCE_SCOPE = '__instance__';
+
 /** ML-DSA and SLH-DSA: the FIPS 204 / FIPS 205 post-quantum signature schemes. */
 const isPostQuantum = (alg: string) => alg.startsWith('ML-DSA') || alg.startsWith('SLH-DSA');
 
@@ -256,8 +259,9 @@ const CaManagement: React.FC = () => {
                 ? '/api/v1/admin/authorities/create-root'
                 : '/api/v1/admin/authorities/create-intermediate';
 
+            // The server refuses a create that names no scope: a tenant, or the instance explicitly.
             const body: any = {
-                tenantId: formTenant,
+                ...(formTenant === INSTANCE_SCOPE ? { scope: 'instance' } : { tenantId: formTenant }),
                 subjectCN: formCN,
                 subjectO: formOrg || undefined,
                 subjectOU: formOU || undefined,
@@ -355,6 +359,7 @@ const CaManagement: React.FC = () => {
                             <label className={labelClass}>Tenant *</label>
                             <select value={formTenant} onChange={(e) => setFormTenant(e.target.value)} className={inputClass}>
                                 <option value="">-- Select Tenant --</option>
+                                {managesAllTenants && <option value={INSTANCE_SCOPE}>Instance (no tenant)</option>}
                                 {creatableTenants.map(t => (
                                     <option key={t.id} value={t.id}>{t.name}</option>
                                 ))}

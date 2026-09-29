@@ -187,7 +187,7 @@ const TenantDetail: React.FC = () => {
     return (
         <DetailPage
             breadcrumbs={[{ label: 'Tenants', to: '/tenants' }, { label: t.name }]}
-            title={<>{t.name}{t.isSystemTenant && <span className="ml-2 text-xs font-normal text-gray-500">(system)</span>}</>}
+            title={t.name}
             status={<StatusBadge status={t.isEnabled !== false ? 'active' : 'disabled'} label={t.isEnabled !== false ? 'Enabled' : 'Disabled'} />}
             subtitle={t.description || undefined}
             backTo="/tenants"
@@ -200,7 +200,7 @@ const TenantDetail: React.FC = () => {
                     {t.isEnabled !== false
                         ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors">Disable</button>
                         : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Enable</button>}
-                    {t.isEnabled !== false && !t.isSystemTenant && (
+                    {t.isEnabled !== false && (
                         <button onClick={softDelete} className="px-3 py-1.5 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors">Soft Delete</button>
                     )}
                 </div>

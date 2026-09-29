@@ -67,15 +67,15 @@ public partial class AdminTenantController(
 
         // CA counts per tenant
         var caCounts = await _db.CertificateAuthorities
-            .Where(ca => tenantIds.Contains(ca.TenantId))
-            .GroupBy(ca => ca.TenantId)
+            .Where(ca => ca.TenantId != null && tenantIds.Contains(ca.TenantId.Value))
+            .GroupBy(ca => ca.TenantId!.Value)
             .Select(g => new { TenantId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TenantId, x => x.Count);
 
         // Distinct user counts per tenant (via group memberships)
         var userCounts = await _db.CaGroupMembers
-            .Where(gm => tenantIds.Contains(gm.Group.TenantId))
-            .GroupBy(gm => gm.Group.TenantId)
+            .Where(gm => gm.Group.TenantId != null && tenantIds.Contains(gm.Group.TenantId.Value))
+            .GroupBy(gm => gm.Group.TenantId!.Value)
             .Select(g => new { TenantId = g.Key, Count = g.Select(gm => gm.UserId).Distinct().Count() })
             .ToDictionaryAsync(x => x.TenantId, x => x.Count);
 
@@ -150,7 +150,8 @@ public partial class AdminTenantController(
     /// Creates a new tenant. The slug is auto-generated from the name if not provided. Refused
     /// with MCA-CFG-017, naming the blocking organisation, when an organisation tenant (enabled or
     /// disabled, not soft-deleted) already exists and <c>Features.AllowMultipleOrganizations</c>
-    /// is off, then subject to the licence gate.
+    /// is off, then subject to the licence gate, which counts organisations only. The slug
+    /// <c>system</c> is reserved for instance CAs' groups.
     /// </summary>
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateTenantRequest request)
@@ -164,6 +165,9 @@ public partial class AdminTenantController(
             ? GenerateSlug(request.Name)
             : GenerateSlug(request.Slug);
 
+        if (slug == ReservedInstanceSlug)
+            return BadRequest(new { error = $"The slug '{ReservedInstanceSlug}' is reserved: instance CAs' groups are named with it." });
+
         var nameExists = await _db.Tenants.AnyAsync(t => t.Name == request.Name.Trim());
         if (nameExists)
             return Conflict(new { error = $"A tenant with name '{request.Name.Trim()}' already exists" });
@@ -174,11 +178,12 @@ public partial class AdminTenantController(
 
         // Single-organisation mode, then the licence. Both after the shape and uniqueness checks so
         // a malformed request is still reported as malformed.
-        var organizations = _db.Tenants.IgnoreQueryFilters().Where(t => !t.IsSystemTenant && !t.IsDeleted);
+        var organizations = _db.Tenants.IgnoreQueryFilters().Where(t => !t.IsDeleted);
         var organizationCount = await organizations.CountAsync();
         var blocking = organizationCount > 0
             ? await organizations.OrderBy(t => t.Name).Select(t => new { t.Name, t.IsEnabled }).FirstAsync()
             : null;
+        // The licence counts organisations only: there is no system tenant to count.
         var refusal = (RequestValidationException?)TenantCreationGate.EvaluateOrganizationMode(
                 _config.Features.AllowMultipleOrganizations, organizationCount, blocking?.Name, blocking is { IsEnabled: false })
             ?? TenantCreationGate.Evaluate(_entitlements, await _db.Tenants.CountAsync());
@@ -351,6 +356,8 @@ public partial class AdminTenantController(
         if (request.Slug != null)
         {
             var slug = GenerateSlug(request.Slug);
+            if (slug == ReservedInstanceSlug)
+                return BadRequest(new { error = $"The slug '{ReservedInstanceSlug}' is reserved: instance CAs' groups are named with it." });
             var slugExists = await _db.Tenants.AnyAsync(t => t.Slug == slug && t.Id != id);
             if (slugExists)
                 return Conflict(new { error = $"A tenant with slug '{slug}' already exists" });
@@ -729,6 +736,12 @@ public partial class AdminTenantController(
 
         return Ok(new { message = $"Tenant '{tenant.Name}' has been disabled" });
     }
+
+    /// <summary>
+    /// The slug instance CAs' groups carry (<c>system_&lt;label&gt;_&lt;role&gt;</c>), which no
+    /// tenant may take, or its CA groups would collide with theirs.
+    /// </summary>
+    private const string ReservedInstanceSlug = "system";
 
     /// <summary>
     /// Generates a URL-safe slug from the given input string by lowercasing,

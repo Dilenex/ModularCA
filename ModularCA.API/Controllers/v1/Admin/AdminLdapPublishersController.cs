@@ -34,11 +34,12 @@ public class AdminLdapPublishersController(
     ILogger<AdminLdapPublishersController> logger) : ControllerBase
 {
     /// <summary>
-    /// Resolves <paramref name="caId"/> to its owning tenant and verifies the caller
-    /// has access. Returns the tenant id on success, or null if the CA is missing or
-    /// outside the caller's <c>AccessibleTenantIds</c>. System admins always pass.
+    /// Resolves <paramref name="caId"/> to its owning scope and verifies the caller
+    /// has access. Returns the scope on success (its tenant is null for an instance CA), or null
+    /// if the CA is missing or outside the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
+    /// System admins always pass.
     /// </summary>
-    private async Task<Guid?> ResolveAndFenceCaAsync(Guid caId)
+    private async Task<CaScope?> ResolveAndFenceCaAsync(Guid caId)
     {
         var ca = await dbContext.CertificateAuthorities
             .AsNoTracking()
@@ -49,12 +50,15 @@ public class AdminLdapPublishersController(
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
+            var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(ca.TenantId))
                 return null;
         }
-        return ca.TenantId;
+        return new CaScope(ca.TenantId);
     }
+
+    /// <summary>A fenced CA's scope: its tenant, or null for an instance CA.</summary>
+    private sealed record CaScope(Guid? TenantId);
 
     /// <summary>
     /// Lists all LDAP publisher configurations for the specified CA. Enforces the tenant fence
@@ -192,7 +196,7 @@ public class AdminLdapPublishersController(
             new { entity.Name, entity.Host, entity.Port, CaId = caId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId);
+            tenantId: resolvedTenantId.TenantId);
 
         return CreatedAtAction(nameof(Get), new { caId, id = entity.Id }, new { entity.Id });
     }
@@ -242,7 +246,7 @@ public class AdminLdapPublishersController(
                 success: false,
                 errorMessage: "LDAP publisher not found.",
                 certificateAuthorityId: caId,
-                tenantId: resolvedTenantId);
+                tenantId: resolvedTenantId.TenantId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
 
@@ -317,7 +321,7 @@ public class AdminLdapPublishersController(
             new { CaId = caId, PasswordRotated = passwordRotated, Before = before, After = after },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId);
+            tenantId: resolvedTenantId.TenantId);
 
         return Ok(new { message = "LDAP publisher updated." });
     }
@@ -365,7 +369,7 @@ public class AdminLdapPublishersController(
                 success: false,
                 errorMessage: "LDAP publisher not found.",
                 certificateAuthorityId: caId,
-                tenantId: resolvedTenantId);
+                tenantId: resolvedTenantId.TenantId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
 
@@ -391,7 +395,7 @@ public class AdminLdapPublishersController(
             deletedSnapshot,
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId);
+            tenantId: resolvedTenantId.TenantId);
 
         return Ok(new { message = "LDAP publisher deleted." });
     }
@@ -467,7 +471,7 @@ public class AdminLdapPublishersController(
                         new { Bulk = true, Deleted = deletedSnapshot },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         certificateAuthorityId: caId,
-                        tenantId: resolvedTenantId);
+                        tenantId: resolvedTenantId.TenantId);
                 }
                 else
                 {
@@ -482,7 +486,7 @@ public class AdminLdapPublishersController(
                         new { CaId = caId, Bulk = true, Enabled = enabled },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         certificateAuthorityId: caId,
-                        tenantId: resolvedTenantId);
+                        tenantId: resolvedTenantId.TenantId);
                 }
 
                 results.Add(new { id, status = "ok" });

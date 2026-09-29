@@ -148,6 +148,9 @@ with the caveats below when the instance is enrolled and in the visor afterwards
 - **Tenant hostnames are removed without a cutover.** Neither live deployment serves one.
 - **Defaults, unless revisited:**
   - Where the system and organisation tenants disagree on a setting, the stricter value wins.
+    **Replaced for S3 (owner decision):** policy scopes are independent, not a floor. The
+    instance's policy governs instance CAs only and a space's governs its own CAs only; nothing
+    merges, and the fold copies the system tenant's values to the instance as they are.
   - Super remains as the break-glass rank, and a space-wide operator rank is kept.
   - Tenant quotas are removed; group quotas stay.
   - The multi-tenancy licence flag moves to the visor.
@@ -163,7 +166,23 @@ that nothing is renamed only to be deleted.
   upgrade test against real PostgreSQL, rehearsed on a dump of staging.
 - **S1.** Single-organisation mode.
 - **S2.** Retire tenant hostnames and tenant ingress routes.
-- **S3.** Fold the system tenant into the instance.
+- **S3.** Fold the system tenant into the instance. Done in the `FoldSystemTenant` migration:
+  - A null `TenantId` now means instance scope everywhere. The system signing CA, SSH CAs, the
+    system groups and the instance CAs' groups have no tenant.
+  - The instance's CA policy (`RequireKeyCeremony`, `CeremonyRequiredApprovals`,
+    `MaxValidityDays`, `ValidityCeilingBehavior`, and the CA-level user quorum) lives on
+    `SecurityPolicy`. The migration copies the system tenant's values there as they are. Every
+    reader goes through `IEffectivePolicyResolver`, which never answers "no policy".
+  - The system tenant's `org-system-*` groups are deleted, and `Tenants.IsSystemTenant` is dropped.
+    The tenant foreign keys are `ON DELETE RESTRICT`.
+  - The upgrade refuses, rolling back, while open ceremonies name the system tenant, while the
+    `org-system-*` groups have members or badge sources, while tenant-wide grants or service
+    identities on the system tenant would become instance-wide, or while the instance has more
+    than one organisation, whatever the multiple-organisations flag says.
+  - New audit records go to the instance chain. Each per-tenant chain is sealed once at control
+    start, with its final hash anchored in the instance chain.
+  - Instance policy changes by anyone but a system-super go through an `InstancePolicyChange`
+    ceremony. The licence counts organisations only.
 - **S4.** Remove the isolation-only query filters and fences, and make CA labels and names
   unique across the instance.
 - **S5.** Simplify ranks to instance, space, CA and operator.

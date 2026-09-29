@@ -7,7 +7,8 @@ import { PORTAL } from '../portal';
  * The scope control in the top bar: one select, tenant and CA together.
  *
  * Options are grouped by tenant: each group offers the whole tenant ("all CAs") and then each
- * CA in it; above the groups, "All tenants" for system-scoped callers. When the caller
+ * CA in it; above the groups, "All tenants" for system-scoped callers; below them, "Instance"
+ * with the instance's own CAs (no tenant: the system signing CA, SSH CAs). When the caller
  * administers only one tenant the group heading still names it, so the value reads as "where
  * am I" at a glance. Only the console has a scope; the self-service portal is its own view,
  * reached through the portal switch beside this control.
@@ -21,6 +22,7 @@ const ScopeSwitcher: React.FC = () => {
 
     if (PORTAL !== 'admin') return null;
     if (cas.length === 0 && tenants.length === 0 && !canScopeToAll) return null;
+    const instance = cas.filter(c => c.tenantId == null);
 
     const value = scope.kind === 'ca' ? caValue(scope.caId)
         : scope.kind === 'tenant' ? tenantValue(scope.tenantId)
@@ -60,6 +62,13 @@ const ScopeSwitcher: React.FC = () => {
                         ))}
                     </optgroup>
                 ))}
+                {instance.length > 0 && (
+                    <optgroup label="Instance">
+                        {instance.map(ca => (
+                            <option key={ca.id} value={caValue(ca.id)}>Instance / {ca.label || ca.name}{ca.isSshCa ? ' (SSH)' : ''}</option>
+                        ))}
+                    </optgroup>
+                )}
             </select>
         </label>
     );

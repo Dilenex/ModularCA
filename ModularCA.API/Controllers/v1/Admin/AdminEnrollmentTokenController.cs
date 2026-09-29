@@ -1,6 +1,7 @@
 using ModularCA.Shared.Authorization;
 using ModularCA.Auth.Authorization;
 using ModularCA.API.Filters;
+using ModularCA.Shared.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -27,11 +28,21 @@ public class AdminEnrollmentTokenController(
     ModularCADbContext db) : ControllerBase
 {
     /// <summary>
+    /// Whether a non-admin caller may see or revoke <paramref name="token"/>: a token bound to a
+    /// CA follows that CA's scope (a null tenant is an instance CA, which needs instance scope);
+    /// a token bound to no CA and no tenant is system-wide and stays hidden, as before.
+    /// </summary>
+    private static bool MayManageToken(TenantFence fence, EnrollmentTokenEntity token)
+        => token.TenantId is Guid t
+            ? fence.TenantIds.Contains(t)
+            : token.CertificateAuthorityId != null && fence.InstanceScope;
+
+    /// <summary>
     /// Resolves the CA + tenant for a signing profile (or cert/request
     /// profile as a secondary path). Returns null if no CA can be resolved — the caller
     /// should treat null as "system-wide target" and require SystemOperator policy.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveCaFromProfilesAsync(
+    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromProfilesAsync(
         Guid? signingProfileId, Guid? certProfileId, Guid? requestProfileId)
     {
         if (signingProfileId.HasValue)
@@ -104,12 +115,8 @@ public class AdminEnrollmentTokenController(
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            tokens = tokens.Where(t =>
-                // Tokens without a tenant are system-wide; system-wide tokens should
-                // not be visible through the per-tenant list endpoint — system admins
-                // have already bypassed this branch above.
-                t.TenantId.HasValue && tenantIds != null && tenantIds.Contains(t.TenantId.Value)).ToList();
+            var fence = TenantFence.From(HttpContext);
+            tokens = tokens.Where(t => fence != null && MayManageToken(fence, t)).ToList();
         }
 
         // No token value leaves this endpoint, for any row. Bearer tokens used to be echoed
@@ -167,8 +174,8 @@ public class AdminEnrollmentTokenController(
         }
         else if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(caInfo.Value.TenantId))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(caInfo.Value.TenantId))
                 return NotFound(new { error = "CMP target CA not found." });
         }
 
@@ -221,8 +228,8 @@ public class AdminEnrollmentTokenController(
         }
         else if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(caInfo.Value.TenantId))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !fence.Allows(caInfo.Value.TenantId))
                 return NotFound(new { error = "Enrollment target not found." });
         }
 
@@ -260,8 +267,8 @@ public class AdminEnrollmentTokenController(
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (!existing.TenantId.HasValue || tenantIds == null || !tenantIds.Contains(existing.TenantId.Value))
+            var fence = TenantFence.From(HttpContext);
+            if (fence == null || !MayManageToken(fence, existing))
                 return NotFound(new { error = "Token not found" });
         }
 

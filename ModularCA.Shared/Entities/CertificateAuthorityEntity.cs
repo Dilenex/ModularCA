@@ -127,14 +127,14 @@ namespace ModularCA.Shared.Entities
         public bool IsSshCa { get; set; } = false;
 
         /// <summary>
-        /// The tenant this CA belongs to. Every CA must belong to a tenant.
+        /// The space (tenant) this CA belongs to, or null for an instance CA such as the system
+        /// signing CA or an SSH CA.
         /// </summary>
-        [Required]
-        public Guid TenantId { get; set; }
+        public Guid? TenantId { get; set; }
 
-        /// <summary>Navigation property to the owning tenant.</summary>
+        /// <summary>Navigation property to the owning tenant; null for an instance CA.</summary>
         [ForeignKey("TenantId")]
-        public virtual TenantEntity Tenant { get; set; } = default!;
+        public virtual TenantEntity? Tenant { get; set; }
 
         /// <summary>
         /// Optional per-CA override for the controlled-user ceremony ("user") quorum — how many

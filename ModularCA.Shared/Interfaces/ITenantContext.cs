@@ -40,6 +40,12 @@ public interface ITenantContext
     IReadOnlySet<Guid> AccessibleTenantIds { get; }
 
     /// <summary>
+    /// True when the caller may see instance rows (CAs with no tenant): a system admin, or a
+    /// member of any group with no tenant (the system groups and the instance CAs' groups).
+    /// </summary>
+    bool HasInstanceScope { get; }
+
+    /// <summary>
     /// The authenticated user ID, or null when <see cref="HasContext"/> is false.
     /// </summary>
     Guid? UserId { get; }
@@ -49,7 +55,7 @@ public interface ITenantContext
     /// tenant memberships. Called once per request from
     /// <c>TenantResolutionMiddleware</c>.
     /// </summary>
-    void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin);
+    void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope);
 }
 
 /// <summary>
@@ -77,10 +83,13 @@ public sealed class UnresolvedTenantContext : ITenantContext
     public IReadOnlySet<Guid> AccessibleTenantIds => EmptySet;
 
     /// <inheritdoc />
+    public bool HasInstanceScope => false;
+
+    /// <inheritdoc />
     public Guid? UserId => null;
 
     /// <inheritdoc />
-    public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin)
+    public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope)
     {
         // No-op. The unresolved context is immutable; callers that want to populate a
         // context should inject the scoped TenantContext DI service instead.

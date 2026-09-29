@@ -31,7 +31,8 @@ public class RequestorSelfServiceTests
         public bool IsSystemAdmin => true;   // bypass the tenant filter; this suite is about capability, not tenancy
         public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
         public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
+        public bool HasInstanceScope => true;
+        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
     }
 
     private static readonly Guid Requestor = Guid.Parse("11111111-0000-0000-0000-000000000001");

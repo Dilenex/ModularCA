@@ -54,14 +54,13 @@ public class AdminGroupController(
             .AsNoTracking()
             .AsQueryable();
 
-        // Filter groups to only those belonging to the user's accessible tenants
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
-            query = query.Where(g => tenantIds.Contains(g.TenantId));
+        // Filter groups to those of the user's accessible tenants, and instance groups (no
+        // tenant) for callers with instance scope.
+        var fence = TenantFence.From(HttpContext);
+        if (fence != null && !fence.IsSystemAdmin)
+            query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.TenantId));
 
         var groups = await query.OrderBy(g => g.Name).ToListAsync();
-        var systemTenants = await _db.Tenants.AsNoTracking().IgnoreQueryFilters()
-            .Where(t => t.IsSystemTenant).Select(t => t.Id).ToHashSetAsync();
 
         return Ok(groups.Select(g => new
         {
@@ -69,7 +68,7 @@ public class AdminGroupController(
             g.Name,
             g.DisplayName,
             g.TenantId,
-            IsSystemTenant = systemTenants.Contains(g.TenantId),
+            IsInstance = g.TenantId == null,
             g.CertificateAuthorityId,
             g.TemplateName,
             g.IsSystemGroup,
@@ -99,10 +98,9 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Verify the requesting user has access to this group's tenant
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true
-            && !tenantIds.Contains(group.TenantId))
+        // Verify the requesting user has access to this group's tenant (or the instance)
+        var fence = TenantFence.From(HttpContext);
+        if (fence != null && !fence.Allows(group.TenantId))
             return NotFound(new { error = $"Group with ID {id} not found" });
 
         return Ok(new
@@ -168,30 +166,31 @@ public class AdminGroupController(
     {
         if (HttpContext.Items["IsSystemAdmin"] is true)
             return null;
-        var tenantId = await _db.CertificateAuthorities
+        var ca = await _db.CertificateAuthorities
             .AsNoTracking()
             .IgnoreQueryFilters()
             .Where(c => c.Id == caId && !c.IsDeleted)
-            .Select(c => (Guid?)c.TenantId)
+            .Select(c => new { c.TenantId })
             .FirstOrDefaultAsync();
-        if (tenantId == null)
+        if (ca == null)
             return NotFound();
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds == null || !tenantIds.Contains(tenantId.Value))
+        var fence = TenantFence.From(HttpContext);
+        if (fence == null || !fence.Allows(ca.TenantId))
             return NotFound();
         return null;
     }
 
     /// <summary>
     /// Resolves a group's tenant and checks access. System admins bypass.
-    /// Uses the group's <c>TenantId</c> directly (auto-populated from the CA at creation time).
+    /// Uses the group's <c>TenantId</c> directly (auto-populated from the CA at creation time);
+    /// an instance group (no tenant) needs instance scope.
     /// </summary>
     private IActionResult? EnsureGroupInAccessibleTenant(Shared.Entities.CaGroupEntity group)
     {
         if (HttpContext.Items["IsSystemAdmin"] is true)
             return null;
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds == null || !tenantIds.Contains(group.TenantId))
+        var fence = TenantFence.From(HttpContext);
+        if (fence == null || !fence.Allows(group.TenantId))
             return NotFound();
         return null;
     }
@@ -199,7 +198,8 @@ public class AdminGroupController(
     /// <summary>
     /// Creates a custom (non-auto-generated) group. Auto-generated groups are created during CA creation.
     /// If a <c>CertificateAuthorityId</c> is supplied, verify that the
-    /// caller has access to the CA's tenant before writing.
+    /// caller has access to the CA's tenant before writing. With neither a CA nor a tenant the
+    /// group is an instance group (<c>IsSystemGroup</c>, no tenant).
     /// </summary>
     [HttpPost]
     [Authorize(Policy = "SystemAdmin")]
@@ -225,8 +225,10 @@ public class AdminGroupController(
                 return BadRequest(new { error = $"Template role '{request.TemplateName}' not found. Available templates: Administrator, Operator, Auditor, Requester." });
         }
 
-        // Resolve TenantId: from CA when CA-scoped, from request when tenant-wide.
-        Guid tenantId;
+        // Resolve TenantId: from CA when CA-scoped, from request when tenant-wide. With neither,
+        // the group is an instance group, which is a system group: a non-system group with no
+        // tenant and no CA would confer nothing (and must never be read as system scope).
+        Guid? tenantId;
         bool isSystemGroup = false;
 
         if (request.CertificateAuthorityId != null)
@@ -248,11 +250,11 @@ public class AdminGroupController(
             if (tenant == null)
                 return BadRequest(new { error = $"Tenant with ID {request.TenantId.Value} not found." });
             tenantId = tenant.Id;
-            isSystemGroup = tenant.IsSystemTenant;
         }
         else
         {
-            return BadRequest(new { error = "TenantId is required when CertificateAuthorityId is not provided." });
+            tenantId = null;
+            isSystemGroup = true;
         }
 
         var group = new Shared.Entities.CaGroupEntity

@@ -92,11 +92,12 @@ public class UserCertificateController(
             .ToList();
 
         // Apply tenant filtering for non-system-admins
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext);
+        if (fence != null && !fence.IsSystemAdmin)
         {
             var accessibleCertIds = await _dbContext.CertificateAuthorities
-                .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                .Where(ca => ca.CertificateId != null)
                 .Select(ca => ca.CertificateId!.Value)
                 .ToListAsync();
 

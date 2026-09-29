@@ -44,18 +44,18 @@ public interface ISigningService
 
     /// <summary>
     /// Generates a new key inside the signer and returns its reference and public half. Allowed
-    /// only under a <see cref="SigningPurpose.Ceremony"/> or <see cref="SigningPurpose.Bootstrap"/> context.
+    /// only under a <see cref="SigningPurpose.Ceremony"/> or <see cref="SigningPurpose.Infrastructure"/> context.
     /// The key has no certificate yet: it is held pending, signs only under the context that
     /// generated it, and is written nowhere until <see cref="CommitKeyAsync"/> binds it to the
     /// certificate row that carries its public key. <see cref="RetireKeyAsync"/> discards it.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or bootstrap.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, or its scope's ceremony policy refuses it.</exception>
     Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Imports wrapped key material for a certificate row that already exists: a migration from
     /// an older keystore or an HSM import. The pair is persisted at once. Allowed only under a
-    /// ceremony or bootstrap context. Material in the <see cref="KeyMaterial.KeystoreFile"/>
+    /// ceremony context held to the scope of the CA that owns the certificate. Material in the <see cref="KeyMaterial.KeystoreFile"/>
     /// format is a whole keystore file from a backup: it is verified against the pinned signer
     /// and replaces the file in place, under a <see cref="SigningPurpose.Restore"/> or
     /// <see cref="SigningPurpose.Bootstrap"/> context, locked or not, since restoring the
@@ -69,9 +69,11 @@ public interface ISigningService
     /// the signer checks that certificate row <paramref name="certificateId"/> carries the key's
     /// public half, persists the pair durably, and from then on serves the key under the policy
     /// for its kind, addressed by <c>new KeyRef(certificateId)</c>. The generated reference is
-    /// spent. Allowed only under a ceremony or bootstrap context.
+    /// spent. Allowed only under a ceremony or infrastructure context; a key generated for a CA
+    /// binds only to a certificate of that CA, and an infrastructure key only to a delegated
+    /// signer certificate of the CA the context names.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or bootstrap, no generated key awaits under <paramref name="key"/>, or the certificate is missing or is not the key's.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, no generated key awaits under <paramref name="key"/>, the certificate is missing or is not the key's, or it belongs to another CA or scope.</exception>
     Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -1143,7 +1143,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
             var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
             var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
             if (info != null)
-                return (signer.PublicCertificate, new ScepSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Scep, info.TenantId, info.CaId)));
+                return (signer.PublicCertificate, new ScepSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, info.CaId!.Value, info.TenantId)));
         }
         return null;
     }

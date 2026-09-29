@@ -50,7 +50,8 @@ public class CaProfileIssuanceGuardTests
         public bool IsSystemAdmin => true;
         public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
         public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
+        public bool HasInstanceScope => true;
+        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
     }
 
     private static ModularCADbContext BuildContext(string dbName)

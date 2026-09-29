@@ -6,6 +6,7 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { SystemQuorumCard } from '../components/UserQuorumPanel';
+import KerberosRealmsPanel from '../components/KerberosRealmsPanel';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { labelClass as labelCls } from '@shared/components/forms';
 import type { ValidityCeilingBehavior } from '@shared/generated';
@@ -48,7 +49,6 @@ export interface Tenant {
     slug?: string;
     description?: string;
     isEnabled: boolean;
-    isSystemTenant: boolean;
     createdAt: string;
     maxCertificateAuthorities: number;
     maxCertificatesTotal: number;
@@ -57,6 +57,17 @@ export interface Tenant {
     validityCeilingBehavior: ValidityCeilingBehavior;
     requireKeyCeremony: boolean;
     ceremonyRequiredApprovals: number;
+    caCount: number;
+    userCount: number;
+    issuedCertificates: number;
+    certificateAuthorities: Ca[];
+}
+/** The instance's own CA policy and its CAs (no tenant: the system signing CA, SSH CAs). */
+export interface InstanceSummary {
+    requireKeyCeremony: boolean;
+    ceremonyRequiredApprovals: number;
+    maxValidityDays: number;
+    validityCeilingBehavior: ValidityCeilingBehavior;
     caCount: number;
     userCount: number;
     issuedCertificates: number;
@@ -130,6 +141,7 @@ export const CaQuotaRow: React.FC<{
 const TenantsAndQuotas: React.FC = () => {
     const { showToast } = useToast();
     const [tenants, setTenants] = useState<Tenant[]>([]);
+    const [instance, setInstance] = useState<InstanceSummary | null>(null);
     const [totals, setTotals] = useState<{ totalTenants: number; totalCAs: number; casAtLimit: number; casNearLimit: number } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -145,6 +157,7 @@ const TenantsAndQuotas: React.FC = () => {
         apiGet<any>('/api/v1/admin/quotas/by-tenant')
             .then((data) => {
                 setTenants(data.tenants || []);
+                setInstance(data.instance || null);
                 setTotals(data.totals || null);
                 setAllowMultipleOrganizations(data.allowMultipleOrganizations !== false);
                 setError(null);
@@ -155,7 +168,7 @@ const TenantsAndQuotas: React.FC = () => {
 
     useEffect(() => { load(); }, [load]);
 
-    const canCreate = allowMultipleOrganizations || !tenants.some((t) => !t.isSystemTenant);
+    const canCreate = allowMultipleOrganizations || tenants.length === 0;
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -184,12 +197,8 @@ const TenantsAndQuotas: React.FC = () => {
         { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (t) => (t.isEnabled !== false ? 'Enabled' : 'Disabled'), render: (t) => <StatusBadge status={t.isEnabled !== false ? 'active' : 'disabled'} label={t.isEnabled !== false ? 'Enabled' : 'Disabled'} /> },
         {
             key: 'name', header: 'Name', defaultWidth: 240, minWidth: 140, truncate: false,
-            exportValue: (t) => t.name + (t.isSystemTenant ? ' (system)' : ''),
-            render: (t) => (
-                <span className="text-gray-900 dark:text-white font-medium truncate">
-                    {t.name}{t.isSystemTenant && <span className="ml-2 text-[10px] text-gray-500">(system)</span>}
-                </span>
-            ),
+            exportValue: (t) => t.name,
+            render: (t) => <span className="text-gray-900 dark:text-white font-medium truncate">{t.name}</span>,
         },
         { key: 'cas', header: 'CAs', defaultWidth: 100, headerTitle: 'CAs / max', exportValue: (t) => fmtLimit(t.caCount, t.maxCertificateAuthorities), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmtLimit(t.caCount, t.maxCertificateAuthorities)}</span> },
         { key: 'users', header: 'Users', defaultWidth: 100, headerTitle: 'Users / max', exportValue: (t) => fmtLimit(t.userCount, t.maxUsers), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmtLimit(t.userCount, t.maxUsers)}</span> },
@@ -201,7 +210,6 @@ const TenantsAndQuotas: React.FC = () => {
         <div className="text-sm">
             <DetailField label="Name" value={t.name} />
             <DetailField label="Description" value={t.description || '-'} />
-            <DetailField label="System Tenant" value={t.isSystemTenant ? 'Yes' : 'No'} />
             <DetailField label="Status" value={t.isEnabled !== false ? 'Enabled' : 'Disabled'} />
             <DetailField label="CAs" value={fmtLimit(t.caCount, t.maxCertificateAuthorities)} />
             <DetailField label="Users" value={fmtLimit(t.userCount, t.maxUsers)} />
@@ -293,6 +301,29 @@ const TenantsAndQuotas: React.FC = () => {
                 drawerTitle={(t) => t.name}
                 detailPath={(t) => `/tenants/${t.id}`}
             />
+
+            {instance && (
+                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Instance</h3>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                            The instance's own CAs belong to no tenant. Their policy is the instance's (Settings → Security Policy), independent of every tenant's.
+                        </p>
+                    </div>
+                    <div className="px-4 py-2 grid grid-cols-2 md:grid-cols-4 gap-x-4 text-sm">
+                        <DetailField label="Key Ceremony" value={instance.requireKeyCeremony ? `Yes (${instance.ceremonyRequiredApprovals} approval${instance.ceremonyRequiredApprovals === 1 ? '' : 's'} from others)` : 'No'} />
+                        <DetailField label="Max Cert Validity" value={instance.maxValidityDays > 0 ? `${instance.maxValidityDays} days (${instance.validityCeilingBehavior === 'Refuse' ? 'refuse' : 'shorten'})` : 'Unlimited'} />
+                        <DetailField label="Users" value={String(instance.userCount)} />
+                        <DetailField label="Active Certs" value={String(instance.issuedCertificates)} />
+                    </div>
+                    {instance.certificateAuthorities.length === 0 ? (
+                        <div className="px-4 py-2 text-xs text-gray-500">No instance CAs.</div>
+                    ) : instance.certificateAuthorities.map((ca) => <CaQuotaRow key={ca.id} ca={ca} readOnly />)}
+                    <div className="px-4 py-3 border-t border-gray-300 dark:border-gray-700">
+                        <KerberosRealmsPanel tenantId={null} tenantName="Instance" caLabels={instance.certificateAuthorities.filter((c) => !c.isSshCa && c.label).map((c) => c.label!)} />
+                    </div>
+                </div>
+            )}
 
             {/* System-scope controlled-user approval quorum — tenant/CA scopes live on each tenant's page. */}
             <SystemQuorumCard />

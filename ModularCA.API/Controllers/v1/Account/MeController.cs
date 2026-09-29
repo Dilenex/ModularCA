@@ -117,14 +117,13 @@ namespace ModularCA.API.Controllers.v1.Account
                 }),
             };
 
-            // Pick a primary tenant from the user's group memberships. System groups have
-            // a TenantId pointing at the System tenant — prefer a non-system tenant if any
-            // is present, otherwise fall back to the system tenant.
+            // Pick a primary tenant from the user's group memberships. Instance groups (the
+            // system groups and instance CAs' groups) have no tenant; null when only those.
             var primaryTenantId = groups
                 .Where(g => !g.isSystemGroup)
                 .Select(g => (Guid?)g.tenantId)
-                .FirstOrDefault()
-                ?? groups.Select(g => (Guid?)g.tenantId).FirstOrDefault();
+                .FirstOrDefault(t => t != null)
+                ?? groups.Select(g => (Guid?)g.tenantId).FirstOrDefault(t => t != null);
 
             return Ok(new
             {

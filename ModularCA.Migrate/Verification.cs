@@ -202,7 +202,7 @@ public sealed class Verification
 
             foreach (var chainBreak in result.Breaks)
             {
-                var label = tenant?.ToString() ?? "(system)";
+                var label = tenant?.ToString() ?? "(instance)";
                 var differences = await HashInputDifferencesAsync(source, audit, chainBreak.RecordId, ct);
 
                 if (differences.Count == 0)

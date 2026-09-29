@@ -412,7 +412,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
-                    b.Property<Guid>("TenantId")
+                    b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
 
                     b.Property<uint>("xmin")
@@ -968,7 +968,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("ParentCaId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("TenantId")
+                    b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("TsaCertificateId")
@@ -1002,6 +1002,14 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("TenantId", "Name")
                         .IsUnique();
+
+                    b.HasIndex(new[] { "Label" }, "IX_CertificateAuthorities_Label_Instance")
+                        .IsUnique()
+                        .HasFilter("\"TenantId\" IS NULL");
+
+                    b.HasIndex(new[] { "Name" }, "IX_CertificateAuthorities_Name_Instance")
+                        .IsUnique()
+                        .HasFilter("\"TenantId\" IS NULL");
 
                     b.ToTable("CertificateAuthorities", t =>
                         {
@@ -1669,7 +1677,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
-                    b.Property<Guid>("TenantId")
+                    b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
@@ -2597,6 +2605,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<bool>("AllowSystemSuperSelfApproval")
                         .HasColumnType("boolean");
 
+                    b.Property<int>("CeremonyRequiredApprovals")
+                        .HasColumnType("integer");
+
                     b.Property<int>("DefaultGoodResponseTtlMinutes")
                         .HasColumnType("integer");
 
@@ -2637,8 +2648,14 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("MaxSingleRequestsPerRequest")
                         .HasColumnType("integer");
 
+                    b.Property<int>("MaxValidityDays")
+                        .HasColumnType("integer");
+
                     b.Property<int>("MfaSessionTtlSeconds")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("RequireKeyCeremony")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("RequireMtlsOcspCheck")
                         .HasColumnType("boolean");
@@ -2667,7 +2684,13 @@ namespace ModularCA.Database.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("UserCeremonyRequiredApprovals")
+                        .HasColumnType("integer");
+
                     b.Property<int>("UserQuorum")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ValidityCeilingBehavior")
                         .HasColumnType("integer");
 
                     b.Property<int>("WebAuthnChallengeTtlSeconds")
@@ -2705,6 +2728,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("DataHash")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("EffectiveScope")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
 
                     b.Property<Guid?>("KeyCertificateId")
                         .HasColumnType("uuid");
@@ -3188,9 +3215,6 @@ namespace ModularCA.Database.Migrations
                         .HasDefaultValue(false);
 
                     b.Property<bool>("IsEnabled")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsSystemTenant")
                         .HasColumnType("boolean");
 
                     b.Property<int>("MaxCertificateAuthorities")
@@ -3906,8 +3930,7 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Certificate");
 
@@ -4052,8 +4075,7 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("EnrollmentUser");
 
@@ -4178,7 +4200,7 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
                         .WithMany("RoleAssignments")
@@ -4219,7 +4241,7 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("CreatedByUser");
 
@@ -4356,7 +4378,7 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
                         .WithMany("UserGrants")

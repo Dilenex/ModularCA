@@ -713,15 +713,17 @@ public class ControlledUserCeremonyService(
     /// System does NOT cascade to tenants, and parents are <i>ceilings</i>, not floors:
     /// <list type="bullet">
     /// <item>System-tier change (system admin/super) → <c>SecurityPolicy.UserQuorum</c> (standalone).</item>
-    /// <item>CA-scoped change → the CA's override if set, capped at its tenant's quorum (a CA may
-    /// require fewer approvals than its tenant, never more); otherwise the tenant's quorum.</item>
+    /// <item>CA-scoped change → the CA's override if set, capped at its scope's CA-level quorum (a
+    /// CA may require fewer approvals than its tenant, never more); otherwise that quorum. The
+    /// scope of an instance CA is the instance, whose CA-level quorum is
+    /// <c>SecurityPolicy.UserCeremonyRequiredApprovals</c>, the value the System tenant held.</item>
     /// <item>Org-scoped change (org admin/operator) → the affected tenant's quorum.</item>
     /// </list>
-    /// Clamped to a minimum of 1.
+    /// Clamped to a minimum of 1; a null scope quorum means 1.
     /// </summary>
     private async Task<int> ResolveUserQuorumAsync(ControlledTier minted)
     {
-        // CA-scoped change: CA override (bounded above by its tenant) → else the tenant's quorum.
+        // CA-scoped change: CA override (bounded above by its scope) → else the scope's quorum.
         if (minted.CaId != null)
         {
             var ca = await db.CertificateAuthorities.AsNoTracking()
@@ -732,11 +734,8 @@ public class ControlledUserCeremonyService(
             var tenantQuorum = 1;
             if (ca != null)
             {
-                var tq = await db.Tenants.AsNoTracking()
-                    .Where(t => t.Id == ca.TenantId)
-                    .Select(t => t.UserCeremonyRequiredApprovals)
-                    .FirstOrDefaultAsync();
-                tenantQuorum = Math.Max(1, tq ?? 1);
+                var policy = await new EffectivePolicyResolver(db).ResolveAsync(ca.TenantId);
+                tenantQuorum = Math.Max(1, (policy.Found ? policy.UserCeremonyRequiredApprovals : null) ?? 1);
 
                 if (ca.UserCeremonyRequiredApprovals.HasValue)
                     // Tenant is the ceiling: the CA can require fewer approvals, never more.
@@ -748,11 +747,8 @@ public class ControlledUserCeremonyService(
         // Org-scoped change (org admin/operator): the affected tenant's quorum.
         if (minted.TenantId is Guid orgTenantId)
         {
-            var tq = await db.Tenants.AsNoTracking()
-                .Where(t => t.Id == orgTenantId)
-                .Select(t => t.UserCeremonyRequiredApprovals)
-                .FirstOrDefaultAsync();
-            return Math.Max(1, tq ?? 1);
+            var policy = await new EffectivePolicyResolver(db).ResolveAsync(orgTenantId);
+            return Math.Max(1, (policy.Found ? policy.UserCeremonyRequiredApprovals : null) ?? 1);
         }
 
         // System-tier change: standalone, independent of any tenant.

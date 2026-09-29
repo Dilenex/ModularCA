@@ -447,11 +447,47 @@ public abstract class SigningServiceContractTests
 
     // ------------------------------------------------------------------ GenerateKey
 
-    /// <summary>Key management happens under a ceremony or bootstrap context, and under nothing else.</summary>
+    /// <summary>Key management happens under a ceremony or infrastructure context, and under nothing else, bootstrap included.</summary>
     public static IEnumerable<object[]> KeyManagementPurposeRows()
     {
         foreach (var p in Enum.GetValues<SigningPurpose>())
-            yield return new object[] { p, p is SigningPurpose.Ceremony or SigningPurpose.Bootstrap or SigningPurpose.Infrastructure };
+            yield return new object[] { p, p is SigningPurpose.Ceremony or SigningPurpose.Infrastructure };
+    }
+
+    /// <summary>
+    /// A bootstrap context is held to no ceremony, so it manages no key: a caller could otherwise
+    /// generate and commit, or import, a CA key into any scope without one. It still moves whole
+    /// keystore files (see the keystore-file rows).
+    /// </summary>
+    [Fact]
+    public async Task Bootstrap_manages_no_key()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var bootstrap = Context(SigningPurpose.Bootstrap, null, world.TenantA);
+        var ceremony = Context(SigningPurpose.Ceremony, null, world.TenantA);
+        var keyless = world["keyless"];
+
+        async Task Refused(Func<Task> operation)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(operation);
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, ex.Reason);
+        }
+        await Refused(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), bootstrap));
+        await Refused(() => signer.ImportKeyAsync(
+            new KeyMaterial((byte[])keyless.PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, keyless.Ref.CertificateId), bootstrap));
+        await Refused(() => signer.ImportKeyAsync(
+            new KeyMaterial((byte[])keyless.PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, keyless.Ref.CertificateId), bootstrap with { InstanceScope = true, TenantId = null }));
+
+        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), ceremony);
+        var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, generated, ceremony);
+        await Refused(() => signer.CommitKeyAsync(generated.Key, certificateId, bootstrap));
+        await Refused(() => signer.RetireKeyAsync(generated.Key, bootstrap));
+
+        Assert.Empty(world.Persistence.Appended);
+        var rows = (await ReadAuditAsync(world)).Where(r => r.Purpose == "Bootstrap").ToList();
+        Assert.Equal(5, rows.Count);
+        Assert.All(rows, r => Assert.Equal(SignerAuditEntity.RefusedOutcome, r.Outcome));
     }
 
     [Theory]
@@ -515,7 +551,7 @@ public abstract class SigningServiceContractTests
         var world = SignerTestWorld.Create();
         var signer = CreateSigner(world);
 
-        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), Context(SigningPurpose.Bootstrap, null, world.TenantA));
+        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), Context(SigningPurpose.Ceremony, null, world.TenantA));
         await Assert.ThrowsAsync<SigningRefusedException>(
             () => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), Context(SigningPurpose.Certificate, world.CaRsaId, world.TenantA)));
 
@@ -523,9 +559,10 @@ public abstract class SigningServiceContractTests
         Assert.Equal(2, rows.Count);
         Assert.Equal("GenerateKey", rows[0].Operation);
         Assert.Equal(SignerAuditEntity.AllowedOutcome, rows[0].Outcome);
-        Assert.Equal("Bootstrap", rows[0].Purpose);
+        Assert.Equal("Ceremony", rows[0].Purpose);
         Assert.Equal(generated.Key.CertificateId, rows[0].KeyCertificateId);
         Assert.Equal(world.TenantA, rows[0].TenantId);
+        Assert.Equal(SignerAuditEntity.TenantScope, rows[0].EffectiveScope);
         Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(generated.PublicKeyDer)), rows[0].DataHash);
         Assert.Equal("GenerateKey", rows[1].Operation);
         Assert.Equal(SignerAuditEntity.RefusedOutcome, rows[1].Outcome);
@@ -553,11 +590,13 @@ public abstract class SigningServiceContractTests
 
     /// <summary>
     /// Self-signs a CA certificate over a generated key through the contract, and seeds the
-    /// rows that make it a CA in tenant A. Returns the certificate row id and the CA id.
+    /// rows that make it a CA in the scope the context states (tenant A when it states none), or
+    /// in <paramref name="owner"/>'s scope when given. Returns the certificate row id and the CA id.
     /// </summary>
     private async Task<(X509Certificate Certificate, Guid CertificateId, Guid CaId)> SeedGeneratedCaAsync(
-        SignerTestWorld world, ISigningService signer, GeneratedKey generated, SigningContext ceremony)
+        SignerTestWorld world, ISigningService signer, GeneratedKey generated, SigningContext ceremony, (Guid? TenantId, bool Set) owner = default)
     {
+        var caTenant = owner.Set ? owner.TenantId : ceremony.InstanceScope ? null : ceremony.TenantId ?? world.TenantA;
         var publicKey = PublicKeyFactory.CreateKey(generated.PublicKeyDer);
         var subject = new X509Name("CN=Generated Through The Signer, O=ModularCA");
         var gen = new X509V3CertificateGenerator();
@@ -589,7 +628,7 @@ public abstract class SigningServiceContractTests
             });
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
-                Id = caId, Name = "generated", Label = "generated", TenantId = world.TenantA, CertificateId = certificateId,
+                Id = caId, Name = "generated", Label = $"generated-{caId:N}", TenantId = caTenant, CertificateId = certificateId,
             });
             await db.SaveChangesAsync();
         }
@@ -1057,14 +1096,14 @@ public abstract class SigningServiceContractTests
     // ---- Ceremonies: the signer verifies the approval it is told about ----------------------
 
     /// <summary>Seeds a ceremony row as the control plane writes one, and returns its id. It expires in an hour unless told otherwise.</summary>
-    private static Guid SeedCeremony(SignerTestWorld world, string status, Guid? tenantId, string targetEntityId = "", DateTime? expiresAt = null)
+    private static Guid SeedCeremony(SignerTestWorld world, string status, Guid? tenantId, string targetEntityId = "", DateTime? expiresAt = null, string operationType = "CreateRootCA")
     {
         var id = Guid.NewGuid();
         using var db = world.OpenDb();
         db.KeyCeremonies.Add(new KeyCeremonyEntity
         {
             Id = id,
-            OperationType = "CreateRootCA",
+            OperationType = operationType,
             Description = "signer contract",
             Status = status,
             TenantId = tenantId,
@@ -1091,6 +1130,24 @@ public abstract class SigningServiceContractTests
         db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = caId, Name = "strict", Label = $"strict-{caId:N}", TenantId = tenantId });
         db.SaveChanges();
         return (tenantId, caId);
+    }
+
+    /// <summary>Seeds another CA row, with no certificate, in <paramref name="tenantId"/>'s scope, and returns its id.</summary>
+    private static Guid SeedCa(SignerTestWorld world, Guid? tenantId)
+    {
+        var caId = Guid.NewGuid();
+        using var db = world.OpenDb();
+        db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = caId, Name = "another", Label = $"another-{caId:N}", TenantId = tenantId });
+        db.SaveChanges();
+        return caId;
+    }
+
+    /// <summary>Moves a world CA to another scope, as the tests that need its key held to a stricter one do.</summary>
+    private static void MoveCa(SignerTestWorld world, Guid caId, Guid? tenantId)
+    {
+        using var db = world.OpenDb();
+        db.CertificateAuthorities.Single(c => c.Id == caId).TenantId = tenantId;
+        db.SaveChanges();
     }
 
     /// <summary>
@@ -1167,6 +1224,72 @@ public abstract class SigningServiceContractTests
         Assert.Equal(SigningRefusalReason.PurposeNotPermitted, committedCa.Reason);
     }
 
+    /// <summary>
+    /// An infrastructure key binds only to a delegated certificate of the CA it was generated
+    /// for and the commit names, in that CA's scope: an infrastructure context for CA A cannot
+    /// commit a key to CA B's responder certificate.
+    /// </summary>
+    [Fact]
+    public async Task An_infrastructure_key_commits_only_to_the_responder_of_the_ca_the_context_names()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var (tenant, caA) = SeedTenant(world, requireKeyCeremony: true);
+        var caB = SeedCa(world, tenant);
+        var (otherTenant, _) = SeedTenant(world, requireKeyCeremony: false);
+        var forA = Context(SigningPurpose.Infrastructure, caA, tenant);
+        var forB = Context(SigningPurpose.Infrastructure, caB, tenant);
+
+        async Task Refused(GeneratedKey generated, Guid certificateId, SigningContext context, SigningRefusalReason reason)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.CommitKeyAsync(generated.Key, certificateId, context));
+            Assert.Equal(reason, ex.Reason);
+        }
+
+        // Generated for CA A: not committed to CA B's responder, whichever CA the commit names.
+        var forAKey = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), forA);
+        var bResponder = await SeedGeneratedResponderAsync(world, signer, forAKey, forA, caB);
+        await Refused(forAKey, bResponder, forA, SigningRefusalReason.CaMismatch);
+        await Refused(forAKey, bResponder, forB, SigningRefusalReason.CaMismatch);
+
+        // Generated naming no CA or scope: held to the CA and scope of the certificate at commit.
+        var unbound = Context(SigningPurpose.Infrastructure, null, null);
+        var unboundKey = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), unbound);
+        var bSecondResponder = await SeedGeneratedResponderAsync(world, signer, unboundKey, unbound, caB);
+        await Refused(unboundKey, bSecondResponder, forA, SigningRefusalReason.CaMismatch);
+        await Refused(unboundKey, bSecondResponder, unbound, SigningRefusalReason.ContextRequired);
+        await Refused(unboundKey, bSecondResponder, Context(SigningPurpose.Infrastructure, caB, otherTenant), SigningRefusalReason.TenantMismatch);
+        await Refused(unboundKey, bSecondResponder, InstanceContext(SigningPurpose.Infrastructure, caB), SigningRefusalReason.TenantMismatch);
+        Assert.Empty(world.Persistence.Appended);
+
+        await signer.CommitKeyAsync(unboundKey.Key, bSecondResponder, forB);
+        Assert.Single(world.Persistence.Appended);
+        Assert.Contains(await signer.ListKeysAsync(Context(SigningPurpose.Ocsp, caB, tenant)),
+            k => k.Key.CertificateId == bSecondResponder && k.Kind == KeyKind.OcspResponder);
+    }
+
+    /// <summary>
+    /// The signer's audit records the scope the context stated, so a null tenant on a row reads
+    /// as the instance or as no stated scope, and never as either by guess.
+    /// </summary>
+    [Fact]
+    public async Task The_audit_tells_the_instance_from_no_stated_scope()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        SeedInstance(world, requireKeyCeremony: false);
+
+        await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), InstanceContext(SigningPurpose.Ceremony));
+        await Assert.ThrowsAsync<SigningRefusedException>(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), Context(SigningPurpose.Ceremony, null, null)));
+        await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), Context(SigningPurpose.Ceremony, null, world.TenantA));
+
+        var rows = await ReadAuditAsync(world);
+        Assert.Equal(3, rows.Count);
+        Assert.Contains(rows, r => r.TenantId == null && r.EffectiveScope == SignerAuditEntity.InstanceScope && r.Outcome == SignerAuditEntity.AllowedOutcome);
+        Assert.Contains(rows, r => r.TenantId == null && r.EffectiveScope == SignerAuditEntity.NoScope && r.Outcome == SignerAuditEntity.RefusedOutcome);
+        Assert.Contains(rows, r => r.TenantId == world.TenantA && r.EffectiveScope == SignerAuditEntity.TenantScope);
+    }
+
     [Fact]
     public async Task Key_management_without_a_ceremony_is_refused_where_the_tenant_requires_one()
     {
@@ -1174,24 +1297,42 @@ public abstract class SigningServiceContractTests
         var signer = CreateSigner(world);
         var (strictTenant, strictCa) = SeedTenant(world, requireKeyCeremony: true);
         var keyless = world["keyless"];
+        MoveCa(world, world.KeylessCaId, strictTenant);
         KeyMaterial Material() => new((byte[])keyless.PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, keyless.Ref.CertificateId);
 
-        async Task Refused(SigningContext context, SigningRefusalReason reason)
+        async Task Refused(Func<Task> operation, SigningRefusalReason reason)
         {
-            var generate = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context));
-            Assert.Equal(reason, generate.Reason);
-            var import = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.ImportKeyAsync(Material(), context));
-            Assert.Equal(reason, import.Reason);
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(operation);
+            Assert.Equal(reason, ex.Reason);
         }
 
-        // The tenant named requires a ceremony; the tenant of the CA named requires one; a
-        // tenant the signer cannot find has no waiver it can verify.
-        await Refused(Context(SigningPurpose.Ceremony, null, strictTenant), SigningRefusalReason.CeremonyRequired);
-        await Refused(Context(SigningPurpose.Ceremony, strictCa, null), SigningRefusalReason.CeremonyRequired);
-        await Refused(Context(SigningPurpose.Ceremony, null, Guid.NewGuid()), SigningRefusalReason.CeremonyRequired);
-        // Nothing to hold the context to: no tenant, no CA, or a CA the signer does not know.
-        await Refused(Context(SigningPurpose.Ceremony, null, null), SigningRefusalReason.ContextRequired);
-        await Refused(Context(SigningPurpose.Ceremony, Guid.NewGuid(), null), SigningRefusalReason.ContextRequired);
+        // Generation: the tenant named requires a ceremony; the tenant of the CA named requires
+        // one; a tenant the signer cannot find has no waiver it can verify; and nothing holds a
+        // context with no tenant, no CA, or a CA the signer does not know.
+        foreach (var (context, reason) in new[]
+                 {
+                     (Context(SigningPurpose.Ceremony, null, strictTenant), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, strictCa, null), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, null, Guid.NewGuid()), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, null, null), SigningRefusalReason.ContextRequired),
+                     (Context(SigningPurpose.Ceremony, Guid.NewGuid(), null), SigningRefusalReason.ContextRequired),
+                 })
+            await Refused(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context), reason);
+
+        // An import is held to the scope of the CA that owns the certificate: that scope's
+        // requirement applies whether the context states it, names a CA in it, or states nothing,
+        // and a context that states another scope is refused as that, whatever its own policy.
+        foreach (var (context, reason) in new[]
+                 {
+                     (Context(SigningPurpose.Ceremony, null, strictTenant), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, strictCa, null), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, null, null), SigningRefusalReason.CeremonyRequired),
+                     (Context(SigningPurpose.Ceremony, null, world.TenantA), SigningRefusalReason.TenantMismatch),
+                     (Context(SigningPurpose.Ceremony, null, Guid.NewGuid()), SigningRefusalReason.TenantMismatch),
+                     (InstanceContext(SigningPurpose.Ceremony), SigningRefusalReason.TenantMismatch),
+                     (Context(SigningPurpose.Ceremony, Guid.NewGuid(), null), SigningRefusalReason.ContextRequired),
+                 })
+            await Refused(() => signer.ImportKeyAsync(Material(), context), reason);
 
         // Under an approved ceremony of that tenant the same operations go through, and a key
         // generated under it is not committed without it.
@@ -1208,10 +1349,166 @@ public abstract class SigningServiceContractTests
         Assert.Equal(2, world.Persistence.Appended.Count);
 
         var refused = (await ReadAuditAsync(world)).Where(r => r.Outcome == SignerAuditEntity.RefusedOutcome).ToList();
-        Assert.Equal(11, refused.Count);
+        Assert.Equal(13, refused.Count);
         Assert.All(refused, r => Assert.Null(r.CeremonyId));
         Assert.All(refused, r => Assert.Contains("ceremony", r.Reason, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// An instance CA (no tenant, as the system signing CA and SSH CAs are after 0.4.0 S3) is held
+    /// to the instance's own policy, never refused as having no context and never waved through as
+    /// having no policy.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task An_instance_ca_is_held_to_the_instance_policy(bool instanceRequiresCeremony)
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var instanceCa = SeedInstance(world, instanceRequiresCeremony);
+
+        var byCa = Context(SigningPurpose.Ceremony, instanceCa, null);
+        var stated = InstanceContext(SigningPurpose.Ceremony);
+        if (instanceRequiresCeremony)
+        {
+            foreach (var context in new[] { byCa, stated })
+            {
+                var refused = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context));
+                Assert.Equal(SigningRefusalReason.CeremonyRequired, refused.Reason);
+                Assert.Contains("instance", refused.Message);
+            }
+
+            var approvedId = SeedCeremony(world, "Approved", null);
+            var byCaApproved = byCa with { CeremonyId = approvedId };
+            var retired = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), byCaApproved);
+            await signer.RetireKeyAsync(retired.Key, byCaApproved);
+
+            var approved = stated with { CeremonyId = approvedId };
+            var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), approved);
+            var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, generated, approved);
+            var unapproved = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.CommitKeyAsync(generated.Key, certificateId, stated));
+            Assert.Equal(SigningRefusalReason.CeremonyRequired, unapproved.Reason);
+            await signer.CommitKeyAsync(generated.Key, certificateId, approved);
+        }
+        else
+        {
+            var byCaKey = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), byCa);
+            await signer.RetireKeyAsync(byCaKey.Key, byCa);
+            var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), stated);
+            var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, generated, stated);
+            await signer.CommitKeyAsync(generated.Key, certificateId, stated);
+        }
+    }
+
+    /// <summary>
+    /// A ceremony context with no tenant, no instance marker and no CA states no scope. That is
+    /// what an older client sends, and it is never read as the instance, whatever the instance's
+    /// policy or a ceremony it names; a context that states both scopes is refused too.
+    /// </summary>
+    [Fact]
+    public async Task A_ceremony_context_that_states_no_scope_is_refused_even_where_the_instance_waives_ceremonies()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        SeedInstance(world, requireKeyCeremony: false);
+        var instanceCeremony = SeedCeremony(world, "Approved", null);
+
+        foreach (var context in new[]
+                 {
+                     Context(SigningPurpose.Ceremony, null, null),
+                     Context(SigningPurpose.Ceremony, null, null) with { CeremonyId = instanceCeremony },
+                     Context(SigningPurpose.Ceremony, null, world.TenantA) with { InstanceScope = true },
+                 })
+        {
+            var refused = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context));
+            Assert.Equal(SigningRefusalReason.ContextRequired, refused.Reason);
+        }
+        Assert.All(await ReadAuditAsync(world), r => Assert.Equal(SignerAuditEntity.RefusedOutcome, r.Outcome));
+    }
+
+    /// <summary>
+    /// A ceremony licenses key operations in exactly its own scope, null equal only to null, and
+    /// only when it is a ceremony that manages a key; a key generated in one scope is not
+    /// committed or retired from another.
+    /// </summary>
+    [Fact]
+    public async Task A_ceremony_does_not_cross_scopes_or_operations()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        SeedInstance(world, requireKeyCeremony: true);
+        var tenantACeremony = SeedCeremony(world, "Approved", world.TenantA);
+        var instanceCeremony = SeedCeremony(world, "Approved", null);
+        var revocation = SeedCeremony(world, "Approved", null, operationType: "RevokeCa");
+
+        async Task NotApproved(SigningContext context)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), context));
+            Assert.Equal(SigningRefusalReason.CeremonyNotApproved, ex.Reason);
+        }
+        await NotApproved(InstanceContext(SigningPurpose.Ceremony) with { CeremonyId = tenantACeremony });
+        await NotApproved(Context(SigningPurpose.Ceremony, null, world.TenantA) with { CeremonyId = instanceCeremony });
+        await NotApproved(Context(SigningPurpose.Ceremony, world.CaRsaId, null) with { CeremonyId = instanceCeremony });
+        await NotApproved(InstanceContext(SigningPurpose.Ceremony) with { CeremonyId = revocation });
+
+        var instanceKey = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), InstanceContext(SigningPurpose.Ceremony) with { CeremonyId = instanceCeremony });
+        var inTenantA = Context(SigningPurpose.Ceremony, null, world.TenantA) with { CeremonyId = tenantACeremony };
+        var retire = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.RetireKeyAsync(instanceKey.Key, inTenantA));
+        Assert.Equal(SigningRefusalReason.TenantMismatch, retire.Reason);
+        var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, instanceKey, InstanceContext(SigningPurpose.Ceremony) with { CeremonyId = instanceCeremony });
+        var commit = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.CommitKeyAsync(instanceKey.Key, certificateId, inTenantA));
+        Assert.Equal(SigningRefusalReason.TenantMismatch, commit.Reason);
+        Assert.Empty(world.Persistence.Appended);
+    }
+
+    /// <summary>
+    /// A commit is held to the policy of the CA that owns the certificate, not to the scope the
+    /// committing context states: a key generated where ceremonies are waived is not committed
+    /// to a certificate of a CA whose scope requires one, and a context that states no scope is
+    /// held to the owning CA's.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_is_held_to_the_policy_of_the_ca_that_owns_the_certificate()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = CreateSigner(world);
+        var (strict, _) = SeedTenant(world, requireKeyCeremony: true);
+        var (waived, _) = SeedTenant(world, requireKeyCeremony: false);
+
+        var byWaived = Context(SigningPurpose.Ceremony, null, waived);
+        var smuggled = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), byWaived);
+        var (_, strictCertificate, _) = await SeedGeneratedCaAsync(world, signer, smuggled, byWaived, (strict, true));
+        var mismatch = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.CommitKeyAsync(smuggled.Key, strictCertificate, byWaived));
+        Assert.Equal(SigningRefusalReason.TenantMismatch, mismatch.Reason);
+
+        var strictCeremony = SeedCeremony(world, "Approved", strict);
+        var approved = Context(SigningPurpose.Ceremony, null, strict) with { CeremonyId = strictCeremony };
+        var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), approved);
+        var (_, certificateId, _) = await SeedGeneratedCaAsync(world, signer, generated, approved);
+        var unstated = Context(SigningPurpose.Ceremony, null, null);
+        var required = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.CommitKeyAsync(generated.Key, certificateId, unstated));
+        Assert.Equal(SigningRefusalReason.CeremonyRequired, required.Reason);
+        Assert.Empty(world.Persistence.Appended);
+
+        await signer.CommitKeyAsync(generated.Key, certificateId, unstated with { CeremonyId = strictCeremony });
+        Assert.Single(world.Persistence.Appended);
+    }
+
+    /// <summary>Seeds the instance's policy row and an instance CA (no tenant), and returns the CA's id.</summary>
+    private static Guid SeedInstance(SignerTestWorld world, bool requireKeyCeremony)
+    {
+        var instanceCa = Guid.NewGuid();
+        using var db = world.OpenDb();
+        db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = requireKeyCeremony });
+        db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = instanceCa, Name = "System Signing CA", Label = $"system-signing-ca-{instanceCa:N}", TenantId = null });
+        db.SaveChanges();
+        return instanceCa;
+    }
+
+    /// <summary>A context that states the instance as its scope.</summary>
+    private static SigningContext InstanceContext(SigningPurpose purpose, Guid? caId = null)
+        => Context(purpose, caId, null) with { InstanceScope = true };
 
     [Fact]
     public async Task A_tenant_that_does_not_require_ceremonies_manages_keys_without_one()

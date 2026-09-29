@@ -27,7 +27,8 @@ public class UserCreationPasswordPolicyTests
         public bool HasContext => false;
         public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
         public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
+        public bool HasInstanceScope => true;
+        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
     }
 
     /// <summary>Rejects every password containing the letter x; accepts the rest.</summary>

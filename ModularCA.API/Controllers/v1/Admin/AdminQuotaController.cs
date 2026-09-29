@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -35,11 +36,11 @@ public class AdminQuotaController(
     public async Task<IActionResult> GetAllQuotas()
     {
         var summary = await quotaService.GetUsageSummaryAsync();
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+        var fence = TenantFence.From(HttpContext);
+        if (fence != null && !fence.IsSystemAdmin)
         {
             var accessibleCaIds = await db.CertificateAuthorities
-                .Where(ca => tenantIds.Contains(ca.TenantId))
+                .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
                 .Select(ca => ca.Id)
                 .ToListAsync();
             var accessibleCaIdSet = new HashSet<Guid>(accessibleCaIds);
@@ -57,7 +58,8 @@ public class AdminQuotaController(
     /// ceilings (max CAs / certs / users) and per-CA issued/pending usage so limits can be read as
     /// they cascade tenant → CA. Gated to SystemAdmin (tenant configuration is admin-only).
     /// <c>allowMultipleOrganizations</c> carries <c>Features.AllowMultipleOrganizations</c> so the
-    /// view can withhold "Create Tenant" in single-organisation mode.
+    /// view can withhold "Create Tenant" in single-organisation mode. <c>instance</c> carries the
+    /// instance's own CA policy and its CAs (those with no tenant: the system signing CA, SSH CAs).
     /// </summary>
     [HttpGet("by-tenant")]
     [Authorize(Policy = "SystemAdmin")]
@@ -74,48 +76,67 @@ public class AdminQuotaController(
             .ToListAsync();
         var tenantIds = tenants.Select(t => t.Id).ToList();
 
-        // CAs per tenant (exclude soft-deleted), grouped for nesting.
+        // CAs per tenant and the instance's (exclude soft-deleted), grouped for nesting.
         var cas = await db.CertificateAuthorities
             .AsNoTracking()
-            .Where(ca => tenantIds.Contains(ca.TenantId) && !ca.IsDeleted)
+            .Where(ca => (ca.TenantId == null || tenantIds.Contains(ca.TenantId.Value)) && !ca.IsDeleted)
             .Select(ca => new { ca.Id, ca.TenantId, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa })
             .ToListAsync();
-        var casByTenant = cas.GroupBy(c => c.TenantId).ToDictionary(g => g.Key, g => g.ToList());
+        var casByTenant = cas.Where(c => c.TenantId != null).GroupBy(c => c.TenantId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        var instanceCas = cas.Where(c => c.TenantId == null).ToList();
 
         // Distinct user counts per tenant (via group memberships) — same source as the tenant list.
         var userCounts = await db.CaGroupMembers
-            .Where(gm => tenantIds.Contains(gm.Group.TenantId))
-            .GroupBy(gm => gm.Group.TenantId)
+            .Where(gm => gm.Group.TenantId != null && tenantIds.Contains(gm.Group.TenantId.Value))
+            .GroupBy(gm => gm.Group.TenantId!.Value)
             .Select(g => new { TenantId = g.Key, Count = g.Select(gm => gm.UserId).Distinct().Count() })
             .ToDictionaryAsync(x => x.TenantId, x => x.Count);
+        var instanceUserCount = await db.CaGroupMembers
+            .Where(gm => gm.Group.TenantId == null)
+            .Select(gm => gm.UserId).Distinct().CountAsync();
+
+        object CaDto(Guid id, string name, string label, string? type, bool isEnabled, bool isSshCa)
+        {
+            var q = quotaByCa.GetValueOrDefault(id);
+            return new
+            {
+                Id = id,
+                Name = name,
+                Label = label,
+                Type = type,
+                IsEnabled = isEnabled,
+                IsSshCa = isSshCa,
+                Quota = q == null ? null : new
+                {
+                    groupId = q.GroupId,
+                    maxCertificates = q.MaxCertificates,
+                    maxPendingRequests = q.MaxPendingRequests,
+                    issuedCount = q.IssuedCount,
+                    pendingCount = q.PendingCount,
+                    remainingCount = q.RemainingCount,
+                    usagePercent = q.UsagePercent,
+                    isExceeded = q.IsExceeded
+                }
+            };
+        }
+
+        var instancePolicy = await new EffectivePolicyResolver(db).ResolveAsync(null);
+        var instance = new
+        {
+            instancePolicy.RequireKeyCeremony,
+            instancePolicy.CeremonyRequiredApprovals,
+            instancePolicy.MaxValidityDays,
+            instancePolicy.ValidityCeilingBehavior,
+            CaCount = instanceCas.Count,
+            UserCount = instanceUserCount,
+            IssuedCertificates = instanceCas.Sum(ca => quotaByCa.GetValueOrDefault(ca.Id)?.IssuedCount ?? 0),
+            CertificateAuthorities = instanceCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList(),
+        };
 
         var tenantDtos = tenants.Select(t =>
         {
             var tenantCas = casByTenant.GetValueOrDefault(t.Id, new());
-            var caDtos = tenantCas.Select(ca =>
-            {
-                var q = quotaByCa.GetValueOrDefault(ca.Id);
-                return new
-                {
-                    ca.Id,
-                    ca.Name,
-                    ca.Label,
-                    ca.Type,
-                    ca.IsEnabled,
-                    ca.IsSshCa,
-                    Quota = q == null ? null : new
-                    {
-                        groupId = q.GroupId,
-                        maxCertificates = q.MaxCertificates,
-                        maxPendingRequests = q.MaxPendingRequests,
-                        issuedCount = q.IssuedCount,
-                        pendingCount = q.PendingCount,
-                        remainingCount = q.RemainingCount,
-                        usagePercent = q.UsagePercent,
-                        isExceeded = q.IsExceeded
-                    }
-                };
-            }).ToList();
+            var caDtos = tenantCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList();
 
             // Tenant-level active certs across its CAs — pairs with MaxCertificatesTotal for context.
             var tenantIssued = tenantCas.Sum(ca => quotaByCa.GetValueOrDefault(ca.Id)?.IssuedCount ?? 0);
@@ -127,7 +148,6 @@ public class AdminQuotaController(
                 t.Slug,
                 t.Description,
                 t.IsEnabled,
-                t.IsSystemTenant,
                 t.CreatedAt,
                 t.MaxCertificateAuthorities,
                 t.MaxCertificatesTotal,
@@ -146,6 +166,7 @@ public class AdminQuotaController(
         return Ok(new
         {
             tenants = tenantDtos,
+            instance,
             totals = new
             {
                 totalTenants = tenantDtos.Count,

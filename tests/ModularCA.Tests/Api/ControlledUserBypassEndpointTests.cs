@@ -41,12 +41,12 @@ public sealed class ControlledUserBypassEndpointTests
 
     private sealed class RecordingTenantPolicy : ITenantPolicyChangeService
     {
-        public List<(Guid TenantId, bool UserQuorumIncluded, int? ProposedUserQuorum, IReadOnlyList<CaUserQuorumChange>? Cas)> Calls { get; } = new();
+        public List<(Guid? TenantId, bool UserQuorumIncluded, int? ProposedUserQuorum, IReadOnlyList<CaUserQuorumChange>? Cas)> Calls { get; } = new();
 
         public bool IsDowngrade(bool currentRequireKeyCeremony, int currentCeremonyRequiredApprovals,
             bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals) => false;
 
-        public Task<Guid> InitiateChangeAsync(Guid tenantId, bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals,
+        public Task<Guid> InitiateChangeAsync(Guid? tenantId, bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals,
             Guid initiatorUserId, string initiatorUsername, bool userQuorumIncluded = false, int? proposedUserQuorum = null,
             IReadOnlyList<CaUserQuorumChange>? caUserQuorums = null)
         {

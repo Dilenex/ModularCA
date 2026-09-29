@@ -17,6 +17,8 @@ namespace ModularCA.Core.Services;
 /// Computes and verifies SHA-256 hash chains for audit records. Writes to one tenant's chain
 /// are serialised by an in-process semaphore and, on PostgreSQL, by a transaction-scoped
 /// advisory lock shared by every process on the audit database; tenants proceed in parallel.
+/// From 0.4.0 new records go to the instance chain (a null tenant); the per-tenant chains are
+/// retired and sealed by <see cref="SealRetiredChainsAsync"/>.
 /// </summary>
 public class AuditHashChainService
 {
@@ -54,6 +56,15 @@ public class AuditHashChainService
     /// verification can start an epoch there. See <see cref="RecordPruneAsync"/>.
     /// </summary>
     public const string ChainPrunedAction = "AuditChainPruned";
+
+    /// <summary>The last record of a retired per-tenant chain; see <see cref="SealRetiredChainsAsync"/>.</summary>
+    public const string ChainSealedAction = "AuditChainSealed";
+
+    /// <summary>The instance-chain record that anchors a sealed chain's final hash.</summary>
+    public const string ChainSuccessionAction = "AuditChainSuccession";
+
+    /// <summary>The migration that retired the per-tenant chains, named in every seal.</summary>
+    public const string FoldMigrationId = "20260929051025_FoldSystemTenant";
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _tenantLocks = new();
     private readonly TimeProvider _time;
@@ -171,8 +182,8 @@ public class AuditHashChainService
 
     /// <summary>
     /// Restarts the chain for every tenant that still has records from before the canonical
-    /// form was versioned and has not been restarted since. Idempotent: a second call finds
-    /// nothing to do.
+    /// form was versioned and has not been restarted since. A sealed chain is never restarted.
+    /// Idempotent: a second call finds nothing to do.
     /// </summary>
     /// <param name="db">The audit context.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -188,6 +199,9 @@ public class AuditHashChainService
         var restarted = new List<Guid?>();
         foreach (var tenant in tenants)
         {
+            if (tenant != null && await db.AuditLogs.AnyAsync(a => a.TenantId == tenant && a.ActionType == ChainSealedAction, ct))
+                continue;
+
             var lastLegacy = await db.AuditLogs
                 .Where(a => a.TenantId == tenant && a.RecordHash != null && a.HashVersion == null)
                 .OrderByDescending(a => a.Timestamp).ThenByDescending(a => a.Id)
@@ -210,6 +224,195 @@ public class AuditHashChainService
         }
 
         return restarted;
+    }
+
+    /// <summary>What a seal declares: why, which migration, and the chain's head before the seal.</summary>
+    private sealed record SealDetails(string Reason, string Migration, Guid? FinalRecordId, string? FinalRecordHash);
+
+    /// <summary>What a succession record declares about the chain it anchors.</summary>
+    private sealed record SuccessionDetails(string Reason, string Migration, Guid SealedChain, Guid SealRecordId, string SealRecordHash, DateTime SealTimestamp);
+
+    /// <summary>
+    /// Seals every retired per-tenant chain (every chain with a non-null tenant) once, at control
+    /// start: under that chain's lock it appends an <see cref="ChainSealedAction"/> record naming
+    /// the reason, <see cref="FoldMigrationId"/> and the chain's head; then, under the instance
+    /// chain's lock, an <see cref="ChainSuccessionAction"/> record naming the sealed chain and the
+    /// seal's hash. The seal is a retired chain's tail, and a tail can be deleted without breaking
+    /// any link; anchoring its hash in the live chain makes that deletion detectable (see
+    /// <see cref="CheckRetiredChainAsync"/>). Nothing already recorded is rewritten. Idempotent:
+    /// each step checks, under its lock, that it has not already been done. A chain counts as
+    /// sealed when its seal is present or a succession record names it, so a seal that retention
+    /// has pruned is not replaced by a fresh one; a succession is written only over a seal that is
+    /// still present.
+    /// </summary>
+    /// <param name="db">The audit context.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The chains sealed by this call.</returns>
+    public async Task<IReadOnlyList<Guid>> SealRetiredChainsAsync(AuditDbContext db, CancellationToken ct = default)
+    {
+        const string reason = "Release 0.4.0 folded the tenants' audit chains into the single instance chain. "
+            + "This chain is retired; its records stay as recorded and verify as an earlier epoch.";
+        var chains = await db.AuditLogs
+            .Where(a => a.TenantId != null && a.RecordHash != null)
+            .Select(a => a.TenantId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var sealedNow = new List<Guid>();
+        foreach (var tenant in chains)
+        {
+            var target = LockKey(tenant);
+            var seal = new AuditLogEntity
+            {
+                ActorUsername = SystemActor,
+                ActionType = ChainSealedAction,
+                TargetEntityType = "AuditChain",
+                TargetEntityId = LockKey(tenant),
+                Success = true,
+                TenantId = tenant,
+            };
+            var wrote = await AppendUnlessAsync(db, seal,
+                async () => await db.AuditLogs.AnyAsync(a => a.TenantId == tenant && a.ActionType == ChainSealedAction && a.RecordHash != null, ct)
+                    || await db.AuditLogs.AnyAsync(a => a.TenantId == null && a.ActionType == ChainSuccessionAction && a.TargetEntityId == target, ct),
+                async () =>
+                {
+                    var head = await db.AuditLogs
+                        .Where(a => a.TenantId == tenant && a.RecordHash != null)
+                        .OrderByDescending(a => a.Timestamp).ThenByDescending(a => a.Id)
+                        .Select(a => new { a.Id, a.RecordHash })
+                        .FirstOrDefaultAsync(ct);
+                    seal.DetailsJson = JsonSerializer.Serialize(new SealDetails(reason, FoldMigrationId, head?.Id, head?.RecordHash));
+                }, ct);
+            if (wrote)
+                sealedNow.Add(tenant);
+
+            var sealRecord = await db.AuditLogs.AsNoTracking()
+                .Where(a => a.TenantId == tenant && a.ActionType == ChainSealedAction && a.RecordHash != null)
+                .OrderBy(a => a.Timestamp).ThenBy(a => a.Id)
+                .Select(a => new { a.Id, a.RecordHash, a.Timestamp })
+                .FirstOrDefaultAsync(ct);
+            if (sealRecord == null)
+                continue;
+            var succession = new AuditLogEntity
+            {
+                ActorUsername = SystemActor,
+                ActionType = ChainSuccessionAction,
+                TargetEntityType = "AuditChain",
+                TargetEntityId = target,
+                Success = true,
+                TenantId = null,
+                DetailsJson = JsonSerializer.Serialize(new SuccessionDetails(
+                    reason, FoldMigrationId, tenant, sealRecord.Id, sealRecord.RecordHash!, sealRecord.Timestamp)),
+            };
+            await AppendUnlessAsync(db, succession,
+                () => db.AuditLogs.AnyAsync(a => a.TenantId == null && a.ActionType == ChainSuccessionAction && a.TargetEntityId == target, ct),
+                null, ct);
+        }
+        return sealedNow;
+    }
+
+    /// <summary>
+    /// Every retired chain: each tenant that still has chained records, together with each chain a
+    /// succession record in the instance chain names, so a retired chain deleted outright, seal
+    /// and all, is still listed and reports its missing tail.
+    /// </summary>
+    public async Task<IReadOnlyList<Guid>> ListRetiredChainsAsync(AuditDbContext db, CancellationToken ct = default)
+    {
+        var withRecords = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId != null && a.RecordHash != null)
+            .Select(a => a.TenantId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+        var successions = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == null && a.ActionType == ChainSuccessionAction && a.RecordHash != null)
+            .Select(a => new { a.TargetEntityId, a.DetailsJson })
+            .ToListAsync(ct);
+
+        var chains = new HashSet<Guid>(withRecords);
+        foreach (var succession in successions)
+        {
+            if (Guid.TryParse(succession.TargetEntityId, out var target))
+                chains.Add(target);
+            if (succession.DetailsJson == null) continue;
+            try
+            {
+                if (JsonSerializer.Deserialize<SuccessionDetails>(succession.DetailsJson) is { } details && details.SealedChain != Guid.Empty)
+                    chains.Add(details.SealedChain);
+            }
+            catch (JsonException) { }
+        }
+        return chains.ToList();
+    }
+
+    /// <summary>
+    /// Checks a retired chain's tail against the succession record that anchors it in the instance
+    /// chain. <see cref="RetiredChainState.Sealed"/> when the seal named there is present with the
+    /// same hash; <see cref="RetiredChainState.Pruned"/> when it is gone but a later prune marker in
+    /// the chain declares a cutoff after it; <see cref="RetiredChainState.TailMissing"/> or
+    /// <see cref="RetiredChainState.TailAltered"/> otherwise. <see cref="RetiredChainState.Unsealed"/>
+    /// when no succession names the chain.
+    /// </summary>
+    public async Task<RetiredChainStatus> CheckRetiredChainAsync(AuditDbContext db, Guid tenantId, CancellationToken ct = default)
+    {
+        var target = LockKey(tenantId);
+        var successionJson = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == null && a.ActionType == ChainSuccessionAction && a.TargetEntityId == target && a.RecordHash != null)
+            .OrderBy(a => a.Timestamp).ThenBy(a => a.Id)
+            .Select(a => a.DetailsJson)
+            .FirstOrDefaultAsync(ct);
+        if (successionJson == null)
+            return new RetiredChainStatus(tenantId, RetiredChainState.Unsealed, "No succession record in the instance chain names this chain.");
+
+        SuccessionDetails? details;
+        try { details = JsonSerializer.Deserialize<SuccessionDetails>(successionJson); }
+        catch (JsonException) { details = null; }
+        if (details == null || details.SealedChain != tenantId)
+            return new RetiredChainStatus(tenantId, RetiredChainState.TailAltered, "The succession record naming this chain cannot be read.");
+
+        var seal = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.Id == details.SealRecordId && a.TenantId == tenantId)
+            .Select(a => new { a.RecordHash })
+            .FirstOrDefaultAsync(ct);
+        if (seal != null)
+            return seal.RecordHash == details.SealRecordHash
+                ? new RetiredChainStatus(tenantId, RetiredChainState.Sealed, null)
+                : new RetiredChainStatus(tenantId, RetiredChainState.TailAltered,
+                    $"The seal record {details.SealRecordId} no longer has the hash the instance chain recorded for it.");
+
+        var pruneMarkers = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.ActionType == ChainPrunedAction && a.RecordHash != null)
+            .Select(a => a.DetailsJson)
+            .ToListAsync(ct);
+        var prunedPastSeal = pruneMarkers.Select(ReadPruneDetails).Any(p => p != null && p.Cutoff > details.SealTimestamp);
+        return prunedPastSeal
+            ? new RetiredChainStatus(tenantId, RetiredChainState.Pruned, null)
+            : new RetiredChainStatus(tenantId, RetiredChainState.TailMissing,
+                $"The seal record {details.SealRecordId} the instance chain anchors is missing, and no prune marker accounts for it.");
+    }
+
+    /// <summary>
+    /// Appends <paramref name="entry"/> under its chain's lock unless <paramref name="exists"/>,
+    /// evaluated under the same lock, says it is already there. Returns whether it wrote.
+    /// </summary>
+    private async Task<bool> AppendUnlessAsync(
+        AuditDbContext db, AuditLogEntity entry, Func<Task<bool>> exists, Func<Task>? prepare, CancellationToken ct)
+    {
+        await using var lease = await AcquireLockAsync(db, entry.TenantId, ct);
+        if (await exists())
+            return false;
+        try
+        {
+            await StampAsync(db, entry, genesis: false, prepare, ct);
+            db.AuditLogs.Add(entry);
+            await db.SaveChangesAsync(ct);
+            await lease.CommitAsync(ct);
+            return true;
+        }
+        catch
+        {
+            db.Entry(entry).State = EntityState.Detached;
+            throw;
+        }
     }
 
     /// <summary>
@@ -275,28 +478,7 @@ public class AuditHashChainService
         var lease = await AcquireLockAsync(db, entry.TenantId, ct);
         try
         {
-            var tenantId = entry.TenantId;
-            var head = await db.AuditLogs
-                .Where(a => a.TenantId == tenantId && a.RecordHash != null)
-                .OrderByDescending(a => a.Timestamp)
-                .ThenByDescending(a => a.Id)
-                .Select(a => new { a.RecordHash, a.Timestamp })
-                .FirstOrDefaultAsync(ct);
-
-            if (prepare != null)
-                await prepare();
-
-            FitToColumns(entry);
-
-            // The chain is ordered by Timestamp, so the entry is stamped here, under the lock and
-            // after the head, rather than when the caller built it. Truncated before it is hashed
-            // AND before it is stored, so the two agree.
-            entry.Timestamp = NextTimestamp(_time.GetUtcNow().UtcDateTime, head?.Timestamp);
-
-            var previousHash = genesis ? null : head?.RecordHash;
-            entry.PreviousRecordHash = previousHash;
-            entry.HashVersion = CurrentHashVersion;
-            entry.RecordHash = ComputeHash(entry, previousHash);
+            await StampAsync(db, entry, genesis, prepare, ct);
             return lease;
         }
         catch
@@ -304,6 +486,36 @@ public class AuditHashChainService
             await lease.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Under a chain lock the caller holds: reads the chain head, runs <paramref name="prepare"/>,
+    /// fits and re-stamps the entry, and hashes it.
+    /// </summary>
+    private async Task StampAsync(AuditDbContext db, AuditLogEntity entry, bool genesis, Func<Task>? prepare, CancellationToken ct)
+    {
+        var tenantId = entry.TenantId;
+        var head = await db.AuditLogs
+            .Where(a => a.TenantId == tenantId && a.RecordHash != null)
+            .OrderByDescending(a => a.Timestamp)
+            .ThenByDescending(a => a.Id)
+            .Select(a => new { a.RecordHash, a.Timestamp })
+            .FirstOrDefaultAsync(ct);
+
+        if (prepare != null)
+            await prepare();
+
+        FitToColumns(entry);
+
+        // The chain is ordered by Timestamp, so the entry is stamped here, under the lock and
+        // after the head, rather than when the caller built it. Truncated before it is hashed
+        // AND before it is stored, so the two agree.
+        entry.Timestamp = NextTimestamp(_time.GetUtcNow().UtcDateTime, head?.Timestamp);
+
+        var previousHash = genesis ? null : head?.RecordHash;
+        entry.PreviousRecordHash = previousHash;
+        entry.HashVersion = CurrentHashVersion;
+        entry.RecordHash = ComputeHash(entry, previousHash);
     }
 
     /// <summary>
@@ -402,7 +614,8 @@ public class AuditHashChainService
     /// retention prune marker declared starts an epoch there instead of reporting a break, but only
     /// for a marker this walk examined and verified (see <see cref="EvaluatePruneMarkers"/>): a
     /// marker beyond <paramref name="limit"/> is not honoured, so a truncated walk of a pruned chain
-    /// reports the oldest record's link until the limit covers the marker.
+    /// reports the oldest record's link until the limit covers the marker. A record after a seal,
+    /// other than a prune marker, is a break; null <paramref name="tenantId"/> is the instance chain.
     /// </summary>
     public async Task<HashChainVerificationResult> VerifyAsync(
         AuditDbContext db, Guid? tenantId, int limit = 10000, CancellationToken ct = default)
@@ -421,12 +634,26 @@ public class AuditHashChainService
         var unverifiable = 0;
         var epochs = 0;
         var pruned = false;
+        var sealedChain = false;
         DateTime? verifiableSince = null;
         string? expectedPreviousHash = null;
 
         for (var i = 0; i < records.Count; i++)
         {
             var record = records[i];
+
+            // Nothing but retention's prune markers may follow a seal.
+            if (sealedChain && record.ActionType != ChainPrunedAction)
+            {
+                breaks.Add(new HashChainBreak
+                {
+                    RecordId = record.Id,
+                    Timestamp = record.Timestamp,
+                    Issue = "Record written after the chain was sealed",
+                });
+            }
+            if (record.ActionType == ChainSealedAction && record.HashVersion is not null)
+                sealedChain = true;
 
             // The oldest surviving record after a retention prune links to a deleted record. The
             // prune marker declared exactly this record and link, so the walk resumes from it.
@@ -504,6 +731,7 @@ public class AuditHashChainService
             UnverifiableRecords = unverifiable,
             Epochs = epochs,
             Pruned = pruned,
+            Sealed = sealedChain,
             VerifiableSince = verifiableSince,
             Breaks = breaks,
             FirstRecord = records.FirstOrDefault()?.Timestamp,
@@ -699,6 +927,12 @@ public class HashChainVerificationResult
     /// </summary>
     public bool Pruned { get; set; }
 
+    /// <summary>
+    /// True when the walk met a seal: the chain was retired in 0.4.0 and only prune markers may
+    /// follow the seal. Any other later record is reported as a break.
+    /// </summary>
+    public bool Sealed { get; set; }
+
     /// <summary>Every hashed record in the tenant's chain, whether or not this run examined it.</summary>
     public int TotalRecords { get; set; }
 
@@ -717,6 +951,27 @@ public class HashChainVerificationResult
     public DateTime? FirstRecord { get; set; }
     public DateTime? LastRecord { get; set; }
 }
+
+/// <summary>The state of a retired chain's tail; see <see cref="AuditHashChainService.CheckRetiredChainAsync"/>.</summary>
+public enum RetiredChainState
+{
+    /// <summary>No succession record names the chain yet.</summary>
+    Unsealed,
+    /// <summary>The seal the instance chain anchors is present with the anchored hash.</summary>
+    Sealed,
+    /// <summary>The seal was removed by retention, as a later prune marker declares.</summary>
+    Pruned,
+    /// <summary>The anchored seal is missing and nothing accounts for it: the tail was deleted.</summary>
+    TailMissing,
+    /// <summary>The anchored seal's hash differs, or its succession record cannot be read.</summary>
+    TailAltered,
+}
+
+/// <summary>A retired chain's tail check.</summary>
+/// <param name="TenantId">The retired chain.</param>
+/// <param name="State">What the check found.</param>
+/// <param name="Issue">A description when the state is a finding, else null.</param>
+public sealed record RetiredChainStatus(Guid TenantId, RetiredChainState State, string? Issue);
 
 /// <summary>A single break detected in the hash chain.</summary>
 public class HashChainBreak

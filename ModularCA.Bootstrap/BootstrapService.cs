@@ -136,12 +136,12 @@ public class BootstrapService
             var orgName = request.Organization.Name;
             if (string.IsNullOrWhiteSpace(orgName)) orgName = request.RootCa.Organization;
             if (string.IsNullOrWhiteSpace(orgName)) orgName = "Default";
-            var (systemTenant, orgTenant) = BootstrapModularCA.EnsureBootstrapTenants(
+            var orgTenant = BootstrapModularCA.EnsureBootstrapTenants(
                 dbContext, orgName, request.Organization.Description);
 
             // === Built-in Roles & System Groups ===
             BootstrapProfileSeeder.SeedBuiltInRoles(dbContext);
-            BootstrapProfileSeeder.CreateSystemGroups(dbContext, systemTenant.Id);
+            BootstrapProfileSeeder.CreateSystemGroups(dbContext);
 
             // === OID Loading ===
             BootstrapProfileSeeder.LoadOidsToDb(dbContext, OIDConfig);
@@ -372,43 +372,15 @@ public class BootstrapService
             BootstrapKeystoreWriter.WriteKeystorePasswordsToFile(configDir, keystorePasswords, keystoreFilePasswords);
 
             BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, tenantId: orgTenant.Id);
-            BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: systemTenant.Id);
+            // The system signing CA is an instance CA: no tenant.
+            BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: null);
 
             var caCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, caCertEntity.CertificateId);
             var sysCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, sysCertEntity.CertificateId);
 
             // === CA-Scoped Groups ===
             BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgTenant.Id);
-            BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, systemTenant.Id);
-
-            // === Backfill tenant IDs ===
-            var unassignedCas = dbContext.CertificateAuthorities
-                .Where(ca => ca.TenantId == Guid.Empty)
-                .ToList();
-            foreach (var ca in unassignedCas)
-            {
-                ca.TenantId = ca.Label == "system-signing-ca" ? systemTenant.Id : orgTenant.Id;
-            }
-            if (unassignedCas.Count > 0)
-                dbContext.SaveChanges();
-
-            var unassignedGroups = dbContext.CaGroups
-                .Where(g => g.TenantId == Guid.Empty)
-                .ToList();
-            foreach (var group in unassignedGroups)
-            {
-                if (group.IsSystemGroup)
-                    group.TenantId = systemTenant.Id;
-                else if (group.CertificateAuthorityId != null)
-                {
-                    var ownerCa = dbContext.CertificateAuthorities.FirstOrDefault(ca => ca.Id == group.CertificateAuthorityId);
-                    group.TenantId = ownerCa?.TenantId ?? orgTenant.Id;
-                }
-                else
-                    group.TenantId = orgTenant.Id;
-            }
-            if (unassignedGroups.Count > 0)
-                dbContext.SaveChanges();
+            BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, null);
 
             // mTLS signing is only available on org-tenant groups AND must point at a
             // non-system, non-Root issuing/intermediate CA. Bootstrap clears any legacy

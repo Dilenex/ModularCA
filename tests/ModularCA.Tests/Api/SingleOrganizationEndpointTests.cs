@@ -43,7 +43,6 @@ public sealed class SingleOrganizationEndpointTests
         public World(params TenantEntity[] tenants)
         {
             BootstrapProfileSeeder.SeedBuiltInRoles(Db);
-            Db.Tenants.Add(new TenantEntity { Name = "System", Slug = "system", IsSystemTenant = true, CanBeDeleted = false });
             Db.Tenants.AddRange(tenants);
             Db.SaveChanges();
         }
@@ -95,7 +94,7 @@ public sealed class SingleOrganizationEndpointTests
         Assert.Equal("MCA-CFG-017", ex.Code);
         Assert.Equal(400, ex.Status);
         Assert.Contains("'Acme'", ex.Message);
-        Assert.Equal(2, world.Tenants);
+        Assert.Equal(1, world.Tenants);
         var audited = Assert.Single(world.Refusals("MCA-CFG-017"));
         Assert.Equal("Globex", audited.TargetId);
         Assert.Single(world.Audit.Entries);
@@ -109,7 +108,7 @@ public sealed class SingleOrganizationEndpointTests
         var result = await world.CreateAsync("Globex", allowMultipleOrganizations: true);
 
         Assert.Equal(201, Status(result));
-        Assert.Equal(3, world.Tenants);
+        Assert.Equal(2, world.Tenants);
         Assert.Empty(world.Refusals("MCA-CFG-017"));
     }
 
@@ -121,7 +120,18 @@ public sealed class SingleOrganizationEndpointTests
         var result = await world.CreateAsync("Acme", allowMultipleOrganizations: false);
 
         Assert.Equal(201, Status(result));
-        Assert.Equal(1, world.Db.Tenants.IgnoreQueryFilters().Count(t => !t.IsSystemTenant));
+        Assert.Equal(1, world.Db.Tenants.IgnoreQueryFilters().Count());
+    }
+
+    [Fact]
+    public async Task The_slug_system_is_reserved_for_the_instance()
+    {
+        var world = new World();
+
+        var result = await world.CreateAsync("System", allowMultipleOrganizations: false);
+
+        Assert.Equal(400, Status(result));
+        Assert.Equal(0, world.Tenants);
     }
 
     [Fact]
@@ -144,7 +154,7 @@ public sealed class SingleOrganizationEndpointTests
         Assert.Equal("MCA-CFG-017", ex.Code);
         Assert.Contains("'Dormant'", ex.Message);
         Assert.Contains("disabled", ex.Message);
-        Assert.Equal(2, world.Tenants);
+        Assert.Equal(1, world.Tenants);
     }
 
     [Fact]

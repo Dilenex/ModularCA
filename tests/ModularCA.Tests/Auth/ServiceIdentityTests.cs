@@ -136,13 +136,12 @@ public class ServiceIdentityTests
         // What does fit.
         var ok = await w.Service.CreateAsync(system, World.Spec("svc-ok", groups: new[] { w.TenantAGroup.Id, w.CaA1Requesters.Id, w.CaB1Requesters.Id }));
         Assert.Equal(3, w.Db.CaGroupMembers.Count(m => m.UserId == ok.Id));
-        Assert.False(ServiceIdentityService.GroupFitsScope(w.SystemGroup, ServiceIdentityScope.System, groupTenantIsSystem: false));
-        Assert.False(ServiceIdentityService.GroupFitsScope(w.CaA1Requesters, ServiceIdentityScope.System, groupTenantIsSystem: true));
+        Assert.False(ServiceIdentityService.GroupFitsScope(w.SystemGroup, ServiceIdentityScope.System, groupIsInstance: false));
+        Assert.False(ServiceIdentityService.GroupFitsScope(w.CaA1Requesters, ServiceIdentityScope.System, groupIsInstance: true));
 
-        // A CA group inside the System tenant is system infrastructure, refused like a system group.
-        var systemTenant = new TenantEntity { Id = Guid.NewGuid(), Name = "System", Slug = "system", IsSystemTenant = true };
-        w.Db.Tenants.Add(systemTenant);
-        var systemCaGroup = new CaGroupEntity { Id = Guid.NewGuid(), Name = "system-signing-ca-admin", DisplayName = "x", TenantId = systemTenant.Id, CertificateAuthorityId = Guid.NewGuid() };
+        // An instance CA's group (no tenant, as the System tenant's were) is system infrastructure,
+        // refused like a system group.
+        var systemCaGroup = new CaGroupEntity { Id = Guid.NewGuid(), Name = "system-signing-ca-admin", DisplayName = "x", TenantId = null, CertificateAuthorityId = Guid.NewGuid() };
         w.Db.CaGroups.Add(systemCaGroup);
         await w.Db.SaveChangesAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => w.Service.CreateAsync(system, World.Spec("svc-sysca", groups: systemCaGroup.Id)));

@@ -115,7 +115,7 @@ public class TenantCapabilityTests
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { Id = Guid.NewGuid(), UserId = w.UserId, Capability = Capabilities.CaManage, TenantId = tenantC });
         w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), UserId = w.UserId, RoleId = w.Role(Capabilities.CaManage).Id, TenantId = tenantD });
         var ca = w.Ca("ca-e", Guid.NewGuid());
-        w.Grant(w.Group(ca.TenantId, caId: ca.Id), Capabilities.CaManage); // on one CA: not tenant-wide
+        w.Grant(w.Group(ca.TenantId!.Value, caId: ca.Id), Capabilities.CaManage); // on one CA: not tenant-wide
         w.Grant(w.Group(Guid.NewGuid(), system: true), Capabilities.CaManage); // system scope: not a tenant
         await w.Db.SaveChangesAsync();
 

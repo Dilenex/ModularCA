@@ -56,7 +56,8 @@ public class AuditService : IAuditService
 
     /// <summary>
     /// Persists an audit log entry. When <paramref name="certificateAuthorityId"/> is provided,
-    /// the event is scoped to that CA for filtered audit queries. The <paramref name="details"/>
+    /// the event is scoped to that CA for filtered audit queries. <paramref name="tenantId"/> is
+    /// ignored: every new record is written with a null tenant, into the instance chain. The <paramref name="details"/>
     /// object is serialized and scrubbed via <see cref="AuditJsonScrubber"/> before persistence.
     /// String fields are fitted to their columns, and the write goes through
     /// <see cref="AuditHashChainService.AppendAsync"/>, which detaches a failed entry so it does
@@ -107,7 +108,9 @@ public class AuditService : IAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                // Every new record joins the single instance chain (0.4.0 S3); the tenant
+                // argument is ignored until S6 removes it.
+                TenantId = null,
                 // The badge the actor wore. Forgetting which hat you wear is the classic
                 // failure of restricted-rights features; the trail must not share it.
                 AccessBadgeId = _wornBadge?.BadgeId,

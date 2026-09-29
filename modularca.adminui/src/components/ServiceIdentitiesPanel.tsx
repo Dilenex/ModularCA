@@ -24,18 +24,21 @@ import AuditTable from './AuditTable';
 export interface ServiceIdentity {
     id: string; username: string; displayName?: string | null; description?: string | null; isActive: boolean; createdAt: string;
     scope: 'system' | 'tenant' | 'ca'; tenantId?: string | null; tenantName?: string | null; caId?: string | null; caLabel?: string | null;
-    groups: Array<{ groupId: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string; templateName?: string | null }>;
+    groups: Array<{ groupId: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string | null; templateName?: string | null }>;
 }
-interface GroupOption { id: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string; isSystemGroup: boolean; isSystemTierSuper?: boolean; isSystemTenant?: boolean }
+interface GroupOption { id: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string | null; isSystemGroup: boolean; isSystemTierSuper?: boolean; isInstance?: boolean }
 
 type ScopeChoice = { key: string; label: string; tenantId: string | null; caId: string | null };
 
 const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '-');
 const scopeLabel = (s: ServiceIdentity) => s.scope === 'ca' ? `CA ${s.caLabel || s.caId}` : s.scope === 'tenant' ? `Tenant ${s.tenantName || s.tenantId}` : 'System';
 
-/** The scope a group belongs to fits an identity scope the same way the server decides it. */
+/**
+ * The scope a group belongs to fits an identity scope the same way the server decides it. An
+ * instance group (no tenant: the system groups and the instance CAs' groups) never fits.
+ */
 const groupFits = (g: GroupOption, tenantId: string | null, caId: string | null) => {
-    if (g.isSystemGroup || g.isSystemTierSuper || g.isSystemTenant) return false;
+    if (g.isSystemGroup || g.isSystemTierSuper || g.isInstance || g.tenantId == null) return false;
     if (!tenantId && !caId) return true;
     if (g.certificateAuthorityId) return caId === g.certificateAuthorityId || (!caId && tenantId === g.tenantId);
     return !caId && tenantId === g.tenantId;
@@ -66,7 +69,7 @@ const ServiceIdentitiesPanel: React.FC = () => {
         const out: ScopeChoice[] = [];
         if (can(capabilities, Capabilities.SystemManage) || can(capabilities, Capabilities.CaManage)) out.push({ key: 'system', label: 'System (any tenant, any CA)', tenantId: null, caId: null });
         for (const t of tenantsOf(capabilities)) if (canAtTenant(capabilities, Capabilities.CaManage, t.id)) out.push({ key: `t:${t.id}`, label: `Tenant: ${t.name}`, tenantId: t.id, caId: null });
-        for (const ca of consoleCas(capabilities)) if (can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.tenantName || ca.tenantSlug})`, tenantId: ca.tenantId, caId: ca.id });
+        for (const ca of consoleCas(capabilities)) if (can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.tenantId == null ? 'Instance' : ca.tenantName || ca.tenantSlug})`, tenantId: ca.tenantId, caId: ca.id });
         return out;
     }, [capabilities]);
 

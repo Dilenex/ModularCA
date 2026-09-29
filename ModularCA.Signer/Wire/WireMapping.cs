@@ -57,9 +57,14 @@ public static class WireMapping
         TenantId = ToWire(context.TenantId),
         CaId = ToWire(context.CaId),
         CeremonyId = ToWire(context.CeremonyId),
+        InstanceScope = context.InstanceScope,
     };
 
-    /// <summary>Reads a context from the wire; an unknown purpose or a missing message is an argument error.</summary>
+    /// <summary>
+    /// Reads a context from the wire; an unknown purpose or a missing message is an argument
+    /// error. The instance marker crosses only as sent: an omitted one is false, so an empty
+    /// tenant id from an older client is an unstated scope, not the instance.
+    /// </summary>
     public static Shared.Signing.SigningContext FromWire(SigningContext? context)
     {
         if (context == null) throw new ArgumentException("The signing context is missing.", "context");
@@ -70,7 +75,10 @@ public static class WireMapping
             purpose,
             ToNullableGuid(context.TenantId, "context.tenant_id"),
             ToNullableGuid(context.CaId, "context.ca_id"),
-            ToNullableGuid(context.CeremonyId, "context.ceremony_id"));
+            ToNullableGuid(context.CeremonyId, "context.ceremony_id"))
+        {
+            InstanceScope = context.InstanceScope,
+        };
     }
 
     /// <summary>Maps a key spec to the wire.</summary>

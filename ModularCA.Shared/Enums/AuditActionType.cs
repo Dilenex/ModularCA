@@ -313,4 +313,19 @@ public static class AuditActionType
     /// the last dominating user of its scope. The ceremony stays Approved and may be executed later.
     /// </summary>
     public const string ControlledUserChangeRefused = "ControlledUserChangeRefused";
+
+    /// <summary>An <c>InstancePolicyChange</c> ceremony executed. Details carry the before/after values.</summary>
+    public const string InstancePolicyChangeApplied = "InstancePolicyChangeApplied";
+
+    /// <summary>
+    /// Appended as the last record of a retired per-tenant audit chain (0.4.0 S3). Details name the
+    /// reason, the migration, and the chain's final record id and hash before the seal.
+    /// </summary>
+    public const string AuditChainSealed = "AuditChainSealed";
+
+    /// <summary>
+    /// Appended to the instance chain when a retired chain is sealed. Details name the sealed
+    /// chain and its final hash, anchoring the retired chain's tail in the live chain.
+    /// </summary>
+    public const string AuditChainSuccession = "AuditChainSuccession";
 }

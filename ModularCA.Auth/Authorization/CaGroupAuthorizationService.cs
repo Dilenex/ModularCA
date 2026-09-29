@@ -271,8 +271,8 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         ids.UnionWith(await _db.CapabilityGrants
             .Where(g => g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null
-                && !g.Group.IsSystemGroup && g.Group.CertificateAuthorityId == null)
-            .Select(g => g.Group.TenantId)
+                && !g.Group.IsSystemGroup && g.Group.CertificateAuthorityId == null && g.Group.TenantId != null)
+            .Select(g => g.Group.TenantId!.Value)
             .ToListAsync());
 
         // Source 2: roles on tenant-wide groups
@@ -280,8 +280,8 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             .Where(ra => ra.GroupId != null
                 && ra.Group!.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)
-                && !ra.Group.IsSystemGroup && ra.Group.CertificateAuthorityId == null)
-            .Select(ra => ra.Group!.TenantId)
+                && !ra.Group.IsSystemGroup && ra.Group.CertificateAuthorityId == null && ra.Group.TenantId != null)
+            .Select(ra => ra.Group!.TenantId!.Value)
             .ToListAsync());
 
         // Source 3: tenant-scoped grants on the user
@@ -382,7 +382,9 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             if (!groupById.TryGetValue(groupId, out var g)) return;
             if (g.IsSystemGroup) systemCaps.Add(capability);
             else if (g.CertificateAuthorityId is Guid caId) Bucket(caCaps, caId).Add(capability);
-            else Bucket(tenantCaps, g.TenantId).Add(capability);
+            // Only a space's tenant-wide group has a bucket; a non-system group with neither
+            // tenant nor CA confers nothing, and never system scope.
+            else if (g.TenantId is Guid tid) Bucket(tenantCaps, tid).Add(capability);
         }
 
         void AddUserScoped(string capability, Guid? tenantId, Guid? certificateAuthorityId)
@@ -450,12 +452,14 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         foreach (var ca in cas)
         {
             var caps = new HashSet<string>(systemCaps, StringComparer.Ordinal);
-            if (tenantCaps.TryGetValue(ca.TenantId, out var t)) caps.UnionWith(t);
+            if (ca.TenantId is Guid caTenantId && tenantCaps.TryGetValue(caTenantId, out var t)) caps.UnionWith(t);
             if (caCaps.TryGetValue(ca.Id, out var c)) caps.UnionWith(c);
             if (caps.Count == 0) continue;
-            tenants.TryGetValue(ca.TenantId, out var tenant);
+            // An instance CA carries no tenant, so an empty name and slug.
+            var tenant = ca.TenantId is Guid tid && tenants.TryGetValue(tid, out var found) ? found : null;
             perCa.Add(new CaCapabilities(ca.Id, ca.Label ?? string.Empty, ca.Name, ca.IsSshCa,
-                ca.TenantId, tenant?.Name ?? string.Empty, tenant?.Slug ?? ca.TenantId.ToString(),
+                ca.TenantId, tenant?.Name ?? string.Empty,
+                ca.TenantId == null ? string.Empty : tenant?.Slug ?? ca.TenantId.Value.ToString(),
                 caps.OrderBy(x => x, StringComparer.Ordinal).ToList()));
         }
 
@@ -508,19 +512,19 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
 
         // Tenant-level group grants → all CAs in those tenants
         var tenantIdsFromGroups = await _db.CapabilityGrants
-            .Where(g => g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup
+            .Where(g => g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup && g.Group.TenantId != null
                 && g.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(g.GroupId))
                 && g.Capability == capability && g.ResourceType == null)
-            .Select(g => g.Group.TenantId)
+            .Select(g => g.Group.TenantId!.Value)
             .Distinct().ToListAsync();
 
         // Tenant-level group role assignments
         var tenantIdsFromGroupRoles = await _db.RoleAssignments
             .Where(ra => ra.GroupId != null
-                && ra.Group!.CertificateAuthorityId == null && !ra.Group.IsSystemGroup
+                && ra.Group!.CertificateAuthorityId == null && !ra.Group.IsSystemGroup && ra.Group.TenantId != null
                 && ra.Group.Members.Any(m => m.UserId == userId) && (!worn || bGroups.Contains(ra.GroupId!.Value))
                 && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null))
-            .Select(ra => ra.Group!.TenantId)
+            .Select(ra => ra.Group!.TenantId!.Value)
             .Distinct().ToListAsync();
 
         // Tenant-level user grants
@@ -547,7 +551,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         if (allTenantIds.Count > 0)
         {
             var tenantCaIds = await _db.CertificateAuthorities
-                .Where(ca => allTenantIds.Contains(ca.TenantId))
+                .Where(ca => ca.TenantId != null && allTenantIds.Contains(ca.TenantId.Value))
                 .Select(ca => ca.Id).ToListAsync();
             foreach (var id in tenantCaIds) caIds.Add(id);
         }
@@ -608,8 +612,9 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
                 .Select(ca => ca.Id).ToListAsync();
         }
 
-        // Tenant-level access from any source → all CAs in tenant
-        var hasTenantAccess =
+        // Tenant-level access from any source → all CAs in tenant. The instance (null) has no
+        // tenant-level sources; a global grant is a system capability, checked above.
+        var hasTenantAccess = tenantId != null && (
             // Group grant
             await _db.CapabilityGrants.AnyAsync(g =>
                 g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup
@@ -630,7 +635,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             || await _db.RoleAssignments.AnyAsync(ra =>
                 ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id))
                 && ra.TenantId == tenantId && ra.CertificateAuthorityId == null
-                && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null));
+                && ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null)));
 
         if (hasTenantAccess)
         {

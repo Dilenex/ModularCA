@@ -37,14 +37,16 @@ type Family = 'CaCreation' | 'TenantPolicyChange' | 'ControlledUserChange';
 
 function ceremonyFamily(c: any): Family {
     const ct = c?.ceremonyType;
-    if (ct === 'TenantPolicyChange' || c?.operationType === 'TenantPolicyChange') return 'TenantPolicyChange';
+    // The instance's policy changes (no tenant) belong to the same family as a tenant's.
+    if (ct === 'TenantPolicyChange' || ct === 'InstancePolicyChange'
+        || c?.operationType === 'TenantPolicyChange' || c?.operationType === 'InstancePolicyChange') return 'TenantPolicyChange';
     if (ct === 'ControlledUserChange' || c?.operationType === 'ControlledUserChange') return 'ControlledUserChange';
     return 'CaCreation';
 }
 
 const FAMILY_META: Record<Family, { label: string; cls: string }> = {
     CaCreation: { label: 'CA', cls: 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
-    TenantPolicyChange: { label: 'Tenant Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
+    TenantPolicyChange: { label: 'Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
     ControlledUserChange: { label: 'Controlled User', cls: 'bg-purple-50 dark:bg-purple-900/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700' },
 };
 
@@ -117,7 +119,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
             {params && family === 'TenantPolicyChange' && (
                 <div>
                     <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Policy Change</span>
-                    {(params.tenantId || params.TenantId) && <DetailField label="Tenant ID" value={params.tenantId || params.TenantId} mono />}
+                    <DetailField label="Scope" value={params.tenantId || params.TenantId || 'Instance'} mono={!!(params.tenantId || params.TenantId)} />
                     {(() => {
                         const pReq = params.proposedRequireKeyCeremony ?? params.ProposedRequireKeyCeremony;
                         const cReq = params.currentRequireKeyCeremony ?? params.CurrentRequireKeyCeremony;
@@ -138,7 +140,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                     <DetailField label="Algorithm" value={params.keyAlgorithm || params.KeyAlgorithm || '-'} />
                     <DetailField label="Key Size" value={params.keySize || params.KeySize || '-'} />
                     <DetailField label="Validity (Years)" value={params.validityYears || params.ValidityYears || '-'} />
-                    <DetailField label="Tenant ID" value={params.tenantId || params.TenantId || '-'} mono />
+                    <DetailField label="Tenant ID" value={params.tenantId || params.TenantId || 'Instance'} mono={!!(params.tenantId || params.TenantId)} />
                     {(params.parentCaId || params.ParentCaId) && <DetailField label="Parent CA ID" value={params.parentCaId || params.ParentCaId} mono />}
                     {(params.label || params.Label) && <DetailField label="Label" value={params.label || params.Label} />}
                 </div>
@@ -346,7 +348,7 @@ const Ceremonies: React.FC = () => {
                     className="px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                     <option value="all">All types</option>
                     <option value="CaCreation">CA</option>
-                    <option value="TenantPolicyChange">Tenant Policy</option>
+                    <option value="TenantPolicyChange">Policy (tenant or instance)</option>
                     <option value="ControlledUserChange">Controlled User</option>
                 </select>
             </div>

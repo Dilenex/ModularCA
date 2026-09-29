@@ -123,6 +123,35 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
 
       sudo rm -r /opt/modularca/config/tenant-tls
 
+- **The system tenant is folded into the instance.** The `FoldSystemTenant` migration moves the
+  system signing CA, SSH CAs, the system groups and those CAs' groups to the instance (no tenant),
+  copies the system tenant's CA policy to the security policy as it is, and deletes the tenant and
+  its four tenant-wide `org-system-*` groups. It changes nothing and stops the service (status 3,
+  the journal names the precondition and what it found) unless all of these hold. Check them with
+  the build you run now, before upgrading:
+  - **No open ceremony names the system tenant.** Execute or cancel every Pending or Approved
+    ceremony on a system CA (the system signing CA, an SSH CA) or on the System tenant's policy,
+    and every controlled-user ceremony on those. The migration never rewrites a ceremony.
+  - **The `org-system-*` groups are empty.** Move each member of `org-system-admin`,
+    `org-system-operator`, `org-system-auditor` and `org-system-user` to the system group that
+    fits (`system-admin`, `system-operator`, `system-auditor`) or to a CA's group, and edit any
+    access badge that names one of them. Their grants and roles are deleted with them.
+  - **Nothing on the system tenant would become instance-wide.** Remove capability grants and
+    role assignments given to users directly across the whole System tenant (grants on one of
+    its CAs are fine), service identities scoped to the whole System tenant (scope them to a CA),
+    and certificate profiles on the System tenant that are bound to no CA.
+  - **One organisation.** An instance with more than one organisation tenant is refused,
+    whatever `Features.AllowMultipleOrganizations` says. A soft-deleted tenant does not count; a
+    disabled one does.
+  - **One security policy row.**
+
+  After the upgrade, the instance's policy (Settings, Security Policy, Instance CA policy) governs
+  the instance CAs only and each organisation keeps its own; nothing is merged. At its first start
+  the control role seals each per-tenant audit chain and anchors its final hash in the instance
+  chain, where every new record now goes; `GET /api/v1/admin/audit/verify/chains` reports them.
+  Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the
+  dumps taken before the upgrade.
+
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
 `docs/architecture/postgresql-migration.md`.

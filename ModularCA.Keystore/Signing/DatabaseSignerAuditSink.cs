@@ -40,6 +40,9 @@ public sealed class DatabaseSignerAuditSink : ISignerAuditSink
         Keystore = decision.Key?.Keystore,
         CaId = decision.Context.CaId,
         TenantId = decision.Context.TenantId,
+        EffectiveScope = decision.Context.TenantId != null ? SignerAuditEntity.TenantScope
+            : decision.Context.InstanceScope ? SignerAuditEntity.InstanceScope
+            : SignerAuditEntity.NoScope,
         CeremonyId = decision.Context.CeremonyId,
         PeerIdentity = decision.Context.PeerIdentity == null ? null : Truncate(decision.Context.PeerIdentity, 256),
         Algorithm = decision.Algorithm?.Name,

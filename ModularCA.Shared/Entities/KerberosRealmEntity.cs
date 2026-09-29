@@ -17,8 +17,8 @@ public class KerberosRealmEntity
     [Key]
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    /// <summary>The tenant this forest belongs to. The isolation boundary.</summary>
-    public Guid TenantId { get; set; }
+    /// <summary>The tenant this forest belongs to, or null for an instance realm serving instance CAs.</summary>
+    public Guid? TenantId { get; set; }
 
     /// <summary>Upper-case Kerberos realm, e.g. <c>CORP.CUSTOMER-A.LOCAL</c>. Unique across tenants.</summary>
     [MaxLength(255)]

@@ -6,8 +6,9 @@ namespace ModularCA.API.Middleware;
 
 /// <summary>
 /// Resolves the authenticated user's accessible tenant IDs from their group memberships,
-/// stores them in <c>HttpContext.Items["AccessibleTenantIds"]</c> for legacy controller
-/// code, and populates the scoped <see cref="ITenantContext"/> that feeds the
+/// stores them in <c>HttpContext.Items["AccessibleTenantIds"]</c> (non-null tenants only) and
+/// <c>HttpContext.Items["HasInstanceScope"]</c> for <see cref="ModularCA.Auth.Authorization.TenantFence"/>,
+/// and populates the scoped <see cref="ITenantContext"/> that feeds the
 /// <c>ModularCADbContext</c> global query filter.
 /// <para>
 /// System administrators (members of a system-admin group) receive access to all tenants
@@ -40,6 +41,7 @@ public class TenantResolutionMiddleware
 
         HashSet<Guid> accessibleTenantIds = new();
         bool isSystemAdmin = false;
+        bool hasInstanceScope = false;
         Guid? resolvedUserId = null;
 
         if (userIdClaim != null && Guid.TryParse(userIdClaim, out var userId))
@@ -57,19 +59,20 @@ public class TenantResolutionMiddleware
                     .Select(t => t.Id)
                     .ToListAsync();
                 accessibleTenantIds = new HashSet<Guid>(allTenantIds);
+                hasInstanceScope = true;
                 context.Items["IsSystemAdmin"] = true;
             }
             else
             {
                 // Group memberships as the resolver sees them (a worn badge keeps only some).
-                var tenantIds = (await authz.GetUserGroupsAsync(userId))
-                    .Select(g => g.TenantId)
-                    .Distinct()
-                    .ToList();
-                accessibleTenantIds = new HashSet<Guid>(tenantIds);
+                // A system group, or an instance CA's group, confers visibility of instance
+                // CAs, as membership of a system-tenant group did (TenantFence.ScopeOf).
+                (accessibleTenantIds, hasInstanceScope) =
+                    ModularCA.Auth.Authorization.TenantFence.ScopeOf(await authz.GetUserGroupsAsync(userId));
             }
 
             context.Items["AccessibleTenantIds"] = accessibleTenantIds;
+            context.Items["HasInstanceScope"] = hasInstanceScope;
         }
 
         // Ensure AccessibleTenantIds is always set for authenticated users (defense-in-depth:
@@ -84,7 +87,7 @@ public class TenantResolutionMiddleware
         // public routes (CRL, OCSP, ACME) continue to see the entire dataset.
         if (resolvedUserId != null || context.User?.Identity?.IsAuthenticated == true)
         {
-            tenantContext.Set(resolvedUserId, accessibleTenantIds, isSystemAdmin);
+            tenantContext.Set(resolvedUserId, accessibleTenantIds, isSystemAdmin, hasInstanceScope);
         }
 
         await _next(context);

@@ -80,6 +80,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Requires step-up MFA verification. Operation types with their own initiation path
     /// (controlled-user changes, tenant policy changes, CA revocation, SSH CAs) are refused with 400:
     /// those paths classify, validate and scope the ceremony, which this generic body cannot.
+    /// The parameters name the CA's scope explicitly: a tenant id, or scope "instance" (400 otherwise).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -102,6 +103,10 @@ public class AdminKeyCeremonyController : ControllerBase
             return BadRequest(new { error = "OperationType is required." });
         if (!GenericOperationTypes.Contains(request.OperationType))
             return BadRequest(new { error = $"Operation type '{request.OperationType}' cannot be initiated here; use its dedicated endpoint." });
+        if (request.Parameters == null)
+            return BadRequest(new { error = "Parameters are required for a CA-creation ceremony." });
+        if (KeyCeremonyParameters.ScopeError(request.Parameters.TenantId, request.Parameters.Scope) is string scopeError)
+            return BadRequest(new { error = scopeError });
 
         // The tenant and parent are in the body, so the route policy cannot scope this action;
         // the same rules as direct CA creation apply (see CaCreationAccess). Other operation
@@ -195,16 +200,19 @@ public class AdminKeyCeremonyController : ControllerBase
         else
         {
             var tenantIds = await GetUserCeremonyTenantIdsAsync(_currentUser.User.Id);
-            var tierTenantIds = (await _controlledUserSvc.GetActorTiersAsync(_currentUser.User.Id))
-                .Where(t => t.TenantId != null).Select(t => t.TenantId!.Value);
+            var tiers = await _controlledUserSvc.GetActorTiersAsync(_currentUser.User.Id);
+            var tierTenantIds = tiers.Where(t => t.TenantId != null).Select(t => t.TenantId!.Value);
             var candidateTenants = tenantIds.Union(tierTenantIds).ToList();
-            if (candidateTenants.Count == 0)
+            // Instance ceremonies (no tenant) are candidates for a caller with instance scope or a
+            // tier on an instance CA; CanAccessCeremonyAsync decides each one.
+            var includeInstance = HttpContext.Items["HasInstanceScope"] is true || tiers.Any(t => t.TenantId == null);
+            if (candidateTenants.Count == 0 && !includeInstance)
                 return Ok(Array.Empty<object>());
 
             var fullTenants = tenantIds.ToHashSet();
             ceremonies = new List<KeyCeremonyEntity>();
-            foreach (var c in await _ceremonySvc.ListByTenantsAsync(candidateTenants, status))
-                if ((!IsControlledUserChange(c) && fullTenants.Contains(c.TenantId!.Value)) || await CanAccessCeremonyAsync(c))
+            foreach (var c in await _ceremonySvc.ListByTenantsAsync(candidateTenants, status, includeInstance))
+                if ((!IsControlledUserChange(c) && c.TenantId is Guid ct && fullTenants.Contains(ct)) || await CanAccessCeremonyAsync(c))
                     ceremonies.Add(c);
         }
 
@@ -681,21 +689,25 @@ public class AdminKeyCeremonyController : ControllerBase
                     crlNumber = revokeResult.CrlNumber,
                 });
             }
-            else if (ceremony.OperationType == "TenantPolicyChange")
+            else if (ceremony.OperationType is "TenantPolicyChange" or "InstancePolicyChange")
             {
-                // Apply the ceremony-gated tenant policy downgrade via the dedicated service,
-                // then mark executed + emit a distinct audit entry carrying the before/after diff
-                // so operators can easily filter policy changes out of the broader ceremony stream.
+                // Apply the ceremony-gated scope policy change via the dedicated service (the
+                // instance's goes to the security policy row), then mark executed + emit a distinct
+                // audit entry carrying the before/after diff so operators can easily filter policy
+                // changes out of the broader ceremony stream.
                 var result = await _tenantPolicyChangeSvc.ApplyApprovedChangeAsync(ceremony.Id);
 
                 await _ceremonySvc.MarkExecutedAsync(id);
+                var isInstance = result.TenantId == null;
+                if (isInstance)
+                    HttpContext.RequestServices.GetService<ISecurityPolicyService>()?.InvalidateCache();
 
                 await _audit.LogAsync(
-                    AuditActionType.TenantPolicyChangeApplied,
+                    isInstance ? AuditActionType.InstancePolicyChangeApplied : AuditActionType.TenantPolicyChangeApplied,
                     _currentUser.User.Id,
                     _currentUser.User.Username,
-                    "Tenant",
-                    result.TenantId.ToString(),
+                    isInstance ? "SecurityPolicy" : "Tenant",
+                    result.TenantId?.ToString() ?? "instance",
                     new
                     {
                         CeremonyId = ceremony.Id,
@@ -716,7 +728,7 @@ public class AdminKeyCeremonyController : ControllerBase
                 {
                     ceremony.Id,
                     Status = "Executed",
-                    message = "Tenant policy change applied.",
+                    message = isInstance ? "Instance policy change applied." : "Tenant policy change applied.",
                     result,
                 });
             }
@@ -813,7 +825,8 @@ public class AdminKeyCeremonyController : ControllerBase
     /// approve it (which excludes its target), so a CA admin reaches the changes on their CA and a
     /// tenant-wide <c>ca.manage</c> holder does not see changes above their rank. Its target gets no
     /// access as such: a pending demotion or deletion must not tip off the account it removes. Any
-    /// other ceremony is open to a system admin or a holder of <c>ca.manage</c> tenant-wide in its tenant.
+    /// other ceremony is open to a system admin or a holder of <c>ca.manage</c> tenant-wide in its
+    /// tenant, or at system scope for an instance ceremony (no tenant).
     /// </summary>
     private async Task<bool> CanAccessCeremonyAsync(KeyCeremonyEntity ceremony)
     {
@@ -828,8 +841,9 @@ public class AdminKeyCeremonyController : ControllerBase
         if (IsControlledUserChange(ceremony))
             return ceremony.InitiatedByUserId == userId || await _controlledUserSvc.CanApproveAsync(userId, ceremony);
 
-        return ceremony.TenantId != null
-            && await _groupAuth.HasTenantCapabilityAsync(userId, ceremony.TenantId.Value, Capabilities.CaManage);
+        // An instance ceremony (no tenant) is open to ca.manage at system scope, as the System
+        // tenant's were.
+        return await _groupAuth.HasScopeCapabilityAsync(userId, ceremony.TenantId, Capabilities.CaManage);
     }
 
     /// <summary>True for a ceremony that gates a controlled user's privileges.</summary>
@@ -853,14 +867,15 @@ public class AdminKeyCeremonyController : ControllerBase
 
     /// <summary>
     /// Whether the caller may start a ceremony of this type with these parameters. CA creation
-    /// follows <see cref="CaCreationAccess"/>; anything else needs <c>ca.manage</c> tenant-wide
-    /// for the tenant named in the parameters, or <c>system.manage</c> when there is none.
+    /// follows <see cref="CaCreationAccess"/>; anything else needs <c>ca.manage</c> across the
+    /// scope named in the parameters: tenant-wide for a tenant, at system scope for the instance
+    /// (no tenant).
     /// </summary>
     private async Task<bool> MayInitiateAsync(string operationType, KeyCeremonyParameters? parameters, Guid userId)
     {
         if (await _groupAuth.IsSystemAdminAsync(userId))
             return true;
-        if (parameters == null || parameters.TenantId == Guid.Empty)
+        if (parameters == null)
             return false;
 
         if (string.Equals(operationType, "CreateRootCA", StringComparison.OrdinalIgnoreCase))
@@ -869,7 +884,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return parameters.ParentCaId is Guid parent
                 && await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, userId, parameters.TenantId, parent);
 
-        return await _groupAuth.HasTenantCapabilityAsync(userId, parameters.TenantId, Capabilities.CaManage);
+        return await _groupAuth.HasScopeCapabilityAsync(userId, parameters.TenantId, Capabilities.CaManage);
     }
 }
 

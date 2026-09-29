@@ -32,4 +32,12 @@ public enum CeremonyType
     /// approval threshold comes from the <i>user quorum</i> (distinct from the CA/key quorum).
     /// </summary>
     ControlledUserChange = 2,
+
+    /// <summary>
+    /// Ceremonies that change the instance's own CA policy on
+    /// <see cref="Entities.SecurityPolicyEntity"/> (ceremony requirement, key quorum, instance-CA
+    /// user quorum). The instance counterpart of <see cref="TenantPolicyChange"/>; its quorum is
+    /// the instance's <c>CeremonyRequiredApprovals</c>, one pending at a time.
+    /// </summary>
+    InstancePolicyChange = 3,
 }

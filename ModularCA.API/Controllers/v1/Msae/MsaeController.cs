@@ -180,8 +180,8 @@ public class MsaeController(
     [HttpGet("whoami")]
     public async Task<IActionResult> WhoAmI(string? caLabel = null)
     {
-        var (allowKerberos, _, tenantId) = await AuthModesAsync(caLabel);
-        if (tenantId == null)
+        var (allowKerberos, _, caFound, tenantId) = await AuthModesAsync(caLabel);
+        if (!caFound)
             return NotFound(new { error = "No such CA, or MSAE is not enabled on it." });
 
         if (!Request.Headers.TryGetValue("Authorization", out var header)
@@ -195,7 +195,7 @@ public class MsaeController(
         try { bytes = Convert.FromBase64String(header.ToString()["Negotiate ".Length..].Trim()); }
         catch (FormatException) { return BadRequest(new { error = "The Negotiate header is not base64." }); }
 
-        var result = await kerberos.AcceptAsync(bytes, tenantId.Value, HttpContext.RequestAborted);
+        var result = await kerberos.AcceptAsync(bytes, tenantId, HttpContext.RequestAborted);
         if (!result.Accepted)
             return StatusCode(StatusCodes.Status403Forbidden, new { refusal = result.Refusal.ToString(), result.Realm, servicePrincipal = result.ServicePrincipal, detail = result.Detail, kerberosEnabledOnCa = allowKerberos });
 
@@ -244,7 +244,7 @@ public class MsaeController(
     private async Task<(MsaeCaller? Caller, IActionResult? Fault)> AuthenticateAsync(
         string? caLabel, WstepMessages.WstepUsernameToken? token, WstepMessages.WstepKerberosToken? kerberosToken, string? messageId)
     {
-        var (allowKerberos, allowUsername, tenantId) = await AuthModesAsync(caLabel);
+        var (allowKerberos, allowUsername, caFound, tenantId) = await AuthModesAsync(caLabel);
 
         // The Windows enrollment engine set to Kerberos carries its AP-REQ in the WS-Security
         // header (Kerberos Token Profile); curl and the like carry it in the HTTP header. Both
@@ -271,11 +271,11 @@ public class MsaeController(
 
         if (bytes != null)
         {
-            if (!allowKerberos || tenantId == null)
+            if (!allowKerberos || !caFound)
                 return (null, Fault("Kerberos authentication is not enabled for this CA.", messageId, "auth_mode"));
 
             Log.Information("MSAE: Kerberos token ({Bytes} bytes, {Where}) from {Ip} for CA {CaLabel}", bytes.Length, where, SourceIp, caLabel);
-            var result = await kerberos.AcceptAsync(bytes, tenantId.Value, HttpContext.RequestAborted);
+            var result = await kerberos.AcceptAsync(bytes, tenantId, HttpContext.RequestAborted);
             if (!result.Accepted)
             {
                 Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}: {Detail}",
@@ -345,26 +345,27 @@ public class MsaeController(
     }
 
     /// <summary>
-    /// The CA's MSAE authentication modes and tenant. A CA that cannot be resolved (no label,
-    /// protocol off) reports username-only, so the request fails later with the resolver's own
-    /// message rather than a Kerberos challenge that could never succeed.
+    /// The CA's MSAE authentication modes and scope. A CA that cannot be resolved (no label,
+    /// protocol off) reports username-only and not found, so the request fails later with the
+    /// resolver's own message rather than a Kerberos challenge that could never succeed. A found
+    /// instance CA has a null tenant, which an instance realm serves.
     /// </summary>
-    private async Task<(bool AllowKerberos, bool AllowUsername, Guid? TenantId)> AuthModesAsync(string? caLabel)
+    private async Task<(bool AllowKerberos, bool AllowUsername, bool Found, Guid? TenantId)> AuthModesAsync(string? caLabel)
     {
         try
         {
             var context = await caResolver.ResolveAsync(caLabel, MsaeEnrollmentService.Protocol);
             var ca = context.Ca;
-            if (ca == null) return (false, true, null);
+            if (ca == null) return (false, true, false, null);
             var config = await db.CaProtocolConfigs.AsNoTracking()
                 .Where(p => p.CaId == ca.Id && p.Protocol == MsaeEnrollmentService.Protocol)
                 .Select(p => new { p.MsaeAllowKerberos, p.MsaeAllowUsernameToken })
                 .FirstOrDefaultAsync();
-            return (config?.MsaeAllowKerberos ?? false, config?.MsaeAllowUsernameToken ?? true, ca.TenantId);
+            return (config?.MsaeAllowKerberos ?? false, config?.MsaeAllowUsernameToken ?? true, true, ca.TenantId);
         }
         catch (InvalidOperationException)
         {
-            return (false, true, null);
+            return (false, true, false, null);
         }
     }
 

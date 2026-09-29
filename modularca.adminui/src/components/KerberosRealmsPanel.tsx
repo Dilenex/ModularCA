@@ -16,11 +16,12 @@ import AuditTable from './AuditTable';
  * A tenant's Kerberos realm bindings for Windows autoenrollment: which Active Directory forests
  * may present tickets, whose capabilities their principals act with, and the service keys that
  * seal the tickets. Keys go in three ways and never come back out; the only export is the setup
- * script for the forest.
+ * script for the forest. With a null `tenantId` the panel manages the instance's realms, which
+ * serve instance CAs (no tenant).
  */
 interface RealmKey { kvno: number; encryptionType: string; source: string; createdAt: string; retireAfter?: string | null }
 interface Realm {
-    id: string; tenantId: string; realm: string; dnsDomain: string; servicePrincipal: string;
+    id: string; tenantId: string | null; realm: string; dnsDomain: string; servicePrincipal: string;
     enrollmentUserId: string; enrollmentUsername?: string | null; allowMachines: boolean; allowUsers: boolean;
     isEnabled: boolean; notes?: string | null; createdAt: string; lastUsedAt?: string | null; keys: RealmKey[];
 }
@@ -32,10 +33,10 @@ const blankKey = { source: 'Password', accountName: 'svc-modularca-enroll', acco
 const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '-');
 const isLive = (k: RealmKey) => !k.retireAfter || new Date(k.retireAfter) > new Date();
 
-const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLabels: string[] }> = ({ tenantId, tenantName, caLabels }) => {
+const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: string; caLabels: string[] }> = ({ tenantId, tenantName, caLabels }) => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
-    const base = `/api/v1/admin/tenants/${tenantId}/kerberos-realms`;
+    const base = tenantId == null ? '/api/v1/admin/instance/kerberos-realms' : `/api/v1/admin/tenants/${tenantId}/kerberos-realms`;
 
     const [realms, setRealms] = useState<Realm[]>([]);
     const [users, setUsers] = useState<UserOption[]>([]);
@@ -60,7 +61,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
         apiGet<any>('/api/v1/admin/authorities/hierarchy').then((data) => {
             const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
             const labels: string[] = [];
-            const walk = (list: any[]) => { for (const ca of list) { if (ca.tenantId === tenantId && ca.label) labels.push(ca.label); if (ca.children?.length) walk(ca.children); } };
+            const walk = (list: any[]) => { for (const ca of list) { if ((ca.tenantId ?? null) === tenantId && ca.label) labels.push(ca.label); if (ca.children?.length) walk(ca.children); } };
             walk(all);
             if (labels.length > 0) setTenantCaLabels(labels);
         }).catch(() => {});
@@ -169,7 +170,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string; tenantName: string; caLa
             )}
 
             <DataTable<Realm>
-                tableId={`kerberos-realms-${tenantId}`}
+                tableId={`kerberos-realms-${tenantId ?? 'instance'}`}
                 rows={realms}
                 rowKey={(r) => r.id}
                 loading={loading}

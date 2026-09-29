@@ -34,6 +34,7 @@ namespace ModularCA.Core.Services
     public class CertificateIssuanceService : ICertificateIssuanceService
     {
         private readonly ModularCADbContext _db;
+        private readonly IEffectivePolicyResolver _policies;
         private readonly IKeystoreCertificates _keystore;
         private readonly ICertificateStore _certStore;
         private readonly IssuanceValidationService _validation;
@@ -63,6 +64,7 @@ namespace ModularCA.Core.Services
         /// <param name="certificateAccessService">Service for managing certificate-level access control entries.</param>
         /// <param name="revocation">Revocation service used by the reissue flow to mark the previous certificate as Superseded through the proper revocation pipeline (CRL trigger, audit, notifications).</param>
         /// <param name="logger">Logger instance.</param>
+        /// <param name="policies">Resolves the issuing CA's scope policy; defaults to one over <paramref name="db"/>.</param>
         public CertificateIssuanceService(
             ModularCADbContext db,
             IKeystoreCertificates keystore,
@@ -76,9 +78,11 @@ namespace ModularCA.Core.Services
             IAuditService audit,
             ICertificateAccessService certificateAccessService,
             ICertificateRevocationService revocation,
-            ILogger<CertificateIssuanceService> logger)
+            ILogger<CertificateIssuanceService> logger,
+            IEffectivePolicyResolver? policies = null)
         {
             _db = db;
+            _policies = policies ?? new EffectivePolicyResolver(db);
             _keystore = keystore;
             _certStore = certStore;
             _validation = validation;
@@ -273,12 +277,12 @@ namespace ModularCA.Core.Services
             var issuingCaEntity = await IssuingCaGuard.EnsureUsableAsync(
                 _db, refCACert, caMatch, requireAuthority: preResolvedCa == null, DateTime.UtcNow, cancellationToken);
             // Hoisted out of the block below because the validity ceiling further down needs it too.
-            TenantEntity? caTenant = null;
+            // An instance CA (no tenant) gets the instance's policy, never none.
+            EffectivePolicy? caTenant = null;
             if (issuingCaEntity != null)
             {
-                caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
-                if (caTenant != null && !caTenant.IsEnabled)
-                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+                caTenant = await _policies.ResolveAsync(issuingCaEntity.TenantId, cancellationToken);
+                EnsureScopeIssues(caTenant);
 
                 // The System Signing CA signs keystore entries only — never end-entity
                 // certs or sub-CAs. A signing profile pointing at it would exfiltrate
@@ -615,9 +619,8 @@ namespace ModularCA.Core.Services
             var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
             var reissueCaEntity = (await IssuingCaGuard.EnsureUsableAsync(
                 _db, refCACert, caMatch, requireAuthority: true, DateTime.UtcNow))!;
-            var caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
-            if (caTenant != null && !caTenant.IsEnabled)
-                throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+            var caTenant = await _policies.ResolveAsync(reissueCaEntity.TenantId);
+            EnsureScopeIssues(caTenant);
             if (string.Equals(reissueCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
                 throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
 
@@ -1241,6 +1244,21 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Refuses issuance under a CA whose scope does not issue: a disabled tenant
+        /// (<c>TenantDisabled</c>), or a tenant that no longer exists or is soft-deleted
+        /// (<c>IssuingCaDisabled</c>), which has no policy to issue under and never means "no
+        /// ceiling". An instance CA resolves to the instance, which always issues.
+        /// </summary>
+        private static void EnsureScopeIssues(EffectivePolicy scope)
+        {
+            if (!scope.Found)
+                throw new ConfigurationValidationException(
+                    $"Certificate issuance is blocked — the issuing CA's tenant {scope.TenantId} no longer exists.", ErrorCodes.IssuingCaDisabled);
+            if (!scope.IsEnabled)
+                throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+        }
+
+        /// <summary>
         /// Applies the owning tenant's validity ceiling to a certificate's expiry: shortens it and
         /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a tenant configured to
         /// refuse — throws <c>MCA-ISS-005</c> instead of issuing something shorter than was asked
@@ -1286,26 +1304,29 @@ namespace ModularCA.Core.Services
         /// </remarks>
         /// <param name="validTo">The expiry resolved so far.</param>
         /// <param name="validFrom">The certificate's start, which the ceiling is measured from.</param>
-        /// <param name="tenant">The issuing CA's tenant, or null when it could not be resolved.</param>
+        /// <param name="tenant">
+        /// The issuing CA's scope policy (the instance's for an instance CA), or null when there is
+        /// no issuing CA row.
+        /// </param>
         /// <param name="isInfrastructureCert">True for a TSA/OCSP/Web TLS certificate; exempt.</param>
         /// <param name="isCaCertificate">True when this issuance produces a CA certificate; exempt.</param>
         /// <param name="enforcement">Whether this caller may be refused by the tenant's behaviour.</param>
         /// <param name="diagnostics">Collects the advisory when the expiry is shortened.</param>
         /// <returns>The expiry to use, never later than the one passed in.</returns>
         /// <exception cref="ConfigurationValidationException">
-        /// The request exceeds the ceiling, the tenant refuses rather than shortens, and the caller
+        /// The request exceeds the ceiling, the scope refuses rather than shortens, and the caller
         /// is one that can act on a refusal.
         /// </exception>
         private DateTime ApplyTenantValidityCeiling(
             DateTime validTo,
             DateTime validFrom,
-            TenantEntity? tenant,
+            EffectivePolicy? tenant,
             bool isInfrastructureCert,
             bool isCaCertificate,
             ValidityCeilingEnforcement enforcement,
             List<Diagnostic> diagnostics)
         {
-            // No tenant resolved means no ceiling to apply — a system-wide signing profile with no
+            // No issuing CA row means no ceiling to apply — a system-wide signing profile with no
             // CA behind it, which the decision function has no way to represent.
             if (tenant is null)
                 return validTo;
@@ -1322,30 +1343,31 @@ namespace ModularCA.Core.Services
                 return validTo;
 
             var requestedDays = (int)Math.Round((validTo - validFrom).TotalDays);
+            var scope = tenant.TenantId == null ? "the instance" : $"tenant '{tenant.Scope}'";
 
             if (decision.Outcome == ValidityCeilingOutcome.Refused)
             {
                 var refusal =
                     $"Requested validity of {requestedDays} days exceeds the {tenant.MaxValidityDays}-day ceiling on " +
-                    $"tenant '{tenant.Name}', which is configured to refuse over-long requests rather than shorten them.";
+                    $"{scope}, which is configured to refuse over-long requests rather than shorten them.";
                 _logger.LogWarning(
-                    "Refused issuance: requested {RequestedDays} days exceeds tenant '{Tenant}' ceiling of {CeilingDays} days.",
-                    requestedDays, tenant.Name, tenant.MaxValidityDays);
+                    "Refused issuance: requested {RequestedDays} days exceeds {Scope} ceiling of {CeilingDays} days.",
+                    requestedDays, scope, tenant.MaxValidityDays);
                 throw new ConfigurationValidationException(
                     refusal,
                     ErrorCodes.ValidityExceedsTenantCeiling,
-                    remediation: $"Request at most {tenant.MaxValidityDays} days, raise the ceiling on tenant " +
-                                 $"'{tenant.Name}', or set that tenant to shorten instead of refuse.");
+                    remediation: $"Request at most {tenant.MaxValidityDays} days, raise the ceiling on " +
+                                 $"{scope}, or set it to shorten instead of refuse.");
             }
 
             var msg = $"Certificate validity shortened from {requestedDays} days to {tenant.MaxValidityDays} days " +
-                      $"because tenant '{tenant.Name}' caps certificate validity at {tenant.MaxValidityDays} days.";
+                      $"because {scope} caps certificate validity at {tenant.MaxValidityDays} days.";
             _logger.LogWarning(msg);
             diagnostics.Add(Diagnostic.Warning(
                 ErrorCodes.ValidityClampedToTenant,
                 "Validity shortened",
                 msg,
-                remediation: $"Raise the validity ceiling on tenant '{tenant.Name}', or request a shorter validity period.",
+                remediation: $"Raise the validity ceiling on {scope}, or request a shorter validity period.",
                 field: "validTo"));
 
             return decision.NotAfter;
@@ -1602,9 +1624,9 @@ namespace ModularCA.Core.Services
                     $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.", ErrorCodes.QuotaExceeded);
 
             // Check tenant-level quota
-            if (ca.TenantId != Guid.Empty)
+            if (ca.TenantId is Guid caTenantId)
             {
-                var canIssueTenant = await _quotaService.CanIssueCertificateInTenantAsync(ca.TenantId);
+                var canIssueTenant = await _quotaService.CanIssueCertificateInTenantAsync(caTenantId);
                 if (!canIssueTenant)
                     throw new ResourceConflictException($"Tenant certificate quota exceeded.", ErrorCodes.QuotaExceeded);
             }

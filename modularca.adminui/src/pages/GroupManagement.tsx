@@ -76,6 +76,9 @@ const GroupDrawer: React.FC<{ group: any; caNameById: (id: string | null) => str
     );
 };
 
+/** The tenant-select value for an instance group: sent as no tenant. */
+const INSTANCE = 'instance';
+
 const GroupManagement: React.FC = () => {
     const { showToast } = useToast();
     // Delete carries [RequireStepUp]; the plain helpers never attach X-MFA-Token. Create does not:
@@ -158,7 +161,8 @@ const GroupManagement: React.FC = () => {
             await apiPostWithMfa('/api/v1/admin/groups', {
                 ...createForm,
                 certificateAuthorityId: createForm.certificateAuthorityId || null,
-                tenantId: createForm.certificateAuthorityId ? null : (createForm.tenantId || null),
+                // With neither a CA nor a tenant the server makes an instance (system) group.
+                tenantId: createForm.certificateAuthorityId || createForm.tenantId === INSTANCE ? null : (createForm.tenantId || null),
             }, requireStepUp, StepUpOps.CreateGroup);
             setShowCreate(false);
             setCreateForm({ name: '', displayName: '', templateName: 'Requester', certificateAuthorityId: '', tenantId: '' });
@@ -188,6 +192,8 @@ const GroupManagement: React.FC = () => {
         }
     };
 
+    const scopeOf = (g: any) => g.tenantId == null ? 'Instance' : (tenants.find((t: any) => t.id === g.tenantId)?.name ?? g.tenantId);
+
     const columns: DataTableColumn<any>[] = [
         {
             key: 'displayName', header: 'Display Name', defaultWidth: 220, minWidth: 160, truncate: false, exportValue: (g) => g.displayName || g.name,
@@ -198,6 +204,7 @@ const GroupManagement: React.FC = () => {
         { key: 'name', header: 'Name', defaultWidth: 160, exportValue: (g) => g.name, render: (g) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{g.name}</span> },
         { key: 'template', header: 'Template', defaultWidth: 120, truncate: false, exportValue: (g) => templateLabel(g.templateName), render: (g) => <StatusBadge status={templateStatus(g.templateName)} label={templateLabel(g.templateName)} /> },
         { key: 'ca', header: 'CA', defaultWidth: 140, exportValue: (g) => caNameById(g.certificateAuthorityId), render: (g) => caNameById(g.certificateAuthorityId) },
+        { key: 'scope', header: 'Scope', defaultWidth: 130, exportValue: (g) => scopeOf(g), render: (g) => scopeOf(g) },
         { key: 'type', header: 'Type', defaultWidth: 110, truncate: false, exportValue: (g) => groupTypeLabel(g), render: (g) => <StatusBadge status={groupTypeStatus(g)} label={groupTypeLabel(g)} /> },
         { key: 'createdBy', header: 'Created By', defaultWidth: 110, truncate: false, exportValue: (g) => createdByLabel(g), render: (g) => <StatusBadge status={createdByStatus(g)} label={createdByLabel(g)} /> },
         { key: 'members', header: 'Members', defaultWidth: 90, exportValue: (g) => (g.memberCount ?? ''), render: (g) => g.memberCount ?? '-' },
@@ -255,6 +262,7 @@ const GroupManagement: React.FC = () => {
                             <select value={createForm.tenantId} onChange={(e) => setCreateForm({ ...createForm, tenantId: e.target.value })} required
                                 className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                                 <option value="">Select Tenant...</option>
+                                <option value={INSTANCE}>Instance (system group, no tenant)</option>
                                 {tenants.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
                             </select>
                         )}

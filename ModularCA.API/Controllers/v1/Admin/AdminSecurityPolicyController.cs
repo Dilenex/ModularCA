@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using ModularCA.API.Filters;
+using Microsoft.Extensions.Caching.Distributed;
+using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
@@ -27,7 +28,10 @@ public class AdminSecurityPolicyController(
     ISecurityPolicyService policyService,
     IAuditService audit,
     ICurrentUserService currentUser,
-    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc,
+    ICaGroupAuthorizationService groupAuth,
+    ModularCA.Core.Services.ITenantPolicyChangeService policyChanges,
+    IDistributedCache cache) : ControllerBase
 {
     /// <summary>Returns the current security policy row.</summary>
     [HttpGet]
@@ -41,17 +45,80 @@ public class AdminSecurityPolicyController(
 
     /// <summary>
     /// Applies a partial update to the security policy. Null fields are left untouched.
-    /// TTL knobs are clamped to their documented ranges.
+    /// TTL knobs are clamped to their documented ranges. The instance CA policy fields
+    /// (<c>RequireKeyCeremony</c>, <c>CeremonyRequiredApprovals</c>, <c>MaxValidityDays</c>,
+    /// <c>ValidityCeilingBehavior</c>) need a system admin; a change to the first two by anyone
+    /// but a system-super opens an InstancePolicyChange ceremony and returns 202. Every refusal,
+    /// and that ceremony, comes before anything is saved: when one is already pending the answer
+    /// is 409 and no field changes; otherwise the other fields are saved and the audit record
+    /// lists the gated ones as proposed by the ceremony, not applied. The save needs
+    /// one step-up token in <c>X-MFA-Token</c>: <see cref="StepUpOps.UpdateConfig"/>, or, when a
+    /// system-super turns the instance's ceremony requirement off directly (KC-07),
+    /// <see cref="StepUpOps.DisableCeremonyRequirement"/>; that change is audited with a
+    /// <c>CeremonyRequirementDisabled</c> marker.
     /// </summary>
     [HttpPut]
-    [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> Update([FromBody] SecurityPolicyUpdateRequest request)
+    public async Task<IActionResult> Update(
+        [FromBody] SecurityPolicyUpdateRequest request,
+        [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         var policy = await db.SecurityPolicies.FirstOrDefaultAsync();
         if (policy == null)
         {
             policy = new SecurityPolicyEntity();
             db.SecurityPolicies.Add(policy);
+        }
+
+        await currentUser.EnsureLoadedAsync();
+        var disablesCeremonyDirectly = request.RequireKeyCeremony == false && policy.RequireKeyCeremony
+            && currentUser.User != null && await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
+        var stepUpOp = disablesCeremonyDirectly ? StepUpOps.DisableCeremonyRequirement : StepUpOps.UpdateConfig;
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, stepUpOp))
+            return StatusCode(403, new
+            {
+                error = disablesCeremonyDirectly
+                    ? "MFA re-verification required to disable the instance's key ceremony requirement. Call /api/v1/auth/mfa/verify-stepup first."
+                    : "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
+                requiresStepUp = true,
+                operation = stepUpOp,
+            });
+        var ceremonyWasRequired = policy.RequireKeyCeremony;
+
+        if (request.UserQuorum is int requestedQuorum && requestedQuorum >= 1 && requestedQuorum != policy.UserQuorum
+            && (currentUser.User == null || !await controlledUserSvc.IsSuperAsync(currentUser.User.Id)))
+            return StatusCode(403, new { error = "Only a system super-administrator can change the System controlled-user approval quorum." });
+
+        bool? proposedRequire = request.RequireKeyCeremony is bool rkc && rkc != policy.RequireKeyCeremony ? rkc : null;
+        int? proposedApprovals = request.CeremonyRequiredApprovals is int cra && Math.Max(1, cra) != policy.CeremonyRequiredApprovals
+            ? Math.Max(1, cra) : null;
+        var validityChanged = (request.MaxValidityDays is int mvd && mvd != policy.MaxValidityDays)
+            || (request.ValidityCeilingBehavior is { } vcb && vcb != policy.ValidityCeilingBehavior);
+        var instanceCeremonyGate = false;
+        if (proposedRequire.HasValue || proposedApprovals.HasValue || validityChanged)
+        {
+            if (currentUser.User == null || !await groupAuth.IsSystemAdminAsync(currentUser.User.Id))
+                return StatusCode(403, new { error = "Only a system administrator can change the instance's CA policy." });
+            if (request.MaxValidityDays is int days && days < 0)
+                return BadRequest(new { error = "MaxValidityDays must be 0 (unlimited) or a positive number of days." });
+            instanceCeremonyGate = (proposedRequire.HasValue || proposedApprovals.HasValue)
+                && !await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
+        }
+
+        Guid? ceremonyId = null;
+        if (instanceCeremonyGate)
+        {
+            if (db.Entry(policy).State == EntityState.Added)
+                await db.SaveChangesAsync();
+            try
+            {
+                ceremonyId = await policyChanges.InitiateChangeAsync(
+                    null, proposedRequire, proposedApprovals,
+                    currentUser.User!.Id, currentUser.User.Username);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("already pending", StringComparison.OrdinalIgnoreCase))
+            {
+                return Conflict(new { error = "An instance policy-change ceremony is already pending. Resolve or cancel it before opening a new one." });
+            }
         }
 
         // Session / lockout
@@ -108,17 +175,20 @@ public class AdminSecurityPolicyController(
         if (request.MaxSingleRequestsPerRequest is int mspr && mspr >= 1)
             policy.MaxSingleRequestsPerRequest = mspr;
 
-        // Controlled-user ceremonies (System user quorum) — minimum 1 (initiator always excluded).
-        // Super-only: unlike tenant/CA quorums (which a regular admin changes via a ceremony), the
-        // System quorum is system-scoped with no tenant-scoped ceremony, so only a system-super may
-        // change it. A non-super attempting an actual change is refused.
-        if (request.UserQuorum is int uq && uq >= 1 && uq != policy.UserQuorum)
-        {
-            await currentUser.EnsureLoadedAsync();
-            var isSuper = currentUser.User != null && await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
-            if (!isSuper)
-                return StatusCode(403, new { error = "Only a system super-administrator can change the System controlled-user approval quorum." });
+        if (request.UserQuorum is int uq && uq >= 1)
             policy.UserQuorum = uq;
+
+        if (validityChanged)
+        {
+            if (request.MaxValidityDays is int newDays)
+                policy.MaxValidityDays = newDays;
+            if (request.ValidityCeilingBehavior is { } behavior)
+                policy.ValidityCeilingBehavior = behavior;
+        }
+        if (!instanceCeremonyGate)
+        {
+            if (proposedRequire.HasValue) policy.RequireKeyCeremony = proposedRequire.Value;
+            if (proposedApprovals.HasValue) policy.CeremonyRequiredApprovals = proposedApprovals.Value;
         }
 
         // Keystore scrypt cost — clamp at write time so the DB never holds an unreasonable value.
@@ -134,14 +204,34 @@ public class AdminSecurityPolicyController(
 
         policyService.InvalidateCache();
 
-        await currentUser.EnsureLoadedAsync();
+        object details = instanceCeremonyGate
+            ? new
+            {
+                Changes = request.WithoutCeremonyGatedFields(),
+                ProposedByCeremony = new { RequireKeyCeremony = proposedRequire, CeremonyRequiredApprovals = proposedApprovals },
+                CeremonyId = ceremonyId,
+            }
+            : ceremonyWasRequired && !policy.RequireKeyCeremony
+                ? new { Changes = request, CeremonyRequirementDisabled = true, DisabledBy = currentUser.User?.Username }
+                : request;
         await audit.LogAsync(
             AuditActionType.SecurityPolicyUpdated,
             currentUser.User?.Id,
             currentUser.User?.Username,
             "SecurityPolicy", policy.Id.ToString(),
-            request,
+            details,
             HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        if (instanceCeremonyGate)
+        {
+            return Accepted(new
+            {
+                ceremonyId,
+                requiresCeremony = true,
+                message = "Changing the instance's key-ceremony policy requires ceremony approval. Approve via /api/v1/admin/ceremonies/{id}/approve.",
+                policy,
+            });
+        }
 
         return Ok(policy);
     }
@@ -180,4 +270,21 @@ public class SecurityPolicyUpdateRequest
     public int? KeystoreScryptN { get; set; }
     public int? KeystoreScryptR { get; set; }
     public int? KeystoreScryptP { get; set; }
+    /// <summary>Whether instance CAs need a key ceremony. Ceremony-gated unless the caller is a system-super.</summary>
+    public bool? RequireKeyCeremony { get; set; }
+    /// <summary>Approvals for key ceremonies on instance CAs (minimum 1). Ceremony-gated unless the caller is a system-super.</summary>
+    public int? CeremonyRequiredApprovals { get; set; }
+    /// <summary>Longest leaf validity in days for instance CAs; 0 is unlimited.</summary>
+    public int? MaxValidityDays { get; set; }
+    /// <summary>What happens above <see cref="MaxValidityDays"/> for instance CAs.</summary>
+    public ValidityCeilingBehavior? ValidityCeilingBehavior { get; set; }
+
+    /// <summary>A copy without the ceremony-gated fields, for auditing what was applied directly.</summary>
+    internal SecurityPolicyUpdateRequest WithoutCeremonyGatedFields()
+    {
+        var copy = (SecurityPolicyUpdateRequest)MemberwiseClone();
+        copy.RequireKeyCeremony = null;
+        copy.CeremonyRequiredApprovals = null;
+        return copy;
+    }
 }

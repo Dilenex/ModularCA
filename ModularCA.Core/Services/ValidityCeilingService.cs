@@ -7,7 +7,7 @@ namespace ModularCA.Core.Services;
 
 /// <summary>
 /// Resolves the effective validity ceiling for a profile pairing by walking
-/// signing profile → issuing CA → tenant, then handing the three numbers to
+/// signing profile → issuing CA → tenant (the instance, for an instance CA), then handing the three numbers to
 /// <see cref="CertificateValidityUtil.ResolveCeiling"/>.
 /// </summary>
 /// <remarks>
@@ -27,6 +27,7 @@ namespace ModularCA.Core.Services;
 public class ValidityCeilingService : IValidityCeilingService
 {
     private readonly ModularCADbContext _db;
+    private readonly IEffectivePolicyResolver _policies;
     private readonly IProfileResolutionService _profileResolver;
     private readonly TimeProvider _timeProvider;
 
@@ -39,12 +40,15 @@ public class ValidityCeilingService : IValidityCeilingService
     /// Clock; optional and defaulted to <see cref="TimeProvider.System"/> the way the scheduler
     /// jobs take theirs, so nothing has to be registered in DI for this to resolve.
     /// </param>
+    /// <param name="policies">Resolves the issuing CA's scope policy; defaults to one over <paramref name="db"/>.</param>
     public ValidityCeilingService(
         ModularCADbContext db,
         IProfileResolutionService profileResolver,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEffectivePolicyResolver? policies = null)
     {
         _db = db;
+        _policies = policies ?? new EffectivePolicyResolver(db);
         _profileResolver = profileResolver;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -104,14 +108,13 @@ public class ValidityCeilingService : IValidityCeilingService
                 if (ca != null)
                 {
                     issuingCaName = ca.Label ?? ca.Name;
-                    var tenant = await _db.Tenants
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(t => t.Id == ca.TenantId, cancellationToken);
-                    if (tenant != null)
+                    // An instance CA (no tenant) is bound by the instance's ceiling.
+                    var policy = await _policies.ResolveAsync(ca.TenantId, cancellationToken);
+                    if (policy.Found)
                     {
-                        tenantName = tenant.Name;
-                        tenantMaxValidityDays = tenant.MaxValidityDays;
-                        tenantBehavior = tenant.ValidityCeilingBehavior;
+                        tenantName = policy.Scope;
+                        tenantMaxValidityDays = policy.MaxValidityDays;
+                        tenantBehavior = policy.ValidityCeilingBehavior;
                     }
                 }
             }

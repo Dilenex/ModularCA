@@ -46,6 +46,14 @@ public class SignerAuditEntity
     public Guid? TenantId { get; set; }
 
     /// <summary>
+    /// The scope the context stated, which <see cref="TenantId"/> alone cannot tell apart when it
+    /// is null: <see cref="InstanceScope"/>, <see cref="TenantScope"/> or <see cref="NoScope"/>.
+    /// Null on rows written before the column existed.
+    /// </summary>
+    [MaxLength(16)]
+    public string? EffectiveScope { get; set; }
+
+    /// <summary>
     /// The <c>KeyCeremonies</c> row the context named, when it named one, whether or not the
     /// signer could verify it: a refusal of an unverifiable ceremony records the id it was told.
     /// </summary>
@@ -100,4 +108,13 @@ public class SignerAuditEntity
 
     /// <summary>The policy refused the operation.</summary>
     public const string RefusedOutcome = "refused";
+
+    /// <summary>The context stated the instance as its scope.</summary>
+    public const string InstanceScope = "instance";
+
+    /// <summary>The context stated a tenant as its scope.</summary>
+    public const string TenantScope = "tenant";
+
+    /// <summary>The context stated no scope.</summary>
+    public const string NoScope = "none";
 }

@@ -4,9 +4,10 @@ using ModularCA.Shared.Enums;
 namespace ModularCA.Shared.Entities;
 
 /// <summary>
-/// Represents a logical tenant in the multi-tenancy model. Every CA and group must belong
-/// to a tenant. The "System" tenant owns infrastructure CAs (system signing CA). Bootstrap
-/// creates a second tenant from the config's Organization name for the root CA.
+/// A space (organisation tenant): a scope that CAs and groups may belong to. Instance CAs and
+/// groups (the system signing CA, SSH CAs, the system groups) have no tenant; their policy is
+/// on <see cref="SecurityPolicyEntity"/>. Bootstrap creates one tenant from the config's
+/// Organization name for the root CA.
 /// </summary>
 public class TenantEntity
 {
@@ -29,9 +30,6 @@ public class TenantEntity
 
     /// <summary>Whether this tenant is active. Disabled tenants cannot issue certificates.</summary>
     public bool IsEnabled { get; set; } = true;
-
-    /// <summary>Whether this is the internal system tenant. System tenants cannot be deleted or disabled.</summary>
-    public bool IsSystemTenant { get; set; } = false;
 
     /// <summary>Whether this tenant can be deleted by administrators. Bootstrap tenants are protected.</summary>
     public bool CanBeDeleted { get; set; } = true;
@@ -120,8 +118,7 @@ public class TenantEntity
 
     /// <summary>
     /// Per-tenant "user quorum" override for controlled-user ceremonies (promote/demote/delete
-    /// of an admin/operator/CA-admin) scoped to this tenant's CAs. Null = fall back to the
-    /// system-level <see cref="SecurityPolicyEntity.UserQuorum"/>. Distinct from
+    /// of an admin/operator/CA-admin) scoped to this tenant's CAs. Null means 1. Distinct from
     /// <see cref="CeremonyRequiredApprovals"/> (the CA/key quorum).
     /// </summary>
     public int? UserCeremonyRequiredApprovals { get; set; }

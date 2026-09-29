@@ -23,11 +23,14 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// </summary>
 /// <remarks>
 /// Tenant-scoped: the caller needs <c>ca.manage</c> tenant-wide for the tenant in the route,
-/// checked explicitly because the target is a tenant rather than a CA. Every mutation needs
-/// step-up under <see cref="StepUpOps.ManageKerberosRealm"/>.
+/// checked explicitly because the target is a tenant rather than a CA. The instance's realms
+/// (no tenant; they serve instance CAs) are under <c>admin/instance/kerberos-realms</c> and need
+/// <c>ca.manage</c> at system scope. Every mutation needs step-up under
+/// <see cref="StepUpOps.ManageKerberosRealm"/>.
 /// </remarks>
 [ApiController]
 [Route("api/v1/admin/tenants/{tenantId:guid}/kerberos-realms")]
+[Route("api/v1/admin/instance/kerberos-realms")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
 public class AdminKerberosRealmController(
@@ -40,7 +43,7 @@ public class AdminKerberosRealmController(
 {
     /// <summary>Lists the tenant's bindings with key versions and encryption types. Never key bytes.</summary>
     [HttpGet]
-    public async Task<IActionResult> List(Guid tenantId)
+    public async Task<IActionResult> List([FromRoute] Guid? tenantId)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         var list = await realms.ListAsync(tenantId);
@@ -49,7 +52,7 @@ public class AdminKerberosRealmController(
 
     /// <summary>One binding.</summary>
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> Get(Guid tenantId, Guid id)
+    public async Task<IActionResult> Get([FromRoute] Guid? tenantId, Guid id)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         var realm = await realms.GetAsync(id);
@@ -60,7 +63,7 @@ public class AdminKerberosRealmController(
     /// <summary>Creates a binding. Keys are added separately.</summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.ManageKerberosRealm)]
-    public async Task<IActionResult> Create(Guid tenantId, [FromBody] KerberosRealmRequest request)
+    public async Task<IActionResult> Create([FromRoute] Guid? tenantId, [FromBody] KerberosRealmRequest request)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         try
@@ -78,7 +81,7 @@ public class AdminKerberosRealmController(
     /// <summary>Updates a binding's non-key fields, including enabling and disabling it.</summary>
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
-    public async Task<IActionResult> Update(Guid tenantId, Guid id, [FromBody] KerberosRealmRequest request)
+    public async Task<IActionResult> Update([FromRoute] Guid? tenantId, Guid id, [FromBody] KerberosRealmRequest request)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } existing) return NotFound();
@@ -98,7 +101,7 @@ public class AdminKerberosRealmController(
     /// <summary>Deletes a binding and its keys.</summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
-    public async Task<IActionResult> Delete(Guid tenantId, Guid id)
+    public async Task<IActionResult> Delete([FromRoute] Guid? tenantId, Guid id)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } existing) return NotFound();
@@ -120,7 +123,7 @@ public class AdminKerberosRealmController(
     /// </summary>
     [HttpPost("{id:guid}/keys")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
-    public async Task<IActionResult> AddKey(Guid tenantId, Guid id, [FromBody] KerberosKeyRequest request)
+    public async Task<IActionResult> AddKey([FromRoute] Guid? tenantId, Guid id, [FromBody] KerberosKeyRequest request)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } existing) return NotFound();
@@ -162,7 +165,7 @@ public class AdminKerberosRealmController(
     /// <summary>Refuses a key version from now on.</summary>
     [HttpPost("{id:guid}/keys/{kvno:int}/retire")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
-    public async Task<IActionResult> RetireKey(Guid tenantId, Guid id, int kvno)
+    public async Task<IActionResult> RetireKey([FromRoute] Guid? tenantId, Guid id, int kvno)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } existing) return NotFound();
@@ -184,11 +187,13 @@ public class AdminKerberosRealmController(
     /// known by, else the public domain, as the setup kit does.
     /// </summary>
     [HttpGet("{id:guid}/setup-script")]
-    public async Task<IActionResult> SetupScript(Guid tenantId, Guid id, [FromQuery] string? caLabel = null, [FromQuery] string? accountName = null)
+    public async Task<IActionResult> SetupScript([FromRoute] Guid? tenantId, Guid id, [FromQuery] string? caLabel = null, [FromQuery] string? accountName = null)
     {
         if (await DenyAsync(tenantId) is { } denied) return denied;
         if (await OwnedAsync(tenantId, id) is not { } realm) return NotFound();
-        var tenantName = await db.Tenants.Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync() ?? tenantId.ToString();
+        var tenantName = tenantId == null
+            ? "Instance"
+            : await db.Tenants.Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync() ?? tenantId.ToString()!;
         var host = names.BaseUrlForServicePrincipal(realm.ServicePrincipal);
         var policyUrl = caLabel != null ? $"{host}/msae/{caLabel}/cep" : null;
         return Ok(new { script = KerberosRealmService.SetupScript(realm, tenantName, policyUrl, accountName, null) });
@@ -196,16 +201,20 @@ public class AdminKerberosRealmController(
 
     // ── Helpers ──
 
-    private async Task<IActionResult?> DenyAsync(Guid tenantId)
+    /// <summary>
+    /// Refuses a caller without <c>ca.manage</c> across the scope: tenant-wide for a tenant, at
+    /// system scope for the instance (the route without a tenant).
+    /// </summary>
+    private async Task<IActionResult?> DenyAsync(Guid? tenantId)
     {
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
-        if (!await groupAuth.HasTenantCapabilityAsync(currentUser.User.Id, tenantId, Capabilities.CaManage))
-            return StatusCode(403, new { error = "You need ca.manage for this tenant." });
+        if (!await groupAuth.HasScopeCapabilityAsync(currentUser.User.Id, tenantId, Capabilities.CaManage))
+            return StatusCode(403, new { error = tenantId == null ? "You need ca.manage at system scope for the instance's realms." : "You need ca.manage for this tenant." });
         return null;
     }
 
-    private async Task<KerberosRealmEntity?> OwnedAsync(Guid tenantId, Guid id)
+    private async Task<KerberosRealmEntity?> OwnedAsync(Guid? tenantId, Guid id)
     {
         var realm = await realms.GetAsync(id);
         return realm != null && realm.TenantId == tenantId ? realm : null;

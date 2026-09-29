@@ -44,7 +44,8 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, and CA.
+    /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA,
+    /// target, and tenant (its CAs, the tenant itself and its groups, or records stamped with it before 0.4.0).
     /// System admins/auditors see all logs. CA-scoped auditors only see logs for their assigned CAs.
     /// </summary>
     [HttpGet]
@@ -72,9 +73,26 @@ public class AdminAuditController : ControllerBase
         if (!string.IsNullOrWhiteSpace(targetEntityId))
             query = query.Where(a => a.TargetEntityId == targetEntityId);
 
-        // The console's tenant scope: rows stamped with that tenant.
+        // The console's tenant scope: rows stamped with that tenant (records before 0.4.0), or
+        // (new records carry no tenant) about one of its CAs, the tenant itself, or one of its
+        // groups. A group deleted outright is no longer known to be the tenant's.
         if (tenantId.HasValue)
-            query = query.Where(a => a.TenantId == tenantId.Value);
+        {
+            var tenantCaIds = await _mainDb.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(ca => ca.TenantId == tenantId.Value)
+                .Select(ca => ca.Id)
+                .ToListAsync();
+            var tenantGroupIds = (await _mainDb.CaGroups.IgnoreQueryFilters().AsNoTracking()
+                    .Where(g => g.TenantId == tenantId.Value)
+                    .Select(g => g.Id)
+                    .ToListAsync())
+                .Select(id => id.ToString()).ToList();
+            var tenantKey = tenantId.Value.ToString();
+            query = query.Where(a => a.TenantId == tenantId.Value
+                || (a.CertificateAuthorityId != null && tenantCaIds.Contains(a.CertificateAuthorityId.Value))
+                || (a.TargetEntityType == "Tenant" && a.TargetEntityId == tenantKey)
+                || (a.TargetEntityType == "CaGroup" && a.TargetEntityId != null && tenantGroupIds.Contains(a.TargetEntityId)));
+        }
 
         if (from.HasValue)
             query = query.Where(a => a.Timestamp >= from.Value);
@@ -482,7 +500,9 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Verifies the integrity of the audit hash chain for a given tenant.
+    /// Verifies the integrity of one audit hash chain: the instance chain with no
+    /// <paramref name="tenantId"/>, else that tenant's retired chain, whose sealed tail is also
+    /// checked against the instance chain's succession record.
     /// Walks records sequentially, recomputes hashes, and reports any broken links. A run that
     /// stopped at <paramref name="limit"/> before the end of the chain reports
     /// <c>PartiallyChecked</c> and the count it did not examine, never <c>Valid</c>.
@@ -498,20 +518,64 @@ public class AdminAuditController : ControllerBase
         if (_hashChain == null)
             return BadRequest(new { error = "Hash chain service is not available." });
 
-        var result = await _hashChain.VerifyAsync(_auditDb, tenantId, Math.Min(limit, 100000));
+        return Ok(await VerifyChainAsync(tenantId, Math.Min(limit, 100000)));
+    }
+
+    /// <summary>
+    /// Lists every audit chain with its verification: the live instance chain, then each retired
+    /// per-tenant chain (sealed in 0.4.0) with the state of its tail. The retired chains are those
+    /// with records and those a succession record names, so one deleted outright still reports.
+    /// </summary>
+    [HttpGet("verify/chains")]
+    [Authorize(Policy = "SystemAdmin")]
+    public async Task<IActionResult> VerifyAllChains([FromQuery] int limit = 10000)
+    {
+        if (_auditDb == null)
+            return BadRequest(new { error = "Audit database is not configured." });
+        if (_hashChain == null)
+            return BadRequest(new { error = "Hash chain service is not available." });
+
+        var retired = await _hashChain.ListRetiredChainsAsync(_auditDb);
+        var names = await _mainDb.Tenants.IgnoreQueryFilters().AsNoTracking()
+            .Where(t => retired.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, t => t.Name);
+
+        var chains = new List<object> { await VerifyChainAsync(null, Math.Min(limit, 100000)) };
+        foreach (var t in retired.OrderBy(t => names.GetValueOrDefault(t) ?? t.ToString()))
+            chains.Add(await VerifyChainAsync(t, Math.Min(limit, 100000), names.GetValueOrDefault(t), listedAsRetired: true));
+        return Ok(chains);
+    }
+
+    /// <summary>
+    /// The verification report for one chain, with <c>Chain</c> ("instance" or "retired") and,
+    /// for a retired chain, the state of its sealed tail. A chain <paramref name="listedAsRetired"/>
+    /// with no records left is broken: retention always leaves its prune marker behind.
+    /// </summary>
+    private async Task<object> VerifyChainAsync(Guid? tenantId, int limit, string? tenantName = null, bool listedAsRetired = false)
+    {
+        var result = await _hashChain!.VerifyAsync(_auditDb!, tenantId, limit);
+        var tail = tenantId is Guid t ? await _hashChain.CheckRetiredChainAsync(_auditDb!, t) : null;
+        if (listedAsRetired && tail != null && result.TotalRecords == 0 && tail.State is not (RetiredChainState.TailMissing or RetiredChainState.TailAltered))
+            tail = tail with { State = RetiredChainState.TailMissing, Issue = "The instance chain names this chain as retired, but none of its records remain." };
+        var tailBroken = tail is { State: RetiredChainState.TailMissing or RetiredChainState.TailAltered };
 
         // Unverifiable is its own answer, and conflating it with tampered is what made this
         // endpoint useless: records written before the canonical form was versioned hashed a
         // timestamp at a precision the column does not keep, so they cannot be recomputed. Calling
         // that TAMPERED puts every deployment permanently in the alarm state, which is exactly how
         // a real tamper goes unnoticed.
-        var integrity = result.Breaks.Count > 0
+        var integrity = result.Breaks.Count > 0 || tailBroken
             ? "TAMPERED"
             : result.Truncated ? "PartiallyChecked"
             : result.UnverifiableRecords > 0 ? "PartiallyVerifiable" : "Valid";
 
-        return Ok(new
+        return new
         {
+            Chain = tenantId == null ? "instance" : "retired",
+            TenantName = tenantName,
+            result.Sealed,
+            TailState = tail?.State.ToString(),
+            TailIssue = tail?.Issue,
             result.TenantId,
             result.RecordsVerified,
             result.UnverifiableRecords,
@@ -531,11 +595,12 @@ public class AdminAuditController : ControllerBase
                   + "carried more precision than the column stores, so the hash cannot be reproduced. "
                   + "Their chain links are still checked."
                 : null
-        });
+        };
     }
 
     /// <summary>
-    /// Begins a new epoch of the audit chain for a tenant.
+    /// Begins a new epoch of the instance audit chain. A tenant's chain is retired and sealed from
+    /// 0.4.0 on, so restarting one is refused (409): a record after its seal is a break.
     /// <para>
     /// Every record after the marker verifies fully and the report says so from one moment. The
     /// marker is itself an audited record naming the caller and the reason, hashed and chained
@@ -553,6 +618,8 @@ public class AdminAuditController : ControllerBase
             return BadRequest(new { error = "Audit database is not configured." });
         if (_hashChain == null)
             return BadRequest(new { error = "Hash chain service is not available." });
+        if (tenantId != null)
+            return Conflict(new { error = "Per-tenant audit chains are retired and sealed; only the instance chain (no tenantId) can be restarted." });
 
         var reason = string.IsNullOrWhiteSpace(request?.Reason) ? "Restarted by an administrator." : request!.Reason.Trim();
         if (reason.Length > 500)

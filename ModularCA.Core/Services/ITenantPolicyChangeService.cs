@@ -30,11 +30,13 @@ public interface ITenantPolicyChangeService
 
     /// <summary>
     /// Opens a <see cref="Shared.Enums.CeremonyType.TenantPolicyChange"/> ceremony for the
-    /// proposed downgrade. The approval threshold snaps to the tenant's <i>current</i>
-    /// <c>CeremonyRequiredApprovals</c>. Fails with <see cref="InvalidOperationException"/>
-    /// if another Pending policy-change ceremony already exists for the tenant.
+    /// proposed change, or an <see cref="Shared.Enums.CeremonyType.InstancePolicyChange"/>
+    /// ceremony when <paramref name="tenantId"/> is null. The approval threshold snaps to the
+    /// scope's <i>current</i> <c>CeremonyRequiredApprovals</c>. Fails with
+    /// <see cref="InvalidOperationException"/> if another Pending policy-change ceremony already
+    /// exists for the scope.
     /// </summary>
-    /// <param name="tenantId">The tenant whose policy will change on execution.</param>
+    /// <param name="tenantId">The tenant whose policy will change on execution, or null for the instance's.</param>
     /// <param name="proposedRequireKeyCeremony">Proposed value, or null if unchanged.</param>
     /// <param name="proposedCeremonyRequiredApprovals">Proposed value, or null if unchanged.</param>
     /// <param name="initiatorUserId">The user initiating the ceremony (for audit/approvals).</param>
@@ -44,7 +46,7 @@ public interface ITenantPolicyChangeService
     /// <param name="proposedUserQuorum">Proposed tenant user-approval quorum (null = inherit System). Only applied when <paramref name="userQuorumIncluded"/> is true.</param>
     /// <param name="caUserQuorums">Per-CA user-approval quorum changes (CaId + ProposedQuorum); current values are snapshotted here for the drift guard.</param>
     Task<Guid> InitiateChangeAsync(
-        Guid tenantId,
+        Guid? tenantId,
         bool? proposedRequireKeyCeremony,
         int? proposedCeremonyRequiredApprovals,
         Guid initiatorUserId,
@@ -54,8 +56,9 @@ public interface ITenantPolicyChangeService
         IReadOnlyList<ModularCA.Shared.Models.CaUserQuorumChange>? caUserQuorums = null);
 
     /// <summary>
-    /// Applies an approved policy-change ceremony to the tenant row. Re-validates that
-    /// the tenant still exists and that the snapshotted <c>Current*</c> values still
+    /// Applies an approved policy-change ceremony to the tenant row, or to the instance's
+    /// security policy row for an InstancePolicyChange. Re-validates that
+    /// the scope still exists and that the snapshotted <c>Current*</c> values still
     /// match before mutating. Called by the ceremony Execute endpoint after quorum is
     /// reached. On success, marks the ceremony Executed and returns the before/after
     /// values for the calling controller to emit as audit detail.
@@ -66,10 +69,10 @@ public interface ITenantPolicyChangeService
 
 /// <summary>
 /// Result of a successful policy-change execution — carries before/after values so the
-/// controller can emit them in the <c>TenantPolicyChangeApplied</c> audit entry.
+/// controller can emit them in the audit entry. <c>TenantId</c> is null for the instance.
 /// </summary>
 public record TenantPolicyChangeAppliedResult(
-    Guid TenantId,
+    Guid? TenantId,
     bool BeforeRequireKeyCeremony,
     int BeforeCeremonyRequiredApprovals,
     bool AfterRequireKeyCeremony,

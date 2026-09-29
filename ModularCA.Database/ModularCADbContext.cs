@@ -50,6 +50,9 @@ public class ModularCADbContext : DbContext
     // property is evaluated per query — which is exactly what makes this correct.
     private bool TenantFilterBypass => !_tenantContext.HasContext || _tenantContext.IsSystemAdmin;
 
+    // Whether instance rows (a null TenantId) pass the CA filter. Live for the same reason.
+    private bool InstanceVisible => TenantFilterBypass || _tenantContext.HasInstanceScope;
+
     // Materialized HashSet<Guid> so EF can translate .Contains() on it directly — HashSet<T>
     // .Contains has a dedicated SQL translator, unlike IReadOnlySet<T>.Contains, and the
     // interface form falls back to client evaluation and NREs during parameter binding.
@@ -510,6 +513,9 @@ public class ModularCADbContext : DbContext
             // also replaces the old global one so existing queries targeting Label get a
             // fast per-tenant prefix lookup.
             entity.HasIndex(e => new { e.TenantId, e.Label }).IsUnique();
+            // The composite indexes treat NULL tenants as distinct, so instance CAs get their own.
+            entity.HasIndex(e => e.Label, "IX_CertificateAuthorities_Label_Instance").IsUnique().HasFilter("\"TenantId\" IS NULL");
+            entity.HasIndex(e => e.Name, "IX_CertificateAuthorities_Name_Instance").IsUnique().HasFilter("\"TenantId\" IS NULL");
             // Soft-delete flag indexed to make the global query
             // filter predicate (IsDeleted = false) index-friendly.
             entity.HasIndex(e => e.IsDeleted);
@@ -768,10 +774,11 @@ public class ModularCADbContext : DbContext
         {
             entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.TenantId);
+            // Restrict, not SetNull: a null tenant means instance scope.
             entity.HasOne(e => e.Tenant)
                   .WithMany()
                   .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CreatedByUser)
                   .WithMany()
                   .HasForeignKey(e => e.CreatedByUserId)
@@ -809,7 +816,7 @@ public class ModularCADbContext : DbContext
             entity.HasOne(e => e.Tenant)
                   .WithMany()
                   .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
                   .HasForeignKey(e => e.CertificateAuthorityId)
@@ -853,7 +860,7 @@ public class ModularCADbContext : DbContext
             entity.HasOne(e => e.Tenant)
                   .WithMany()
                   .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.Cascade);
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.EnrollmentUser)
                   .WithMany()
                   .HasForeignKey(e => e.EnrollmentUserId)
@@ -881,7 +888,7 @@ public class ModularCADbContext : DbContext
             entity.HasOne(e => e.Tenant)
                   .WithMany()
                   .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
                   .HasForeignKey(e => e.CertificateAuthorityId)
@@ -1056,12 +1063,16 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca =>
             !ca.IsDeleted &&
-            (TenantFilterBypass || AccessibleTenantIds.Contains(ca.TenantId)));
+            (TenantFilterBypass
+             || (ca.TenantId == null && InstanceVisible)
+             || (ca.TenantId != null && AccessibleTenantIds.Contains(ca.TenantId.Value))));
 
+        // A null-tenant profile is instance-wide configuration everyone sees, unless it belongs
+        // to an instance CA, which only callers with instance scope see.
         modelBuilder.Entity<CertProfileEntity>().HasQueryFilter(cp =>
             TenantFilterBypass
-            || cp.TenantId == null
-            || AccessibleTenantIds.Contains(cp.TenantId.Value));
+            || (cp.TenantId == null && (cp.CertificateAuthorityId == null || InstanceVisible))
+            || (cp.TenantId != null && AccessibleTenantIds.Contains(cp.TenantId.Value)));
 
         modelBuilder.Entity<UserEntity>().HasQueryFilter(u => !u.IsDeleted);
 

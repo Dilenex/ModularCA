@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Capabilities } from '@shared/generated';
-import { can, canAnywhere, canAtTenant, canInTenant, canUseAdminConsole, consoleCas, NO_CAPABILITIES, tenantsOf, type EffectiveCapabilities } from '@adminui/authz';
+import { can, canAnywhere, canAtTenant, canInTenant, canUseAdminConsole, consoleCas, instanceCas, NO_CAPABILITIES, tenantsOf, type EffectiveCapabilities } from '@adminui/authz';
 
 /**
  * The capability checks the console gates on, over the `capabilities` payload of
@@ -110,5 +110,21 @@ describe('canAtTenant', () => {
         expect(canInTenant(noCaYet, Capabilities.CaManage, 't1')).toBe(false);
         const requesterOnly: EffectiveCapabilities = { system: [], cas: [], tenants: [{ id: 't4', name: 'Four', slug: 'four', capabilities: [Capabilities.CertRequest, Capabilities.CertView] }] };
         expect(canUseAdminConsole(requesterOnly)).toBe(false);
+    });
+});
+
+describe('instance CAs (no tenant)', () => {
+    const signing = { id: 'sys', label: 'system-signing-ca', name: 'System Signing CA', isSshCa: false, tenantId: null, tenantName: '', tenantSlug: '', capabilities: [Capabilities.AuditView] };
+    const auditor: EffectiveCapabilities = { system: [Capabilities.AuditView], cas: [signing, caA] };
+
+    it('are not a tenant', () => {
+        expect(tenantsOf(auditor)).toEqual([{ id: 't1', name: 'Tenant One', slug: 'one' }]);
+        expect(tenantsOf({ system: [], cas: [signing] })).toEqual([]);
+    });
+
+    it('are listed apart and still checked per CA', () => {
+        expect(instanceCas(auditor).map(c => c.id)).toEqual(['sys']);
+        expect(can(auditor, Capabilities.AuditView, 'sys')).toBe(true);
+        expect(canInTenant(auditor, Capabilities.CertView, 't1')).toBe(true);
     });
 });
