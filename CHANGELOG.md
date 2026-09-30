@@ -8,6 +8,11 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ### Fixed
 
+- **Reissuing a CA's responder certificates works again.** Since 0.3.0, reissuing the OCSP,
+  TSA or CMP signing certificate of any CA whose tenant requires a key ceremony (the default)
+  failed with CeremonyRequired: the new responder key was generated under the ceremony purpose
+  with no ceremony. It is now generated as infrastructure of that CA.
+
 - **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
   configuration can name a request profile, and both protocols used that profile to choose the
   certificate profile and to validate the names a client asked for. Neither ever read the flag

@@ -1511,10 +1511,12 @@ public class CaCreationService(
         var certProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Name == certProfileName)
             ?? throw new InvalidOperationException($"Infrastructure cert profile '{certProfileName}' not found. Run bootstrap to seed it.");
 
-        // The subject key is the signer's: generated there, pending under a ceremony context
-        // naming this CA, and signing the CSR through the signer. At CA creation the CA's own
-        // context is the ceremony's, and its ceremony id carries over; a reissue has none.
-        var keyContext = new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id, caSigningContext.CeremonyId);
+        // The subject key is the signer's: generated there, pending, and signing the CSR through
+        // the signer. At CA creation it is generated under the creation ceremony's context; a
+        // reissue has no ceremony and generates it as infrastructure of this CA.
+        var keyContext = caSigningContext.Purpose == SigningPurpose.Ceremony
+            ? new SigningContext(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id, caSigningContext.CeremonyId)
+            : SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.TenantId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
         try
