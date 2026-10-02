@@ -124,6 +124,12 @@ public static class ErrorCodes
     /// </summary>
     public const string BootstrapDatabaseNotEmpty = "MCA-CFG-018";
 
+    /// <summary>
+    /// The certificate profile belongs to another scope than the issuing CA: another space, or a
+    /// CA other than the issuing one. See <c>CertProfileScope</c>.
+    /// </summary>
+    public const string CertProfileOutOfScope = "MCA-CFG-019";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>
@@ -143,6 +149,12 @@ public static class ErrorCodes
 
     /// <summary>The CSR is not in a state from which this operation can proceed.</summary>
     public const string CsrStateNotEligible = "MCA-RES-005";
+
+    /// <summary>
+    /// The CA has issued certificates, so its label, which is in their CRL, OCSP and AIA URLs,
+    /// cannot change.
+    /// </summary>
+    public const string CaLabelLocked = "MCA-RES-006";
 
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 

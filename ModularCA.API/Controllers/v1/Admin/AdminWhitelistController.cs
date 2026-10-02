@@ -45,23 +45,44 @@ public class AdminWhitelistController(
     private readonly ILogger<AdminWhitelistController> _logger = logger;
 
     /// <summary>
-    /// Lists every whitelist row, ordered for admin UI display. No step-up MFA is
-    /// required for read operations — callers still need the <c>CaOperator</c>
-    /// policy to reach the endpoint.
+    /// Lists the whitelist rows inside the caller's <see cref="TenantFence"/>, ordered for admin
+    /// UI display: a CA's rules follow its CA's scope, and the global rules (no CA) are instance
+    /// configuration, which needs instance scope. No step-up MFA is required for read
+    /// operations — callers still need the <c>CaOperator</c> policy to reach the endpoint.
     /// </summary>
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
-    /// <returns>200 OK with the full list of <see cref="WhitelistResponse"/>.</returns>
+    /// <returns>200 OK with the visible <see cref="WhitelistResponse"/> rows.</returns>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
         var all = await _whitelistService.GetAllAsync(ct);
-        return Ok(all.Select(ToResponse).ToList());
+        var visible = new List<WhitelistEntity>();
+        foreach (var w in all)
+            if (await InFenceAsync(w.CertificateAuthorityId, ct))
+                visible.Add(w);
+        return Ok(visible.Select(ToResponse).ToList());
+    }
+
+    /// <summary>
+    /// Whether a rule of CA <paramref name="caId"/> (null for a global rule, read as the
+    /// instance) is inside the caller's cert.revoke <see cref="TenantFence"/>. A rule whose CA is gone is not.
+    /// </summary>
+    private async Task<bool> InFenceAsync(Guid? caId, CancellationToken ct)
+    {
+        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        if (fence.InstanceWide)
+            return true;
+        if (caId is not Guid id)
+            return fence.Allows(null);
+        var ca = await _db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync(ct);
+        return ca != null && fence.Allows(ca.TenantId);
     }
 
     /// <summary>
     /// Fetches a single whitelist rule by its primary key. Returns 404 if no row
-    /// with the supplied identifier exists.
+    /// with the supplied identifier exists inside the caller's <see cref="TenantFence"/>.
     /// </summary>
     /// <param name="id">The whitelist rule identifier.</param>
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
@@ -71,7 +92,7 @@ public class AdminWhitelistController(
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
         var entity = await _whitelistService.GetByIdAsync(id, ct);
-        if (entity == null)
+        if (entity == null || !await InFenceAsync(entity.CertificateAuthorityId, ct))
             return NotFound(new { error = "Whitelist not found" });
         return Ok(ToResponse(entity));
     }

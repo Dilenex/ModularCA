@@ -210,13 +210,13 @@ public class ControlledUserCeremonyService(
             .ToHashSet();
 
         var caIds = candidates.Where(h => h.Tier.CaId != null).Select(h => h.Tier.CaId!.Value).Distinct().ToList();
-        var liveCas = (await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+        var liveCas = (await db.CertificateAuthorities.AsNoTracking()
                 .Where(c => caIds.Contains(c.Id) && !c.IsDeleted)
                 .Select(c => c.Id)
                 .ToListAsync())
             .ToHashSet();
         var tenantIds = candidates.Where(h => h.Tier.TenantId != null).Select(h => h.Tier.TenantId!.Value).Distinct().ToList();
-        var liveTenants = (await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+        var liveTenants = (await db.Tenants.AsNoTracking()
                 .Where(t => tenantIds.Contains(t.Id) && !t.IsDeleted)
                 .Select(t => t.Id)
                 .ToListAsync())

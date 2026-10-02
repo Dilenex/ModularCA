@@ -81,6 +81,8 @@ public class AdminKeyCeremonyController : ControllerBase
     /// (controlled-user changes, tenant policy changes, CA revocation, SSH CAs) are refused with 400:
     /// those paths classify, validate and scope the ceremony, which this generic body cannot.
     /// The parameters name the CA's scope explicitly: a tenant id, or scope "instance" (400 otherwise).
+    /// The label, name and CA certificate profile are checked now (<see cref="RefuseCaCreationParametersAsync"/>),
+    /// so a ceremony that could never execute is not put to the approvers.
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -117,6 +119,9 @@ public class AdminKeyCeremonyController : ControllerBase
                 _currentUser.User.Id, _currentUser.User.Username, request.OperationType, request.Parameters?.TenantId);
             return StatusCode(403, new { error = "You need ca.manage for the ceremony's tenant, and for the parent CA when it belongs to another tenant." });
         }
+
+        if (await RefuseCaCreationParametersAsync(_caCreation, request.Parameters) is { } refused)
+            return refused;
 
         try
         {
@@ -158,6 +163,34 @@ public class AdminKeyCeremonyController : ControllerBase
         {
             Log.Error(ex, "Failed to create key ceremony");
             return StatusCode(500, new { error = "An unexpected error occurred while creating the key ceremony. Please try again." });
+        }
+    }
+
+    /// <summary>
+    /// Null when CA-creation parameters would pass the checks execution applies, else the response
+    /// to send now, before anyone approves: 400 for an invalid or reserved label, 409 for a label or
+    /// name another CA has, 404 for a CA certificate profile outside the new CA's scope.
+    /// </summary>
+    internal static async Task<IActionResult?> RefuseCaCreationParametersAsync(CaCreationService caCreation, KeyCeremonyParameters parameters)
+    {
+        try
+        {
+            await caCreation.EnsureNamingAsync(parameters.SubjectCN, parameters.Label);
+            if (parameters.ParentCaId is Guid parentCaId)
+                await caCreation.EnsureCaCertProfileAdmittedAsync(parameters.CertProfileId, parentCaId, parameters.TenantId);
+            return null;
+        }
+        catch (ArgumentException ex)
+        {
+            return new BadRequestObjectResult(new { error = ex.Message });
+        }
+        catch (ModularCA.Shared.Errors.ResourceConflictException ex)
+        {
+            return new ConflictObjectResult(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException ex)
+        {
+            return new NotFoundObjectResult(new { error = ex.Message, code = ex.Code });
         }
     }
 
@@ -205,7 +238,7 @@ public class AdminKeyCeremonyController : ControllerBase
             var candidateTenants = tenantIds.Union(tierTenantIds).ToList();
             // Instance ceremonies (no tenant) are candidates for a caller with instance scope or a
             // tier on an instance CA; CanAccessCeremonyAsync decides each one.
-            var includeInstance = HttpContext.Items["HasInstanceScope"] is true || tiers.Any(t => t.TenantId == null);
+            var includeInstance = (ModularCA.Auth.Authorization.TenantFence.From(HttpContext)?.Allows(null) ?? false) || tiers.Any(t => t.TenantId == null);
             if (candidateTenants.Count == 0 && !includeInstance)
                 return Ok(Array.Empty<object>());
 
@@ -464,6 +497,8 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Executes an approved key ceremony, triggering the actual CA creation.
     /// Only the initiator or an approver may execute. Parameters are locked from initiation.
+    /// A label or name another CA took meanwhile is 409, an invalid or reserved label 400, and a
+    /// CA certificate profile outside the new CA's scope 404.
     /// Requires step-up MFA verification.
     /// </summary>
     [HttpPost("{id:guid}/execute")]
@@ -804,6 +839,18 @@ public class AdminKeyCeremonyController : ControllerBase
                 "KeyCeremony", id.ToString(),
                 new { CeremonyId = id, ceremony.OperationType, Reason = ex.Message, RefusedAtExecute = true });
             return Conflict(new { error = ex.Message, ceremonyExpired = ex.CeremonyExpired });
+        }
+        catch (ModularCA.Shared.Errors.ResourceConflictException ex)
+        {
+            return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {

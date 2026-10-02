@@ -82,7 +82,7 @@ public class AdminAuditController : ControllerBase
                 .Where(ca => ca.TenantId == tenantId.Value)
                 .Select(ca => ca.Id)
                 .ToListAsync();
-            var tenantGroupIds = (await _mainDb.CaGroups.IgnoreQueryFilters().AsNoTracking()
+            var tenantGroupIds = (await _mainDb.CaGroups.AsNoTracking()
                     .Where(g => g.TenantId == tenantId.Value)
                     .Select(g => g.Id)
                     .ToListAsync())
@@ -197,13 +197,14 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Shared by-id lookup for the protocol/network audit tables. Mirrors the CA-label access
-    /// scoping used by the list endpoints: system-level auditors see everything; CA-scoped auditors
-    /// only see entries whose <c>CaLabel</c> is in their accessible set, and never null-label
-    /// (system-wide) rows. Mismatches return 404 so audit ids can't be used as an existence oracle.
+    /// Shared by-id lookup for the protocol/network audit tables. Mirrors the CA access scoping
+    /// used by the list endpoints: system-level auditors see everything; CA-scoped auditors only
+    /// see entries whose CA id is in their accessible set (a legacy row with no CA id, by its
+    /// <c>CaLabel</c>), and never system-wide rows. Mismatches return 404 so audit ids can't be
+    /// used as an existence oracle.
     /// </summary>
     private async Task<IActionResult> GetProtocolAuditByIdAsync<T>(
-        DbSet<T>? set, Guid id, Func<T, string?> caLabel) where T : class
+        DbSet<T>? set, Guid id, Func<T, Guid?> caIdOf, Func<T, string?> caLabel) where T : class
     {
         if (_auditDb == null || set == null)
             return StatusCode(503, new { error = "Audit database is not configured" });
@@ -218,11 +219,14 @@ public class AdminAuditController : ControllerBase
             var isSystemLevel = await _authService.HasSystemCapabilityAsync(userId.Value, Capabilities.AuditView);
             if (!isSystemLevel)
             {
+                var accessibleCaIds = await _authService.GetAccessibleCaIdsAsync(userId.Value, Capabilities.AuditView);
+                if (caIdOf(entry) is Guid entryCaId)
+                    return accessibleCaIds.Contains(entryCaId) ? Ok(entry) : NotFound();
+
                 var label = caLabel(entry);
                 if (label == null)
                     return NotFound();
 
-                var accessibleCaIds = await _authService.GetAccessibleCaIdsAsync(userId.Value, Capabilities.AuditView);
                 var accessibleLabels = await _mainDb.CertificateAuthorities
                     .Where(ca => accessibleCaIds.Contains(ca.Id))
                     .Select(ca => ca.Label)
@@ -238,32 +242,32 @@ public class AdminAuditController : ControllerBase
     /// <summary>Returns a single EST audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("est/{id:guid}")]
     public Task<IActionResult> GetEstAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditEst, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditEst, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>Returns a single SCEP audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("scep/{id:guid}")]
     public Task<IActionResult> GetScepAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditScep, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditScep, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>Returns a single CMP audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("cmp/{id:guid}")]
     public Task<IActionResult> GetCmpAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditCmp, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditCmp, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>Returns a single ACME audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("acme/{id:guid}")]
     public Task<IActionResult> GetAcmeAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditAcme, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditAcme, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>Returns a single MSAE audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("msae/{id:guid}")]
     public Task<IActionResult> GetMsaeAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditMsae, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditMsae, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>Returns a single network audit entry by ID, CA-scope filtered like the list endpoint.</summary>
     [HttpGet("network/{id:guid}")]
     public Task<IActionResult> GetNetworkAuditById(Guid id) =>
-        GetProtocolAuditByIdAsync(_auditDb?.AuditNetwork, id, a => a.CaLabel);
+        GetProtocolAuditByIdAsync(_auditDb?.AuditNetwork, id, a => a.CertificateAuthorityId, a => a.CaLabel);
 
     /// <summary>
     /// Returns paginated EST audit entries, optionally filtered by date range and CA.
@@ -282,12 +286,10 @@ public class AdminAuditController : ControllerBase
         if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
-        // Resolve caId to caLabel for filtering
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -313,11 +315,10 @@ public class AdminAuditController : ControllerBase
         if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -343,11 +344,10 @@ public class AdminAuditController : ControllerBase
         if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -373,11 +373,10 @@ public class AdminAuditController : ControllerBase
         if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -403,11 +402,10 @@ public class AdminAuditController : ControllerBase
         if (from.HasValue) query = query.Where(a => a.Timestamp >= from.Value);
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
 
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -435,11 +433,10 @@ public class AdminAuditController : ControllerBase
         if (to.HasValue) query = query.Where(a => a.Timestamp <= to.Value);
         if (!string.IsNullOrWhiteSpace(sourceIp)) query = query.Where(a => a.SourceIp == sourceIp);
 
-        var filterLabel = await ResolveCaLabelAsync(caId);
-        if (filterLabel != null)
-            query = query.Where(a => a.CaLabel == filterLabel);
+        if (caId.HasValue)
+            query = WhereCa(query, a => a.CertificateAuthorityId, a => a.CaLabel, [caId.Value], [await ResolveCaLabelAsync(caId)]);
 
-        query = await ApplyCaLabelAccessFilterAsync(query, a => a.CaLabel);
+        query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
         var items = await query.OrderByDescending(a => a.Timestamp)
@@ -461,12 +458,14 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Applies group-based access filtering to a protocol audit query that has a CaLabel property.
-    /// System-level auditors see all logs. CA-scoped auditors only see logs for CAs they can access.
-    /// Logs with null CaLabel (system-wide events) are only visible to system-level users.
+    /// Applies group-based access filtering to a protocol audit query. System-level auditors see
+    /// all logs. CA-scoped auditors only see logs of CAs they can access, matched by the row's CA
+    /// id, or by its <c>CaLabel</c> for a legacy row written without one (<see cref="WhereCa{T}"/>).
+    /// System-wide logs (neither) are only visible to system-level users.
     /// </summary>
-    private async Task<IQueryable<T>> ApplyCaLabelAccessFilterAsync<T>(
+    private async Task<IQueryable<T>> ApplyCaAccessFilterAsync<T>(
         IQueryable<T> query,
+        System.Linq.Expressions.Expression<Func<T, Guid?>> caIdSelector,
         System.Linq.Expressions.Expression<Func<T, string?>> caLabelSelector)
     {
         var userId = _currentUser.UserId;
@@ -477,26 +476,39 @@ public class AdminAuditController : ControllerBase
         if (isSystemLevel)
             return query;
 
-        // Get accessible CA labels from the main DB
         var accessibleCaIds = await _authService.GetAccessibleCaIdsAsync(userId.Value, Capabilities.AuditView);
         var accessibleLabels = await _mainDb.CertificateAuthorities
             .Where(ca => accessibleCaIds.Contains(ca.Id))
             .Select(ca => ca.Label)
             .ToListAsync();
+        return WhereCa(query, caIdSelector, caLabelSelector, accessibleCaIds, accessibleLabels);
+    }
 
-        // Build: a => accessibleLabels.Contains(a.CaLabel)
-        // Null CaLabel (system-wide events) are excluded for non-system users
-        var parameter = caLabelSelector.Parameters[0];
-        var memberAccess = caLabelSelector.Body;
+    /// <summary>
+    /// Narrows audit rows with a translatable predicate: a row with a CA id matches when it is in
+    /// <paramref name="caIds"/>; a legacy row with none matches when its label is in
+    /// <paramref name="labels"/>. A null label never matches.
+    /// </summary>
+    private static IQueryable<T> WhereCa<T>(IQueryable<T> query,
+        System.Linq.Expressions.Expression<Func<T, Guid?>> caIdSelector,
+        System.Linq.Expressions.Expression<Func<T, string?>> caLabelSelector,
+        List<Guid> caIds, List<string?> labels)
+    {
+        var known = labels.Where(l => l != null).ToList();
+        System.Linq.Expressions.Expression<Func<Guid?, string?, bool>> rule = (id, label) =>
+            (id != null && caIds.Contains(id.Value)) || (id == null && label != null && known.Contains(label));
+        var parameter = caIdSelector.Parameters[0];
+        var labelBody = new ReplaceParameter(caLabelSelector.Parameters[0], parameter).Visit(caLabelSelector.Body)!;
+        var body = new ReplaceParameter(rule.Parameters[0], caIdSelector.Body).Visit(rule.Body)!;
+        body = new ReplaceParameter(rule.Parameters[1], labelBody).Visit(body)!;
+        return query.Where(System.Linq.Expressions.Expression.Lambda<Func<T, bool>>(body, parameter));
+    }
 
-        var containsMethod = typeof(List<string?>).GetMethod("Contains", new[] { typeof(string) })!;
-        var containsCall = System.Linq.Expressions.Expression.Call(
-            System.Linq.Expressions.Expression.Constant(accessibleLabels),
-            containsMethod,
-            memberAccess);
-
-        var lambda = System.Linq.Expressions.Expression.Lambda<Func<T, bool>>(containsCall, parameter);
-        return query.Where(lambda);
+    private sealed class ReplaceParameter(System.Linq.Expressions.ParameterExpression from, System.Linq.Expressions.Expression to)
+        : System.Linq.Expressions.ExpressionVisitor
+    {
+        protected override System.Linq.Expressions.Expression VisitParameter(System.Linq.Expressions.ParameterExpression node)
+            => node == from ? to : base.VisitParameter(node);
     }
 
     /// <summary>

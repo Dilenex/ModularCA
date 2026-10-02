@@ -16,8 +16,8 @@ public static class IssuingCaGuard
     /// <summary>
     /// Refuses with a <see cref="ConfigurationValidationException"/> when the CA whose certificate
     /// row is <paramref name="caCertRow"/> may not sign, and otherwise returns its authority row.
-    /// The authority row is looked up past the tenant and soft-delete query filters: the guard
-    /// judges the CA's own state, not whether the caller's tenants can see it.
+    /// The authority row is looked up past the soft-delete query filter: the guard judges the
+    /// CA's own state, a deleted CA included.
     /// </summary>
     /// <param name="db">Context to resolve the authority row through.</param>
     /// <param name="caCertRow">The issuing CA's certificate row.</param>

@@ -561,7 +561,15 @@ MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgr
 ```
 
 A later stage that adds a data migration extends the seed with the rows its precondition and
-transformation care about, and extends the assertions. For `FoldSystemTenant` (0.4.0 S3) the seed
+transformation care about, and extends the assertions. For `InstanceUniqueCaNames` (0.4.0 S4) the
+test asserts that plain unique indexes on CA `Label` and `Name` exist with no filter, that the
+non-unique `IX_CertificateAuthorities_TenantId` backs the foreign key, that the four per-tenant and
+instance-only indexes and the three tenant quota columns are gone, and that a space CA cannot take
+an instance CA's label nor a CA a deleted CA's name. One further test per precondition seeds an
+instance SSH CA labelled like the space's root CA (P1), the same with a soft-deleted CA (P1), a
+label that differs only in case (P2), a duplicate name (P3), an enabled and a disabled protocol
+configuration naming a signing profile that issues from no CA (P4), and the same for certificate
+templates (P5), and asserts the message and that nothing of the migration was applied. For `FoldSystemTenant` (0.4.0 S3) the seed
 adds a system tenant and an organisation whose CA policies differ, the system signing CA and an SSH
 CA with their groups, the system groups, the four `org-system-*` groups (grants, no members), a
 Kerberos realm and a custom role on the system tenant, a CA-scoped user grant, a CA-bound profile,
@@ -608,4 +616,7 @@ databases and the three roles afterwards.
 It checks that no migration is unknown to the build, and that every pending one applies. It also
 checks that CA, user, membership and certificate counts are unchanged, that there is one tenant
 fewer (the system tenant) and four groups fewer (its `org-system-*` groups), that no group named
-`org-system-*` remains, and that the `IsSystemTenant` column is gone.
+`org-system-*` remains, that the `IsSystemTenant` column and the three tenant quota columns are gone,
+and that the unique `Label` and `Name` indexes exist. A staging copy that two CAs share a label or a
+name on, or whose enabled protocol configuration or template signs with another CA's profile, fails
+here with the `InstanceUniqueCaNames` refusal, which is the point of rehearsing.

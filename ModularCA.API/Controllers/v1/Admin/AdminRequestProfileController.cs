@@ -1,6 +1,7 @@
 using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Authorization;
@@ -29,13 +30,32 @@ public class AdminRequestProfileController(
     ICurrentUserService currentUser,
     IDistributedCache cache,
     IProfileResolutionService profileResolutionService,
-    ICaGroupAuthorizationService authService) : ControllerBase
+    ICaGroupAuthorizationService authService,
+    ModularCA.Database.ModularCADbContext db) : ControllerBase
 {
     private readonly IDistributedCache _cache = cache;
     private readonly ICaGroupAuthorizationService _authService = authService;
 
     /// <summary>
-    /// Returns all request profiles ordered by name.
+    /// Whether a request profile bound to <paramref name="caId"/> is inside the caller's
+    /// <see cref="TenantFence"/> for <paramref name="capability"/>: an unbound (system-wide) one
+    /// is, as an unbound certificate profile is; a CA-bound one follows its CA's scope, and a
+    /// deleted CA's is not.
+    /// </summary>
+    private async Task<bool> InFenceAsync(Guid? caId, string capability)
+    {
+        var fence = TenantFence.From(HttpContext, capability);
+        if (caId is not Guid id || fence.InstanceWide)
+            return true;
+        var ca = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync();
+        return ca != null && fence.Allows(ca.TenantId);
+    }
+
+    /// <summary>
+    /// Returns the request profiles inside the caller's <see cref="TenantFence"/> (see
+    /// <see cref="InFenceAsync"/>), ordered by name; a caller who is not a system admin also
+    /// sees only those they hold a <c>profile.*</c> grant for.
     /// Supports optional filtering by CA ID; null returns system-wide profiles.
     /// </summary>
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
@@ -56,6 +76,12 @@ public class AdminRequestProfileController(
                 profiles = profiles.Where(p => grantedIds.Contains(p.Id)).ToList();
         }
 
+        var visible = new List<RequestProfileDto>();
+        foreach (var p in profiles)
+            if (await InFenceAsync(p.CertificateAuthorityId, Capabilities.CertRevoke))
+                visible.Add(p);
+        profiles = visible;
+
         if (caId.HasValue)
             profiles = profiles.Where(p => p.CertificateAuthorityId == caId.Value || p.CertificateAuthorityId == null).ToList();
         // Without caId filter, return all profiles (system-wide + all CA-scoped)
@@ -63,14 +89,15 @@ public class AdminRequestProfileController(
     }
 
     /// <summary>
-    /// Retrieves a single request profile by its GUID, including inheritance fields.
+    /// Retrieves a single request profile by its GUID, including inheritance fields. A profile
+    /// outside the caller's <see cref="TenantFence"/> is not found.
     /// </summary>
     [HttpGet("{id}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var profile = await requestProfileService.GetByIdAsync(id);
-        if (profile == null)
+        if (profile == null || !await InFenceAsync(profile.CertificateAuthorityId, Capabilities.CertRevoke))
             return NotFound(new { message = "Request profile not found" });
         return Ok(profile);
     }
@@ -94,7 +121,9 @@ public class AdminRequestProfileController(
 
     /// <summary>
     /// Updates an existing request profile by ID with new rules, constraints,
-    /// and optional inheritance configuration.
+    /// and optional inheritance configuration. A profile outside the caller's fence is not found;
+    /// moving it to another CA, or unbinding it, needs cert.revoke on the new CA (or across the
+    /// scope) and a CA of the profile's current scope (<see cref="CaBindingAccess"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -106,6 +135,19 @@ public class AdminRequestProfileController(
             return Unauthorized();
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
+
+        var current = await requestProfileService.GetByIdAsync(id);
+        if (current == null || !await InFenceAsync(current.CertificateAuthorityId, Capabilities.CertRevoke))
+            return NotFound(new { message = "Request profile not found" });
+        if (current.CertificateAuthorityId != request.CertificateAuthorityId)
+        {
+            var ownerTenant = current.CertificateAuthorityId is Guid oldCa
+                ? await db.CertificateAuthorities.AsNoTracking().Where(c => c.Id == oldCa).Select(c => c.TenantId).FirstOrDefaultAsync()
+                : null;
+            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, TenantFence.From(HttpContext, Capabilities.CertRevoke),
+                    currentUser.User.Id, request.CertificateAuthorityId, ownerTenant, Capabilities.CertRevoke)) is { } refused)
+                return refused;
+        }
 
         var result = await requestProfileService.UpdateAsync(id, request);
         await audit.LogAsync("RequestProfileUpdated", currentUser.User?.Id, currentUser.User?.Username,
@@ -138,13 +180,17 @@ public class AdminRequestProfileController(
 
     /// <summary>
     /// Returns the effective (merged) request profile after resolving inheritance
-    /// from parent profiles. Useful for previewing the actual constraints that will apply.
+    /// from parent profiles. Useful for previewing the actual constraints that will apply. A
+    /// profile outside the caller's <see cref="TenantFence"/> is not found.
     /// </summary>
     /// <param name="id">The GUID of the request profile to resolve.</param>
     [HttpGet("{id}/resolved")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetResolved(Guid id)
     {
+        var profile = await requestProfileService.GetByIdAsync(id);
+        if (profile == null || !await InFenceAsync(profile.CertificateAuthorityId, Capabilities.CertView))
+            return NotFound(new { message = "Request profile not found" });
         var resolved = await profileResolutionService.ResolveRequestProfileAsync(id);
         return Ok(resolved);
     }
@@ -158,6 +204,9 @@ public class AdminRequestProfileController(
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> ValidateInheritance(Guid id)
     {
+        var profile = await requestProfileService.GetByIdAsync(id);
+        if (profile == null || !await InFenceAsync(profile.CertificateAuthorityId, Capabilities.CertView))
+            return NotFound(new { message = "Request profile not found" });
         var errors = await profileResolutionService.ValidateRequestProfileInheritanceAsync(id);
         return Ok(new { isValid = errors.Count == 0, errors });
     }

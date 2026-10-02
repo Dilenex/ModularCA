@@ -104,38 +104,64 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Restricts a user list to accounts that share a tenant with the caller. System
-        /// administrators see everyone.
+        /// Restricts a user list to accounts that share a space with the caller, and each account's
+        /// group memberships to the groups inside the caller's fence. A caller whose cert.view
+        /// fence is instance-wide sees everyone.
         /// </summary>
         /// <remarks>
-        /// Users carry no tenant of their own; tenancy is a property of the groups they belong to.
-        /// An account is visible when at least one of its group memberships is in a group whose
-        /// tenant the caller can access, or in an instance group when the caller has instance
-        /// scope. An account with no memberships at all is visible only to
-        /// system administrators, since nothing places it in any tenant.
+        /// Users carry no tenant of their own; their spaces come from their group memberships and
+        /// from tenant- or CA-scoped grants and roles on the user (owner decision Q2). An account is
+        /// visible when one of those lies inside the caller's <see cref="TenantFence"/> (an
+        /// instance group, an instance CA or a global grant needs instance scope). An account with
+        /// none is visible only to an instance-wide caller.
         /// </remarks>
         private async Task<List<UserEntityDto>> ScopeToCallerAsync(List<UserEntityDto> users)
         {
-            var tenantContext = HttpContext.RequestServices.GetRequiredService<ITenantContext>();
-            if (tenantContext.IsSystemAdmin)
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            if (fence.InstanceWide)
                 return users;
-
-            var accessible = tenantContext.AccessibleTenantIds.ToHashSet();
-            var instance = tenantContext.HasInstanceScope;
-            if (accessible.Count == 0 && !instance)
+            if (fence.IsEmpty)
                 return [];
 
-            // Instance groups (no tenant) count for a caller with instance scope, as the System
-            // tenant's groups did for its members.
             var visibleGroupIds = await _dbContext.CaGroups
                 .AsNoTracking()
-                .Where(g => (g.TenantId == null && instance) || (g.TenantId != null && accessible.Contains(g.TenantId.Value)))
+                .Where(fence.Predicate<ModularCA.Shared.Entities.CaGroupEntity>(g => g.TenantId))
                 .Select(g => g.Id)
                 .ToHashSetAsync();
 
-            return users
-                .Where(u => u.Groups != null && u.Groups.Any(g => visibleGroupIds.Contains(g.GroupId)))
+            var userIds = users.Select(u => u.Id).ToList();
+            var grantScopes = await _dbContext.UserCapabilityGrants.AsNoTracking()
+                .Where(g => userIds.Contains(g.UserId))
+                .Select(g => new { g.UserId, g.TenantId, g.CertificateAuthorityId })
+                .ToListAsync();
+            var roleScopes = await _dbContext.RoleAssignments.AsNoTracking()
+                .Where(r => r.UserId != null && r.GroupId == null && userIds.Contains(r.UserId!.Value))
+                .Select(r => new { UserId = r.UserId!.Value, r.TenantId, r.CertificateAuthorityId })
+                .ToListAsync();
+            var scopes = grantScopes.Select(g => (g.UserId, g.TenantId, g.CertificateAuthorityId))
+                .Concat(roleScopes.Select(r => (r.UserId, r.TenantId, r.CertificateAuthorityId)))
                 .ToList();
+            var caIds = scopes.Where(s => s.CertificateAuthorityId != null).Select(s => s.CertificateAuthorityId!.Value).Distinct().ToList();
+            var caTenants = await _dbContext.CertificateAuthorities.AsNoTracking()
+                .Where(ca => caIds.Contains(ca.Id))
+                .ToDictionaryAsync(ca => ca.Id, ca => ca.TenantId);
+            var grantVisible = scopes
+                .Where(s => s.CertificateAuthorityId is Guid caId
+                    ? caTenants.TryGetValue(caId, out var caTenant) && fence.Allows(caTenant)
+                    : fence.Allows(s.TenantId))
+                .Select(s => s.UserId)
+                .ToHashSet();
+
+            var visible = new List<UserEntityDto>();
+            foreach (var u in users)
+            {
+                var groups = u.Groups?.Where(g => visibleGroupIds.Contains(g.GroupId)).ToList() ?? [];
+                if (groups.Count == 0 && !grantVisible.Contains(u.Id))
+                    continue;
+                u.Groups = groups;
+                visible.Add(u);
+            }
+            return visible;
         }
 
         /// <summary>

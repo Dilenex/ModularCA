@@ -333,7 +333,6 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             {
                 var cp = await _db.CertProfiles
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(p => p.Id == idGuid);
                 if (cp?.CertificateAuthorityId != null) return cp.CertificateAuthorityId;
             }

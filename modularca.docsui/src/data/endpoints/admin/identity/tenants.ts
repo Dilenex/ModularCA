@@ -10,7 +10,7 @@ export const adminTenants: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of tenants with name, slug, description, status, quotas, and counts.',
+        responseDescription: 'Array of tenants with name, slug, description, status, policy, and counts.',
     },
     {
         method: 'GET',
@@ -21,7 +21,7 @@ export const adminTenants: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Tenant details with all quota and count fields.',
+        responseDescription: 'Tenant details with policy and count fields. Tenant quotas were removed in 0.4.0.',
     },
     {
         method: 'POST',
@@ -33,9 +33,6 @@ export const adminTenants: ApiEndpoint[] = [
             { name: 'name', type: 'string', required: true, description: 'Human-readable tenant name (must be unique)' },
             { name: 'slug', type: 'string', required: false, description: 'URL-safe slug (auto-generated from name if not provided)' },
             { name: 'description', type: 'string', required: false, description: 'Tenant description' },
-            { name: 'maxCertificateAuthorities', type: 'int', required: false, description: 'Maximum CAs allowed (0 = unlimited)' },
-            { name: 'maxCertificatesTotal', type: 'int', required: false, description: 'Maximum total certificates (0 = unlimited)' },
-            { name: 'maxUsers', type: 'int', required: false, description: 'Maximum users (0 = unlimited)' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -46,16 +43,13 @@ export const adminTenants: ApiEndpoint[] = [
     {
         method: 'PUT',
         path: '/api/v1/admin/tenants/{id}',
-        summary: 'Update a tenant\'s name, slug, description, quotas, or enabled status.',
+        summary: 'Update a tenant\'s name, slug, description, or enabled status.',
         auth: 'Authorize (SystemAdmin)',
         category: 'Admin Tenants',
         requestBody: [
             { name: 'name', type: 'string', required: false, description: 'New tenant name' },
             { name: 'slug', type: 'string', required: false, description: 'New URL-safe slug' },
             { name: 'description', type: 'string', required: false, description: 'New description' },
-            { name: 'maxCertificateAuthorities', type: 'int', required: false, description: 'Maximum CAs allowed' },
-            { name: 'maxCertificatesTotal', type: 'int', required: false, description: 'Maximum total certificates' },
-            { name: 'maxUsers', type: 'int', required: false, description: 'Maximum users' },
             { name: 'isEnabled', type: 'bool', required: false, description: 'Enable or disable the tenant' },
         ],
         headers: [

@@ -34,7 +34,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// detail page is serial-based). Each entry is a user with View or Manage access. The original
         /// requestor (who always has implicit view) is surfaced separately for context. Note: users who
         /// can already see/manage the cert via CA-scoped RBAC capabilities are NOT listed here — this is
-        /// only the supplementary ACL.
+        /// only the supplementary ACL. A certificate whose CA is outside the caller's <see cref="TenantFence"/>, or of
+        /// no CA for a caller who is not instance-wide, is not found.
         /// </summary>
         [HttpGet("serial/{serial}")]
         [Authorize(Policy = "CaOperator")]
@@ -48,6 +49,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Otherwise the scope is null and the hint over-matches every tenant.
             var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.CertificateId)
                 ?? (cert.IssuerCertificateId != null ? await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.IssuerCertificateId) : null);
+
+            // A certificate of no CA is shown only to an instance-wide caller.
+            var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+            if (ca == null ? !fence.InstanceWide : !fence.Allows(ca.TenantId))
+                return NotFound(new { error = "Certificate not found." });
 
             var entries = await _db.CertificateAccessLists.AsNoTracking()
                 .Where(a => a.CertificateId == cert.CertificateId)

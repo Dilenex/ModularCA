@@ -92,6 +92,66 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   `InstancePolicyChange` ceremony. Down is not supported: restore the pre-upgrade dump. See
   "Upgrading to 0.4.0" in the deploy readme.
 
+- **Tenant quotas (0.4.0).** The tenant-level maximum CAs, certificates and users are removed,
+  with their columns, by the `InstanceUniqueCaNames` migration, whatever values were set: nothing
+  is refused over them. Quotas are per CA, on the CA's admin group, as before. The tenant API no
+  longer returns or accepts the three fields, and the console no longer shows them.
+
+- **The tenant query filter (0.4.0).** Spaces are an access scope, not a partition of data, so
+  the database no longer filters rows by tenant; the only global filters left hide soft-deleted
+  tenants, CAs and users. Every endpoint that lists or reads rows of several spaces applies the
+  caller's fence explicitly, and a test drives each of them through the real authorization policy
+  as users of one space and asserts no row of another space or of the instance comes back.
+
+### Changed
+
+- **CA labels and names are unique across the instance (0.4.0).** A label is the path of a CA's
+  CRL, OCSP, AIA and enrolment URLs, so it names one CA, soft-deleted ones included, compared
+  without regard to case; a deleted CA's label is never reused. Creating a CA, an SSH CA, or
+  renaming one (`PUT /admin/authorities/{id}`, which now validates the label too) answers 409 for a
+  taken label or name. The `InstanceUniqueCaNames` migration refuses, changing nothing, while two
+  CAs share a label, a label up to case, or a name; see "Upgrading to 0.4.0" in the deploy readme.
+  In the console, `?ca=<label>` alone names the scope. Bootstrap and the setup wizard refuse,
+  before building anything, a root CA common name whose label would be invalid or reserved.
+- **Instance roles see every space's CAs (0.4.0).** A holder of a capability at system scope,
+  such as a system operator or system auditor, could already act on every CA but was shown only
+  the instance's in lists. Lists now show what they may act on, per capability: each list opens
+  every space only for the capability its endpoint demands, so a system auditor who also operates
+  one CA sees every space's CAs and certificates but only that CA's space's operator
+  configuration (tokens, whitelists, SSH keys, request profiles, service URLs). The same holds
+  per space: a space is open to a list only for the capabilities held there, so a requester in
+  one space sees none of its operator configuration.
+- **A CA that has issued keeps its label (0.4.0).** Changing the label of a CA that has issued any
+  certificate, under its current or a superseded CA certificate, or as a legacy row with no issuer
+  link whose issuer DN is the CA's subject, is refused with 409
+  (`MCA-RES-006`): the label is in those certificates' CRL, OCSP and AIA URLs. Its name can still
+  change. CA-creation ceremonies check the label, name and CA profile when initiated, not only
+  after approval, and an execution that fails on them answers 409, 400 or 404 instead of 500.
+- **Moving a profile to another CA checks the new CA (0.4.0).** A signing profile's issuer, a
+  certificate, request or SSH profile's CA, and an SSH template's key are checked against the
+  CA they move to: inside the caller's fence (404), with the capability on it (403), and, except
+  for signing profiles, of the row's own scope (400). A protocol configuration or certificate
+  template may name only a signing profile that issues from its own CA's current certificate, and
+  enrolment refuses a stored one that does not; the console offers only that CA's profiles, and
+  re-saving a stored one says what to change. The `InstanceUniqueCaNames` migration refuses,
+  changing nothing, while an enabled configuration or template is like that; see "Upgrading to
+  0.4.0" in the deploy readme. A CA profile for a new intermediate may be unbound, bound to the
+  parent CA, or space-wide in the new CA's space.
+- **Grants given to a user directly work in lists (0.4.0).** A CA- or tenant-scoped capability
+  grant or role assignment held by a user without a group in that space was hidden from the user's
+  lists and pending requests. The fence now comes from all four grant sources, under a worn
+  badge, and equals what authorization allows.
+- **A certificate profile is used only within its scope (0.4.0).** A CA issues under an unbound
+  profile, one of its own space, or one bound to it, on every path: console, user portal, EST,
+  SCEP, CMP, ACME and Windows autoenrollment. Naming another space's profile, or one bound to an
+  instance CA or another CA, is refused (`MCA-CFG-019`), as is configuring one on a protocol, a
+  certificate template, or as an inheritance parent. A new CA is linked only to the unbound and
+  space-wide profiles.
+- **ACME EAB keys are instance credentials (0.4.0).** An EAB key names no CA and is accepted at
+  every CA's ACME endpoint, so creating and deleting keys needs cert.revoke at system scope, and
+  only a caller whose cert.revoke reaches every space sees the list. The console hides
+  "Generate EAB Key" from everyone else and says why the list is empty.
+
 ### Server-generated private keys are delivered once, as one PKCS#12
 
 - **Short custody, then one file.** A private key the CA generates for a request is held on the

@@ -55,7 +55,14 @@ public sealed class CeremonyEndpointPipelineTests
         public KeyCeremonyService Ceremonies { get; }
         public Func<IControlledUserCeremonyService, IControlledUserCeremonyService> Decorate { get; set; } = s => s;
 
-        public World() => Ceremonies = new KeyCeremonyService(Db, Audit);
+        /// <summary>The CA-creation service, over this world's database; its signer is a no-op.</summary>
+        public CaCreationService CaCreation { get; }
+
+        public World()
+        {
+            Ceremonies = new KeyCeremonyService(Db, Audit);
+            CaCreation = (CaCreationService)new SpaceIsolationMatrixTests.Resolver(Db).GetService(typeof(CaCreationService))!;
+        }
 
         /// <summary>A badge for <paramref name="userId"/> that keeps only <paramref name="groups"/>.</summary>
         public Guid Badge(Guid userId, params CaGroupEntity[] groups)
@@ -110,7 +117,7 @@ public sealed class CeremonyEndpointPipelineTests
                 return new StatusCodeResult(403);
 
             var controller = Activator.CreateInstance(type,
-                Ceremonies, new CurrentUserStub(actor), Audit, Cache, new RecordingAlertService(), null, Db, groupAuth, null, null, null, controlled)!;
+                Ceremonies, new CurrentUserStub(actor), Audit, Cache, new RecordingAlertService(), CaCreation, Db, groupAuth, null, null, null, controlled)!;
             type.GetProperty("ControllerContext")!.SetValue(controller, new ControllerContext { HttpContext = http });
             return await (Task<IActionResult>)method.Invoke(controller, args)!;
         }
@@ -122,13 +129,7 @@ public sealed class CeremonyEndpointPipelineTests
 
             var services = new ServiceCollection().AddLogging().AddAuthorizationCore(options =>
             {
-                options.AddPolicy("SystemAdmin", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.SystemManage, isSystemOnly: true)));
-                options.AddPolicy("SystemOperator", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.CaManage, isSystemOnly: true)));
-                options.AddPolicy("SystemAuditor", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.AuditView, isSystemOnly: true)));
-                options.AddPolicy("CaAdmin", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.CaManage)));
-                options.AddPolicy("CaOperator", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.CertRevoke)));
-                options.AddPolicy("CaAuditor", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.CertView)));
-                options.AddPolicy("CaUser", p => p.Requirements.Add(new CaGroupRequirement(Capabilities.CertRequest)));
+                PolicyDefinitions.AddTo(options);
                 options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
             });
             services.AddSingleton<IAuthorizationHandler>(new CaGroupAuthorizationHandler(groupAuth, accessor, Db, NullLogger<CaGroupAuthorizationHandler>.Instance));
@@ -347,6 +348,72 @@ public sealed class CeremonyEndpointPipelineTests
         var result = await w.Send(w.W.SystemAdmin, null, "Initiate", body, w.StepUp(w.W.SystemAdmin, StepUpOps.InitiateCeremony));
         Assert.Equal(400, Status(result));
         Assert.Empty(w.Db.KeyCeremonies);
+    }
+
+    private static object InitiateBody(string operationType, KeyCeremonyParameters parameters)
+    {
+        var body = Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.InitiateCeremonyRequest"))!;
+        body.GetType().GetProperty("OperationType")!.SetValue(body, operationType);
+        body.GetType().GetProperty("Parameters")!.SetValue(body, parameters);
+        return body;
+    }
+
+    /// <summary>
+    /// A CA-creation ceremony that could never execute is refused at initiation, before anyone
+    /// approves: an invalid or reserved label is 400, a label or name another CA has 409, and an
+    /// intermediate's CA certificate profile outside the new CA's scope 404. Nothing is opened.
+    /// </summary>
+    [Fact]
+    public async Task A_ca_creation_ceremony_that_could_never_execute_is_refused_at_initiation()
+    {
+        var w = new World();
+        var foreignProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "b-ca", IsCaProfile = true, TenantId = w.W.TenantB, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+        w.Db.CertProfiles.Add(foreignProfile);
+        w.Db.SaveChanges();
+
+        async Task<int?> Initiate(string operationType, KeyCeremonyParameters parameters)
+            => Status(await w.Send(w.W.SystemAdmin, null, "Initiate", InitiateBody(operationType, parameters),
+                w.StepUp(w.W.SystemAdmin, StepUpOps.InitiateCeremony)));
+
+        Assert.Equal(400, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "system-fresh", Scope = KeyCeremonyParameters.InstanceScope }));
+        Assert.Equal(400, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "Fresh", Scope = KeyCeremonyParameters.InstanceScope }));
+        Assert.Equal(409, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "a1", Scope = KeyCeremonyParameters.InstanceScope }));
+        Assert.Equal(409, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "b1", Label = "fresh", Scope = KeyCeremonyParameters.InstanceScope }));
+        Assert.Equal(404, await Initiate("CreateIntermediateCA", new KeyCeremonyParameters
+        {
+            SubjectCN = "Fresh Sub", Label = "fresh-sub", TenantId = w.W.TenantA, ParentCaId = w.W.CaA1, CertProfileId = foreignProfile.Id,
+        }));
+        Assert.Empty(w.Db.KeyCeremonies);
+
+        Assert.Equal(200, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "fresh-root", Scope = KeyCeremonyParameters.InstanceScope }));
+        Assert.Single(w.Db.KeyCeremonies);
+    }
+
+    /// <summary>
+    /// A label or name another CA took after initiation is refused at execution as 409 and an
+    /// invalid label as 400, with the ceremony still approved, never a 500.
+    /// </summary>
+    [Theory]
+    [InlineData("a1", 409)]
+    [InlineData("system-late", 400)]
+    public async Task An_approved_ca_ceremony_whose_label_is_refused_at_execute_keeps_its_status(string label, int expected)
+    {
+        var w = new World();
+        var parameters = new KeyCeremonyParameters { SubjectCN = "Late Root", Label = label, Scope = KeyCeremonyParameters.InstanceScope };
+        var ceremony = new KeyCeremonyEntity
+        {
+            Id = Guid.NewGuid(), OperationType = "CreateRootCA", Description = "late", TargetEntityId = string.Empty,
+            InitiatedByUserId = w.W.SystemAdmin, InitiatedByUsername = "sysadmin", RequiredApprovals = 1, CurrentApprovals = 1, Status = "Approved",
+            CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1),
+            ParametersJson = System.Text.Json.JsonSerializer.Serialize(parameters), ApprovalsJson = "[]",
+        };
+        w.Db.KeyCeremonies.Add(ceremony);
+        w.Db.SaveChanges();
+
+        var result = await w.Send(w.W.SystemAdmin, null, "Execute", ceremony.Id, w.StepUp(w.W.SystemAdmin, StepUpOps.ExecuteCeremony, ceremony.Id));
+
+        Assert.Equal(expected, Status(result));
+        Assert.Equal("Approved", w.Db.KeyCeremonies.Single(c => c.Id == ceremony.Id).Status);
     }
 
     [Fact]

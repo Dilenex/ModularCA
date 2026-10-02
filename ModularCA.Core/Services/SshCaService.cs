@@ -39,10 +39,18 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// Generates an SSH CA key pair via ssh-keygen. For RSA and ECDSA, <paramref name="keySize"/>
     /// controls the bit length (<c>-b</c> flag). Ed25519 has a fixed size and ignores keySize.
-    /// The SSH CA and its groups are instance rows, with no tenant.
+    /// The SSH CA and its groups are instance rows, with no tenant. Its label, derived from
+    /// <paramref name="name"/>, must be valid and not reserved, and its label and name unused by
+    /// any CA of the instance, soft-deleted ones included; otherwise nothing is generated. A label
+    /// or name another request takes before the save is a <see cref="ResourceConflictException"/>,
+    /// and the generated key files are removed.
     /// </summary>
     public async Task<SshCaKeyEntity> GenerateKeyPairAsync(string name, string keyType, bool isUserCa, bool isHostCa, int maxValidityHours, int? keySize = null)
     {
+        var caLabel = name.ToLowerInvariant().Replace(" ", "-");
+        CaLabelRules.Validate(caLabel, paramName: nameof(name));
+        await CaLabelRules.EnsureUniqueAsync(_db, caLabel, name);
+
         var keyDir = Path.Combine(AppContext.BaseDirectory, _config.SshCa.KeyStoragePath);
         Directory.CreateDirectory(keyDir);
 
@@ -70,7 +78,6 @@ public class SshCaService : ISshCaService
         var publicKey = await File.ReadAllTextAsync($"{keyPath}.pub");
 
         // Create an instance CertificateAuthorityEntity (no tenant) for the SSH CA (no X.509 certificate)
-        var caLabel = name.ToLowerInvariant().Replace(" ", "-");
         var caEntity = new CertificateAuthorityEntity
         {
             Name = name,
@@ -81,7 +88,16 @@ public class SshCaService : ISshCaService
             TenantId = null,
         };
         _db.CertificateAuthorities.Add(caEntity);
-        await _db.SaveChangesAsync();
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (CaLabelRules.IsNameRace(ex))
+        {
+            _db.Entry(caEntity).State = EntityState.Detached;
+            TryDeleteKeyFiles(keyPath);
+            throw CaLabelRules.NameRaceConflict(caLabel, name);
+        }
 
         // Auto-generate per-CA authorization groups for all capability templates
         var templates = new[]
@@ -215,7 +231,7 @@ public class SshCaService : ISshCaService
             throw new ConfigurationValidationException(
                 $"SSH CA key '{caKey.Name}' is disabled and cannot sign.", ErrorCodes.IssuingCaDisabled);
 
-        var ca = await _db.CertificateAuthorities.IgnoreQueryFilters()
+        var ca = await _db.CertificateAuthorities
             .FirstOrDefaultAsync(c => c.Id == caKey.CertificateAuthorityId);
         if (ca == null || ca.IsDeleted || !ca.IsEnabled)
             throw new ConfigurationValidationException(
@@ -465,6 +481,13 @@ public class SshCaService : ISshCaService
     }
 
     // Input sanitization to prevent command injection
+    /// <summary>Removes a generated key pair that will not be registered; best effort.</summary>
+    private static void TryDeleteKeyFiles(string keyPath)
+    {
+        try { File.Delete(keyPath); } catch { }
+        try { File.Delete($"{keyPath}.pub"); } catch { }
+    }
+
     private static string SanitizeKeyType(string keyType) =>
         keyType.ToLowerInvariant() switch
         {

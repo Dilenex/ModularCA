@@ -995,21 +995,15 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("IsDeleted");
 
+                    b.HasIndex("Label")
+                        .IsUnique();
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
                     b.HasIndex("ParentCaId");
 
-                    b.HasIndex("TenantId", "Label")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique();
-
-                    b.HasIndex(new[] { "Label" }, "IX_CertificateAuthorities_Label_Instance")
-                        .IsUnique()
-                        .HasFilter("\"TenantId\" IS NULL");
-
-                    b.HasIndex(new[] { "Name" }, "IX_CertificateAuthorities_Name_Instance")
-                        .IsUnique()
-                        .HasFilter("\"TenantId\" IS NULL");
+                    b.HasIndex("TenantId");
 
                     b.ToTable("CertificateAuthorities", t =>
                         {
@@ -3216,15 +3210,6 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("boolean");
-
-                    b.Property<int>("MaxCertificateAuthorities")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("MaxCertificatesTotal")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("MaxUsers")
-                        .HasColumnType("integer");
 
                     b.Property<int>("MaxValidityDays")
                         .HasColumnType("integer");

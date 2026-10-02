@@ -364,6 +364,7 @@ public sealed class AdminCertificateChainEndpointTests
         public Task<List<Guid>> GetTenantIdsWithCapabilityAsync(Guid userId, string capability) => throw new NotSupportedException();
         public Task<bool> IsSystemAdminAsync(Guid userId) => throw new NotSupportedException();
         public Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId) => throw new NotSupportedException();
+        public Task<TenantFence> GetFenceAsync(Guid userId) => throw new NotSupportedException();
         public Task<EffectiveCapabilities> GetEffectiveCapabilitiesAsync(Guid userId) => throw new NotSupportedException();
         public Task<bool> HasResourceCapabilityAsync(Guid userId, string capability, string resourceType, Guid resourceId) => throw new NotSupportedException();
         public Task<(List<Guid> ResourceIds, bool HasWildcard)> GetGrantedResourceIdsAsync(Guid userId, string capabilityPrefix, string resourceType) => throw new NotSupportedException();

@@ -754,6 +754,16 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 return BadRequest(new { error = "Organization name is required." });
             if (string.IsNullOrWhiteSpace(request.RootCa.CommonName))
                 return BadRequest(new { error = "Root CA Common Name is required." });
+            if (RootCaNameClashesWithSystemCa(request.RootCa.CommonName))
+                return BadRequest(new { error = "The Root CA Common Name is taken by the system signing CA, whose name and label are reserved. CA names and labels are unique across the instance; choose another." });
+            try
+            {
+                ModularCA.Bootstrap.BootstrapCertCreator.EnsureRootLabelUsable(request.RootCa.CommonName);
+            }
+            catch (ModularCA.Shared.Errors.ConfigurationValidationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
 
             // Check the administrator password against the policy BEFORE any destructive setup
             // work begins. BootstrapService validates it too, authoritatively, against the policy
@@ -925,6 +935,16 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             _initializeLock.Release();
         }
     }
+
+    /// <summary>
+    /// Whether a root CA named <paramref name="commonName"/> would take the system signing CA's
+    /// name or label, which bootstrap creates next. CA names and labels are unique across the
+    /// instance, so bootstrap would refuse it after the databases were already built.
+    /// </summary>
+    public static bool RootCaNameClashesWithSystemCa(string commonName)
+        => string.Equals(commonName.Trim(), ModularCA.Bootstrap.BootstrapCertCreator.SystemSigningCaName, StringComparison.Ordinal)
+           || string.Equals(ModularCA.Bootstrap.BootstrapCertCreator.LabelFor(commonName.Trim()),
+               ModularCA.Bootstrap.BootstrapCertCreator.SystemSigningCaLabel, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Checks whether the system has been fully configured: config.yaml exists and the

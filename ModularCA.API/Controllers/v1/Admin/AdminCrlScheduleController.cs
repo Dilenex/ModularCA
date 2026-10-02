@@ -18,8 +18,8 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// <summary>
     /// Admin endpoints for managing CRL generation schedules and configurations.
     /// Mutations require step-up MFA via <c>X-MFA-Token</c> and enforce the standard
-    /// tenant fence: the schedule's owning CA must belong to a tenant in the caller's
-    /// <c>AccessibleTenantIds</c>. Audit events are emitted on both success and failure
+    /// tenant fence: the schedule's owning CA must be inside the caller's
+    /// <see cref="TenantFence"/>. Audit events are emitted on both success and failure
     /// paths so cross-tenant probes are recorded.
     /// </summary>
     [ApiController]
@@ -41,60 +41,38 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Resolves a CRL schedule's owning CA + tenant from its <paramref name="taskId"/>
-        /// and verifies the caller's <c>AccessibleTenantIds</c> includes that tenant.
-        /// Returns the (CaId, TenantId) tuple on success, or null when the schedule is
-        /// missing, the CA is unresolvable, or the request is cross-tenant. System admins
-        /// always pass.
+        /// and verifies the caller's <see cref="TenantFence"/> for <paramref name="capability"/>
+        /// admits that tenant. Returns the (CaId, TenantId) tuple on success, or null when the
+        /// schedule is missing, the CA is unresolvable or deleted, or the request is outside the fence.
         /// </summary>
-        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceScheduleAsync(Guid taskId)
+        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceScheduleAsync(Guid taskId, string capability = Capabilities.CertRevoke)
         {
             var config = await _db.CrlConfigurations.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.TaskId == taskId);
             if (config == null)
                 return null;
-
-            var ca = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(c => c.CertificateId == config.CaCertificateId);
-            if (ca == null || ca.IsDeleted)
-                return null;
-
-            if (HttpContext.Items["IsSystemAdmin"] is not true)
-            {
-                var fence = TenantFence.From(HttpContext);
-                if (fence == null || !fence.Allows(ca.TenantId))
-                    return null;
-            }
-            return (ca.Id, ca.TenantId);
+            return await ResolveAndFenceByCaCertificateAsync(config.CaCertificateId, capability);
         }
 
         /// <summary>
         /// Resolves the CA + tenant for a Create request, where the CA is supplied by
-        /// <paramref name="caCertificateId"/> rather than an existing schedule row.
+        /// <paramref name="caCertificateId"/> rather than an existing schedule row, under the
+        /// same fence.
         /// </summary>
-        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId)
+        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId, string capability = Capabilities.CertRevoke)
         {
             var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
-                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId);
-            if (ca == null || ca.IsDeleted)
+            if (ca == null || !TenantFence.From(HttpContext, capability).Allows(ca.TenantId))
                 return null;
-
-            if (HttpContext.Items["IsSystemAdmin"] is not true)
-            {
-                var fence = TenantFence.From(HttpContext);
-                if (fence == null || !fence.Allows(ca.TenantId))
-                    return null;
-            }
             return (ca.Id, ca.TenantId);
         }
 
         /// <summary>
-        /// Lists every CRL scheduled job. Non-system admins receive only schedules whose
-        /// owning CA is inside their <see cref="TenantFence"/> (a space they belong to, or the
-        /// instance when they have instance scope).
+        /// Lists every CRL scheduled job whose owning CA is inside the caller's
+        /// <see cref="TenantFence"/> (a space they belong to, or the instance when they have
+        /// instance scope; everything when instance-wide).
         /// </summary>
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
@@ -102,20 +80,17 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             var jobs = (await _crlConfigService.GetAllAsync()).ToList();
 
-            if (HttpContext.Items["IsSystemAdmin"] is not true)
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            if (!fence.InstanceWide)
             {
-                var fence = TenantFence.From(HttpContext);
-                if (fence == null || (fence.TenantIds.Count == 0 && !fence.InstanceScope))
+                if (fence.IsEmpty)
                     return Ok(Array.Empty<CrlConfigurationDto>());
 
                 var caCertIds = jobs.Select(j => j.CaCertificateId).Distinct().ToList();
                 var allowedCaCertIds = await _db.CertificateAuthorities
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
-                    .Where(ca => ca.CertificateId != null
-                                 && caCertIds.Contains(ca.CertificateId.Value)
-                                 && !ca.IsDeleted)
+                    .Where(ca => ca.CertificateId != null && caCertIds.Contains(ca.CertificateId.Value))
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
                 var allowedSet = new HashSet<Guid>(allowedCaCertIds);
@@ -176,7 +151,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetById(Guid id)
         {
-            if (await ResolveAndFenceScheduleAsync(id) == null)
+            if (await ResolveAndFenceScheduleAsync(id, Capabilities.CertView) == null)
                 return NotFound();
 
             var job = await _crlConfigService.GetByIdAsync(id);

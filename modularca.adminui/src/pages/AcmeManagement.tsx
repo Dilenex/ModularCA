@@ -9,7 +9,8 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -39,6 +40,9 @@ interface NewEabKey {
 
 const EabKeyManagementSection: React.FC = () => {
     const { requireStepUp } = useStepUp();
+    // EAB keys are accepted at every CA, so only a system-scope cert.revoke holder manages them.
+    const { can } = useAuth();
+    const canManageEab = can(Capabilities.CertRevoke);
     const [keys, setKeys] = useState<EabKey[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -118,9 +122,9 @@ const EabKeyManagementSection: React.FC = () => {
     ];
 
     // EAB delete is step-up MFA gated with no bulk endpoint, so Delete is single-select.
-    const bulkActions: DataTableBulkAction<EabKey>[] = [
+    const bulkActions: DataTableBulkAction<EabKey>[] = canManageEab ? [
         { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]) },
-    ];
+    ] : [];
 
     const drawer = (k: EabKey) => {
         const s = getKeyStatus(k);
@@ -143,12 +147,14 @@ const EabKeyManagementSection: React.FC = () => {
         <div className="space-y-3">
             <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-gray-900 dark:text-white">EAB Key Management</h2>
-                <button
-                    onClick={() => { setShowCreateForm(!showCreateForm); setNewKey(null); }}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors"
-                >
-                    + Generate EAB Key
-                </button>
+                {canManageEab && (
+                    <button
+                        onClick={() => { setShowCreateForm(!showCreateForm); setNewKey(null); }}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors"
+                    >
+                        + Generate EAB Key
+                    </button>
+                )}
             </div>
 
             {/* New key creation form */}
@@ -233,9 +239,11 @@ const EabKeyManagementSection: React.FC = () => {
                 rowKey={(k) => k.id}
                 loading={loading}
                 error={error}
-                empty="No EAB keys found. Generate one to get started."
+                empty={canManageEab
+                    ? 'No EAB keys found. Generate one to get started.'
+                    : 'EAB keys are instance credentials: an ACME client can present one at any CA. They are managed by instance operators, so none are shown here.'}
                 columns={columns}
-                selectable
+                selectable={canManageEab}
                 bulkActions={bulkActions}
                 exportFileName="acme-eab-keys"
                 renderDrawer={drawer}

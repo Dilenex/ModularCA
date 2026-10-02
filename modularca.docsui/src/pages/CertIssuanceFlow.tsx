@@ -84,8 +84,10 @@ export default function CertIssuanceFlow() {
                     <li>Basic constraints are appropriate (not requesting CA:true on end-entity profile)</li>
                     <li>System-wide certificate policy rules evaluated
                         via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ICertPolicyService</code></li>
-                    <li>Tenant quota and per-CA certificate limits checked
+                    <li>Per-CA certificate limits checked
                         via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">IQuotaService</code> (skipped for infrastructure certs)</li>
+                    <li>The certificate profile must be in the issuing CA's scope (unbound, the CA's tenant's, or bound to the CA)
+                        via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CertProfileScope</code></li>
                     <li>Tenant enabled status verified -- disabled tenants cannot issue certificates</li>
                 </ul>
 

@@ -107,33 +107,59 @@ public class InstanceScopeTests
         Assert.Contains(Capabilities.AuditView, entry.Capabilities);
     }
 
+    /// <summary>
+    /// A system auditor holds audit.view at system scope, so their fence is instance-wide for that
+    /// capability: they see every space's audit views (owner decision Q1), but no operator
+    /// configuration through a capability they hold nowhere. An instance CA's auditor has instance
+    /// scope only, and an organisation operator their space only.
+    /// </summary>
     [Fact]
-    public void A_system_auditor_has_instance_scope_and_an_organisation_operator_does_not()
+    public async Task A_system_auditor_sees_every_space_and_an_organisation_operator_only_theirs()
     {
-        var auditor = TenantFence.ScopeOf([new CaGroupEntity { Name = "system-auditor", IsSystemGroup = true, TenantId = null }]);
-        Assert.True(auditor.InstanceScope);
-        Assert.Empty(auditor.TenantIds);
+        var auditor = new World();
+        auditor.Grant(auditor.Group(null, system: true, template: "Auditor"), Capabilities.AuditView);
+        await auditor.Db.SaveChangesAsync();
+        var auditorFence = await auditor.Service.GetFenceAsync(auditor.UserId);
+        Assert.True(auditorFence.InstanceWideFor(Capabilities.AuditView));
+        Assert.False(auditorFence.InstanceWide);
+        Assert.False(auditorFence.IsSystemAdmin);
+        Assert.True(auditorFence.For(Capabilities.AuditView).Allows(Space));
+        Assert.True(auditorFence.For(Capabilities.AuditView).Allows(null));
+        Assert.False(auditorFence.For(Capabilities.CertRevoke).Allows(Space));
+        Assert.False(auditorFence.For(Capabilities.CertRevoke).Allows(null));
 
-        var signingCaAuditor = TenantFence.ScopeOf([new CaGroupEntity { Name = "system_system-signing-ca_auditor", TenantId = null, CertificateAuthorityId = Guid.NewGuid() }]);
-        Assert.True(signingCaAuditor.InstanceScope);
+        var signingCaAuditor = new World();
+        signingCaAuditor.Grant(signingCaAuditor.Group(null, caId: Guid.NewGuid(), template: "Auditor"), Capabilities.CertView);
+        await signingCaAuditor.Db.SaveChangesAsync();
+        var signingFence = await signingCaAuditor.Service.GetFenceAsync(signingCaAuditor.UserId);
+        Assert.False(signingFence.InstanceWideFor(Capabilities.CertView));
+        Assert.True(signingFence.Allows(null));
+        Assert.False(signingFence.Allows(Space));
 
-        var operatorScope = TenantFence.ScopeOf([new CaGroupEntity { Name = "org-acme-operator", TenantId = Space }]);
-        Assert.False(operatorScope.InstanceScope);
-        Assert.Equal([Space], operatorScope.TenantIds);
+        var orgOperator = new World();
+        orgOperator.Grant(orgOperator.Group(Space, template: "Operator"), Capabilities.CertRevoke);
+        await orgOperator.Db.SaveChangesAsync();
+        var operatorFence = await orgOperator.Service.GetFenceAsync(orgOperator.UserId);
+        Assert.False(operatorFence.Allows(null));
+        Assert.Equal([Space], operatorFence.TenantIds);
     }
 
     [Fact]
-    public void A_stray_null_tenant_group_that_is_neither_system_nor_an_instance_cas_confers_no_instance_scope()
+    public async Task A_stray_null_tenant_group_that_is_neither_system_nor_an_instance_cas_confers_no_instance_scope()
     {
-        var stray = TenantFence.ScopeOf([new CaGroupEntity { Name = "stray", TenantId = null, CertificateAuthorityId = null, IsSystemGroup = false }]);
-        Assert.False(stray.InstanceScope);
-        Assert.Empty(stray.TenantIds);
+        var stray = new World();
+        stray.Group(null);
+        await stray.Db.SaveChangesAsync();
+        var fence = await stray.Service.GetFenceAsync(stray.UserId);
+        Assert.True(fence.IsEmpty);
 
-        var withSpace = TenantFence.ScopeOf([
-            new CaGroupEntity { Name = "stray", TenantId = null, IsSystemGroup = false },
-            new CaGroupEntity { Name = "org-acme-operator", TenantId = Space }]);
-        Assert.False(withSpace.InstanceScope);
-        Assert.Equal([Space], withSpace.TenantIds);
+        var withSpace = new World();
+        withSpace.Group(null);
+        withSpace.Group(Space);
+        await withSpace.Db.SaveChangesAsync();
+        var spaceFence = await withSpace.Service.GetFenceAsync(withSpace.UserId);
+        Assert.False(spaceFence.Allows(null));
+        Assert.Equal([Space], spaceFence.TenantIds);
     }
 
     [Theory]
@@ -154,6 +180,11 @@ public class InstanceScopeTests
         Assert.Equal(expected, rows.AsQueryable().Where(fence.Predicate<CertificateAuthorityEntity>(c => c.TenantId)).Select(c => c.Label).ToArray());
         Assert.Equal(expected, rows.Where(c => fence.Allows(c.TenantId)).Select(c => c.Label).ToArray());
         Assert.True(TenantFence.Of([], false, isSystemAdmin: true).Allows(null));
+        var auditor = TenantFence.Of([], false, systemCapabilities: [Capabilities.CertView]);
+        Assert.True(auditor.For(Capabilities.CertView).Allows(Guid.NewGuid()));
+        Assert.False(auditor.For(Capabilities.CertRevoke).Allows(Guid.NewGuid()));
+        Assert.False(auditor.Allows(Guid.NewGuid()));
+        Assert.True(TenantFence.None.IsEmpty);
     }
 
     [Fact]

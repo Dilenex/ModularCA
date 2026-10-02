@@ -28,14 +28,14 @@ public class AdminEnrollmentTokenController(
     ModularCADbContext db) : ControllerBase
 {
     /// <summary>
-    /// Whether a non-admin caller may see or revoke <paramref name="token"/>: a token bound to a
-    /// CA follows that CA's scope (a null tenant is an instance CA, which needs instance scope);
-    /// a token bound to no CA and no tenant is system-wide and stays hidden, as before.
+    /// Whether the caller may see or revoke <paramref name="token"/>: a token of a space or of an
+    /// instance CA follows <see cref="TenantFence.Allows"/>; a token bound to no CA and no tenant
+    /// is system-wide and needs a fence instance-wide for cert.revoke.
     /// </summary>
     private static bool MayManageToken(TenantFence fence, EnrollmentTokenEntity token)
-        => token.TenantId is Guid t
-            ? fence.TenantIds.Contains(t)
-            : token.CertificateAuthorityId != null && fence.InstanceScope;
+        => token.TenantId == null && token.CertificateAuthorityId == null
+            ? fence.InstanceWide
+            : fence.Allows(token.TenantId);
 
     /// <summary>
     /// Resolves the CA + tenant for a signing profile (or cert/request
@@ -60,7 +60,6 @@ public class AdminEnrollmentTokenController(
             {
                 var ca = await db.CertificateAuthorities
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(c => c.CertificateId == sp.IssuerId);
                 if (ca != null)
                     return (ca.Id, ca.TenantId);
@@ -70,13 +69,11 @@ public class AdminEnrollmentTokenController(
         {
             var cp = await db.CertProfiles
                 .AsNoTracking()
-                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(p => p.Id == certProfileId.Value);
             if (cp?.CertificateAuthorityId != null)
             {
                 var ca = await db.CertificateAuthorities
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(c => c.Id == cp.CertificateAuthorityId.Value);
                 if (ca != null)
                     return (ca.Id, ca.TenantId);
@@ -89,7 +86,6 @@ public class AdminEnrollmentTokenController(
             {
                 var ca = await db.CertificateAuthorities
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(c => c.Id == rp.CertificateAuthorityId.Value);
                 if (ca != null)
                     return (ca.Id, ca.TenantId);
@@ -99,7 +95,7 @@ public class AdminEnrollmentTokenController(
     }
 
     /// <summary>
-    /// Returns all active enrollment tokens, filtered by tenant access for non-system-admins.
+    /// Returns the active enrollment tokens the caller's fence admits (<see cref="MayManageToken"/>).
     /// Filters on the token's <c>TenantId</c> column directly so users who
     /// have moved between tenants don't leak prior-tenant token visibility.
     /// <para>
@@ -113,11 +109,8 @@ public class AdminEnrollmentTokenController(
     {
         var tokens = await tokenService.GetActiveTokensAsync();
 
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
-        {
-            var fence = TenantFence.From(HttpContext);
-            tokens = tokens.Where(t => fence != null && MayManageToken(fence, t)).ToList();
-        }
+        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        tokens = tokens.Where(t => MayManageToken(fence, t)).ToList();
 
         // No token value leaves this endpoint, for any row. Bearer tokens used to be echoed
         // back here, which made the list a way to recover a credential long after it was
@@ -174,8 +167,7 @@ public class AdminEnrollmentTokenController(
         }
         else if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null || !fence.Allows(caInfo.Value.TenantId))
+            if (!TenantFence.From(HttpContext, Capabilities.CertRevoke).Allows(caInfo.Value.TenantId))
                 return NotFound(new { error = "CMP target CA not found." });
         }
 
@@ -217,7 +209,7 @@ public class AdminEnrollmentTokenController(
         if (currentUser.User == null) return Unauthorized();
 
         // Resolve the target CA/tenant from the selected profiles and
-        // enforce AccessibleTenantIds. A SystemOperator can no longer mint tokens against
+        // enforce the caller's TenantFence. A SystemOperator can no longer mint tokens against
         // another tenant's CA.
         var caInfo = await ResolveCaFromProfilesAsync(request.SigningProfileId, request.CertProfileId, request.RequestProfileId);
         if (caInfo == null)
@@ -228,8 +220,7 @@ public class AdminEnrollmentTokenController(
         }
         else if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null || !fence.Allows(caInfo.Value.TenantId))
+            if (!TenantFence.From(HttpContext, Capabilities.CertRevoke).Allows(caInfo.Value.TenantId))
                 return NotFound(new { error = "Enrollment target not found." });
         }
 
@@ -267,8 +258,7 @@ public class AdminEnrollmentTokenController(
 
         if (HttpContext.Items["IsSystemAdmin"] is not true)
         {
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null || !MayManageToken(fence, existing))
+            if (!MayManageToken(TenantFence.From(HttpContext, Capabilities.CertRevoke), existing))
                 return NotFound(new { error = "Token not found" });
         }
 

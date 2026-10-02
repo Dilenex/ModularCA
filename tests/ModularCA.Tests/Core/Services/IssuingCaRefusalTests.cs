@@ -280,36 +280,6 @@ public class IssuingCaRefusalTests
         Assert.Equal(s.Ca!.Id, ca!.Id);
     }
 
-    private sealed class FencedTenantContext(Guid visibleTenant) : ITenantContext
-    {
-        public bool HasContext => true;
-        public bool IsSystemAdmin => false;
-        public IReadOnlySet<Guid> AccessibleTenantIds { get; } = new HashSet<Guid> { visibleTenant };
-        public Guid? UserId { get; } = Guid.NewGuid();
-        public bool HasInstanceScope => false;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
-    }
-
-    [Fact]
-    public async Task The_guard_judges_the_ca_even_when_the_callers_tenants_exclude_it()
-    {
-        var name = $"guard-{Guid.NewGuid():N}";
-        Seeded s;
-        using (var seed = InMemoryDbContextFactory.Create(name))
-            s = Seed(seed, CaState.Healthy);
-
-        var options = new DbContextOptionsBuilder<ModularCADbContext>()
-            .UseInMemoryDatabase(name)
-            .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
-            .Options;
-        using var fenced = new ModularCADbContext(options, new FencedTenantContext(Guid.NewGuid()));
-        Assert.False(await fenced.CertificateAuthorities.AnyAsync(c => c.Id == s.Ca!.Id));
-
-        var ca = await IssuingCaGuard.EnsureUsableAsync(fenced, s.CaRow, s.CaCert, requireAuthority: true, DateTime.UtcNow);
-
-        Assert.Equal(s.Ca!.Id, ca!.Id);
-    }
-
     /// <summary>
     /// A leaf from an instance CA (no tenant, as the system signing CA's would be) is held to the
     /// instance's own validity ceiling: Refuse refuses an interactive caller and names the
@@ -367,5 +337,99 @@ public class IssuingCaRefusalTests
 
         Assert.Equal(ErrorCodes.IssuingCaDisabled, user.Code);
         Assert.Equal(ErrorCodes.IssuingCaDisabled, host.Code);
+    }
+
+    /// <summary>
+    /// N2 at the choke point every protocol shares: a leaf certificate profile outside the issuing
+    /// CA's scope is refused, whether it is bound to an instance CA, belongs to another space, or is
+    /// bound to another CA of the same space.
+    /// </summary>
+    [Theory]
+    [InlineData("instance-ca-bound")]
+    [InlineData("other-space")]
+    [InlineData("other-ca")]
+    public async Task Issuance_refuses_a_profile_outside_the_issuing_cas_scope(string scope)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var s = Seed(db, CaState.Healthy);
+        var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
+        (profile.TenantId, profile.CertificateAuthorityId) = scope switch
+        {
+            "instance-ca-bound" => ((Guid?)null, (Guid?)Guid.NewGuid()),
+            "other-space" => (Guid.NewGuid(), null),
+            _ => (s.Ca!.TenantId, Guid.NewGuid()),
+        };
+        db.SaveChanges();
+
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(() => Service(db, s.CaCert).IssueCertificateAsync(s.CsrId, null, null));
+        Assert.Equal(ErrorCodes.CertProfileOutOfScope, ex.Code);
+    }
+
+    /// <summary>
+    /// Reissue re-checks the CSR's profile against the issuing CA's scope, and refuses before the
+    /// predecessor is auto-revoked (the revocation service is null, so reaching it would throw).
+    /// </summary>
+    [Theory]
+    [InlineData("instance-ca-bound")]
+    [InlineData("other-space")]
+    public async Task Reissue_refuses_a_profile_outside_the_issuing_cas_scope_before_revoking(string scope)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var s = Seed(db, CaState.Healthy, forReissue: true);
+        var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
+        (profile.TenantId, profile.CertificateAuthorityId) = scope == "other-space"
+            ? ((Guid?)Guid.NewGuid(), (Guid?)null)
+            : (null, Guid.NewGuid());
+        db.SaveChanges();
+
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => Service(db, s.CaCert).ReissueCertificateAsync(null, null, s.CsrId, null, null));
+
+        Assert.Equal(ErrorCodes.CertProfileOutOfScope, ex.Code);
+        Assert.False((await db.Certificates.AsNoTracking().FirstAsync(c => c.CertificateId == s.Predecessor!.CertificateId)).Revoked);
+    }
+
+    /// <summary>An unbound profile, the CA's space's, and one bound to the CA itself all pass the scope rule.</summary>
+    [Theory]
+    [InlineData("unbound")]
+    [InlineData("space")]
+    [InlineData("own-ca")]
+    public async Task Issuance_admits_a_profile_in_the_issuing_cas_scope(string scope)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var s = Seed(db, CaState.Healthy);
+        var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
+        (profile.TenantId, profile.CertificateAuthorityId) = scope switch
+        {
+            "unbound" => ((Guid?)null, (Guid?)null),
+            "space" => (s.Ca!.TenantId, null),
+            _ => (s.Ca!.TenantId, s.Ca.Id),
+        };
+        db.SaveChanges();
+
+        var ex = await Record.ExceptionAsync(() => Service(db, s.CaCert).IssueCertificateAsync(s.CsrId, null, null));
+        Assert.False(ex is ConfigurationValidationException { Code: ErrorCodes.CertProfileOutOfScope }, ex?.ToString());
+    }
+
+    /// <summary>
+    /// The user and admin CSR paths refuse another scope's profile early (400), before anything is
+    /// stored; EST, SCEP, CMP and ACME reach the issuance check above.
+    /// </summary>
+    [Fact]
+    public async Task A_csr_naming_another_scopes_profile_is_refused_before_it_is_stored()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var s = Seed(db, CaState.Healthy);
+        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Other Space", TenantId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+        db.CertProfiles.Add(other);
+        db.SaveChanges();
+        var signingProfile = db.SigningProfiles.Single().Id;
+        var csrs = new CsrService(db, new HeldKeyService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider(), new RecordingAuditService()));
+        var before = db.CertificateRequests.Count();
+
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(() => csrs.UploadCsrAsync(CsrPem("other.test"), other.Id, signingProfile, Guid.NewGuid()));
+
+        Assert.Equal(ErrorCodes.CertProfileOutOfScope, ex.Code);
+        Assert.Equal(before, db.CertificateRequests.Count());
     }
 }

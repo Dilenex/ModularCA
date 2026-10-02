@@ -88,8 +88,7 @@ export default function TenantModelDiagram() {
                     <li>Can be enabled or disabled without affecting other tenants (disabled tenants cannot issue certificates)</li>
                     <li>Support soft-delete
                         (<code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">IsDeleted</code>) -- hidden
-                        via EF global query filter; system admins can
-                        use <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">IgnoreQueryFilters()</code> to view</li>
+                        by the soft-delete query filter, which is the only global filter left; it filters no tenant</li>
                     <li>URL-safe <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Slug</code> field
                         for route segments and API filters</li>
                 </ul>
@@ -112,16 +111,8 @@ export default function TenantModelDiagram() {
                             <td className="py-2">Number of admin approvals needed before a ceremony can execute (default: 2)</td>
                         </tr>
                         <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">MaxCertificateAuthorities</td>
-                            <td className="py-2">Maximum CAs allowed for this tenant (0 = unlimited)</td>
-                        </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">MaxCertificatesTotal</td>
-                            <td className="py-2">Maximum total certificates across all CAs (0 = unlimited)</td>
-                        </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">MaxUsers</td>
-                            <td className="py-2">Maximum user accounts in this tenant's groups (0 = unlimited)</td>
+                            <td className="py-2 pr-4 font-mono text-sm">MaxValidityDays</td>
+                            <td className="py-2">Longest validity a leaf certificate of this tenant's CAs may carry (0 = unlimited). Tenant quotas were removed in 0.4.0; quotas are per CA</td>
                         </tr>
                         <tr>
                             <td className="py-2 pr-4 font-mono text-sm">CanBeDeleted</td>
@@ -302,8 +293,8 @@ export default function TenantModelDiagram() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Quota Enforcement</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Resource quotas prevent any single tenant from consuming excessive resources. Quotas are
-                    configured per tenant and enforced at issuance time.
+                    Quotas are configured per CA, on the CA's admin group, and enforced at issuance time.
+                    Tenant quotas (max CAs, certificates and users) were removed in 0.4.0.
                 </p>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Quota Types</h3>
                 <table className="w-full border-collapse mb-4">
@@ -316,15 +307,11 @@ export default function TenantModelDiagram() {
                     <tbody className="text-gray-700 dark:text-gray-300">
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4">Max Certificates</td>
-                            <td className="py-2">Total number of active certificates per tenant</td>
+                            <td className="py-2">Active certificates per CA (set on the CA's admin group)</td>
                         </tr>
                         <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4">Max CAs</td>
-                            <td className="py-2">Number of Certificate Authorities per tenant</td>
-                        </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4">Max Users</td>
-                            <td className="py-2">Number of user accounts per tenant</td>
+                            <td className="py-2 pr-4">Max Pending Requests</td>
+                            <td className="py-2">Pending requests per CA (set on the CA's admin group)</td>
                         </tr>
                         <tr className="border-b border-gray-100 dark:border-gray-800">
                             <td className="py-2 pr-4">Rate Limit</td>
@@ -332,7 +319,7 @@ export default function TenantModelDiagram() {
                         </tr>
                         <tr>
                             <td className="py-2 pr-4">Max Validity</td>
-                            <td className="py-2">Maximum certificate validity period allowed</td>
+                            <td className="py-2">Maximum certificate validity, per tenant or for the instance</td>
                         </tr>
                     </tbody>
                 </table>
@@ -341,15 +328,15 @@ export default function TenantModelDiagram() {
   Issuance Request
         |
         v
-  +------------------+     +------------------+     +------------------+
-  | Tenant Quota     |---->| CA Quota         |---->| Rate Limit       |
-  | (total certs)    |     | (per-CA limit)   |     | (per-hour limit) |
-  +--------+---------+     +--------+---------+     +--------+---------+
-           |                        |                        |
-      Pass | Fail             Pass  | Fail              Pass | Fail
-           v                        v                        v
-      Continue              429 Quota               429 Rate Limited
-                            Exceeded
+  +------------------+     +------------------+
+  | CA Quota         |---->| Rate Limit       |
+  | (per-CA limit)   |     | (per-hour limit) |
+  +--------+---------+     +--------+---------+
+           |                        |
+      Pass | Fail              Pass | Fail
+           v                        v
+      Continue              429 Rate Limited
+      409 Quota Exceeded
 `}</pre>
                 </div>
             </section>
@@ -358,18 +345,18 @@ export default function TenantModelDiagram() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Tenant Isolation</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Tenant isolation is enforced at the application layer. All database queries are scoped
-                    to the current tenant context, which is derived from the authenticated user's JWT claims.
-                    Admin endpoints automatically filter results by tenant so users can only see CAs and
-                    certificates within their own tenant scope.
+                    From 0.4.0 the isolation boundary is the instance; a tenant is a scope for delegating
+                    administration, not a partition of data. There is no tenant query filter: each endpoint
+                    that lists or reads rows of several tenants applies the caller's fence explicitly, and the
+                    fence equals what authorization allows.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>CAs and groups carry a tenant ID; instance CAs and system groups carry none</li>
-                    <li>All queries include a tenant filter derived from the JWT <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">tenant</code> claim</li>
-                    <li>Admin endpoints filter by tenant -- users only see CAs and certificates within their tenant</li>
-                    <li>Cross-tenant access requires system-level groups (<code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-super</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-admin</code>, etc.)</li>
-                    <li>Audit logs are tenant-scoped (except for system-level events)</li>
-                    <li>The tenant context switcher in the Admin UI allows system admins to view other tenants</li>
+                    <li>The fence holds the tenants of the caller's groups, of tenant-scoped grants and roles on the user, and of the CAs the user holds grants on; instance rows need an instance group or a grant on an instance CA</li>
+                    <li>A capability held at system scope (system operator, system auditor and the like) makes the fence instance-wide: every tenant's CAs are listed</li>
+                    <li>CA labels and names are unique across the instance, so a label in a URL names one CA</li>
+                    <li>A certificate profile is used only by a CA of its own scope, whatever the protocol</li>
+                    <li>The Admin UI's scope switcher narrows what a caller may see; it never widens it</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm overflow-x-auto mb-4">
                     <pre className="text-gray-700 dark:text-gray-300">{`
@@ -377,24 +364,24 @@ export default function TenantModelDiagram() {
         |
         v
   +---------------------+     +----------------------+     +---------------------+
-  | Extract tenant      |---->| Tenant-scoped query  |---->| Return filtered     |
-  | from JWT claim      |     | (WHERE TenantId = X) |     | results             |
+  | Resolve the fence   |---->| Endpoint applies it  |---->| Return fenced       |
+  | from all grants     |     | to rows it returns   |     | results             |
   +---------------------+     +----------+-----------+     +---------------------+
                                          |
-                               System group member?
+                            Capability at system scope?
                                     |          |
                                    Yes         No
                                     |          |
                                     v          v
-                              All tenants   Own tenant
-                              visible       only
+                              All tenants   Fenced tenants
+                              visible       (+ instance rows)
 `}</pre>
                 </div>
                 <div className="border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-r">
                     <p className="text-gray-700 dark:text-gray-300 text-sm">
                         <span className="font-semibold">Important:</span> Tenant isolation is application-level,
-                        not database-level. All tenants share the same database. The isolation is enforced by the
-                        TenantContext middleware and query filters.
+                        not database-level. All tenants share the same database. Each endpoint applies the
+                        caller's fence, which the tenant resolution middleware stores for the request.
                     </p>
                 </div>
             </section>

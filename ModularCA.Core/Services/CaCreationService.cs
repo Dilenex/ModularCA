@@ -48,7 +48,6 @@ public class CaCreationService(
     ICertificateIssuanceService issuanceService,
     SystemConfig systemConfig,
     ILogger<CaCreationService> logger,
-    IQuotaService quotaService,
     ISigningService signer,
     IAuditService? audit = null)
 {
@@ -106,19 +105,6 @@ public class CaCreationService(
             }
         }
     }
-    /// <summary>
-    /// Blocks CA creation when the owning tenant has reached its
-    /// <c>MaxCertificateAuthorities</c> limit. Previously the value was stored on the
-    /// tenant and echoed by the admin UI but never consulted by either creation path,
-    /// so operators thought they had a cap when in fact there wasn't one. Instance CAs (a null
-    /// tenant) are unlimited.
-    /// </summary>
-    private async Task EnforceTenantCaQuotaAsync(Guid? tenantId)
-    {
-        if (tenantId is Guid t && !await quotaService.CanCreateCaInTenantAsync(t))
-            throw new ResourceConflictException("Tenant CA quota exceeded.", ErrorCodes.QuotaExceeded);
-    }
-
     // Shared helper used by the root/intermediate builders below to
     // synthesize the CDP / AIA URL lists a new CA will carry in its own cert.
     // For roots (self-signed) we don't emit any — there is no issuer to point at.
@@ -186,6 +172,8 @@ public class CaCreationService(
     /// constraints flow through to every leaf the CA later issues.
     /// <paramref name="ceremonyId"/> is the approved key ceremony this creation executes, when
     /// the tenant required one; the signer verifies it before it generates or commits a key.
+    /// An invalid or reserved label, or a label or name another CA of the instance has
+    /// (soft-deleted CAs included), is refused before any key is generated.
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateRootAsync(
         string subjectCN, string? subjectO, string? subjectOU,
@@ -197,7 +185,7 @@ public class CaCreationService(
         string? nameConstraintsExcludedJson = null,
         Guid? ceremonyId = null)
     {
-        await EnforceTenantCaQuotaAsync(tenantId);
+        await EnsureNamingAsync(subjectCN, label);
 
         // The key is generated inside the signer and held pending under this ceremony context:
         // it signs only under it until it is committed to the certificate row, and is retired
@@ -320,7 +308,10 @@ public class CaCreationService(
     /// the same constraints. <paramref name="ceremonyId"/> is the approved key ceremony this
     /// creation executes, when the tenant required one; the signer verifies it before it
     /// generates or commits a key. A parent that is disabled, deleted, revoked or outside its
-    /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated.
+    /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated,
+    /// as is an invalid or reserved label, or a label or name another CA of the instance has. A
+    /// <paramref name="certProfileId"/> that <see cref="CertProfileScope"/> does not admit for the
+    /// parent and the new CA's space is reported as not found, like a missing one.
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateIntermediateAsync(
         CertificateAuthorityEntity parentCa, CertificateEntity parentCert,
@@ -334,7 +325,7 @@ public class CaCreationService(
         string? nameConstraintsExcludedJson = null,
         Guid? ceremonyId = null)
     {
-        await EnforceTenantCaQuotaAsync(tenantId);
+        await EnsureNamingAsync(subjectCN, label);
 
         var parentBcCert = CertificateUtil.ParseFromPem(parentCert.Pem);
         if (parentCa.IsDeleted || !parentCa.IsEnabled)
@@ -353,11 +344,8 @@ public class CaCreationService(
         CertProfileEntity caCertProfile;
         if (certProfileId.HasValue)
         {
-            caCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Id == certProfileId.Value && cp.IsCaProfile)
-                ?? throw new ResourceNotFoundException(
-                    "Certificate profile",
-                    $"CA Certificate Profile '{certProfileId}' not found or is not a CA profile.",
-                    certProfileId?.ToString());
+            await EnsureCaCertProfileAdmittedAsync(certProfileId, parentCa.Id, tenantId);
+            caCertProfile = await db.CertProfiles.FirstAsync(cp => cp.Id == certProfileId.Value);
         }
         else
         {
@@ -520,22 +508,8 @@ public class CaCreationService(
         // Validate the label against a strict char set BEFORE any DB work so we
         // never persist a CA whose label can escape CDP/AIA URLs or the /ca/{label} route.
         var caLabel = label ?? ToSafeLabel(name);
-        ValidateLabel(caLabel);
-        if (caLabel.StartsWith("system-", StringComparison.OrdinalIgnoreCase) ||
-            caLabel.StartsWith("org-", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException(
-                $"CA label '{caLabel}' uses a reserved prefix (system- / org-). Choose a different label.",
-                nameof(label));
-        }
-
-        var existingInTenant = await db.CertificateAuthorities
-            .AnyAsync(c => c.TenantId == tenantId && c.Label == caLabel);
-        if (existingInTenant)
-        {
-            throw new ResourceConflictException(
-                $"A CA with label '{caLabel}' already exists in this tenant.", ErrorCodes.NameAlreadyTaken);
-        }
+        CaLabelRules.Validate(caLabel);
+        await CaLabelRules.EnsureUniqueAsync(db, caLabel, name);
 
         CertificateAuthorityEntity caEntity;
         SigningProfileEntity signingProfile;
@@ -614,15 +588,12 @@ public class CaCreationService(
                 "[CA-CREATE-DIAG] After signing-profile save for '{Name}': certEntity.CertificateId={CertId} signingProfile.Id={SpId} signingProfile.IssuerId={IssuerId}",
                 name, certEntity.CertificateId, signingProfile.Id, signingProfile.IssuerId);
 
-            // Tenant-isolate the signing-profile-to-cert-profile link.
-            // Now that CertProfileEntity.TenantId is a real column, only link profiles that
-            // (a) are not CA profiles and (b) are either system-wide (TenantId == null) or
-            // owned by the same tenant as the new CA. This closes the cross-tenant profile
-            // leak.
+            // Link the leaf profiles CertProfileScope admits for the new CA: unbound ones, and
+            // its space's profiles bound to no CA.
             var eligibleCertProfiles = await db.CertProfiles
-                .IgnoreQueryFilters()
                 .Where(cp => !cp.IsCaProfile
-                    && ((cp.TenantId == null && cp.CertificateAuthorityId == null) || (tenantId != null && cp.TenantId == tenantId)))
+                    && ((cp.TenantId == null && cp.CertificateAuthorityId == null)
+                        || (tenantId != null && cp.TenantId == tenantId && cp.CertificateAuthorityId == null)))
                 .ToListAsync();
             foreach (var cp in eligibleCertProfiles)
             {
@@ -726,7 +697,7 @@ public class CaCreationService(
                 "OCSP Responder Certificate Profile", "OCSP Responder", logger);
 
             // Seed default protocol configs using the per-CA signing profile
-            var defaultCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => !cp.IsCaProfile);
+            var defaultCertProfile = await DefaultLeafProfileAsync(db, caEntity.Id, tenantId);
             if (defaultCertProfile != null)
             {
                 foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" })
@@ -745,12 +716,14 @@ public class CaCreationService(
 
             await tx.CommitAsync();
         }
-        catch
+        catch (Exception ex)
         {
             // Roll back the DB transaction and discard every pending key: nothing was written to
             // the keystore, and a pending key signs under nothing but this ceremony.
             try { await tx.RollbackAsync(); } catch { /* best-effort */ }
             await RetireQuietlyAsync(ceremony, caKey, tsaKey, ocspKey);
+            if (ex is DbUpdateException dbEx && CaLabelRules.IsNameRace(dbEx))
+                throw CaLabelRules.NameRaceConflict(caLabel, name);
             throw;
         }
 
@@ -1301,17 +1274,60 @@ public class CaCreationService(
             $"'{certType}' certificate profile, then reissue again.", ErrorCodes.SigningProfileMissingRequiredEku);
     }
 
-    private static readonly System.Text.RegularExpressions.Regex LabelPattern =
-        new(@"^[a-z0-9][a-z0-9-]{0,62}$", System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    private static void ValidateLabel(string label)
+    /// <summary>
+    /// Refuses, before any key is generated, a CA whose label (given, or derived from
+    /// <paramref name="name"/>) is invalid or reserved, or whose label or name another CA of the
+    /// instance already has, soft-deleted CAs included.
+    /// </summary>
+    /// <summary>
+    /// Applies <see cref="CaLabelRules"/> to a new CA named <paramref name="name"/> with
+    /// <paramref name="label"/> (derived from the name when null): <see cref="ArgumentException"/>
+    /// for an invalid or reserved label, <see cref="ResourceConflictException"/> for a label or name
+    /// another CA has. Ceremony initiation calls it so a bad name is refused before anyone approves.
+    /// </summary>
+    public async Task EnsureNamingAsync(string name, string? label)
     {
-        if (string.IsNullOrEmpty(label) || !LabelPattern.IsMatch(label))
-        {
-            throw new ArgumentException(
-                $"Invalid CA label '{label}'. Labels must match ^[a-z0-9][a-z0-9-]{{0,62}}$.",
-                nameof(label));
-        }
+        var caLabel = label ?? ToSafeLabel(name);
+        CaLabelRules.Validate(caLabel);
+        await CaLabelRules.EnsureUniqueAsync(db, caLabel, name);
+    }
+
+    /// <summary>
+    /// The leaf profile a new CA's default protocol configurations use: the first, by name then
+    /// id, of the non-CA profiles <see cref="CertProfileScope"/> admits for CA
+    /// <paramref name="caId"/> of <paramref name="tenantId"/>; null when there is none.
+    /// </summary>
+    internal static Task<CertProfileEntity?> DefaultLeafProfileAsync(ModularCADbContext db, Guid caId, Guid? tenantId)
+        => db.CertProfiles
+            .Where(cp => !cp.IsCaProfile
+                && ((cp.TenantId == null && cp.CertificateAuthorityId == null)
+                    || (cp.TenantId == tenantId && (cp.CertificateAuthorityId == null || cp.CertificateAuthorityId == caId))))
+            .OrderBy(cp => cp.Name).ThenBy(cp => cp.Id)
+            .FirstOrDefaultAsync();
+
+    /// <summary>
+    /// Throws <see cref="ResourceNotFoundException"/> when CA certificate profile
+    /// <paramref name="certProfileId"/> is missing, not a CA profile, or not admitted for a child
+    /// CA of <paramref name="tenantId"/> under <paramref name="parentCaId"/>. Admitted are an
+    /// unbound profile, one bound to the parent CA (the CA that issues the child's certificate),
+    /// and one space-wide in the child's space; out of scope reads as missing, so there is no
+    /// existence oracle.
+    /// </summary>
+    public async Task EnsureCaCertProfileAdmittedAsync(Guid? certProfileId, Guid parentCaId, Guid? tenantId)
+    {
+        if (certProfileId is not Guid id)
+            return;
+        var profile = await db.CertProfiles.AsNoTracking()
+            .Where(cp => cp.Id == id && cp.IsCaProfile)
+            .Select(cp => new { cp.TenantId, cp.CertificateAuthorityId })
+            .FirstOrDefaultAsync();
+        var admitted = profile != null
+            && ((profile.TenantId == null && profile.CertificateAuthorityId == null)
+                || profile.CertificateAuthorityId == parentCaId
+                || (profile.CertificateAuthorityId == null && profile.TenantId == tenantId));
+        if (!admitted)
+            throw new ResourceNotFoundException(
+                "Certificate profile", $"CA Certificate Profile '{id}' not found or is not a CA profile.", id.ToString());
     }
 
     private static string ToSafeLabel(string name)

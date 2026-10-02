@@ -23,8 +23,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing certificate signing requests including approval, rejection,
 /// multi-person approval workflows, CSR parsing, and profile validation.
-/// Approve/reject/cancel resolve the target CA and enforce
-/// <c>AccessibleTenantIds</c>. The <c>system-super</c> self-approval bypass is gated on
+/// Approve/reject/cancel resolve the target CA and enforce the caller's
+/// <see cref="TenantFence"/>. The <c>system-super</c> self-approval bypass is gated on
 /// <c>SecurityPolicyEntity.AllowSystemSuperSelfApproval</c> (DB-backed, see <c>/admin/security-policy</c>).
 /// </summary>
 [ApiController]
@@ -134,7 +134,7 @@ public class AdminCertSignRequestController(
         if (csr == null)
             return NotFound(new { error = "Certificate request not found" });
 
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fence != null) return fence;
 
         // Step-up re-authenticates the caller; it does not authorize the object. The same
@@ -191,6 +191,8 @@ public class AdminCertSignRequestController(
         // The rules issuance applies are the effective profile's, after inheritance; validating
         // against the profile's own rows let the form and the CA disagree for every profile
         // that inherits from a system profile.
+        if (!await TenantFence.From(HttpContext, Capabilities.CertView).AllowsRequestProfileAsync(_db, request.RequestProfileId))
+            return NotFound(new { error = "Request profile not found." });
         Core.Models.EffectiveRequestProfile profile;
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
         catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
@@ -481,7 +483,7 @@ public class AdminCertSignRequestController(
         if (csr == null) return NotFound();
 
         // Tenant fence.
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fence != null) return fence;
 
         // Enforce profile.use capability on both profiles referenced by the CSR
@@ -586,7 +588,7 @@ public class AdminCertSignRequestController(
             return NotFound(new { error = "Certificate request not found" });
 
         // Enforce tenant isolation on the CSR's CA
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertView);
         if (fence != null) return fence;
 
         var approvals = await _db.CsrApprovals
@@ -622,7 +624,7 @@ public class AdminCertSignRequestController(
             return NotFound(new { error = "Certificate request not found" });
 
         // Tenant fence.
-        var fenceReject = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        var fenceReject = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fenceReject != null) return fenceReject;
 
         // A request an approver owns (PendingApproval, or PartiallyApproved under a quorum) is
@@ -663,7 +665,7 @@ public class AdminCertSignRequestController(
             return NotFound(new { error = "Certificate request not found" });
 
         // Tenant fence.
-        var fenceCancel = await EnforceTenantFenceAsync(csr.SigningProfileId);
+        var fenceCancel = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fenceCancel != null) return fenceCancel;
 
         if (csr.Status != "Approved" && csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
@@ -704,19 +706,17 @@ public class AdminCertSignRequestController(
 
     /// <summary>
     /// Returns null when the caller may act on the CSR, or an <see cref="IActionResult"/>
-    /// (NotFound on tenant mismatch) when access is denied. System admins always pass.
+    /// (NotFound) when the CSR's CA is outside the caller's <see cref="TenantFence"/> for
+    /// <paramref name="capability"/>. An instance-wide caller always passes; anyone else is
+    /// refused a CSR whose CA cannot be resolved.
     /// </summary>
-    private async Task<IActionResult?> EnforceTenantFenceAsync(Guid? signingProfileId)
+    private async Task<IActionResult?> EnforceTenantFenceAsync(Guid? signingProfileId, string capability)
     {
-        if (HttpContext.Items["IsSystemAdmin"] is true)
+        var fence = TenantFence.From(HttpContext, capability);
+        if (fence.InstanceWide)
             return null;
         var caInfo = await ResolveCaFromSigningProfileAsync(signingProfileId);
-        if (caInfo == null)
-            return NotFound();
-        var fence = TenantFence.From(HttpContext);
-        if (fence == null || !fence.Allows(caInfo.Value.TenantId))
-            return NotFound();
-        return null;
+        return caInfo != null && fence.Allows(caInfo.Value.TenantId) ? null : NotFound();
     }
 }
 

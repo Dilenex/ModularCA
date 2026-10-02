@@ -137,6 +137,10 @@ namespace ModularCA.Core.Services
         /// </summary>
         private sealed record PreResolvedCa(X509Certificate Certificate, KeyRef Key, SigningContext Context);
 
+        /// <summary>
+        /// Issues the CSR's certificate. A leaf profile outside the issuing CA's scope is refused
+        /// (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>), whatever the entry point.
+        /// </summary>
         /// <param name="allowCaProfile">
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
         /// entry point; only <see cref="IssueCaCertificateAsync"/> passes true. See
@@ -291,6 +295,21 @@ namespace ModularCA.Core.Services
                 // the same block regardless of which entry point they came through.
                 if (string.Equals(issuingCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
                     throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
+            }
+
+            // The profile must be in the issuing CA's scope, on every path that reaches here.
+            var issuingScope = issuingCaEntity != null
+                ? (CaId: (Guid?)issuingCaEntity.Id, issuingCaEntity.TenantId)
+                : (CaId: preResolvedCa?.Context.CaId, preResolvedCa?.Context.TenantId);
+            if (!allowCaProfile && issuingScope.CaId is Guid scopeCaId)
+            {
+                var profileScope = await _db.CertProfiles.AsNoTracking()
+                    .Where(p => p.Id == csrEntity.CertProfileId.Value)
+                    .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                    .FirstOrDefaultAsync(cancellationToken)
+                    ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
+                ModularCA.Core.Authorization.CertProfileScope.Ensure(
+                    profileScope.TenantId, profileScope.CertificateAuthorityId, scopeCaId, issuingScope.TenantId);
             }
 
             var now = DateTime.UtcNow;
@@ -494,7 +513,9 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Reissues a certificate identified by certificate ID, serial number, or CSR ID.
         /// Refuses first when the issuing CA is revoked, outside its validity, disabled, deleted or
-        /// unregistered (see <see cref="IssuingCaGuard"/>), so the predecessor is not auto-revoked
+        /// unregistered (see <see cref="IssuingCaGuard"/>), or when the CSR's certificate profile is
+        /// no longer in that CA's scope (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>),
+        /// so the predecessor is not auto-revoked
         /// for a reissue that cannot happen. Otherwise revokes the previous certificate (if not
         /// already revoked), validates constraints, builds a new certificate, and persists it.
         /// </summary>
@@ -623,6 +644,18 @@ namespace ModularCA.Core.Services
             EnsureScopeIssues(caTenant);
             if (string.Equals(reissueCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
                 throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
+
+            // The profile must still be in the issuing CA's scope, checked before the predecessor is revoked.
+            if (csrEntity.CertProfileId is Guid reissueProfileId)
+            {
+                var reissueScope = await _db.CertProfiles.AsNoTracking()
+                    .Where(p => p.Id == reissueProfileId)
+                    .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                    .FirstOrDefaultAsync()
+                    ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
+                ModularCA.Core.Authorization.CertProfileScope.Ensure(
+                    reissueScope.TenantId, reissueScope.CertificateAuthorityId, reissueCaEntity.Id, reissueCaEntity.TenantId);
+            }
 
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
             // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, do so now via
@@ -1622,14 +1655,6 @@ namespace ModularCA.Core.Services
             if (!canIssue)
                 throw new ResourceConflictException(
                     $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.", ErrorCodes.QuotaExceeded);
-
-            // Check tenant-level quota
-            if (ca.TenantId is Guid caTenantId)
-            {
-                var canIssueTenant = await _quotaService.CanIssueCertificateInTenantAsync(caTenantId);
-                if (!canIssueTenant)
-                    throw new ResourceConflictException($"Tenant certificate quota exceeded.", ErrorCodes.QuotaExceeded);
-            }
         }
 
         /// <summary>The caller identity issuance signs under; the signer audits it with every decision.</summary>

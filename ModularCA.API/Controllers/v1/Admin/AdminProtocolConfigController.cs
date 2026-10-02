@@ -158,7 +158,9 @@ public class AdminProtocolConfigController(
     }
 
     /// <summary>
-    /// Create or update a protocol config for a CA.
+    /// Create or update a protocol config for a CA. A certificate profile outside the CA's scope
+    /// (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>) is refused (400), and so is a
+    /// signing profile that does not issue from this CA's certificate.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{caId:guid}/{protocol}")]
@@ -195,6 +197,34 @@ public class AdminProtocolConfigController(
                 normalizedProtocol, ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate));
             if (refusal != null)
                 return BadRequest(new { error = refusal });
+        }
+
+        if (request.SigningProfileId is Guid signingProfileId)
+        {
+            var signing = await _db.SigningProfiles.AsNoTracking()
+                .Where(sp => sp.Id == signingProfileId)
+                .Select(sp => new { sp.Name, sp.IssuerId })
+                .FirstOrDefaultAsync();
+            if (signing == null)
+                return BadRequest(new { error = "Signing profile not found." });
+            if (signing.IssuerId == null || signing.IssuerId != ca.CertificateId)
+            {
+                var stored = await _db.CaProtocolConfigs.AsNoTracking()
+                    .AnyAsync(c => c.CaId == caId && c.Protocol == normalizedProtocol && c.SigningProfileId == signingProfileId);
+                return BadRequest(new { error = ForeignSigningProfileMessage(ca, normalizedProtocol, signing.Name, signing.IssuerId, stored) });
+            }
+        }
+
+        if (request.CertProfileId is Guid certProfileId)
+        {
+            var profile = await _db.CertProfiles.AsNoTracking()
+                .Where(p => p.Id == certProfileId)
+                .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                .FirstOrDefaultAsync();
+            if (profile == null)
+                return BadRequest(new { error = "Certificate profile not found." });
+            if (!ModularCA.Core.Authorization.CertProfileScope.Admits(profile.TenantId, profile.CertificateAuthorityId, ca.Id, ca.TenantId))
+                return BadRequest(new { error = "The certificate profile belongs to another scope than this CA.", code = ModularCA.Shared.Errors.ErrorCodes.CertProfileOutOfScope });
         }
 
         var config = await _db.CaProtocolConfigs
@@ -282,6 +312,31 @@ public class AdminProtocolConfigController(
             config.SigningProfileId,
             config.CertProfileId,
         });
+    }
+
+    /// <summary>
+    /// The 400 for a signing profile that does not issue from <paramref name="ca"/>'s current
+    /// certificate: where it issues from instead (no CA, another CA, or a superseded certificate
+    /// of this CA), and what to change. <paramref name="stored"/> says the configuration already
+    /// names it, as one saved before 0.4.0 can, so re-saving it unchanged is refused too.
+    /// </summary>
+    private string ForeignSigningProfileMessage(
+        ModularCA.Shared.Entities.CertificateAuthorityEntity ca, string protocol, string profileName, Guid? issuerId, bool stored)
+    {
+        string source;
+        if (issuerId is not Guid issuer)
+            source = "issues from no CA";
+        else if (ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(_db, issuer) is not { } owner)
+            source = "issues from a certificate no CA owns";
+        else if (owner.CaId == ca.Id)
+            source = "issues from a superseded certificate of this CA";
+        else
+            source = $"issues from CA '{_db.CertificateAuthorities.AsNoTracking().Where(c => c.Id == owner.CaId).Select(c => c.Label ?? c.Name).FirstOrDefault() ?? owner.CaId.ToString()}'";
+
+        var lead = stored
+            ? $"{protocol} on CA '{ca.Label ?? ca.Name}' still names signing profile '{profileName}', which {source}; it cannot be saved as it is."
+            : $"Signing profile '{profileName}' {source}, so {protocol} on CA '{ca.Label ?? ca.Name}' cannot use it.";
+        return lead + " Under Signing Profile, choose one of this CA's own signing profiles (one that issues from its current certificate), then save.";
     }
 }
 

@@ -145,9 +145,9 @@ namespace ModularCA.Shared.Entities
         public int? UserCeremonyRequiredApprovals { get; set; }
 
         /// <summary>
-        /// Soft-delete flag. When true, the row is hidden by the
-        /// global query filter. The filtered unique index on <c>(TenantId, Label)</c>
-        /// permits re-creating a CA with the same label after soft-deletion.
+        /// Soft-delete flag. When true, the row is hidden by the soft-delete query filter. The
+        /// unique indexes on Label and Name cover deleted rows too, so a deleted CA's label is
+        /// never reused: it is baked into the URLs of the certificates it issued.
         /// </summary>
         public bool IsDeleted { get; set; } = false;
 

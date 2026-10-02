@@ -24,17 +24,6 @@ namespace ModularCA.Tests.Auth;
 /// </summary>
 public class RequestorSelfServiceTests
 {
-    /// <summary>System-admin-off tenant context, so the global filter behaves like a normal user session.</summary>
-    private sealed class NoTenantContext : ITenantContext
-    {
-        public bool HasContext => true;
-        public bool IsSystemAdmin => true;   // bypass the tenant filter; this suite is about capability, not tenancy
-        public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
-        public Guid? UserId => null;
-        public bool HasInstanceScope => true;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
-    }
-
     private static readonly Guid Requestor = Guid.Parse("11111111-0000-0000-0000-000000000001");
     private static readonly Guid Stranger = Guid.Parse("22222222-0000-0000-0000-000000000002");
 
@@ -45,7 +34,7 @@ public class RequestorSelfServiceTests
             .ConfigureWarnings(w => w.Ignore(
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new ModularCADbContext(options, new NoTenantContext());
+        return new ModularCADbContext(options);
     }
 
     /// <summary>Seeds one certificate plus the request that produced it, and returns its id.</summary>

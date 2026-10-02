@@ -73,7 +73,7 @@ public sealed class ControlledUserBypassEndpointTests
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("sub", actor.ToString()) }, "test")),
         };
-        http.Items["IsSystemAdmin"] = true;
+        ModularCA.Auth.Authorization.TenantFence.Store(http, ModularCA.Auth.Authorization.TenantFence.Of([], instanceScope: true, isSystemAdmin: true));
         controller.GetType().GetProperty("ControllerContext", BindingFlags.Instance | BindingFlags.Public)!
             .SetValue(controller, new ControllerContext { HttpContext = http });
         return controller;

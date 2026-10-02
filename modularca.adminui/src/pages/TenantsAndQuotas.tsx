@@ -20,7 +20,6 @@ export const usagePercent = (used: number, max: number) => (!max || max <= 0 ? 0
 export const usageBarColor = (p: number) => (p > 80 ? 'bg-red-500' : p >= 60 ? 'bg-yellow-500' : 'bg-green-500');
 export const usageTextColor = (p: number) => (p > 80 ? 'text-red-800 dark:text-red-400' : p >= 60 ? 'text-yellow-800 dark:text-yellow-400' : 'text-green-800 dark:text-green-400');
 // 0 = unlimited by convention across tenant and CA quotas.
-export const fmtLimit = (used: number, max: number) => (max > 0 ? `${used} / ${max}` : `${used} / ∞`);
 
 export const numInput = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
 
@@ -50,9 +49,6 @@ export interface Tenant {
     description?: string;
     isEnabled: boolean;
     createdAt: string;
-    maxCertificateAuthorities: number;
-    maxCertificatesTotal: number;
-    maxUsers: number;
     maxValidityDays: number;
     validityCeilingBehavior: ValidityCeilingBehavior;
     requireKeyCeremony: boolean;
@@ -149,7 +145,7 @@ const TenantsAndQuotas: React.FC = () => {
 
     // create-tenant form
     const [showCreate, setShowCreate] = useState(false);
-    const [createForm, setCreateForm] = useState({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior });
+    const [createForm, setCreateForm] = useState({ name: '', description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior });
     const [creating, setCreating] = useState(false);
 
     const load = useCallback(() => {
@@ -177,14 +173,11 @@ const TenantsAndQuotas: React.FC = () => {
             await apiPost('/api/v1/admin/tenants', {
                 name: createForm.name,
                 description: createForm.description,
-                maxCertificateAuthorities: createForm.maxCAs,
-                maxCertificatesTotal: createForm.maxCertificates,
-                maxUsers: createForm.maxUsers,
                 maxValidityDays: createForm.maxValidityDays,
                 validityCeilingBehavior: createForm.validityCeilingBehavior,
             });
             setShowCreate(false);
-            setCreateForm({ name: '', description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' });
+            setCreateForm({ name: '', description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' });
             load();
         } catch (err: any) {
             showToast('error', err.message || 'Failed to create tenant');
@@ -200,9 +193,9 @@ const TenantsAndQuotas: React.FC = () => {
             exportValue: (t) => t.name,
             render: (t) => <span className="text-gray-900 dark:text-white font-medium truncate">{t.name}</span>,
         },
-        { key: 'cas', header: 'CAs', defaultWidth: 100, headerTitle: 'CAs / max', exportValue: (t) => fmtLimit(t.caCount, t.maxCertificateAuthorities), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmtLimit(t.caCount, t.maxCertificateAuthorities)}</span> },
-        { key: 'users', header: 'Users', defaultWidth: 100, headerTitle: 'Users / max', exportValue: (t) => fmtLimit(t.userCount, t.maxUsers), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmtLimit(t.userCount, t.maxUsers)}</span> },
-        { key: 'certs', header: 'Certs', defaultWidth: 120, headerTitle: 'Active certs / max', exportValue: (t) => fmtLimit(t.issuedCertificates, t.maxCertificatesTotal), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmtLimit(t.issuedCertificates, t.maxCertificatesTotal)}</span> },
+        { key: 'cas', header: 'CAs', defaultWidth: 100, exportValue: (t) => String(t.caCount), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.caCount}</span> },
+        { key: 'users', header: 'Users', defaultWidth: 100, exportValue: (t) => String(t.userCount), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.userCount}</span> },
+        { key: 'certs', header: 'Certs', defaultWidth: 120, headerTitle: 'Active certificates', exportValue: (t) => String(t.issuedCertificates), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.issuedCertificates}</span> },
         { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (t) => formatDate(t.createdAt), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(t.createdAt)}</span> },
     ];
 
@@ -211,12 +204,12 @@ const TenantsAndQuotas: React.FC = () => {
             <DetailField label="Name" value={t.name} />
             <DetailField label="Description" value={t.description || '-'} />
             <DetailField label="Status" value={t.isEnabled !== false ? 'Enabled' : 'Disabled'} />
-            <DetailField label="CAs" value={fmtLimit(t.caCount, t.maxCertificateAuthorities)} />
-            <DetailField label="Users" value={fmtLimit(t.userCount, t.maxUsers)} />
-            <DetailField label="Active Certs" value={fmtLimit(t.issuedCertificates, t.maxCertificatesTotal)} />
+            <DetailField label="CAs" value={t.caCount} />
+            <DetailField label="Users" value={t.userCount} />
+            <DetailField label="Active Certs" value={t.issuedCertificates} />
             <DetailField label="Key Ceremony" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No'} />
             <DetailField label="Created" value={formatDate(t.createdAt)} />
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit ceilings, toggle status, or set per-CA quotas.</p>
+            <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit the validity ceiling, toggle status, or set per-CA quotas.</p>
         </div>
     );
 
@@ -265,12 +258,6 @@ const TenantsAndQuotas: React.FC = () => {
                         <input type="text" placeholder="Description" value={createForm.description}
                             onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
                             className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
-                        <div><label className={labelCls}>Max CAs</label>
-                            <input inputMode="numeric" value={createForm.maxCAs} onChange={(e) => setCreateForm({ ...createForm, maxCAs: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
-                        <div><label className={labelCls}>Max Certificates</label>
-                            <input inputMode="numeric" value={createForm.maxCertificates} onChange={(e) => setCreateForm({ ...createForm, maxCertificates: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
-                        <div><label className={labelCls}>Max Users</label>
-                            <input inputMode="numeric" value={createForm.maxUsers} onChange={(e) => setCreateForm({ ...createForm, maxUsers: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
                         <div><label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
                             <input inputMode="numeric" value={createForm.maxValidityDays} onChange={(e) => setCreateForm({ ...createForm, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} /></div>
                         <div><label className={labelCls}>Over the ceiling</label>

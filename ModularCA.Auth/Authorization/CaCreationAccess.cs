@@ -36,7 +36,6 @@ public static class CaCreationAccess
 
         var parent = await db.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
             .Where(ca => ca.Id == parentCaId)
             .Select(ca => new { ca.Id, ca.TenantId })
             .FirstOrDefaultAsync();

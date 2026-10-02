@@ -40,7 +40,7 @@ const TenantDetail: React.FC = () => {
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; confirmClass?: string; action: () => Promise<void> } | null>(null);
 
     // ── edit buffers (seeded from source on load / Cancel) ──
-    const blankForm = { description: '', maxCAs: 0, maxCertificates: 0, maxUsers: 0, maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior, requireKeyCeremony: false, ceremonyRequiredApprovals: 1 };
+    const blankForm = { description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior, requireKeyCeremony: false, ceremonyRequiredApprovals: 1 };
     const [form, setForm] = useState(blankForm);
     const [quotaEdits, setQuotaEdits] = useState<Record<string, { maxCertificates: number; maxPendingRequests: number }>>({});
     const [tenantQuorum, setTenantQuorum] = useState('');                 // '' = inherit
@@ -49,9 +49,6 @@ const TenantDetail: React.FC = () => {
     const seed = useCallback((t: Tenant, q: TenantQ | null) => {
         setForm({
             description: t.description || '',
-            maxCAs: t.maxCertificateAuthorities ?? 0,
-            maxCertificates: t.maxCertificatesTotal ?? 0,
-            maxUsers: t.maxUsers ?? 0,
             maxValidityDays: t.maxValidityDays ?? 0,
             validityCeilingBehavior: t.validityCeilingBehavior ?? 'Shorten',
             requireKeyCeremony: t.requireKeyCeremony ?? false,
@@ -101,9 +98,6 @@ const TenantDetail: React.FC = () => {
     // ── dirty / validity (drive the unified Save button) ──
     const ceilingsDirty =
         form.description !== (t.description || '') ||
-        form.maxCAs !== (t.maxCertificateAuthorities ?? 0) ||
-        form.maxCertificates !== (t.maxCertificatesTotal ?? 0) ||
-        form.maxUsers !== (t.maxUsers ?? 0) ||
         form.maxValidityDays !== (t.maxValidityDays ?? 0) ||
         form.validityCeilingBehavior !== (t.validityCeilingBehavior ?? 'Shorten') ||
         form.requireKeyCeremony !== (t.requireKeyCeremony ?? false) ||
@@ -129,9 +123,6 @@ const TenantDetail: React.FC = () => {
         try {
             const body = {
                 description: form.description,
-                maxCertificateAuthorities: form.maxCAs,
-                maxCertificatesTotal: form.maxCertificates,
-                maxUsers: form.maxUsers,
                 maxValidityDays: form.maxValidityDays,
                 validityCeilingBehavior: form.validityCeilingBehavior,
                 requireKeyCeremony: form.requireKeyCeremony,
@@ -213,12 +204,6 @@ const TenantDetail: React.FC = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <div><label className={labelCls}>Description</label>
                                     <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={numInput} /></div>
-                                <div><label className={labelCls}>Max CAs (0 = unlimited)</label>
-                                    <input inputMode="numeric" value={form.maxCAs} onChange={(e) => setForm({ ...form, maxCAs: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
-                                <div><label className={labelCls}>Max Certificates (0 = unlimited)</label>
-                                    <input inputMode="numeric" value={form.maxCertificates} onChange={(e) => setForm({ ...form, maxCertificates: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
-                                <div><label className={labelCls}>Max Users (0 = unlimited)</label>
-                                    <input inputMode="numeric" value={form.maxUsers} onChange={(e) => setForm({ ...form, maxUsers: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })} className={numInput} /></div>
                                 <div>
                                     <label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
                                     <input inputMode="numeric" value={form.maxValidityDays} onChange={(e) => setForm({ ...form, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} />
@@ -260,9 +245,6 @@ const TenantDetail: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                             <DetailField label="ID" value={t.id} mono />
                             <DetailField label="Description" value={t.description || '-'} />
-                            <DetailField label="Max CAs" value={t.maxCertificateAuthorities || 'Unlimited'} />
-                            <DetailField label="Max Certificates" value={t.maxCertificatesTotal || 'Unlimited'} />
-                            <DetailField label="Max Users" value={t.maxUsers || 'Unlimited'} />
                             <DetailField label="Max Cert Validity" value={t.maxValidityDays ? `${t.maxValidityDays} days` : 'Unlimited'} />
                             <DetailField label="Over the ceiling" value={t.maxValidityDays
                                 ? (t.validityCeilingBehavior === 'Refuse'

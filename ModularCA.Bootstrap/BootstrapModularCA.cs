@@ -362,6 +362,15 @@ public class BootstrapModularCA
             Console.WriteLine("❌ Failed to load bootstrap configuration. Aborting.");
             return 1;
         }
+        try
+        {
+            BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
+        }
+        catch (ModularCA.Shared.Errors.ConfigurationValidationException ex)
+        {
+            Console.WriteLine($"❌ Bootstrap refused before any change was made: {ex.Message}");
+            return 1;
+        }
 
         var setupDbPath = Path.Combine(configDir, "setup-database.yaml");
         var setupDbConfig = YamlSetupDatabaseLoader.Load(setupDbPath);
@@ -893,7 +902,7 @@ public class BootstrapModularCA
         var orgTenant = dbContext.Tenants.FirstOrDefault(t => t.Slug == orgSlug);
         if (orgTenant == null)
         {
-            var existing = dbContext.Tenants.IgnoreQueryFilters()
+            var existing = dbContext.Tenants
                 .Where(t => !t.IsDeleted)
                 .OrderBy(t => t.Name)
                 .FirstOrDefault();

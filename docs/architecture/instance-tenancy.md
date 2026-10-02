@@ -184,6 +184,28 @@ that nothing is renamed only to be deleted.
   - Instance policy changes by anyone but a system-super go through an `InstancePolicyChange`
     ceremony. The licence counts organisations only.
 - **S4.** Remove the isolation-only query filters and fences, and make CA labels and names
-  unique across the instance.
+  unique across the instance. Done in the `InstanceUniqueCaNames` migration and the code around it:
+  - The only global query filters left are soft-delete ones (tenants, CAs, users). There is no
+    `ITenantContext`; `TenantResolutionMiddleware` stores the caller's `TenantFence` from
+    `GetFenceAsync`, which reads all four grant sources under a worn badge, so the fence equals
+    what authorization allows. A capability at system scope makes it instance-wide for that
+    capability only (`TenantFence.For`): each endpoint narrows the fence to the capability its
+    policy demands, so a system auditor sees every space's audit views but not their operator
+    configuration.
+  - Every list and read of several spaces' rows applies the fence explicitly; the lists that leaked
+    across spaces (whitelists, SSH CA keys and templates, signing and request profiles) are fenced,
+    and ACME EAB keys, which no CA owns, are listed only to a fence instance-wide for cert.revoke
+    and created or deleted only with cert.revoke at system scope. `SpaceIsolationMatrixTests`
+    drives each through the real policies, and again with the policy skipped so the action's own
+    fence is tested; `SpaceFenceGuardTests` fails a new read (a GET, or a query POST) that names no
+    CA and carries no instance-rank policy until its fence is declared.
+  - A write that takes a CA from the body checks the new CA: a signing profile's issuer, a profile's
+    or SSH row's CA, an SSH template's key (`CaBindingAccess`), and a protocol configuration's
+    signing profile, which must issue from that CA. A CA that has issued keeps its label.
+  - A certificate profile is used only by a CA of its own scope (`CertProfileScope`), at issuance
+    for every protocol, at CSR submission, on a protocol configuration, a template and an
+    inheritance parent.
+  - CA labels (ignoring case) and names are unique over all rows, deleted ones included. The
+    upgrade refuses while any two CAs collide. Tenant quotas are dropped; group quotas stay.
 - **S5.** Simplify ranks to instance, space, CA and operator.
 - **S6.** Rename tenant to space in the schema, API, console and docs.

@@ -63,8 +63,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Resolve the CA via CSR → SigningProfile → IssuerId → CA, then
-        /// enforce that the caller's <see cref="ICurrentUserService"/> accessible tenant
-        /// set contains the CA's tenant. Returns null on allow, an <see cref="IActionResult"/>
+        /// enforce that the caller's <see cref="TenantFence"/> admits the CA's tenant.
+        /// Returns null on allow, an <see cref="IActionResult"/>
         /// (404) on deny. Collapses cross-tenant mismatches to 404 to avoid existence oracles.
         /// </summary>
         private async Task<IActionResult?> EnforceTenantFenceForCsrAsync(Guid csrId)
@@ -104,21 +104,16 @@ namespace ModularCA.API.Controllers.v1.Admin
             return EnforceTenantFence(info);
         }
 
+        /// <summary>
+        /// Null when the caller's cert.revoke <see cref="TenantFence"/> admits the CA's tenant, else
+        /// 404. A signing profile with no CA link is system-wide and admits only a system admin.
+        /// </summary>
         private IActionResult? EnforceTenantFence((Guid CaId, Guid? TenantId)? info)
         {
-            // System-wide signing profile with no CA link — treat as system-admin-only.
+            var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
             if (info == null)
-            {
-                if (HttpContext.Items["IsSystemAdmin"] is true)
-                    return null;
-                return NotFound();
-            }
-            if (HttpContext.Items["IsSystemAdmin"] is true)
-                return null;
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null || !fence.Allows(info.Value.TenantId))
-                return NotFound();
-            return null;
+                return fence.IsSystemAdmin ? null : NotFound();
+            return fence.Allows(info.Value.TenantId) ? null : NotFound();
         }
 
         /// <summary>

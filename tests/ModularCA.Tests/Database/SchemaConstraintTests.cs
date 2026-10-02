@@ -75,32 +75,23 @@ public class SchemaConstraintTests
         Assert.Equal(DeleteBehavior.Restrict, crlToConfig.DeleteBehavior);
     }
 
-    // ── Tenant scoping ─────────────────────────────────────────────────────────
+    // ── Naming and tenant foreign keys ────────────────────────────────────────
 
-    [Fact]
-    public void Ca_names_and_labels_are_both_scoped_to_the_tenant()
-    {
-        // Label was already composite; Name beside it was left global, so two tenants could each
-        // have an "issuing-ca" label but not both name a CA "Issuing CA". A global unique name is
-        // also a cross-tenant oracle: you learn a name is taken by failing to take it.
-        Assert.True(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.TenantId), nameof(CertificateAuthorityEntity.Name)));
-        Assert.True(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.TenantId), nameof(CertificateAuthorityEntity.Label)));
-
-        Assert.False(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.Name)),
-            "a globally unique CA Name index must not exist");
-    }
-
+    /// <summary>
+    /// From 0.4.0 S4 a CA's label and name are unique across the instance over all rows, deleted
+    /// ones included (no filter): the label is the path of the CA's CRL, OCSP, AIA and enrolment URLs.
+    /// The per-tenant and instance-only indexes are gone.
+    /// </summary>
     [Theory]
-    [InlineData(nameof(CertificateAuthorityEntity.Label), "IX_CertificateAuthorities_Label_Instance")]
-    [InlineData(nameof(CertificateAuthorityEntity.Name), "IX_CertificateAuthorities_Name_Instance")]
-    public void Instance_ca_names_and_labels_are_unique_among_instance_cas(string column, string indexName)
+    [InlineData(nameof(CertificateAuthorityEntity.Label))]
+    [InlineData(nameof(CertificateAuthorityEntity.Name))]
+    public void Ca_names_and_labels_are_unique_across_the_instance(string column)
     {
-        // The composite (TenantId, x) indexes treat NULL tenants as distinct, so instance CAs
-        // (no tenant) need their own; NULLS NOT DISTINCT would need PostgreSQL 15.
-        var index = Assert.Single(Entity<CertificateAuthorityEntity>().GetIndexes(), i => i.GetDatabaseName() == indexName);
+        var indexes = Entity<CertificateAuthorityEntity>().GetIndexes().Where(i => i.Properties.Any(p => p.Name == column)).ToList();
+        var index = Assert.Single(indexes);
         Assert.True(index.IsUnique);
         Assert.Equal([column], index.Properties.Select(p => p.Name));
-        Assert.Equal("\"TenantId\" IS NULL", index.GetFilter());
+        Assert.Null(index.GetFilter());
     }
 
     [Theory]

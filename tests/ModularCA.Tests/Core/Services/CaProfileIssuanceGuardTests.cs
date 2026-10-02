@@ -43,17 +43,6 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class CaProfileIssuanceGuardTests
 {
-    /// <summary>Tenant filter off; this suite is about the CA flag, not tenancy.</summary>
-    private sealed class NoTenantContext : ITenantContext
-    {
-        public bool HasContext => true;
-        public bool IsSystemAdmin => true;
-        public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
-        public Guid? UserId => null;
-        public bool HasInstanceScope => true;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin, bool hasInstanceScope) { }
-    }
-
     private static ModularCADbContext BuildContext(string dbName)
     {
         var options = new DbContextOptionsBuilder<ModularCADbContext>()
@@ -61,7 +50,7 @@ public class CaProfileIssuanceGuardTests
             .ConfigureWarnings(w => w.Ignore(
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new ModularCADbContext(options, new NoTenantContext());
+        return new ModularCADbContext(options);
     }
 
     /// <summary>

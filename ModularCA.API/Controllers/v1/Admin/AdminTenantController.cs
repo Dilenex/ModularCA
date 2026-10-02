@@ -87,9 +87,6 @@ public partial class AdminTenantController(
             t.Description,
             t.IsEnabled,
             t.CreatedAt,
-            t.MaxCertificateAuthorities,
-            t.MaxCertificatesTotal,
-            t.MaxUsers,
             t.MaxValidityDays,
             t.ValidityCeilingBehavior,
             t.RequireKeyCeremony,
@@ -133,9 +130,6 @@ public partial class AdminTenantController(
             tenant.Description,
             tenant.IsEnabled,
             tenant.CreatedAt,
-            tenant.MaxCertificateAuthorities,
-            tenant.MaxCertificatesTotal,
-            tenant.MaxUsers,
             tenant.MaxValidityDays,
             tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
@@ -178,7 +172,7 @@ public partial class AdminTenantController(
 
         // Single-organisation mode, then the licence. Both after the shape and uniqueness checks so
         // a malformed request is still reported as malformed.
-        var organizations = _db.Tenants.IgnoreQueryFilters().Where(t => !t.IsDeleted);
+        var organizations = _db.Tenants;
         var organizationCount = await organizations.CountAsync();
         var blocking = organizationCount > 0
             ? await organizations.OrderBy(t => t.Name).Select(t => new { t.Name, t.IsEnabled }).FirstAsync()
@@ -208,9 +202,6 @@ public partial class AdminTenantController(
             Slug = slug,
             Description = request.Description,
             IsEnabled = true,
-            MaxCertificateAuthorities = request.MaxCertificateAuthorities ?? 0,
-            MaxCertificatesTotal = request.MaxCertificatesTotal ?? 0,
-            MaxUsers = request.MaxUsers ?? 0,
             MaxValidityDays = request.MaxValidityDays ?? 0,
             // Shorten unless the caller asks otherwise: a new tenant behaves exactly as every
             // tenant did before this setting existed.
@@ -265,9 +256,6 @@ public partial class AdminTenantController(
             tenant.Description,
             tenant.IsEnabled,
             tenant.CreatedAt,
-            tenant.MaxCertificateAuthorities,
-            tenant.MaxCertificatesTotal,
-            tenant.MaxUsers,
             tenant.MaxValidityDays,
             tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
@@ -276,7 +264,7 @@ public partial class AdminTenantController(
     }
 
     /// <summary>
-    /// Updates a tenant's name, description, or quota settings.
+    /// Updates a tenant's name, description, validity ceiling or ceremony policy (tenant quotas were removed in 0.4.0).
     /// Disabling RequireKeyCeremony (true to false) requires step-up MFA verification
     /// to prevent accidental or malicious removal of ceremony protections.
     /// </summary>
@@ -293,7 +281,7 @@ public partial class AdminTenantController(
             return NotFound(new { error = $"Tenant with ID {id} not found" });
 
         // Toggling a tenant's enabled state (e.g. re-enabling a disabled tenant) is a
-        // high-impact action — require step-up MFA. Quota-only edits (no IsEnabled in the
+        // high-impact action — require step-up MFA. Other edits (no IsEnabled in the
         // request) are unaffected.
         if (request.IsEnabled.HasValue && request.IsEnabled.Value != tenant.IsEnabled)
         {
@@ -366,12 +354,6 @@ public partial class AdminTenantController(
 
         if (request.Description != null)
             tenant.Description = request.Description;
-        if (request.MaxCertificateAuthorities.HasValue)
-            tenant.MaxCertificateAuthorities = request.MaxCertificateAuthorities.Value;
-        if (request.MaxCertificatesTotal.HasValue)
-            tenant.MaxCertificatesTotal = request.MaxCertificatesTotal.Value;
-        if (request.MaxUsers.HasValue)
-            tenant.MaxUsers = request.MaxUsers.Value;
         if (request.MaxValidityDays.HasValue)
         {
             // Negative is rejected rather than coerced: 0 already means unlimited, so there is no
@@ -459,9 +441,6 @@ public partial class AdminTenantController(
                     tenant.Description,
                     tenant.IsEnabled,
                     tenant.CreatedAt,
-                    tenant.MaxCertificateAuthorities,
-                    tenant.MaxCertificatesTotal,
-                    tenant.MaxUsers,
                     tenant.MaxValidityDays,
                     tenant.ValidityCeilingBehavior,
                     tenant.RequireKeyCeremony,
@@ -478,9 +457,6 @@ public partial class AdminTenantController(
             tenant.Description,
             tenant.IsEnabled,
             tenant.CreatedAt,
-            tenant.MaxCertificateAuthorities,
-            tenant.MaxCertificatesTotal,
-            tenant.MaxUsers,
             tenant.MaxValidityDays,
             tenant.ValidityCeilingBehavior,
             tenant.RequireKeyCeremony,
@@ -490,7 +466,7 @@ public partial class AdminTenantController(
 
     /// <summary>
     /// Combined, atomic update of a tenant's editable settings as a single sub-resource:
-    /// org-level ceilings, per-CA issuance quotas, and the tenant + per-CA controlled-user approval
+    /// the validity ceiling, per-CA issuance quotas, and the tenant + per-CA controlled-user approval
     /// quorums. Backs the tenant detail page's unified Save. Because any of these fields is considered
     /// sensitive, the whole save is gated by ONE step-up MFA token (<see cref="StepUpOps.UpdateTenantSettings"/>),
     /// so editing several fields prompts the operator exactly once. A key-ceremony downgrade by a
@@ -581,11 +557,8 @@ public partial class AdminTenantController(
         }
         var gateThroughCeremony = (keyCeremonyChanged || userQuorumChanged || caQuorumChanges.Count > 0) && !callerIsSuper;
 
-        // ── apply: non-gated tenant fields (always — resource limits, not security thresholds) ──
+        // ── apply: non-gated tenant fields (always — not security thresholds) ──
         if (request.Description != null) tenant.Description = request.Description;
-        if (request.MaxCertificateAuthorities.HasValue) tenant.MaxCertificateAuthorities = request.MaxCertificateAuthorities.Value;
-        if (request.MaxCertificatesTotal.HasValue) tenant.MaxCertificatesTotal = request.MaxCertificatesTotal.Value;
-        if (request.MaxUsers.HasValue) tenant.MaxUsers = request.MaxUsers.Value;
         // MaxValidityDays was missing here from the day the tenant ceiling landed, so the tenant
         // detail page — whose one Save posts to this sub-resource, not to PUT /tenants/{id} — sent
         // the field and had it silently dropped. The only way to set a tenant ceiling was the raw
@@ -691,9 +664,6 @@ public partial class AdminTenantController(
         t.Id,
         t.Name,
         t.Description,
-        t.MaxCertificateAuthorities,
-        t.MaxCertificatesTotal,
-        t.MaxUsers,
         t.RequireKeyCeremony,
         t.CeremonyRequiredApprovals,
         UserQuorum = t.UserCeremonyRequiredApprovals,
@@ -776,15 +746,6 @@ public class CreateTenantRequest
     /// <summary>Optional description of the tenant.</summary>
     public string? Description { get; set; }
 
-    /// <summary>Maximum CAs allowed. 0 = unlimited.</summary>
-    public int? MaxCertificateAuthorities { get; set; }
-
-    /// <summary>Maximum total certificates. 0 = unlimited.</summary>
-    public int? MaxCertificatesTotal { get; set; }
-
-    /// <summary>Maximum users. 0 = unlimited.</summary>
-    public int? MaxUsers { get; set; }
-
     /// <summary>
     /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.
     /// 0 = unlimited. Exceeding it shortens the certificate and raises MCA-ISS-004 rather than
@@ -815,15 +776,6 @@ public class UpdateTenantRequest
 
     /// <summary>New description.</summary>
     public string? Description { get; set; }
-
-    /// <summary>New maximum CAs allowed. 0 = unlimited.</summary>
-    public int? MaxCertificateAuthorities { get; set; }
-
-    /// <summary>New maximum total certificates. 0 = unlimited.</summary>
-    public int? MaxCertificatesTotal { get; set; }
-
-    /// <summary>New maximum users. 0 = unlimited.</summary>
-    public int? MaxUsers { get; set; }
 
     /// <summary>
     /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.
@@ -865,15 +817,6 @@ public class UpdateTenantSettingsRequest
 {
     /// <summary>New description.</summary>
     public string? Description { get; set; }
-
-    /// <summary>New maximum CAs allowed. 0 = unlimited.</summary>
-    public int? MaxCertificateAuthorities { get; set; }
-
-    /// <summary>New maximum total certificates. 0 = unlimited.</summary>
-    public int? MaxCertificatesTotal { get; set; }
-
-    /// <summary>New maximum users. 0 = unlimited.</summary>
-    public int? MaxUsers { get; set; }
 
     /// <summary>
     /// Longest validity, in days, a leaf certificate issued by this tenant's CAs may carry.

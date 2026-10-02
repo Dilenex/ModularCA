@@ -71,7 +71,6 @@ public sealed class InfrastructureReissueTests
             new SignerIssuance(db, signer),
             new SystemConfig(),
             NullLogger<CaCreationService>.Instance,
-            InstanceCeremonyEndpointTests.Fake<IQuotaService>.Create(),
             signer);
 
         await service.ReissueInfrastructureCertsAsync(caId, reissueOcsp: true, reissueTsa: false);

@@ -85,10 +85,12 @@ public class CertificateTemplateService
     }
 
     /// <summary>
-    /// Creates a new certificate template from the given request.
+    /// Creates a new certificate template from the given request. A certificate profile outside
+    /// the CA's scope (<see cref="Authorization.CertProfileScope"/>) throws <see cref="ArgumentException"/>.
     /// </summary>
     public async Task<CertificateTemplateDto> CreateAsync(CreateCertificateTemplateRequest request)
     {
+        await EnsureProfileInScopeAsync(request.CaId, request.CertProfileId);
         var entity = new CertificateTemplateEntity
         {
             Name = request.Name,
@@ -109,12 +111,14 @@ public class CertificateTemplateService
     }
 
     /// <summary>
-    /// Updates an existing certificate template by ID. Throws <see cref="KeyNotFoundException"/> if not found.
+    /// Updates an existing certificate template by ID. Throws <see cref="KeyNotFoundException"/> if not found,
+    /// and <see cref="ArgumentException"/> for a certificate profile outside the CA's scope.
     /// </summary>
     public async Task<CertificateTemplateDto> UpdateAsync(Guid id, UpdateCertificateTemplateRequest request)
     {
         var entity = await _db.CertificateTemplates.FindAsync(id)
             ?? throw new KeyNotFoundException("Certificate template not found");
+        await EnsureProfileInScopeAsync(request.CaId, request.CertProfileId);
 
         entity.Name = request.Name;
         entity.Description = request.Description;
@@ -129,6 +133,22 @@ public class CertificateTemplateService
 
         // Reload with navigations to return resolved names
         return (await GetByIdAsync(entity.Id))!;
+    }
+
+    /// <summary>
+    /// Throws <see cref="ArgumentException"/> when the CA or the certificate profile does not
+    /// exist, or the profile is outside the CA's scope.
+    /// </summary>
+    private async Task EnsureProfileInScopeAsync(Guid caId, Guid certProfileId)
+    {
+        var ca = await _db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == caId).Select(c => new { c.Id, c.TenantId }).FirstOrDefaultAsync()
+            ?? throw new ArgumentException("Certificate authority not found.");
+        var profile = await _db.CertProfiles.AsNoTracking()
+            .Where(p => p.Id == certProfileId).Select(p => new { p.TenantId, p.CertificateAuthorityId }).FirstOrDefaultAsync()
+            ?? throw new ArgumentException("Certificate profile not found.");
+        if (!Authorization.CertProfileScope.Admits(profile.TenantId, profile.CertificateAuthorityId, ca.Id, ca.TenantId))
+            throw new ArgumentException("The certificate profile belongs to another scope than the template's CA.");
     }
 
     /// <summary>

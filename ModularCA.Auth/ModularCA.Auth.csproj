@@ -27,5 +27,9 @@
 	<ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ModularCA.Tests" />
+  </ItemGroup>
+
 </Project>
 

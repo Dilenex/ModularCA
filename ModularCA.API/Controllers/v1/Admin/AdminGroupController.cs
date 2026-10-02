@@ -6,6 +6,7 @@ using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Bootstrap;
@@ -37,7 +38,7 @@ public class AdminGroupController(
 
     /// <summary>
     /// Lists all groups the current user has access to view.
-    /// System admins see all groups; other users see only groups belonging to their accessible tenants.
+    /// The caller sees the groups inside their <see cref="TenantFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
@@ -54,11 +55,8 @@ public class AdminGroupController(
             .AsNoTracking()
             .AsQueryable();
 
-        // Filter groups to those of the user's accessible tenants, and instance groups (no
-        // tenant) for callers with instance scope.
-        var fence = TenantFence.From(HttpContext);
-        if (fence != null && !fence.IsSystemAdmin)
-            query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.TenantId));
+        var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+        query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.TenantId));
 
         var groups = await query.OrderBy(g => g.Name).ToListAsync();
 
@@ -98,9 +96,7 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Verify the requesting user has access to this group's tenant (or the instance)
-        var fence = TenantFence.From(HttpContext);
-        if (fence != null && !fence.Allows(group.TenantId))
+        if (!TenantFence.From(HttpContext, Capabilities.CertView).Allows(group.TenantId))
             return NotFound(new { error = $"Group with ID {id} not found" });
 
         return Ok(new
@@ -159,41 +155,25 @@ public class AdminGroupController(
     }
 
     /// <summary>
-    /// Resolves the CA's tenant and checks the caller can access it.
-    /// Returns null on allow, NotFound on deny. System admins always pass.
+    /// Resolves the CA's tenant and checks it is inside the caller's <see cref="TenantFence"/>.
+    /// Returns null on allow, NotFound on deny or for a missing or deleted CA.
     /// </summary>
     private async Task<IActionResult?> EnsureCaInAccessibleTenantAsync(Guid caId)
     {
-        if (HttpContext.Items["IsSystemAdmin"] is true)
-            return null;
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
-            .Where(c => c.Id == caId && !c.IsDeleted)
+            .Where(c => c.Id == caId)
             .Select(c => new { c.TenantId })
             .FirstOrDefaultAsync();
-        if (ca == null)
-            return NotFound();
-        var fence = TenantFence.From(HttpContext);
-        if (fence == null || !fence.Allows(ca.TenantId))
-            return NotFound();
-        return null;
+        return ca != null && TenantFence.From(HttpContext, Capabilities.CertView).Allows(ca.TenantId) ? null : NotFound();
     }
 
     /// <summary>
-    /// Resolves a group's tenant and checks access. System admins bypass.
-    /// Uses the group's <c>TenantId</c> directly (auto-populated from the CA at creation time);
-    /// an instance group (no tenant) needs instance scope.
+    /// Checks the group's <c>TenantId</c> (auto-populated from the CA at creation time) is inside
+    /// the caller's <see cref="TenantFence"/>; an instance group (no tenant) needs instance scope.
     /// </summary>
     private IActionResult? EnsureGroupInAccessibleTenant(Shared.Entities.CaGroupEntity group)
-    {
-        if (HttpContext.Items["IsSystemAdmin"] is true)
-            return null;
-        var fence = TenantFence.From(HttpContext);
-        if (fence == null || !fence.Allows(group.TenantId))
-            return NotFound();
-        return null;
-    }
+        => TenantFence.From(HttpContext, Capabilities.CertView).Allows(group.TenantId) ? null : NotFound();
 
     /// <summary>
     /// Creates a custom (non-auto-generated) group. Auto-generated groups are created during CA creation.
@@ -238,7 +218,6 @@ public class AdminGroupController(
             if (fence != null) return fence;
             tenantId = await _db.CertificateAuthorities
                 .AsNoTracking()
-                .IgnoreQueryFilters()
                 .Where(c => c.Id == request.CertificateAuthorityId.Value)
                 .Select(c => c.TenantId)
                 .FirstOrDefaultAsync();

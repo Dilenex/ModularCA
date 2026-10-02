@@ -494,7 +494,31 @@ public class MsaeEnrollmentServiceTests
     public async Task A_template_belonging_to_another_ca_is_refused_when_the_route_names_this_one()
     {
         var h = Build();
-        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId };
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId, CertificateId = Guid.NewGuid() };
+        var otherSigning = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "other-signing", IssuerId = otherCa.CertificateId };
+        h.Db.CertificateAuthorities.Add(otherCa);
+        h.Db.SigningProfiles.Add(otherSigning);
+        h.Db.CertificateTemplates.Add(new CertificateTemplateEntity
+        {
+            Id = Guid.NewGuid(), Name = "OtherDevice", CaId = otherCa.Id,
+            CertProfileId = h.CertProfile.Id, SigningProfileId = otherSigning.Id, IsEnabled = true,
+        });
+        await h.Db.SaveChangesAsync();
+
+        await AssertRefusedCleanly(h,
+            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, caLabel: "lab"),
+            "does not belong to CA 'lab'");
+    }
+
+    /// <summary>
+    /// A template whose signing profile issues from another CA than the template's own is refused
+    /// as unavailable, so an enrolment against one CA's template cannot be signed by another CA.
+    /// </summary>
+    [Fact]
+    public async Task A_template_whose_signing_profile_issues_from_another_ca_is_refused()
+    {
+        var h = Build();
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId, CertificateId = Guid.NewGuid() };
         h.Db.CertificateAuthorities.Add(otherCa);
         h.Db.CertificateTemplates.Add(new CertificateTemplateEntity
         {
@@ -504,8 +528,8 @@ public class MsaeEnrollmentServiceTests
         await h.Db.SaveChangesAsync();
 
         await AssertRefusedCleanly(h,
-            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, caLabel: "lab"),
-            "does not belong to CA 'lab'");
+            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, null),
+            "Certificate template 'OtherDevice' is not available");
     }
 
     [Fact]

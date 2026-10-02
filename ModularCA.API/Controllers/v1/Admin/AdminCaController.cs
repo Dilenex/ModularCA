@@ -6,6 +6,8 @@ using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Shared.Authorization;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using Serilog;
@@ -54,10 +56,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .AsNoTracking()
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants (or the instance)
-            var fence = TenantFence.From(HttpContext);
-            if (fence != null)
-                query = query.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            query = query.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
 
             var cas = await query.ToListAsync();
 
@@ -85,8 +85,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Returns all CA certificates including system CAs, filtered by the current user's tenant access.
-        /// System admins see all CA certificates; other users see only those belonging to their accessible tenants.
+        /// Returns all CA certificates including system CAs, filtered by the caller's
+        /// <see cref="TenantFence"/>: an instance-wide caller sees all, others those of CAs inside it.
         /// </summary>
         [HttpGet("include-system-ca")]
         [Authorize(Policy = "CaAuditor")]
@@ -99,9 +99,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             var certs = await _certService.GetAllCertificatesAsync();
             var caCerts = certs.Where(c => c.IsCA).ToList();
 
-            // Apply tenant filtering for non-system-admins
-            var fence = TenantFence.From(HttpContext);
-            if (fence != null && !fence.IsSystemAdmin)
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            if (!fence.InstanceWide)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
                     .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
@@ -218,10 +217,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /admin/ssh — keep them out of the X.509 hierarchy
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants (or the instance)
-            var fence = TenantFence.From(HttpContext);
-            if (fence != null)
-                caQuery = caQuery.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            caQuery = caQuery.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId));
 
             var cas = await caQuery.ToListAsync();
             var caIds = cas.Select(ca => ca.Id).ToHashSet();
@@ -322,6 +319,11 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Update CA properties. Runtime fields (Name, Label, IsDefault, IsEnabled) take effect immediately.
+        /// A new label must match the label pattern and carry no reserved prefix (400); a label or
+        /// name another CA of the instance has, soft-deleted CAs included, is a conflict (409), as is
+        /// a new label for a CA that has issued any certificate (<see cref="IssuerChainResolver.HasIssuedAsync"/>),
+        /// since the label is in those certificates' CRL, OCSP and AIA URLs.
+        /// Making a CA the default clears the default on every other CA of the instance.
         /// Requires step-up MFA verification.
         /// </summary>
         [HttpPut("{id:guid}")]
@@ -335,6 +337,35 @@ namespace ModularCA.API.Controllers.v1.Admin
             var ca = await _db.CertificateAuthorities.FindAsync(id);
             if (ca == null)
                 return NotFound(new { error = $"CA with ID {id} not found" });
+
+            var newLabel = request.Label != null && request.Label != ca.Label ? request.Label : null;
+            var newName = request.Name != null && request.Name != ca.Name ? request.Name : null;
+            if (newLabel != null)
+            {
+                try
+                {
+                    CaLabelRules.Validate(newLabel);
+                }
+                catch (ArgumentException ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
+                if (await IssuerChainResolver.HasIssuedAsync(_db, id))
+                    return Conflict(new
+                    {
+                        error = "This CA has issued certificates, and its label is part of the CRL, OCSP and AIA URLs in them, "
+                              + "so it cannot be changed. Its name can.",
+                        code = ErrorCodes.CaLabelLocked,
+                    });
+            }
+            try
+            {
+                await CaLabelRules.EnsureUniqueAsync(_db, newLabel, newName, exceptCaId: id);
+            }
+            catch (ResourceConflictException ex)
+            {
+                return Conflict(new { error = ex.Message, code = ex.Code });
+            }
 
             var changes = new List<string>();
 
@@ -367,7 +398,15 @@ namespace ModularCA.API.Controllers.v1.Admin
                 changes.Add("IsEnabled");
             }
 
-            await _db.SaveChangesAsync();
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (CaLabelRules.IsNameRace(ex))
+            {
+                var conflict = CaLabelRules.NameRaceConflict(newLabel, newName);
+                return Conflict(new { error = conflict.Message, code = conflict.Code });
+            }
 
             if (changes.Count > 0)
             {
@@ -463,6 +502,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     NameConstraintsPermitted = request.NameConstraintsPermitted,
                     NameConstraintsExcluded = request.NameConstraintsExcluded,
                 };
+                if (await AdminKeyCeremonyController.RefuseCaCreationParametersAsync(_caCreation, parameters) is { } refused)
+                    return refused;
                 var ceremony = await _ceremonySvc.InitiateAsync(
                     "CreateIntermediateCA",
                     $"Create intermediate CA '{request.SubjectCN}' under {parentCa.Name}",
@@ -609,19 +650,15 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Shared tenant gate for CA certificate lookups. Returns true
-        /// when the caller is a system admin (all tenants), or when the owning CA's scope
-        /// is inside the caller's <see cref="TenantFence"/> (an instance CA needs instance scope).
-        /// An unbound cert is refused.
+        /// Shared tenant gate for CA certificate lookups. Returns true when the caller's
+        /// <see cref="TenantFence"/> is instance-wide, or when the owning CA's scope is inside it
+        /// (an instance CA needs instance scope). An unbound cert is refused to everyone else.
         /// </summary>
         private async Task<bool> CallerCanSeeCaCertAsync(Guid certificateId)
         {
-            if (HttpContext.Items["IsSystemAdmin"] is true)
+            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            if (fence.InstanceWide)
                 return true;
-
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null)
-                return false;
 
             // If the certificate is not bound to any CertificateAuthorities row, fall back
             // to denying — admin callers should never reach here through an unbound cert.
@@ -678,6 +715,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     NameConstraintsPermitted = request.NameConstraintsPermitted,
                     NameConstraintsExcluded = request.NameConstraintsExcluded,
                 };
+                if (await AdminKeyCeremonyController.RefuseCaCreationParametersAsync(_caCreation, parameters) is { } refused)
+                    return refused;
                 var ceremony = await _ceremonySvc.InitiateAsync(
                     "CreateRootCA",
                     $"Create root CA '{request.SubjectCN}'",

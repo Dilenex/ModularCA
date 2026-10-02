@@ -501,11 +501,9 @@ public class AdminRevocationController(
     private async Task<IActionResult?> TryCreateRevokeCaCeremonyAsync(
         Shared.Entities.CertificateEntity cert, RevocationReason reason)
     {
-        // Find the CA entity that owns this certificate, whatever the caller's query fence.
         var ca = await _dbContext.CertificateAuthorities
-            .IgnoreQueryFilters()
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId && !c.IsDeleted);
+            .FirstOrDefaultAsync(c => c.CertificateId == cert.CertificateId);
 
         if (ca == null)
             return null; // No CA linkage — allow direct revocation.
@@ -561,12 +559,13 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Enforces tenant isolation for certificate operations. Resolves the certificate's CA
-    /// tenant via the signing profile linkage and checks that the caller has access to that
-    /// tenant. System admins bypass the check. Returns null on allow, NotFound on deny.
+    /// tenant via the signing profile linkage and checks that the caller's <see cref="TenantFence"/>
+    /// admits it for cert.revoke. An instance-wide caller passes. Returns null on allow, NotFound on deny.
     /// </summary>
     private async Task<IActionResult?> EnforceTenantFenceForCertAsync(Guid? certId, string? serial)
     {
-        if (HttpContext.Items["IsSystemAdmin"] is true) return null;
+        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        if (fence.InstanceWide) return null;
 
         Shared.Entities.CertificateEntity? cert = null;
         if (certId.HasValue)
@@ -591,11 +590,7 @@ public class AdminRevocationController(
             .AsNoTracking()
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
         if (config?.Ca == null) return NotFound();
-
-        var fence = TenantFence.From(HttpContext);
-        if (fence == null || !fence.Allows(config.Ca.TenantId))
-            return NotFound();
-        return null;
+        return fence.Allows(config.Ca.TenantId) ? null : NotFound();
     }
 
     /// <summary>

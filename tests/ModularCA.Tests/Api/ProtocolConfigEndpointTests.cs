@@ -191,6 +191,107 @@ public sealed class ProtocolConfigEndpointTests
         Assert.False(db.CaProtocolConfigs.Single().IsEnabled);
     }
 
+    /// <summary>
+    /// N2: a protocol configuration may name only a certificate profile the CA admits: an unbound
+    /// one, its space's, or one bound to it. Another space's, or one bound to an instance CA, is refused.
+    /// </summary>
+    [Fact]
+    public async Task Upsert_refuses_a_certificate_profile_of_another_scope()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var caId = SeedCa(db, RsaCaPem());
+        var caTenant = db.CertificateAuthorities.Single(c => c.Id == caId).TenantId;
+        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "other-space", TenantId = Guid.NewGuid() };
+        var instanceBound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "instance-bound", CertificateAuthorityId = Guid.NewGuid() };
+        var own = new CertProfileEntity { Id = Guid.NewGuid(), Name = "own", TenantId = caTenant, CertificateAuthorityId = caId };
+        var unbound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "unbound" };
+        db.CertProfiles.AddRange(other, instanceBound, own, unbound);
+        db.SaveChanges();
+        var cache = new StubCache();
+        var controller = NewController(db, new FlagStub("EST.Enabled"), cache);
+        GiveHttpContext(controller);
+
+        async Task<IActionResult> Upsert(Guid profile)
+        {
+            var request = Activator.CreateInstance(ApiAssembly.TypeNamed(RequestName))!;
+            request.GetType().GetProperty("Enabled")!.SetValue(request, true);
+            request.GetType().GetProperty("CertProfileId")!.SetValue(request, profile);
+            return await (Task<IActionResult>)controller.GetType().GetMethod("Upsert")!
+                .Invoke(controller, new object?[] { caId, "EST", request, SeedStepUp(cache, caId) })!;
+        }
+
+        Assert.Contains("another scope", ErrorOf(await Upsert(other.Id)));
+        Assert.Contains("another scope", ErrorOf(await Upsert(instanceBound.Id)));
+        Assert.Empty(db.CaProtocolConfigs.ToList());
+        Assert.IsType<OkObjectResult>(await Upsert(own.Id));
+        Assert.IsType<OkObjectResult>(await Upsert(unbound.Id));
+    }
+
+    /// <summary>
+    /// A protocol configuration may name only a signing profile that issues from its own CA's
+    /// certificate; another CA's, one issuing from no CA or from a superseded certificate of this CA,
+    /// or a missing one is refused with a message saying where it issues from, re-saving a stored
+    /// legacy row unchanged is refused with what to change, and resolution at enrolment refuses a
+    /// stale row that names another CA's profile.
+    /// </summary>
+    [Fact]
+    public async Task Upsert_and_resolution_refuse_another_cas_signing_profile()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var caId = SeedCa(db, RsaCaPem());
+        var ca = db.CertificateAuthorities.Single(c => c.Id == caId);
+        ca.IsEnabled = true;
+        var own = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "own", IssuerId = ca.CertificateId };
+        var foreign = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "foreign", IssuerId = Guid.NewGuid() };
+        var selfSigned = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "self-signed" };
+        var otherCert = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "02", Pem = "", SubjectDN = "CN=Other CA", Issuer = "CN=Other CA", IsCA = true };
+        db.Certificates.Add(otherCert);
+        db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Other CA", Label = "other-ca", CertificateId = otherCert.CertificateId });
+        var otherCas = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "other-cas", IssuerId = otherCert.CertificateId };
+        var oldCert = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "03", Pem = ca.Certificate!.Pem, SubjectDN = "CN=Test CA", Issuer = "CN=Test CA", IsCA = true };
+        db.Certificates.Add(oldCert);
+        var superseded = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "superseded", IssuerId = oldCert.CertificateId };
+        var certProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "unbound" };
+        db.SigningProfiles.AddRange(own, foreign, selfSigned, otherCas, superseded);
+        db.CertProfiles.Add(certProfile);
+        db.SaveChanges();
+        var cache = new StubCache();
+        var controller = NewController(db, new FlagStub("EST.Enabled"), cache);
+        GiveHttpContext(controller);
+
+        async Task<IActionResult> Upsert(Guid signingProfile)
+        {
+            var request = Activator.CreateInstance(ApiAssembly.TypeNamed(RequestName))!;
+            request.GetType().GetProperty("Enabled")!.SetValue(request, true);
+            request.GetType().GetProperty("SigningProfileId")!.SetValue(request, signingProfile);
+            request.GetType().GetProperty("CertProfileId")!.SetValue(request, certProfile.Id);
+            return await (Task<IActionResult>)controller.GetType().GetMethod("Upsert")!
+                .Invoke(controller, new object?[] { caId, "EST", request, SeedStepUp(cache, caId) })!;
+        }
+
+        Assert.Contains("Signing profile 'foreign' issues from a certificate no CA owns", ErrorOf(await Upsert(foreign.Id)));
+        Assert.Contains("Signing profile 'self-signed' issues from no CA", ErrorOf(await Upsert(selfSigned.Id)));
+        Assert.Contains("issues from CA 'other-ca'", ErrorOf(await Upsert(otherCas.Id)));
+        Assert.Contains("issues from a superseded certificate of this CA", ErrorOf(await Upsert(superseded.Id)));
+        Assert.Contains("not found", ErrorOf(await Upsert(Guid.NewGuid())));
+        Assert.Empty(db.CaProtocolConfigs.ToList());
+        Assert.IsType<OkObjectResult>(await Upsert(own.Id));
+
+        db.CaProtocolConfigs.Single().SigningProfileId = otherCas.Id;
+        db.SaveChanges();
+        var legacy = ErrorOf(await Upsert(otherCas.Id));
+        Assert.Contains("EST on CA 'test-ca' still names signing profile 'other-cas', which issues from CA 'other-ca'", legacy);
+        Assert.Contains("choose one of this CA's own signing profiles", legacy);
+        Assert.IsType<OkObjectResult>(await Upsert(own.Id));
+
+        var resolver = new ModularCA.Core.Services.CaResolverService(db);
+        Assert.Equal(own.Id, (await resolver.ResolveAsync("test-ca", "EST")).SigningProfileId);
+        db.CaProtocolConfigs.Single().SigningProfileId = foreign.Id;
+        db.SaveChanges();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync("test-ca", "EST"));
+        Assert.Contains("does not issue from this CA", ex.Message);
+    }
+
     // ---- 2. the advisory on the listing ----------------------------------------------------
 
     [Fact]
@@ -268,6 +369,10 @@ public sealed class ProtocolConfigEndpointTests
         var controller = Activator.CreateInstance(
             type, null, null, db, null, null, null, null, null, null, new FlagStub("EST.Enabled"))!;
         GiveHttpContext(controller);
+        // The hierarchy is fenced; the middleware would store an instance-wide fence for this caller.
+        var http = ((ControllerBase)controller).HttpContext;
+        ModularCA.Auth.Authorization.TenantFence.Store(http, ModularCA.Auth.Authorization.TenantFence.Of([], instanceScope: true,
+            systemCapabilities: [ModularCA.Shared.Authorization.Capabilities.CertView]));
 
         var result = await (Task<IActionResult>)type.GetMethod("GetHierarchy")!.Invoke(controller, null)!;
 

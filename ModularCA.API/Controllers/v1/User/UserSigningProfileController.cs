@@ -26,8 +26,10 @@ public class UserSigningProfileController(
     private readonly ICaGroupAuthorizationService _authService = authService;
 
     /// <summary>
-    /// Returns signing profiles the caller has profile.* grants for. System admins
-    /// see all profiles; other users see only those with an explicit capability grant.
+    /// Returns signing profiles the caller has profile.* grants for, whose issuing CA is inside
+    /// the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/> (a profile with no
+    /// issuer is unbound). System admins see all profiles; other users see only those with an
+    /// explicit capability grant.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetSigningProfiles()
@@ -36,8 +38,14 @@ public class UserSigningProfileController(
         if (!currentUser.IsAuthenticated || currentUser.User == null)
             return Unauthorized();
 
+        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+        var visibleIssuers = db.CertificateAuthorities.AsNoTracking()
+            .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+            .Where(ca => ca.CertificateId != null)
+            .Select(ca => ca.CertificateId!.Value);
         var profiles = await db.SigningProfiles
             .AsNoTracking()
+            .Where(sp => sp.IssuerId == null || visibleIssuers.Contains(sp.IssuerId.Value))
             .Select(sp => new
             {
                 sp.Id,

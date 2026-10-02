@@ -19,8 +19,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing per-CA LDAP publishing configurations.
 /// Mutations require step-up MFA via <c>X-MFA-Token</c> and enforce the
-/// standard tenant fence: the target CA must belong to a tenant in the
-/// caller's <c>AccessibleTenantIds</c>.
+/// standard tenant fence: the target CA must be inside the caller's
+/// <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/authorities/{caId:guid}/ldap-publishers")]
@@ -36,25 +36,15 @@ public class AdminLdapPublishersController(
     /// <summary>
     /// Resolves <paramref name="caId"/> to its owning scope and verifies the caller
     /// has access. Returns the scope on success (its tenant is null for an instance CA), or null
-    /// if the CA is missing or outside the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
-    /// System admins always pass.
+    /// if the CA is missing, deleted or outside the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
     /// </summary>
     private async Task<CaScope?> ResolveAndFenceCaAsync(Guid caId)
     {
         var ca = await dbContext.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
             .FirstOrDefaultAsync(c => c.Id == caId);
-        if (ca == null || ca.IsDeleted)
-            return null;
-
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
-        {
-            var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext);
-            if (fence == null || !fence.Allows(ca.TenantId))
-                return null;
-        }
-        return new CaScope(ca.TenantId);
+        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CaManage);
+        return ca != null && fence.Allows(ca.TenantId) ? new CaScope(ca.TenantId) : null;
     }
 
     /// <summary>A fenced CA's scope: its tenant, or null for an instance CA.</summary>

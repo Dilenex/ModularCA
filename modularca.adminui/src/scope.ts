@@ -5,9 +5,9 @@ import { consoleCas, tenantsOf, type EffectiveCapabilities } from './authz';
  * checked against.
  *
  * Four kinds of value. `all` is every CA the caller may see, offered only to callers with a
- * system-scoped capability. `tenant` is every CA of one tenant. `ca` is one CA, named by label
- * within its tenant (labels are unique per tenant, not globally), or an instance CA (no tenant),
- * which the switcher groups under "Instance". `mine` is the self-service view (my certificates,
+ * system-scoped capability. `tenant` is every CA of one tenant. `ca` is one CA, named by its label
+ * (labels are unique across the instance), whether it belongs to a tenant or is an instance CA
+ * (no tenant), which the switcher groups under "Instance". `mine` is the self-service view (my certificates,
  * my requests), which is what the `/user` portal is.
  *
  * The scope lives in the URL, as `?tenant=<slug>`, `?tenant=<slug>&ca=<label>`, `?ca=<label>`
@@ -36,10 +36,11 @@ export function caScope(ca: { id: string; label: string; tenantId: string | null
 
 /**
  * Reads a scope from a query string. `?ca=<label>` wins when the label names a CA the caller
- * may scope to (within `?tenant=<slug>` when given, since labels repeat across tenants; without
- * it an instance CA of that label comes first, then the first match); `?tenant=<slug>` alone is a tenant scope; `?scope=mine` or `?scope=all` otherwise. Anything
- * else (an unknown label or slug, a CA the caller cannot see, nothing at all) is `null`, so
- * the caller falls back to a default.
+ * may scope to; labels are unique across the instance, so the label alone resolves it, and a
+ * `?tenant=<slug>` beside it is optional but must be the CA's own. `?tenant=<slug>` alone is a
+ * tenant scope; `?scope=mine` or `?scope=all` otherwise. Anything else (an unknown label or
+ * slug, a CA the caller cannot see, a tenant that is not the CA's, nothing at all) is `null`,
+ * so the caller falls back to a default.
  */
 export function parseScope(search: string | URLSearchParams, caps: EffectiveCapabilities): Scope | null {
     const params = typeof search === 'string' ? new URLSearchParams(search) : search;
@@ -48,11 +49,8 @@ export function parseScope(search: string | URLSearchParams, caps: EffectiveCapa
     if (slug && !tenant) return null;
     const label = params.get(SCOPE_CA_PARAM);
     if (label) {
-        const cas = consoleCas(caps);
-        const ca = tenant
-            ? cas.find(c => c.label === label && c.tenantId === tenant.id)
-            : cas.find(c => c.label === label && c.tenantId == null) ?? cas.find(c => c.label === label);
-        return ca ? caScope(ca) : null;
+        const ca = consoleCas(caps).find(c => c.label === label);
+        return ca && (!tenant || ca.tenantId === tenant.id) ? caScope(ca) : null;
     }
     if (tenant) return { kind: 'tenant', tenantId: tenant.id, slug: tenant.slug, name: tenant.name };
     const kind = params.get(SCOPE_KIND_PARAM);

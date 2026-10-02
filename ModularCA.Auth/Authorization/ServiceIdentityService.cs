@@ -87,7 +87,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         {
             var tenants = await auth.GetTenantIdsWithCapabilityAsync(callerId, Capabilities.CaManage);
             var cas = await auth.GetAccessibleCaIdsAsync(callerId, Capabilities.CaManage);
-            var tenantCas = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
+            var tenantCas = await db.CertificateAuthorities.AsNoTracking()
                 .Where(ca => ca.TenantId != null && tenants.Contains(ca.TenantId.Value)).Select(ca => ca.Id).ToListAsync();
             var visibleCas = cas.Concat(tenantCas).Distinct().ToList();
             query = query.Where(u =>
@@ -209,17 +209,17 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         => await db.Users.FirstOrDefaultAsync(u => u.Id == id && u.IsServiceIdentity)
             ?? throw new KeyNotFoundException("Service identity not found.");
 
-    /// <summary>A CA scope carries its tenant; a tenant scope must name a real tenant.</summary>
+    /// <summary>A CA scope carries its tenant; a tenant scope must name a real tenant. A deleted CA or tenant is refused.</summary>
     private async Task<ServiceIdentityScope> NormalizeScopeAsync(ServiceIdentityScope scope)
     {
         if (scope.CaId is Guid caId)
         {
-            var ca = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
+            var ca = await db.CertificateAuthorities.AsNoTracking()
                 .Where(c => c.Id == caId).Select(c => new { c.TenantId }).FirstOrDefaultAsync()
                 ?? throw new InvalidOperationException("The CA does not exist.");
             return new ServiceIdentityScope(ca.TenantId, caId);
         }
-        if (scope.TenantId is Guid tenantId && !await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Id == tenantId))
+        if (scope.TenantId is Guid tenantId && !await db.Tenants.AnyAsync(t => t.Id == tenantId))
             throw new InvalidOperationException("The tenant does not exist.");
         return scope;
     }

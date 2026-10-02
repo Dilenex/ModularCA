@@ -37,18 +37,9 @@ public class TenantEntity
     /// <summary>Timestamp when this tenant was created.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-    /// <summary>Maximum number of certificate authorities allowed for this tenant. 0 means unlimited.</summary>
-    public int MaxCertificateAuthorities { get; set; } = 0;
-
-    /// <summary>Maximum total certificates that can be issued across all CAs in this tenant. 0 means unlimited.</summary>
-    public int MaxCertificatesTotal { get; set; } = 0;
-
-    /// <summary>Maximum number of users that can be assigned to this tenant's groups. 0 means unlimited.</summary>
-    public int MaxUsers { get; set; } = 0;
-
     /// <summary>
     /// Longest validity, in days, that a leaf certificate issued by one of this tenant's CAs may
-    /// carry. 0 means unlimited, matching the quota fields above.
+    /// carry. 0 means unlimited.
     /// </summary>
     /// <remarks>
     /// This replaced a single global <c>CertPolicy.MaxValidityDays</c> that defaulted to 825 — the
@@ -124,10 +115,8 @@ public class TenantEntity
     public int? UserCeremonyRequiredApprovals { get; set; }
 
     /// <summary>
-    /// Soft-delete flag. When true, the row is hidden from every
-    /// application query via the EF global query filter in
-    /// <see cref="ModularCA.Database.ModularCADbContext"/>. Call
-    /// <c>IgnoreQueryFilters()</c> (with an explicit system-admin gate) to resurrect.
+    /// Soft-delete flag. When true, the row is hidden by the soft-delete query filter in
+    /// <c>ModularCADbContext</c>; only <c>IgnoreQueryFilters()</c> reads it.
     /// </summary>
     public bool IsDeleted { get; set; } = false;
 

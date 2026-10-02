@@ -130,6 +130,10 @@ const ProtocolConfig: React.FC = () => {
     const allCasFlat = flattenCas(authorities);
     const selectedCa = allCasFlat.find((ca) => (ca.id || ca.certificateId || ca.name) === selectedCaId) || null;
     const caKeyAlgorithm: string = selectedCa?.keyAlgorithm || '';
+    // Only the selected CA's own signing profiles: the API refuses any other.
+    const caSigningProfiles = selectedCa?.certificateId
+        ? signingProfiles.filter((p: any) => p.issuerId === selectedCa.certificateId)
+        : [];
 
     // A protocol disabled system-wide is refused at the edge, so it is not listed here either.
     const visibleProtocols = systemProtocols
@@ -239,7 +243,7 @@ const ProtocolConfig: React.FC = () => {
                         onSave={(updates) => handleSave(protocol, updates)}
                         saving={saving === protocol}
                         advisories={advisoriesFor(protocol, config)}
-                        signingProfiles={signingProfiles}
+                        signingProfiles={caSigningProfiles}
                         certProfiles={certProfiles}
                         labelClass={labelClass}
                         selectClass={selectClass}
@@ -267,6 +271,7 @@ interface ProtocolCardProps {
     saving: boolean;
     /** Reasons this protocol cannot work on this CA, if any; shown before anything is saved. */
     advisories: ProtocolAdvisory[];
+    /** The signing profiles that issue from this CA's current certificate. */
     signingProfiles: any[];
     certProfiles: any[];
     labelClass: string;
@@ -416,6 +421,11 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                     <label className={labelClass}>Signing Profile</label>
                                     <select value={form.signingProfileId} onChange={(e) => setForm({ ...form, signingProfileId: e.target.value })} className={selectClass}>
                                         <option value="">Not assigned</option>
+                                        {form.signingProfileId && !signingProfiles.some((p: any) => p.id === form.signingProfileId) && (
+                                            <option value={form.signingProfileId} disabled>
+                                                {config?.signingProfileName || form.signingProfileId} (not this CA's; choose another)
+                                            </option>
+                                        )}
                                         {signingProfiles.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
                                     </select>
                                 </div>

@@ -76,6 +76,18 @@ public interface ICaGroupAuthorizationService
     Task<bool> IsSystemAdminAsync(Guid userId);
 
     /// <summary>
+    /// The user's space fence, from all four grant sources and respecting a worn badge: system
+    /// admin; the capabilities held at system scope, each of which makes the fence instance-wide
+    /// for that capability (<see cref="TenantFence.For"/>); the spaces of the user's groups, of
+    /// tenant-scoped grants and roles on the user, and of the CAs the user holds CA-scoped grants
+    /// or roles on; and instance scope from an instance CA's group, or a CA-scoped grant or role
+    /// on an instance CA. That raw fence is the union over every capability; it also records,
+    /// per capability, the spaces and whether the instance in which a group, grant or role confers
+    /// it, and <see cref="TenantFence.For"/> selects from those.
+    /// </summary>
+    Task<TenantFence> GetFenceAsync(Guid userId);
+
+    /// <summary>
     /// Gets all groups the user belongs to.
     /// </summary>
     Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId);

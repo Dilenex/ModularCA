@@ -91,9 +91,8 @@ public class UserCertificateController(
             .Where(c => !c.IsCA && !(c.SubjectDN?.Contains("System Signing CA") ?? false))
             .ToList();
 
-        // Apply tenant filtering for non-system-admins
-        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext);
-        if (fence != null && !fence.IsSystemAdmin)
+        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+        if (!fence.InstanceWide)
         {
             var accessibleCertIds = await _dbContext.CertificateAuthorities
                 .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))

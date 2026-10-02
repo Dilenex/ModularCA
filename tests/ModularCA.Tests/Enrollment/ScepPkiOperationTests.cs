@@ -199,7 +199,7 @@ public class ScepPkiOperationTests
             CertificateId = certificateId, TenantId = tenantId,
         });
 
-        var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing" };
+        var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = certificateId };
         var certProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Device", ValidityPeriodMax = "P30D" };
         var requestProfile = new RequestProfileEntity
         {

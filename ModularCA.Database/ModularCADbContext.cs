@@ -3,20 +3,15 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
 using ModularCA.Database.Conventions;
-using ModularCA.Shared.Interfaces;
 
 namespace ModularCA.Database;
 
 /// <summary>
 /// Primary EF Core database context for the ModularCA application data (certificates, profiles, ACME, users, etc.).
 /// <para>
-/// The context accepts an optional <see cref="ITenantContext"/>
-/// that feeds the global query filter applied to every tenant-scoped entity. When the
-/// context is unresolved (background jobs, anonymous public routes, migrations) the filter
-/// allows all rows through so CRL generation, OCSP, and EF migrations continue to work.
-/// Cross-tenant admin UIs that legitimately need every row call <c>IgnoreQueryFilters()</c>
-/// on the query AND explicitly gate the call on
-/// <see cref="ITenantContext.IsSystemAdmin"/>.
+/// The only global query filters are soft-delete ones (tenants, CAs, users). Spaces are an
+/// access scope, not a partition of data: every read sees every space, and callers that list
+/// rows for a user apply <c>TenantFence</c> explicitly.
 /// </para>
 /// </summary>
 public class ModularCADbContext : DbContext
@@ -29,82 +24,9 @@ public class ModularCADbContext : DbContext
     /// </summary>
     private const string XminShadowProperty = "xmin";
 
-    // Never null — the single-arg constructor populates this with UnresolvedTenantContext.Instance.
-    private readonly ITenantContext _tenantContext;
-
-    // True when the filter should allow every row through — i.e. during bootstrap, design-time
-    // tooling, background jobs, or for system-admin callers.
-    //
-    // This MUST stay a computed property. It was previously a readonly field assigned in the
-    // constructor, which silently disabled tenant isolation on every authenticated request:
-    // TenantResolutionMiddleware takes ModularCADbContext as a method-injected parameter, so DI
-    // constructs the scoped context BEFORE the middleware body runs — and therefore before it
-    // calls tenantContext.Set(...). At construction HasContext is still false, so the snapshot
-    // latched to true, and because AddDbContext is scoped that same bypassed instance was then
-    // handed to every downstream controller and service for the rest of the request. A tenant-A
-    // user querying CertificateAuthorities saw tenant B's rows.
-    //
-    // The ITenantContext reference is live, so reading through it here picks up the middleware's
-    // Set(...) regardless of construction order. EF Core binds DbContext-instance members as SQL
-    // parameters when it compiles each query for execution, not once at model-build time, so a
-    // property is evaluated per query — which is exactly what makes this correct.
-    private bool TenantFilterBypass => !_tenantContext.HasContext || _tenantContext.IsSystemAdmin;
-
-    // Whether instance rows (a null TenantId) pass the CA filter. Live for the same reason.
-    private bool InstanceVisible => TenantFilterBypass || _tenantContext.HasInstanceScope;
-
-    // Materialized HashSet<Guid> so EF can translate .Contains() on it directly — HashSet<T>
-    // .Contains has a dedicated SQL translator, unlike IReadOnlySet<T>.Contains, and the
-    // interface form falls back to client evaluation and NREs during parameter binding.
-    //
-    // Cached against the source set's identity rather than rebuilt per access: the filter is
-    // evaluated on every tenant-scoped query, and Set(...) is called at most once per request,
-    // so the cache is refreshed exactly when the underlying set is replaced. Empty in the bypass
-    // case, so the Contains() path yields 0 rows if it is ever reached (it should not be —
-    // TenantFilterBypass short-circuits first).
-    private HashSet<Guid>? _accessibleTenantIdsCache;
-    private IReadOnlySet<Guid>? _accessibleTenantIdsSource;
-
-    private HashSet<Guid> AccessibleTenantIds
-    {
-        get
-        {
-            if (TenantFilterBypass)
-                return _emptyTenantIds;
-
-            var source = _tenantContext.AccessibleTenantIds;
-            if (!ReferenceEquals(source, _accessibleTenantIdsSource))
-            {
-                _accessibleTenantIdsSource = source;
-                _accessibleTenantIdsCache = new HashSet<Guid>(source);
-            }
-            return _accessibleTenantIdsCache!;
-        }
-    }
-
-    private static readonly HashSet<Guid> _emptyTenantIds = new();
-
-    /// <summary>
-    /// Constructs a <see cref="ModularCADbContext"/> with an unresolved tenant context.
-    /// Used by EF design-time tooling (`dotnet ef migrations add`), bootstrap, CRL/OCSP
-    /// responders, and background services that do not have an HTTP scope. The unresolved
-    /// context reports <c>HasContext=false</c> so the query filter allows every row through.
-    /// </summary>
+    /// <summary>Constructs the context over <paramref name="options"/>.</summary>
     public ModularCADbContext(DbContextOptions<ModularCADbContext> options) : base(options)
     {
-        _tenantContext = UnresolvedTenantContext.Instance;
-    }
-
-    /// <summary>
-    /// Constructs a <see cref="ModularCADbContext"/> with a scoped
-    /// <see cref="ITenantContext"/>. Called by ASP.NET Core DI for every HTTP request
-    /// so the query filter knows which tenants the caller can see.
-    /// </summary>
-    public ModularCADbContext(DbContextOptions<ModularCADbContext> options, ITenantContext tenantContext) : base(options)
-    {
-        // Deliberately no snapshotting here — see TenantFilterBypass. The middleware populates
-        // this same ITenantContext instance after DI has already constructed us.
-        _tenantContext = tenantContext ?? UnresolvedTenantContext.Instance;
     }
 
     public DbSet<CrlEntity> Crls { get; set; }
@@ -481,13 +403,7 @@ public class ModularCADbContext : DbContext
             .HasIndex(ur => ur.Id).IsUnique();
         modelBuilder.Entity<UserEntity>()
             .HasIndex(ur => ur.Email).IsUnique();
-        // Tenant entity
-        // Tenant rows gain IsDeleted + DeletedAt soft-delete columns.
-        // MySQL/Pomelo does not expose partial/filtered unique indexes, so the unique
-        // constraints remain "absolute": an operator re-creating a tenant with the same
-        // Name/Slug after soft-deleting the old one must hard-delete the soft record (or
-        // rename it) via a SystemAdmin IgnoreQueryFilters path. That trade-off is acceptable
-        // in exchange for the global query filter never leaking soft-deleted rows.
+        // Tenant Name and Slug are unique over all rows, soft-deleted ones included.
         modelBuilder.Entity<TenantEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
@@ -498,26 +414,10 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<CertificateAuthorityEntity>(entity =>
         {
-            // Name is per-tenant for the same reason Label is, below. This entity was only half
-            // migrated: Label was made composite and Name was left global, so two tenants could
-            // each have an "issuing-ca" label but not both call a CA "Issuing CA". Beyond the
-            // inconvenience, a global unique name is a cross-tenant oracle — a tenant learns
-            // whether another tenant already uses a name by trying to take it.
-            //
-            // Safe to relax because nothing resolves a CA by bare Name: lookups go through Label
-            // or Id. That is NOT true of CertProfiles, CaGroups or Roles, which are still
-            // globally unique here deliberately — see the note further down.
-            entity.HasIndex(e => new { e.TenantId, e.Name }).IsUnique();
-            // Label uniqueness is per-tenant, not global. Two tenants may each
-            // have a CA labeled "issuing-ca" without collision. The composite unique index
-            // also replaces the old global one so existing queries targeting Label get a
-            // fast per-tenant prefix lookup.
-            entity.HasIndex(e => new { e.TenantId, e.Label }).IsUnique();
-            // The composite indexes treat NULL tenants as distinct, so instance CAs get their own.
-            entity.HasIndex(e => e.Label, "IX_CertificateAuthorities_Label_Instance").IsUnique().HasFilter("\"TenantId\" IS NULL");
-            entity.HasIndex(e => e.Name, "IX_CertificateAuthorities_Name_Instance").IsUnique().HasFilter("\"TenantId\" IS NULL");
-            // Soft-delete flag indexed to make the global query
-            // filter predicate (IsDeleted = false) index-friendly.
+            // Label and Name are unique across the instance, soft-deleted CAs included: a label is
+            // the path in the CRL, OCSP, AIA and enrolment URLs of every certificate the CA issued.
+            entity.HasIndex(e => e.Label).IsUnique();
+            entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.IsDeleted);
             entity.Property(e => e.IsDeleted).HasDefaultValue(false);
             entity.HasOne(e => e.ParentCa)
@@ -1037,43 +937,9 @@ public class ModularCADbContext : DbContext
             modelBuilder.Entity<KeyCeremonyEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
         }
 
-        // Global query filters for tenant isolation +
-        // soft-delete. The filter is evaluated against the scoped ITenantContext and,
-        // for tenant-scoped entities, against the caller's AccessibleTenantIds set.
-        //
-        // Bypass rules:
-        //   - When ITenantContext is not resolved (background jobs, migrations, anonymous
-        //     public routes), HasContext is false and the filter degrades to "allow all
-        //     non-deleted rows". That lets OCSP/CRL/ACME and EF migrations continue to read.
-        //   - System admins (IsSystemAdmin == true) similarly see all non-deleted rows.
-        //   - Cross-tenant admin UIs that need soft-deleted rows call IgnoreQueryFilters()
-        //     with an explicit IsSystemAdmin gate.
-        //
-        // Tenant-scoped entities (TenantEntity, CertificateAuthorityEntity, CertProfileEntity)
-        // fence on TenantId; global entities with only IsDeleted (UserEntity) fence only on
-        // the soft-delete flag.
-        // Tenant filter. The filter references only scalar bools and a concrete
-        // HashSet<Guid> — both have dedicated EF Core SQL translators, avoiding the
-        // "IReadOnlySet.Contains is not translatable → client-eval → NRE" trap. The
-        // bypass bool short-circuits the Contains() path entirely during bootstrap,
-        // design-time tooling, background jobs, and for system admins.
-        modelBuilder.Entity<TenantEntity>().HasQueryFilter(t =>
-            !t.IsDeleted &&
-            (TenantFilterBypass || AccessibleTenantIds.Contains(t.Id)));
-
-        modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca =>
-            !ca.IsDeleted &&
-            (TenantFilterBypass
-             || (ca.TenantId == null && InstanceVisible)
-             || (ca.TenantId != null && AccessibleTenantIds.Contains(ca.TenantId.Value))));
-
-        // A null-tenant profile is instance-wide configuration everyone sees, unless it belongs
-        // to an instance CA, which only callers with instance scope see.
-        modelBuilder.Entity<CertProfileEntity>().HasQueryFilter(cp =>
-            TenantFilterBypass
-            || (cp.TenantId == null && (cp.CertificateAuthorityId == null || InstanceVisible))
-            || (cp.TenantId != null && AccessibleTenantIds.Contains(cp.TenantId.Value)));
-
+        // Soft-delete filters only. Spaces are fenced explicitly by the callers (TenantFence).
+        modelBuilder.Entity<TenantEntity>().HasQueryFilter(t => !t.IsDeleted);
+        modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca => !ca.IsDeleted);
         modelBuilder.Entity<UserEntity>().HasQueryFilter(u => !u.IsDeleted);
 
         // IP allow-list rules (Whitelists)

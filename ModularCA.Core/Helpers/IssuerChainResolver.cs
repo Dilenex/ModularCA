@@ -231,6 +231,39 @@ public static class IssuerChainResolver
     }
 
     /// <summary>
+    /// Whether CA <paramref name="caId"/> has issued any certificate: a row whose
+    /// <c>IssuerCertificateId</c> is one of the CA's own certificates, its current one or a
+    /// superseded one (per <see cref="OwnerOf(ModularCADbContext, Guid)"/>), or a legacy row with no
+    /// <c>IssuerCertificateId</c> whose issuer DN is the CA's subject DN, other than those
+    /// certificates themselves. The DN match over-counts rather than misses, which only blocks a
+    /// relabel. A CA without an X.509 certificate has issued none.
+    /// </summary>
+    public static async Task<bool> HasIssuedAsync(ModularCADbContext db, Guid caId)
+    {
+        var ca = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == caId)
+            .Select(c => new { c.CertificateId, Subject = c.Certificate == null ? null : c.Certificate.SubjectDN })
+            .FirstOrDefaultAsync();
+        if (ca?.CertificateId is not Guid currentId)
+            return false;
+
+        var owned = new List<Guid> { currentId };
+        if (!string.IsNullOrEmpty(ca.Subject))
+        {
+            var siblings = await db.Certificates.AsNoTracking()
+                .Where(c => c.IsCA && c.SubjectDN == ca.Subject && c.CertificateId != currentId)
+                .Select(c => c.CertificateId)
+                .ToListAsync();
+            owned.AddRange(siblings.Where(id => OwnerOf(db, id)?.CaId == caId));
+        }
+        var subject = string.IsNullOrEmpty(ca.Subject) ? null : ca.Subject;
+        return await db.Certificates.AsNoTracking()
+            .AnyAsync(c => !owned.Contains(c.CertificateId)
+                && ((c.IssuerCertificateId != null && owned.Contains(c.IssuerCertificateId.Value))
+                    || (c.IssuerCertificateId == null && subject != null && c.Issuer == subject)));
+    }
+
+    /// <summary>
     /// Every certificate a CA owns, current and superseded, mapped to its owner — computed once
     /// for a request so a scope filter can match on a plain id list.
     /// </summary>

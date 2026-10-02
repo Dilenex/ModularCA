@@ -592,7 +592,7 @@ export default function AdminUiGuide() {
                     Route: /admin/quotas
                 </div>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Configure and monitor resource quotas per tenant, CA, or group.
+                    Configure and monitor certificate quotas per CA (on its admin group).
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>Set certificate issuance limits</li>
@@ -727,7 +727,7 @@ export default function AdminUiGuide() {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>Create and manage tenants</li>
-                    <li>Configure tenant-level quotas and limits</li>
+                    <li>Configure each tenant's validity ceiling and ceremony policy</li>
                     <li>View tenant resource usage</li>
                     <li>Enable/disable tenants</li>
                     <li>The instance (its own CAs, system groups and CA policy) vs. organization tenants</li>

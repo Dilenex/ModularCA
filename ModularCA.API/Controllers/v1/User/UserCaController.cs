@@ -46,9 +46,8 @@ namespace ModularCA.API.Controllers.v1.User
                 .Where(c => c.IsCA && !(c.SubjectDN?.Contains("System Signing CA") ?? false))
                 .ToList();
 
-            // Apply tenant filtering for non-system-admins
-            var fence = TenantFence.From(HttpContext);
-            if (fence != null && !fence.IsSystemAdmin)
+            var fence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+            if (!fence.InstanceWide)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
                     .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
@@ -86,17 +85,15 @@ namespace ModularCA.API.Controllers.v1.User
         }
 
         /// <summary>
-        /// Returns true when the caller's tenant set includes the CA's tenant.
-        /// System admins always pass. Returns false when the certificate is not bound to any
-        /// CA row — legacy/standalone trust anchors are not exposed through this API surface.
+        /// Returns true when the caller's <see cref="TenantFence"/> admits the CA's tenant; an
+        /// instance-wide caller always passes. Otherwise false when the certificate is not bound to
+        /// any CA row — legacy/standalone trust anchors are not exposed through this API surface.
         /// </summary>
         private async Task<bool> CallerCanSeeCaCertAsync(Guid certificateId)
         {
-            if (HttpContext.Items["IsSystemAdmin"] is true)
+            var fence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+            if (fence.InstanceWide)
                 return true;
-            var fence = TenantFence.From(HttpContext);
-            if (fence == null)
-                return false;
             var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.CertificateId == certificateId)
@@ -176,8 +173,7 @@ namespace ModularCA.API.Controllers.v1.User
             if (!await CallerCanSeeCaCertAsync(caCert.CertificateId))
                 return NotFound();
 
-            var isSystemAdmin = HttpContext.Items["IsSystemAdmin"] is true;
-            var chainFence = TenantFence.From(HttpContext);
+            var chainFence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
 
             var chainPems = new List<string> { caCert.Pem.Trim() };
 
@@ -214,7 +210,7 @@ namespace ModularCA.API.Controllers.v1.User
 
                     // Tenant check every hop — stop the walk at the first
                     // cross-tenant parent instead of adding that parent's PEM to the bundle.
-                    if (!isSystemAdmin && (chainFence == null || !chainFence.Allows(parentCa.TenantId)))
+                    if (!chainFence.Allows(parentCa.TenantId))
                         break;
 
                     chainPems.Add(parentCa.Certificate.Pem.Trim());

@@ -151,6 +151,41 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
   chain, where every new record now goes; `GET /api/v1/admin/audit/verify/chains` reports them.
   Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the
   dumps taken before the upgrade.
+- **CA labels and names are unique across the instance.** A label is the path of a CA's CRL,
+  OCSP, AIA and enrolment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
+  applied) while two CAs, counting soft-deleted ones, share a label, have labels that differ only in
+  case, or share a name; the journal lists each, with its organisation or "instance" and whether
+  it is deleted. Before upgrading, find them with the build you run now:
+
+      sudo -u postgres psql -X -d '<app database>' -c 'SELECT "Label", "Name", "TenantId", "IsDeleted" FROM "CertificateAuthorities" ORDER BY lower("Label"), "Name";'
+
+  Rename all but one of each under Certificate Authorities (edit the CA's label or name), or with
+  `PUT /api/v1/admin/authorities/{id}`. Prefer the SSH CA, or a CA that has issued nothing:
+  renaming the label of an X.509 CA changes its CRL, OCSP and AIA URLs, and certificates it already
+  issued keep pointing at the old ones. A name is a display name; renaming it changes no
+  certificate. A soft-deleted CA still holds its label and name; rename it with SQL
+  (`UPDATE "CertificateAuthorities" SET "Label" = '<label>-old', "Name" = '<name> (old)' WHERE "Id" = '<id>';`,
+  with the service stopped and a dump taken) only when nothing it issued is still in use.
+  The same migration drops the tenant quota columns (maximum CAs, certificates and users) whatever
+  they hold; per-CA quotas are unchanged.
+- **A protocol must sign with its own CA's signing profile.** 0.3.x let a CA's EST, CMP, SCEP,
+  ACME, XCEP or MSAE configuration name any signing profile. From 0.4.0 a configuration whose
+  signing profile issues from no CA, from another CA, or from a superseded certificate of the
+  same CA makes every request to that CA's endpoints fail, so `InstanceUniqueCaNames` refuses
+  (status 3, nothing applied) while any enabled configuration of a live X.509 CA is like that;
+  the journal lists each CA label, protocol and profile. Before upgrading, find them with the
+  build you run now (read-only):
+
+      sudo -u postgres psql -X -d '<app database>' -c 'SELECT ca."Label", pc."Protocol", sp."Name" FROM "CaProtocolConfigs" pc JOIN "CertificateAuthorities" ca ON ca."Id" = pc."CaId" JOIN "SigningProfiles" sp ON sp."Id" = pc."SigningProfileId" WHERE pc."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa" AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");'
+
+  For each row, open Protocol Config for that CA in the 0.3.x console and choose that CA's own
+  signing profile, or disable the protocol, then upgrade. The same holds for the certificate
+  templates MSAE enrols against; the migration refuses an enabled one likewise, and this query
+  finds them:
+
+      sudo -u postgres psql -X -d '<app database>' -c 'SELECT ct."Name", ca."Label", sp."Name" FROM "CertificateTemplates" ct JOIN "CertificateAuthorities" ca ON ca."Id" = ct."CaId" JOIN "SigningProfiles" sp ON sp."Id" = ct."SigningProfileId" WHERE ct."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa" AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");'
+
+  Fix each under Certificate Templates (`/admin/templates`), or disable the template.
 
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in

@@ -5,6 +5,7 @@ using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.API.Startup;
@@ -15,7 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for managing the per-CA public base URL. CDP, OCSP, and AIA endpoints are
 /// always auto-generated from the base URL at cert-build time; no per-field overrides are stored.
 /// CreateOrUpdate/Delete/GetByCa resolve the owning CA through the
-/// cert → CertificateAuthority map, enforce <c>AccessibleTenantIds</c>, and audit-log the
+/// cert → CertificateAuthority map, enforce the caller's <see cref="TenantFence"/>, and audit-log the
 /// before/after <c>PublicBaseUrl</c> on every change.
 /// </summary>
 [ApiController]
@@ -32,39 +33,28 @@ public class AdminCaServiceUrlController(
     /// <summary>
     /// Resolves the CA owning a given CA-certificate id and verifies that
     /// the caller's <see cref="TenantFence"/> admits the CA's scope. Returns the CA
-    /// entity (for audit-log enrichment) when access is granted, or null on deny.
-    /// System admins bypass the tenant check.
+    /// entity (for audit-log enrichment) when access is granted, or null on deny or for a
+    /// deleted CA.
     /// </summary>
     private async Task<Shared.Entities.CertificateAuthorityEntity?> ResolveOwningCaAsync(Guid caCertificateId)
     {
         var ca = await db.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId && !c.IsDeleted);
-        if (ca == null)
-            return null;
-
-        if (HttpContext.Items["IsSystemAdmin"] is true)
-            return ca;
-
-        var fence = TenantFence.From(HttpContext);
-        if (fence != null && fence.Allows(ca.TenantId))
-            return ca;
-
-        return null;
+            .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId);
+        return ca != null && TenantFence.From(HttpContext, Capabilities.CertRevoke).Allows(ca.TenantId) ? ca : null;
     }
 
     /// <summary>
-    /// Returns all CA service URL configurations, filtered by the caller's accessible tenants.
-    /// System administrators see all service URLs.
+    /// Returns the CA service URL configurations of the CAs inside the caller's
+    /// <see cref="TenantFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
         var all = await caServiceUrlService.GetAllAsync();
 
-        var fence = TenantFence.From(HttpContext);
-        if (fence != null && !fence.IsSystemAdmin)
+        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        if (!fence.InstanceWide)
         {
             var accessibleCaCertIds = await db.CertificateAuthorities
                 .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))

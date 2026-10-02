@@ -905,11 +905,6 @@ if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
         ).AddInterceptors(dbDurationInterceptor));
 }
 
-// Scoped tenant context feeds the global query filter in
-// ModularCADbContext so every tenant-scoped read is fenced to the authenticated caller's
-// accessible tenants. Populated by TenantResolutionMiddleware after the auth pipeline.
-builder.Services.AddScoped<ModularCA.Shared.Interfaces.ITenantContext, ModularCA.API.Services.TenantContext>();
-
 builder.Services.AddScoped<ISigningProfileService, SigningProfileService>();
 
 builder.Services.AddScoped<IssuanceValidationService>();
@@ -1137,15 +1132,8 @@ builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHand
 
 builder.Services.AddAuthorization(options =>
 {
-    // System-level policies (system group membership required)
-    options.AddPolicy("SystemAdmin", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.SystemManage, isSystemOnly: true)));
-    options.AddPolicy("SystemOperator", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CaManage, isSystemOnly: true)));
-    options.AddPolicy("SystemAuditor", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.AuditView, isSystemOnly: true)));
-    // CA-scoped policies (system, tenant, or CA group membership)
-    options.AddPolicy("CaAdmin", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CaManage)));
-    options.AddPolicy("CaOperator", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertRevoke)));
-    options.AddPolicy("CaAuditor", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertView)));
-    options.AddPolicy("CaUser", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertRequest)));
+    // System-level (system scope only) and CA-scoped (system, tenant, or CA) capability policies.
+    ModularCA.Auth.Authorization.PolicyDefinitions.AddTo(options);
 
     // Fail closed. Any controller/action without an
     // explicit [Authorize] attribute now requires authentication by default. Genuinely
@@ -2571,7 +2559,7 @@ if (!isSetupMode && controlActive && !config.Features.AllowMultipleOrganizations
     {
         using var orgScope = app.Services.CreateScope();
         var orgDb = orgScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-        var organisations = await orgDb.Tenants.IgnoreQueryFilters()
+        var organisations = await orgDb.Tenants
             .Where(t => !t.IsDeleted)
             .OrderBy(t => t.Name)
             .Select(t => new { t.Name, t.IsEnabled })
@@ -3330,7 +3318,6 @@ try
     var secPolicyRow = ocspStartupDb.SecurityPolicies.AsNoTracking().FirstOrDefault();
     var allowCaDirect = secPolicyRow?.AllowCaDirectSigning ?? false;
     var missingResponder = ocspStartupDb.CertificateAuthorities
-        .IgnoreQueryFilters()
         .Where(ca => ca.IsEnabled && !ca.IsDeleted && !ca.IsSshCa && ca.OcspResponderCertificateId == null)
         .Select(ca => new { ca.Label, ca.Name })
         .ToList();

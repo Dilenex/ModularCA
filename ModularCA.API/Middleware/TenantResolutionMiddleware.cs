@@ -1,22 +1,13 @@
-using Microsoft.EntityFrameworkCore;
-using ModularCA.Database;
-using ModularCA.Shared.Interfaces;
+using ModularCA.Auth.Authorization;
 
 namespace ModularCA.API.Middleware;
 
 /// <summary>
-/// Resolves the authenticated user's accessible tenant IDs from their group memberships,
-/// stores them in <c>HttpContext.Items["AccessibleTenantIds"]</c> (non-null tenants only) and
-/// <c>HttpContext.Items["HasInstanceScope"]</c> for <see cref="ModularCA.Auth.Authorization.TenantFence"/>,
-/// and populates the scoped <see cref="ITenantContext"/> that feeds the
-/// <c>ModularCADbContext</c> global query filter.
-/// <para>
-/// System administrators (members of a system-admin group) receive access to all tenants
-/// and bypass the query filter via <see cref="ITenantContext.IsSystemAdmin"/>.
-/// Non-authenticated requests skip tenant resolution entirely and the query filter
-/// evaluates an unresolved context as bypass so anonymous public routes (CRL, OCSP,
-/// ACME directory, etc.) continue to read the full dataset.
-/// </para>
+/// Resolves the authenticated caller's <see cref="TenantFence"/> through
+/// <see cref="ICaGroupAuthorizationService.GetFenceAsync"/> and stores it for the request, with
+/// <c>HttpContext.Items["IsSystemAdmin"]</c> for a system admin. An authenticated caller whose
+/// subject cannot be read gets <see cref="TenantFence.None"/>. Anonymous requests get no fence;
+/// there is no query filter behind it, so endpoints apply the fence explicitly.
 /// </summary>
 public class TenantResolutionMiddleware
 {
@@ -31,64 +22,17 @@ public class TenantResolutionMiddleware
     }
 
     /// <summary>
-    /// Resolves tenant access for the current user, stashes the results in HttpContext.Items,
-    /// populates the scoped <see cref="ITenantContext"/>, and continues the pipeline.
+    /// Resolves the caller's fence, stores it in <c>HttpContext.Items</c>, and continues the pipeline.
     /// </summary>
-    public async Task InvokeAsync(HttpContext context, ModularCADbContext db, ITenantContext tenantContext, ModularCA.Auth.Authorization.ICaGroupAuthorizationService authz)
+    public async Task InvokeAsync(HttpContext context, ICaGroupAuthorizationService authz)
     {
         var userIdClaim = context.User?.FindFirst("sub")?.Value
             ?? context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
-        HashSet<Guid> accessibleTenantIds = new();
-        bool isSystemAdmin = false;
-        bool hasInstanceScope = false;
-        Guid? resolvedUserId = null;
-
         if (userIdClaim != null && Guid.TryParse(userIdClaim, out var userId))
-        {
-            resolvedUserId = userId;
-
-            // system.manage via any of the four grant sources. The resolver answers, rather
-            // than a copy of its queries here, so a worn access badge restricts this too.
-            isSystemAdmin = await authz.IsSystemAdminAsync(userId);
-
-            if (isSystemAdmin)
-            {
-                var allTenantIds = await db.Tenants
-                    .IgnoreQueryFilters()
-                    .Select(t => t.Id)
-                    .ToListAsync();
-                accessibleTenantIds = new HashSet<Guid>(allTenantIds);
-                hasInstanceScope = true;
-                context.Items["IsSystemAdmin"] = true;
-            }
-            else
-            {
-                // Group memberships as the resolver sees them (a worn badge keeps only some).
-                // A system group, or an instance CA's group, confers visibility of instance
-                // CAs, as membership of a system-tenant group did (TenantFence.ScopeOf).
-                (accessibleTenantIds, hasInstanceScope) =
-                    ModularCA.Auth.Authorization.TenantFence.ScopeOf(await authz.GetUserGroupsAsync(userId));
-            }
-
-            context.Items["AccessibleTenantIds"] = accessibleTenantIds;
-            context.Items["HasInstanceScope"] = hasInstanceScope;
-        }
-
-        // Ensure AccessibleTenantIds is always set for authenticated users (defense-in-depth:
-        // if claim parsing failed or an unexpected path was taken, default to no access)
-        if (context.User?.Identity?.IsAuthenticated == true && context.Items["AccessibleTenantIds"] == null)
-        {
-            context.Items["AccessibleTenantIds"] = accessibleTenantIds;
-        }
-
-        // Populate the scoped ITenantContext for the EF global query filter.
-        // Anonymous requests leave HasContext = false which the filter treats as bypass so
-        // public routes (CRL, OCSP, ACME) continue to see the entire dataset.
-        if (resolvedUserId != null || context.User?.Identity?.IsAuthenticated == true)
-        {
-            tenantContext.Set(resolvedUserId, accessibleTenantIds, isSystemAdmin, hasInstanceScope);
-        }
+            TenantFence.Store(context, await authz.GetFenceAsync(userId));
+        else if (context.User?.Identity?.IsAuthenticated == true)
+            TenantFence.Store(context, TenantFence.None);
 
         await _next(context);
     }

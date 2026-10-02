@@ -30,14 +30,14 @@ public class AdminQuotaController(
     /// <summary>
     /// Returns quota usage summaries for all enabled CAs, including issued counts,
     /// remaining capacity, and warning/exceeded status.
-    /// Non-system-admins see only CAs belonging to their accessible tenants.
+    /// The caller sees the CAs inside their <see cref="TenantFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAllQuotas()
     {
         var summary = await quotaService.GetUsageSummaryAsync();
-        var fence = TenantFence.From(HttpContext);
-        if (fence != null && !fence.IsSystemAdmin)
+        var fence = TenantFence.From(HttpContext, Capabilities.CaManage);
+        if (!fence.InstanceWide)
         {
             var accessibleCaIds = await db.CertificateAuthorities
                 .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
@@ -54,9 +54,9 @@ public class AdminQuotaController(
 
     /// <summary>
     /// Returns all tenants with their certificate authorities and each CA's certificate-issuance
-    /// quota nested underneath, for the combined Tenants &amp; Quotas view. Includes tenant-level
-    /// ceilings (max CAs / certs / users) and per-CA issued/pending usage so limits can be read as
-    /// they cascade tenant → CA. Gated to SystemAdmin (tenant configuration is admin-only).
+    /// quota nested underneath, for the combined Tenants &amp; Quotas view, with per-CA issued and
+    /// pending usage. Tenant quotas were removed in 0.4.0; quotas are per CA, on its admin group.
+    /// Gated to SystemAdmin (tenant configuration is admin-only).
     /// <c>allowMultipleOrganizations</c> carries <c>Features.AllowMultipleOrganizations</c> so the
     /// view can withhold "Create Tenant" in single-organisation mode. <c>instance</c> carries the
     /// instance's own CA policy and its CAs (those with no tenant: the system signing CA, SSH CAs).
@@ -138,7 +138,7 @@ public class AdminQuotaController(
             var tenantCas = casByTenant.GetValueOrDefault(t.Id, new());
             var caDtos = tenantCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList();
 
-            // Tenant-level active certs across its CAs — pairs with MaxCertificatesTotal for context.
+            // Active certificates across the tenant's CAs.
             var tenantIssued = tenantCas.Sum(ca => quotaByCa.GetValueOrDefault(ca.Id)?.IssuedCount ?? 0);
 
             return new
@@ -149,9 +149,6 @@ public class AdminQuotaController(
                 t.Description,
                 t.IsEnabled,
                 t.CreatedAt,
-                t.MaxCertificateAuthorities,
-                t.MaxCertificatesTotal,
-                t.MaxUsers,
                 t.MaxValidityDays,
                 t.ValidityCeilingBehavior,
                 t.RequireKeyCeremony,

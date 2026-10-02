@@ -62,6 +62,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The name of the 0.4.0 S3 migration that folds the system tenant into the instance.</summary>
     public const string FoldSystemTenant = "FoldSystemTenant";
 
+    /// <summary>The 0.4.0 S4 migration's name, without its timestamp.</summary>
+    public const string InstanceUniqueCaNames = "InstanceUniqueCaNames";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -93,6 +96,7 @@ public class PostgresUpgradeHarnessTests
     private static readonly Guid Token = Guid.Parse("00000000-0000-0000-0000-00000000e007");
     private static readonly Guid ExecutedCeremony = Guid.Parse("00000000-0000-0000-0000-00000000e008");
     private static readonly Guid ServiceIdentity = Guid.Parse("00000000-0000-0000-0000-00000000d002");
+    private static readonly Guid ForeignSigningProfile = Guid.Parse("00000000-0000-0000-0000-00000000e009");
 
     [RequiresEnvironmentFact(ServerVariable)]
     public async Task Baseline_with_a_030_shape_migrates_to_latest()
@@ -120,7 +124,9 @@ public class PostgresUpgradeHarnessTests
                 Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames'"));
                 Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + RetireTenantHostnames, StringComparison.Ordinal));
                 Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + FoldSystemTenant, StringComparison.Ordinal));
+                Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
                 await AssertFoldedAsync(app);
+                await AssertInstanceUniqueAsync(app);
             }
 
             await using (var audit = CreateAudit(WithDatabase(server, auditName)))
@@ -179,8 +185,7 @@ public class PostgresUpgradeHarnessTests
     /// What the fold must leave: no system tenant and the column gone; every row that named it on
     /// the instance (a null tenant); the org-system-* groups, their grants and roles gone; the
     /// instance policy equal to the SYSTEM tenant's values (scopes are independent, nothing merged)
-    /// and the organisation's unchanged; RESTRICT on the tenant foreign keys; and the instance's own
-    /// label and name uniqueness.
+    /// and the organisation's unchanged; and RESTRICT on the tenant foreign keys.
     /// </summary>
     private static async Task AssertFoldedAsync(ModularCADbContext app)
     {
@@ -242,15 +247,80 @@ public class PostgresUpgradeHarnessTests
         foreach (var fk in new[] { "FK_CertificateAuthorities_Tenants_TenantId", "FK_KerberosRealms_Tenants_TenantId", "FK_Roles_Tenants_TenantId",
                      "FK_RoleAssignments_Tenants_TenantId", "FK_UserCapabilityGrants_Tenants_TenantId" })
             Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM pg_catalog.pg_constraint WHERE conname = '{fk}' AND confdeltype = 'r'"));
-        foreach (var index in new[] { "IX_CertificateAuthorities_Label_Instance", "IX_CertificateAuthorities_Name_Instance" })
-            Assert.Equal(1, await ScalarAsync(app,
-                $"SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = '{index}' AND indexdef LIKE 'CREATE UNIQUE INDEX%' AND indexdef LIKE '%WHERE (\"TenantId\" IS NULL)%'"));
+    }
 
-        // A second instance CA may not take the system signing CA's label.
+    /// <summary>
+    /// What 0.4.0 S4 must leave: plain unique indexes on CA Label and Name over all rows, the raw
+    /// unique index on lower(Label), the non-unique TenantId index behind the foreign key, none of the four per-tenant and
+    /// instance-only indexes, and no tenant quota columns. A space CA may not take an instance CA's
+    /// label, nor a CA a deleted CA's name.
+    /// </summary>
+    private static async Task AssertInstanceUniqueAsync(ModularCADbContext app)
+    {
+        foreach (var index in new[] { "IX_CertificateAuthorities_Label", "IX_CertificateAuthorities_Name" })
+            Assert.Equal(1, await ScalarAsync(app,
+                $"SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = '{index}' AND indexdef LIKE 'CREATE UNIQUE INDEX%' AND indexdef NOT LIKE '% WHERE %'"));
+        Assert.Equal(1, await ScalarAsync(app,
+            "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_TenantId' AND indexdef NOT LIKE 'CREATE UNIQUE INDEX%'"));
+        Assert.Equal(1, await ScalarAsync(app,
+            "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_LabelLower' AND indexdef LIKE 'CREATE UNIQUE INDEX%' AND indexdef LIKE '%lower(%'"));
+        foreach (var index in new[] { "IX_CertificateAuthorities_TenantId_Label", "IX_CertificateAuthorities_TenantId_Name",
+                     "IX_CertificateAuthorities_Label_Instance", "IX_CertificateAuthorities_Name_Instance" })
+            Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = '{index}'"));
+        Assert.Equal(0, await ScalarAsync(app,
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name IN ('MaxCertificateAuthorities','MaxCertificatesTotal','MaxUsers')"));
+
         var duplicate = await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
             "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"TenantId\",\"IsDeleted\") "
-            + "VALUES (gen_random_uuid(),'Another','system-signing-ca',false,'Root',true,'Software',false,NULL,false)"));
+            + $"VALUES (gen_random_uuid(),'Another','system-signing-ca',false,'Root',true,'Software',false,'{OrgTenant}',false)"));
         Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
+
+        await ExecAsync(app, $"UPDATE \"CertificateAuthorities\" SET \"IsDeleted\" = true WHERE \"Id\" = '{SshCa}'");
+        var reused = await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
+            "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"TenantId\",\"IsDeleted\") "
+            + "VALUES (gen_random_uuid(),'Ops SSH','ops-ssh-2',false,'SSH',true,'Software',true,NULL,false)"));
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, reused.SqlState);
+    }
+
+    public static TheoryData<string, string, string> RefusedUniqueness() => new()
+    {
+        { "P1", $"UPDATE \"CertificateAuthorities\" SET \"Label\" = 'acme-root' WHERE \"Id\" = '{SshCa}';",
+            "This instance has 1 CA label(s) used by more than one CA, counting soft-deleted CAs: acme-root (Acme), acme-root (instance)." },
+        { "P1 deleted", "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"TenantId\",\"IsDeleted\") "
+            + $"VALUES (gen_random_uuid(),'Old Root','acme-root',false,'Root',false,'Software',false,'{SystemTenant}',true);",
+            "acme-root (Acme), acme-root (instance, deleted)" },
+        { "P2", $"UPDATE \"CertificateAuthorities\" SET \"Label\" = 'Acme-Root' WHERE \"Id\" = '{SshCa}';",
+            "This instance has 1 CA label(s) that differ from another CA's label only in case, counting soft-deleted CAs: |acme-root (Acme)|Acme-Root (instance)" },
+        { "P3", $"UPDATE \"CertificateAuthorities\" SET \"Name\" = 'Acme Root CA' WHERE \"Id\" = '{SshCa}';",
+            "This instance has 1 CA name(s) used by more than one CA, counting soft-deleted CAs: Acme Root CA (Acme), Acme Root CA (instance)." },
+        { "P4", SeedForeignProtocolConfigsSql,
+            "This instance has 1 enabled protocol configuration(s) whose signing profile does not issue from the configuration's CA: acme-root EST uses 'Orphan Signing'. |point the protocol at that CA's own signing profile, or disable the protocol" },
+        { "P5", SeedForeignTemplatesSql,
+            "This instance has 1 enabled certificate template(s) whose signing profile does not issue from the template's CA: 'Workstation' on acme-root uses 'Orphan Signing'. |From 0.4.0 MSAE refuses such a template." },
+    };
+
+    /// <summary>
+    /// Each S4 precondition refuses its own shape (P1-P3 counting soft-deleted CAs, P4 and P5 only
+    /// enabled rows), names the offenders, and rolls back: S4 is not recorded and the old
+    /// indexes and the quota columns are still there.
+    /// </summary>
+    [RequiresEnvironmentTheory(ServerVariable)]
+    [MemberData(nameof(RefusedUniqueness))]
+    public async Task A_precondition_refuses_the_upgrade_and_nothing_of_it_is_applied(string precondition, string offendingSql, string expected)
+    {
+        var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, async app =>
+        {
+            Assert.DoesNotContain(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_TenantId_Label'"));
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_Label'"));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'MaxUsers'"));
+        });
+
+        Assert.NotNull(failure);
+        Assert.EndsWith("_" + InstanceUniqueCaNames, failure!.Migration, StringComparison.Ordinal);
+        var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
+        foreach (var fragment in expected.Split('|'))
+            Assert.True(raised.MessageText.Contains(fragment, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
     }
 
     [RequiresEnvironmentFact(ServerVariable)]
@@ -379,6 +449,10 @@ public class PostgresUpgradeHarnessTests
         Assert.Equal(before with { Tenants = before.Tenants - 1, Groups = before.Groups - 4 }, after);
         Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'IsSystemTenant'"));
         Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\" WHERE \"Name\" LIKE 'org-system-%'"));
+        Assert.Equal(0, await ScalarAsync(app,
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name IN ('MaxCertificateAuthorities','MaxCertificatesTotal','MaxUsers')"));
+        Assert.Equal(2, await ScalarAsync(app,
+            "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname IN ('IX_CertificateAuthorities_Label','IX_CertificateAuthorities_Name') AND indexdef LIKE 'CREATE UNIQUE INDEX%'"));
 
         var auditConnection = Environment.GetEnvironmentVariable(RehearsalAuditVariable);
         if (!string.IsNullOrWhiteSpace(auditConnection))
@@ -592,6 +666,41 @@ public class PostgresUpgradeHarnessTests
             "DefaultGoodResponseTtlMinutes","DefaultRevokedResponseTtlMinutes","MaxSingleRequestsPerRequest","KeystoreScryptN",
             "KeystoreScryptR","KeystoreScryptP","UserQuorum","UpdatedAt")
         VALUES (gen_random_uuid(),5,15,30,3,14,500,false,false,90,300,120,true,5,300,false,false,false,60,15,4,65536,8,1,1,now());
+        """;
+
+    /// <summary>A signing profile that issues from no CA.</summary>
+    internal static string SeedOrphanSigningProfileSql => $"""
+
+        INSERT INTO "SigningProfiles" ("Id","Name","Description","AllowedAlgorithms","AllowedEKUs","IsDefault","CreatedAt","Revision",
+            "UpdatedAt","ExtendedKeyUsageCritical","InhibitAnyPolicy","InheritanceEnabled","IssuerId")
+        VALUES ('{ForeignSigningProfile}','Orphan Signing','','[]','[]',false,now(),1,now(),false,false,false,NULL);
+        """;
+
+    /// <summary>
+    /// An enabled EST and a disabled SCEP configuration of the root CA naming
+    /// <see cref="SeedOrphanSigningProfileSql"/>'s profile: the enabled one is what the 0.4.0 S4
+    /// migration's P4 refuses. Run after <see cref="Seed030Sql"/> and that seed.
+    /// </summary>
+    internal static string SeedForeignProtocolConfigsSql => SeedOrphanSigningProfileSql + $"""
+
+        INSERT INTO "CaProtocolConfigs" ("Id","CaId","Protocol","IsEnabled","IsPublicVisible","SigningProfileId","CertProfileId",
+            "EstRequireClientCert","EstHttpAuthEnabled","ScepChallengeRequired","CmpRequireSignature","AcmeRequireEab",
+            "AcmeAllowPrivateAddressValidation","OcspSignResponses","MsaeAllowUsernameToken","MsaeAllowKerberos")
+        VALUES (gen_random_uuid(),'{RootCa}','EST',true,true,'{ForeignSigningProfile}',NULL,false,false,false,false,false,false,false,false,false),
+               (gen_random_uuid(),'{RootCa}','SCEP',false,true,'{ForeignSigningProfile}',NULL,false,false,false,false,false,false,false,false,false);
+        """;
+
+    /// <summary>
+    /// An enabled and a disabled certificate template of the root CA naming
+    /// <see cref="SeedOrphanSigningProfileSql"/>'s profile: the enabled one is what P5 refuses.
+    /// Run after <see cref="SeedFoldSql"/>, whose bound profile they use.
+    /// </summary>
+    internal static string SeedForeignTemplatesSql => SeedOrphanSigningProfileSql + $"""
+
+        INSERT INTO "CertificateTemplates" ("Id","Name","CaId","CertProfileId","SigningProfileId","IsEnabled","MsaeMajorVersion",
+            "MsaeMinorVersion","MsaeMachineType","CreatedAt")
+        VALUES (gen_random_uuid(),'Workstation','{RootCa}','{BoundProfile}','{ForeignSigningProfile}',true,100,0,true,now()),
+               (gen_random_uuid(),'Retired','{RootCa}','{BoundProfile}','{ForeignSigningProfile}',false,100,0,true,now());
         """;
 
     /// <summary>

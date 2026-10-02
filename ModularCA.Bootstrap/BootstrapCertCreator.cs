@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Core.Implementations;
 using ModularCA.Keystore.Crypto;
@@ -221,13 +222,29 @@ public static class BootstrapCertCreator
     /// <summary>
     /// Creates a certificate authority entity in the database, linked to the given certificate.
     /// Supports root, intermediate, and issuing CA types. A null <paramref name="tenantId"/>
-    /// creates an instance CA, such as the system signing CA.
+    /// creates an instance CA, such as the system signing CA. A label (ignoring case) or name that
+    /// another CA of the instance already has throws
+    /// <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> naming both, rather
+    /// than failing on the unique index, as does a label derived from the CA's name that
+    /// <see cref="EnsureRootLabelUsable"/> refuses. An explicit <paramref name="label"/> may be reserved.
     /// </summary>
     public static void CreateCertificateAuthority(ModularCADbContext db, CertificateEntity caCertificateEntity,
         string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? tenantId = null)
     {
         var caName = CertificateUtil.ParseCnFromPem(caCertificateEntity.Pem);
         var caType = type;
+        if (label == null)
+            EnsureRootLabelUsable(caName);
+        var caLabel = label ?? LabelFor(caName);
+        var lowered = caLabel.ToLowerInvariant();
+        var clash = db.CertificateAuthorities.IgnoreQueryFilters()
+            .Where(c => (c.Label != null && c.Label.ToLower() == lowered) || c.Name == caName)
+            .Select(c => new { c.Name, c.Label })
+            .FirstOrDefault();
+        if (clash != null)
+            throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                $"Bootstrap cannot create CA '{caName}' (label '{caLabel}'): CA '{clash.Name}' (label '{clash.Label}') already has that "
+                + "name or label, and both are unique across the instance. Choose another root CA common name.");
 
         var caEntity = new CertificateAuthorityEntity
         {
@@ -237,7 +254,7 @@ public static class BootstrapCertCreator
             Type = caType,
             IsEnabled = true,
             IsDefault = isDefault,
-            Label = label ?? ToLabel(caName),
+            Label = caLabel,
             ParentCaId = parentCaId,
             TenantId = tenantId,
         };
@@ -247,9 +264,39 @@ public static class BootstrapCertCreator
     }
 
     /// <summary>
-    /// Converts a CA name into a URL-safe label (lowercase, hyphens, no special chars).
+    /// The system signing CA's common name, which is also its CA name.
     /// </summary>
-    private static string ToLabel(string name) =>
+    public const string SystemSigningCaName = "ModularCA System Signing CA";
+
+    /// <summary>The system signing CA's label.</summary>
+    public const string SystemSigningCaLabel = "system-signing-ca";
+
+    /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> when the root CA
+    /// common name <paramref name="commonName"/> would give an invalid label, or one with a reserved
+    /// prefix (system- / org-), under <see cref="ModularCA.Core.Services.CaLabelRules"/>. Called
+    /// before any setup work so the operator can pick another name while nothing is built yet.
+    /// </summary>
+    public static void EnsureRootLabelUsable(string commonName)
+    {
+        var label = LabelFor(commonName.Trim());
+        try
+        {
+            ModularCA.Core.Services.CaLabelRules.Validate(label, allowReserved: false);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                $"The root CA common name '{commonName}' gives the CA label '{label}', which cannot be used: {ex.Message} "
+                + "The label is the path of the CA's CRL, OCSP and AIA URLs; choose another common name.");
+        }
+    }
+
+    /// <summary>
+    /// Converts a CA name into a URL-safe label (lowercase, hyphens, no special chars), as
+    /// bootstrap labels the root CA.
+    /// </summary>
+    public static string LabelFor(string name) =>
         new string(name.ToLowerInvariant()
             .Replace(' ', '-')
             .Where(c => char.IsLetterOrDigit(c) || c == '-')

@@ -70,14 +70,14 @@ public interface IEffectivePolicyResolver
 {
     /// <summary>
     /// The policy of <paramref name="tenantId"/>: the instance's for null, the space's otherwise,
-    /// and <see cref="EffectivePolicy.Unknown"/> for an id that names no live space. The
-    /// caller's query filters do not hide a space's policy; soft deletion does.
+    /// and <see cref="EffectivePolicy.Unknown"/> for an id that names no live space; a
+    /// soft-deleted space has none.
     /// </summary>
     Task<EffectivePolicy> ResolveAsync(Guid? tenantId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The policy of the CA <paramref name="caId"/>'s scope, or null when no such live CA
-    /// exists. The caller's query filters do not hide the CA.
+    /// exists; a soft-deleted CA has none.
     /// </summary>
     Task<EffectivePolicy?> ResolveForCaAsync(Guid caId, CancellationToken cancellationToken = default);
 }
@@ -91,14 +91,14 @@ public sealed class EffectivePolicyResolver(ModularCADbContext db) : IEffectiveP
         if (tenantId is not Guid id)
             return EffectivePolicy.ForInstance(await db.SecurityPolicies.AsNoTracking().FirstOrDefaultAsync(cancellationToken));
 
-        var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
         return tenant == null ? EffectivePolicy.Unknown(id) : EffectivePolicy.ForSpace(tenant);
     }
 
     /// <inheritdoc />
     public async Task<EffectivePolicy?> ResolveForCaAsync(Guid caId, CancellationToken cancellationToken = default)
     {
-        var ca = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+        var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == caId && !c.IsDeleted)
             .Select(c => new { c.TenantId })
             .FirstOrDefaultAsync(cancellationToken);

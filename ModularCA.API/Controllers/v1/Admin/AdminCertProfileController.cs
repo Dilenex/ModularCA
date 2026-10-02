@@ -19,8 +19,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing certificate profiles (extension templates, validity constraints,
 /// algorithm restrictions, and CT log configuration).
-/// GetAll and Create resolve the profile/CA back to a tenant and enforce the caller's
-/// <see cref="TenantFence"/> before returning or writing rows.
+/// Every list, read and write enforces the caller's <see cref="TenantFence"/>
+/// (<see cref="TenantFence.AllowsProfile"/>): there is no query filter behind it.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/cert-profiles")]
@@ -42,10 +42,11 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Returns all certificate profiles with resolved EKU friendly names.
-    /// Non-system-admin callers see profiles inside their <see cref="TenantFence"/>: their spaces'
-    /// profiles, the instance-wide ones (TenantId == null), and those bound to an instance CA only
-    /// with instance scope. A <paramref name="tenantId"/> view shows that space's profiles and the
-    /// instance-wide ones not bound to an instance CA.
+    /// The caller sees the profiles inside their <see cref="TenantFence"/>: their spaces'
+    /// profiles, the unbound instance-wide ones, and those bound to an instance CA only with
+    /// instance scope; a caller who is not a system admin also only those they hold a
+    /// <c>profile.*</c> grant for. A <paramref name="tenantId"/> view shows that space's profiles
+    /// and the unbound instance-wide ones.
     /// </summary>
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
     /// <param name="isCaProfile">Optional filter: true returns only CA profiles, false returns only leaf profiles, null returns all.</param>
@@ -73,18 +74,11 @@ public class AdminCertProfileController(
         if (isCaProfile.HasValue)
             profiles = profiles.Where(p => p.IsCaProfile == isCaProfile.Value).ToList();
 
-        // Tenant fence. System admins see everything; other callers see the instance-wide
-        // profiles, those bound to an instance CA only with instance scope, and those of a space
-        // inside their TenantFence.
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
+        if (!ReadFence.IsSystemAdmin)
         {
-            var fence = TenantFence.From(HttpContext);
-            var tenantIds = fence?.TenantIds ?? new HashSet<Guid>();
-            var instanceScope = fence?.InstanceScope == true;
             var accessibleProfileIds = await db.CertProfiles
                 .AsNoTracking()
-                .Where(p => (p.TenantId == null && (p.CertificateAuthorityId == null || instanceScope))
-                         || (p.TenantId != null && tenantIds.Contains(p.TenantId.Value)))
+                .Where(ReadFence.ProfilePredicate<Shared.Entities.CertProfileEntity>(p => p.TenantId, p => p.CertificateAuthorityId))
                 .Select(p => p.Id)
                 .ToListAsync();
             var allowedSet = new HashSet<Guid>(accessibleProfileIds);
@@ -109,7 +103,8 @@ public class AdminCertProfileController(
     /// Creates a new certificate profile with key usage, EKU, validity, algorithm constraints,
     /// and optional inheritance configuration. Validates that the target
     /// CA (when supplied) is inside the caller's <see cref="TenantFence"/> and
-    /// populates <c>CertProfileEntity.TenantId</c> from it (null for an instance CA).
+    /// populates <c>CertProfileEntity.TenantId</c> from it (null for an instance CA). An
+    /// inheritance parent outside the fence is not found.
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -121,21 +116,13 @@ public class AdminCertProfileController(
         {
             var ca = await db.CertificateAuthorities
                 .AsNoTracking()
-                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(c => c.Id == request.CertificateAuthorityId.Value);
-            if (ca == null || ca.IsDeleted)
+            if (ca == null || !WriteFence.Allows(ca.TenantId))
                 return NotFound(new { error = "CA not found" });
-
-            if (HttpContext.Items["IsSystemAdmin"] is not true)
-            {
-                var fence = TenantFence.From(HttpContext);
-                if (fence == null || !fence.Allows(ca.TenantId))
-                    return NotFound(new { error = "CA not found" });
-            }
             resolvedTenantId = ca.TenantId;
         }
 
-        var result = await certProfileService.CreateAsync(request, resolvedTenantId);
+        var result = await certProfileService.CreateAsync(request, resolvedTenantId, WriteFence.AllowsProfile);
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync(AuditActionType.CertProfileCreated, currentUser.User?.Id, currentUser.User?.Username,
             "CertProfile", null, new { request.Name, TenantId = resolvedTenantId, request.CertificateAuthorityId },
@@ -146,7 +133,10 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Updates an existing certificate profile by ID with new constraint values
-    /// and optional inheritance configuration.
+    /// and optional inheritance configuration. An inheritance parent outside the caller's
+    /// <see cref="TenantFence"/> is not found. Moving the profile to another CA, or unbinding it,
+    /// needs cert.revoke on the new CA (or across the profile's scope) and a CA of the profile's
+    /// own scope (<see cref="CaBindingAccess"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -159,7 +149,18 @@ public class AdminCertProfileController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateCertProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        await certProfileService.UpdateAsync(id, request);
+        var current = await db.CertProfiles.AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+            .FirstOrDefaultAsync();
+        if (current == null || !WriteFence.AllowsProfile(current.TenantId, current.CertificateAuthorityId))
+            return NotFound(new { message = "Profile not found" });
+        if (current.CertificateAuthorityId != request.CertificateAuthorityId
+            && CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, WriteFence, currentUser.User!.Id,
+                request.CertificateAuthorityId, current.TenantId, Capabilities.CertRevoke)) is { } refused)
+            return refused;
+
+        await certProfileService.UpdateAsync(id, request, WriteFence.AllowsProfile);
         await audit.LogAsync(AuditActionType.CertProfileUpdated, currentUser.User?.Id, currentUser.User?.Username,
             "CertProfile", id.ToString(), request,
             HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -190,27 +191,31 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Retrieves a single certificate profile by GUID, including resolved EKU names
-    /// and inheritance fields.
+    /// and inheritance fields. A profile outside the caller's <see cref="TenantFence"/> is not found:
+    /// the policy admits an unbound profile for anyone holding the capability on any CA.
     /// </summary>
     [HttpGet("{id}")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var profile = await certProfileService.GetByIdAsync(id);
-        if (profile == null)
+        if (profile == null || !await InFenceAsync(id))
             return NotFound(new { message = "Profile not found" });
         return Ok(profile);
     }
 
     /// <summary>
     /// Returns the effective (merged) certificate profile after resolving inheritance
-    /// from parent profiles. Useful for previewing the actual constraints that will apply.
+    /// from parent profiles. Useful for previewing the actual constraints that will apply. A
+    /// profile outside the caller's <see cref="TenantFence"/> is not found.
     /// </summary>
     /// <param name="id">The GUID of the certificate profile to resolve.</param>
     [HttpGet("{id}/resolved")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetResolved(Guid id)
     {
+        if (!await InFenceAsync(id))
+            return NotFound(new { message = "Profile not found" });
         var resolved = await profileResolutionService.ResolveCertProfileAsync(id);
         return Ok(resolved);
     }
@@ -224,7 +229,23 @@ public class AdminCertProfileController(
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> ValidateInheritance(Guid id)
     {
+        if (!await InFenceAsync(id))
+            return NotFound(new { message = "Profile not found" });
         var errors = await profileResolutionService.ValidateCertProfileInheritanceAsync(id);
         return Ok(new { isValid = errors.Count == 0, errors });
+    }
+
+    private TenantFence ReadFence => TenantFence.From(HttpContext, Capabilities.CertView);
+
+    private TenantFence WriteFence => TenantFence.From(HttpContext, Capabilities.CertRevoke);
+
+    /// <summary>Whether profile <paramref name="id"/> exists and is inside the caller's cert.view fence.</summary>
+    private async Task<bool> InFenceAsync(Guid id)
+    {
+        var scope = await db.CertProfiles.AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+            .FirstOrDefaultAsync();
+        return scope != null && ReadFence.AllowsProfile(scope.TenantId, scope.CertificateAuthorityId);
     }
 }

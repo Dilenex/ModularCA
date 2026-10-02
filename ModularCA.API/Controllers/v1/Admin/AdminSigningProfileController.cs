@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
@@ -28,16 +29,52 @@ public class AdminSigningProfileController(
     ICurrentUserService currentUser,
     IDistributedCache cache,
     ISecurityAlertService alertService,
-    ICaGroupAuthorizationService authService) : ControllerBase
+    ICaGroupAuthorizationService authService,
+    ModularCA.Database.ModularCADbContext db) : ControllerBase
 {
     private readonly IDistributedCache _cache = cache;
     private readonly ISecurityAlertService _alertService = alertService;
     private readonly ICaGroupAuthorizationService _authService = authService;
 
     /// <summary>
-    /// Returns all signing profiles including their allowed cert profile IDs
-    /// and inheritance configuration. Non-system-admin callers see only profiles
-    /// they have a profile.* capability grant for.
+    /// Whether a signing profile issuing from CA certificate <paramref name="issuerId"/> is inside
+    /// the caller's <see cref="TenantFence"/> for <paramref name="capability"/>: one with no issuer
+    /// is unbound and is; otherwise the issuing CA's scope decides, and a profile whose CA is gone
+    /// or deleted is not.
+    /// </summary>
+    private async Task<bool> InFenceAsync(Guid? issuerId, string capability)
+    {
+        var fence = TenantFence.From(HttpContext, capability);
+        if (issuerId is not Guid id || fence.InstanceWide)
+            return true;
+        var ca = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.CertificateId == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync();
+        return ca != null && fence.Allows(ca.TenantId);
+    }
+
+    /// <summary>
+    /// Null when the caller may make CA certificate <paramref name="issuerId"/> a profile's issuer:
+    /// its CA is inside the caller's ca.manage fence (else 404) and the caller holds ca.manage on
+    /// it (else 403). No issuer needs no check.
+    /// </summary>
+    private async Task<IActionResult?> AuthorizeIssuerAsync(Guid userId, Guid? issuerId)
+    {
+        if (issuerId is not Guid id)
+            return null;
+        var ca = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.CertificateId == id).Select(c => new { c.Id, c.TenantId }).FirstOrDefaultAsync();
+        if (ca == null || !TenantFence.From(HttpContext, Capabilities.CaManage).Allows(ca.TenantId))
+            return NotFound(new { error = "Issuing CA not found" });
+        return await _authService.HasCaCapabilityAsync(userId, ca.Id, Capabilities.CaManage)
+            ? null
+            : StatusCode(403, new { error = "You lack ca.manage on the issuing CA." });
+    }
+
+    /// <summary>
+    /// Returns the signing profiles inside the caller's <see cref="TenantFence"/> (see
+    /// <see cref="InFenceAsync"/>), including their allowed cert profile IDs and inheritance
+    /// configuration. A caller who is not a system admin also sees only profiles they have a
+    /// profile.* capability grant for.
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
@@ -54,20 +91,29 @@ public class AdminSigningProfileController(
                 profiles = profiles.Where(p => grantedIds.Contains(p.Id)).ToList();
         }
 
-        return Ok(profiles);
+        var visible = new List<SigningProfileDto>();
+        foreach (var p in profiles)
+            if (await InFenceAsync(p.IssuerId, Capabilities.CertView))
+                visible.Add(p);
+        return Ok(visible);
     }
 
     /// <summary>
     /// Creates a new signing profile with optional allowed cert profile links
-    /// and inheritance configuration.
+    /// and inheritance configuration. The issuer's CA must be inside the caller's fence and the
+    /// caller must hold ca.manage on it (<see cref="AuthorizeIssuerAsync"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CaManage, CaTarget.CaCertificate, "r.IssuerId")]
     public async Task<IActionResult> Create([FromBody] CreateSigningProfileRequest r)
     {
-        var result = await service.CreateAsync(r);
         await currentUser.EnsureLoadedAsync();
+        if (currentUser.User == null)
+            return Unauthorized();
+        if (await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
+            return refused;
+        var result = await service.CreateAsync(r);
         await audit.LogAsync(AuditActionType.SigningProfileCreated, currentUser.User?.Id, currentUser.User?.Username,
             "SigningProfile", null, new { r.Name },
             HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -76,7 +122,9 @@ public class AdminSigningProfileController(
 
     /// <summary>
     /// Updates an existing signing profile and replaces its allowed cert profile links
-    /// and inheritance configuration.
+    /// and inheritance configuration. A profile outside the caller's fence is not found, and a new
+    /// issuer is checked by <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the
+    /// current one.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -87,6 +135,12 @@ public class AdminSigningProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
+
+        var current = await service.GetByIdAsync(id);
+        if (current == null || !await InFenceAsync(current.IssuerId, Capabilities.CaManage))
+            return NotFound(new { message = "Profile not found" });
+        if (current.IssuerId != r.IssuerId && await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
+            return refused;
 
         // UpdateAsync also replaces the allowed-cert-profile links from r.AllowedCertProfileIds, so the
         // detail page's unified Save persists the profile and its links in this one step-up-gated call.
@@ -120,14 +174,15 @@ public class AdminSigningProfileController(
 
     /// <summary>
     /// Retrieves a single signing profile by its GUID, including allowed cert profile IDs
-    /// and inheritance configuration.
+    /// and inheritance configuration. A profile outside the caller's <see cref="TenantFence"/> is
+    /// not found.
     /// </summary>
     [HttpGet("{id}")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var profile = await service.GetByIdAsync(id);
-        if (profile == null)
+        if (profile == null || !await InFenceAsync(profile.IssuerId, Capabilities.CertView))
             return NotFound(new { message = "Profile not found" });
         return Ok(profile);
     }
@@ -153,12 +208,16 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
-    /// Returns the list of allowed cert profile IDs for the specified signing profile.
+    /// Returns the list of allowed cert profile IDs for the specified signing profile. A profile
+    /// outside the caller's <see cref="TenantFence"/> is not found.
     /// </summary>
     [HttpGet("{id}/allowed-cert-profiles")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetAllowedCertProfiles(Guid id)
     {
+        var profile = await service.GetByIdAsync(id);
+        if (profile == null || !await InFenceAsync(profile.IssuerId, Capabilities.CertView))
+            return NotFound(new { message = "Profile not found" });
         var ids = await service.GetAllowedCertProfileIdsAsync(id);
         return Ok(ids);
     }

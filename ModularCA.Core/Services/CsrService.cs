@@ -39,7 +39,7 @@ public class CsrService : ICsrService
     /// Generates a new CSR with a fresh key pair based on the requested parameters, validates the key
     /// parameters against the signing and certificate profiles, and stores the CSR entity in the
     /// database with the private key held on it under Data Protection, for delivery as PKCS#12
-    /// once the certificate is issued.
+    /// once the certificate is issued. A profile outside the issuing CA's scope is refused.
     /// </summary>
     public async Task<GeneratedCsr> GenerateCsrAsync(CreateCsrRequest request, Guid userId)
     {
@@ -51,6 +51,8 @@ public class CsrService : ICsrService
             throw new Exception("Certificate profile not found.");
         if (signingProfile == null)
             throw new Exception("Signing profile not found.");
+
+        await EnsureProfileInScopeAsync(certProfile, signingProfile);
 
         var user = await _dbContext.Users
             .Where(c => c.Id == userId)
@@ -210,7 +212,8 @@ public class CsrService : ICsrService
 
     /// <summary>
     /// Resolves the profiles an infrastructure CSR is issued under and checks the key algorithm
-    /// and size against the key policy and both profiles, as the CSR generators share it.
+    /// and size against the key policy and both profiles, as the CSR generators share it, and
+    /// refuses a profile outside the issuing CA's scope.
     /// </summary>
     private async Task<(CertProfileEntity CertProfile, SigningProfileEntity SigningProfile, string SignatureAlgorithm, string KeySizeStr)>
         ValidateInfrastructureKeyParametersAsync(string keyAlgorithm, int keySizeOrCurve, Guid certProfileId, Guid signingProfileId)
@@ -219,6 +222,8 @@ public class CsrService : ICsrService
             ?? throw new InvalidOperationException("Infrastructure cert profile not found.");
         var signingProfile = await _dbContext.SigningProfiles.FindAsync(signingProfileId)
             ?? throw new InvalidOperationException("Signing profile not found.");
+
+        await EnsureProfileInScopeAsync(certProfile, signingProfile);
 
         // Resolve the string key size for profile validation (e.g. 256 → "P-256" for ECDSA)
         var keySizeStr = KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySizeOrCurve);
@@ -350,7 +355,8 @@ public class CsrService : ICsrService
     /// <summary>
     /// Uploads an externally-generated PEM-encoded CSR with optional subject and SAN overrides,
     /// validates its key parameters against the signing and certificate profiles, and stores the
-    /// CSR entity in the database with override metadata for use during issuance.
+    /// CSR entity in the database with override metadata for use during issuance. A profile
+    /// outside the issuing CA's scope is refused.
     /// </summary>
     public async Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
         Dictionary<string, string>? subjectOverrides, List<Shared.Models.Csr.SanOverride>? sanOverrides,
@@ -364,6 +370,8 @@ public class CsrService : ICsrService
             throw new Exception($"Certificate profile not found (ID: {certProfileId}).");
         if (signingProfile == null)
             throw new Exception($"Signing profile not found (ID: {signingProfileId}).");
+
+        await EnsureProfileInScopeAsync(certProfile, signingProfile);
         // Parse CSR
         var user = await _dbContext.Users
             .Where(c => c.Id == userId)
@@ -423,6 +431,23 @@ public class CsrService : ICsrService
         MetricsService.CsrSubmissionsTotal.WithLabels("uploaded").Inc();
 
         return pem;
+    }
+
+    /// <summary>
+    /// Refuses, before a CSR is stored, a leaf certificate profile outside the scope of the CA the
+    /// signing profile issues from (<see cref="Authorization.CertProfileScope"/>). A signing profile
+    /// whose CA is not registered yet (the CA creation seam) is left to issuance, which checks again.
+    /// </summary>
+    private async Task EnsureProfileInScopeAsync(CertProfileEntity certProfile, SigningProfileEntity signingProfile)
+    {
+        if (certProfile.IsCaProfile || signingProfile.IssuerId is not Guid issuerId)
+            return;
+        var ca = await _dbContext.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.CertificateId == issuerId)
+            .Select(c => new { c.Id, c.TenantId })
+            .FirstOrDefaultAsync();
+        if (ca != null)
+            Authorization.CertProfileScope.Ensure(certProfile.TenantId, certProfile.CertificateAuthorityId, ca.Id, ca.TenantId);
     }
 
     /// <summary>

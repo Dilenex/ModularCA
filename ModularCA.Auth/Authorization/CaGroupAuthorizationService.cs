@@ -343,6 +343,103 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     }
 
     /// <inheritdoc />
+    public async Task<TenantFence> GetFenceAsync(Guid userId)
+    {
+        if (await IsSystemAdminAsync(userId))
+            return TenantFence.Of([], instanceScope: true, isSystemAdmin: true);
+
+        var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
+
+        var groups = (await _db.CaGroupMembers
+                .Where(m => m.UserId == userId && (!worn || bGroups.Contains(m.GroupId)))
+                .Select(m => new { m.GroupId, m.Group.TenantId, m.Group.IsSystemGroup, m.Group.CertificateAuthorityId })
+                .ToListAsync())
+            .DistinctBy(g => g.GroupId).ToList();
+        var groupIds = groups.Select(g => g.GroupId).ToList();
+
+        var groupCaps = await _db.CapabilityGrants
+            .Where(g => groupIds.Contains(g.GroupId) && g.ResourceType == null)
+            .Select(g => new { g.GroupId, g.Capability })
+            .ToListAsync();
+        groupCaps.AddRange(await _db.RoleAssignments
+            .Where(ra => ra.GroupId != null && groupIds.Contains(ra.GroupId.Value))
+            .SelectMany(ra => ra.Role.Capabilities.Where(rc => rc.ResourceType == null)
+                .Select(rc => new { GroupId = ra.GroupId!.Value, rc.Capability }))
+            .ToListAsync());
+
+        var userCaps = await _db.UserCapabilityGrants
+            .Where(ug => ug.UserId == userId && (!worn || bGrants.Contains(ug.Id)) && ug.ResourceType == null)
+            .Select(ug => new { ug.Capability, ug.TenantId, ug.CertificateAuthorityId })
+            .ToListAsync();
+        userCaps.AddRange(await _db.RoleAssignments
+            .Where(ra => ra.UserId == userId && ra.GroupId == null && (!worn || bRas.Contains(ra.Id)))
+            .SelectMany(ra => ra.Role.Capabilities.Where(rc => rc.ResourceType == null)
+                .Select(rc => new { rc.Capability, ra.TenantId, ra.CertificateAuthorityId }))
+            .ToListAsync());
+
+        var caIds = userCaps.Where(u => u.CertificateAuthorityId != null).Select(u => u.CertificateAuthorityId!.Value).Distinct().ToList();
+        var caTenants = caIds.Count == 0 ? new Dictionary<Guid, Guid?>()
+            : await _db.CertificateAuthorities
+                .Where(ca => caIds.Contains(ca.Id))
+                .ToDictionaryAsync(ca => ca.Id, ca => ca.TenantId);
+
+        var systemCaps = new HashSet<string>(StringComparer.Ordinal);
+        var tenantIds = new HashSet<Guid>();
+        var instanceScope = false;
+        var systemMember = false;
+        var tenantsByCapability = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
+        var instanceCaps = new HashSet<string>(StringComparer.Ordinal);
+
+        void Confer(string capability, Guid? tenantId)
+        {
+            if (tenantId is not Guid t)
+            {
+                instanceCaps.Add(capability);
+                return;
+            }
+            if (!tenantsByCapability.TryGetValue(capability, out var set))
+                tenantsByCapability[capability] = set = [];
+            set.Add(t);
+        }
+
+        foreach (var g in groups)
+        {
+            if (g.TenantId is Guid t) tenantIds.Add(t);
+            else if (g.IsSystemGroup) systemMember = true;
+            else if (g.CertificateAuthorityId != null) instanceScope = true;
+        }
+
+        var groupById = groups.ToDictionary(g => g.GroupId);
+        foreach (var gc in groupCaps)
+        {
+            var g = groupById[gc.GroupId];
+            if (g.IsSystemGroup) systemCaps.Add(gc.Capability);
+            else if (g.TenantId != null || g.CertificateAuthorityId != null) Confer(gc.Capability, g.TenantId);
+        }
+
+        foreach (var uc in userCaps)
+        {
+            if (uc.CertificateAuthorityId is Guid caId)
+            {
+                if (!caTenants.TryGetValue(caId, out var caTenant))
+                    continue;
+                if (caTenant is Guid t) tenantIds.Add(t);
+                else instanceScope = true;
+                Confer(uc.Capability, caTenant);
+            }
+            else if (uc.TenantId is Guid t)
+            {
+                tenantIds.Add(t);
+                Confer(uc.Capability, t);
+            }
+            else systemCaps.Add(uc.Capability);
+        }
+
+        return TenantFence.Of(tenantIds, instanceScope, systemCapabilities: systemCaps, systemMember: systemMember,
+            tenantsByCapability: tenantsByCapability, instanceCapabilities: instanceCaps);
+    }
+
+    /// <inheritdoc />
     public async Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId)
     {
         var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
@@ -439,11 +536,7 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             .AsNoTracking()
             .Select(ca => new { ca.Id, ca.Label, ca.Name, ca.IsSshCa, ca.TenantId })
             .ToListAsync();
-        // Tenant names and slugs for the console's tenant scope. Every tenant, not just the
-        // caller's: the query filter would otherwise hide the tenant of a CA the caller holds a
-        // grant on but is not a member of through a group.
         var tenants = await _db.Tenants
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .Select(t => new { t.Id, t.Name, t.Slug })
             .ToDictionaryAsync(t => t.Id, t => t);

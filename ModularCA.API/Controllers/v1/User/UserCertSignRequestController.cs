@@ -169,8 +169,7 @@ public class UserCertSignRequestController(
                 .FirstOrDefaultAsync(c => c.CertificateId == signingProfile.IssuerId);
             if (ca != null)
             {
-                var fence = TenantFence.From(HttpContext);
-                if (fence != null && !fence.Allows(ca.TenantId))
+                if (!TenantFence.From(HttpContext, Capabilities.CertRequest).Allows(ca.TenantId))
                     return BadRequest(new { error = "You do not have access to the CA associated with this signing profile." });
             }
         }
@@ -296,6 +295,8 @@ public class UserCertSignRequestController(
         // The rules issuance applies are the effective profile's, after inheritance; validating
         // against the profile's own rows let the form and the CA disagree for every profile
         // that inherits from a system profile.
+        if (!await TenantFence.From(HttpContext, Capabilities.CertRequest).AllowsRequestProfileAsync(_db, request.RequestProfileId))
+            return NotFound(new { error = "Request profile not found." });
         Core.Models.EffectiveRequestProfile profile;
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
         catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
