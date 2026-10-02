@@ -207,5 +207,24 @@ that nothing is renamed only to be deleted.
     inheritance parent.
   - CA labels (ignoring case) and names are unique over all rows, deleted ones included. The
     upgrade refuses while any two CAs collide. Tenant quotas are dropped; group quotas stay.
-- **S5.** Simplify ranks to instance, space, CA and operator.
-- **S6.** Rename tenant to space in the schema, API, console and docs.
+- **S5.** Simplify ranks to instance, space, CA and operator. Done without a schema change:
+  - `ca.manage` at instance scope (no tenant, no CA) is the new controlled tier
+    `SystemOperator = 7`, from a direct grant, a role on the account or the system-operator group.
+    Before, it conferred no tier, so a lone system admin could make anyone an approver of every
+    key ceremony without a ceremony. Granting, removing or deleting it now needs a controlled-user
+    ceremony at `SecurityPolicy.UserQuorum`, unless a system-super acts. At each start the control
+    role names the accounts that hold it by direct grant or role.
+  - The rule is one line: an admin tier dominates every tier inside its scope, an operator tier
+    dominates only the identical tier, and super dominates everything. A system operator approves
+    only its peers, not a space operator. An undefined level fails closed: it dominates nothing,
+    and only super and system admin dominate it.
+  - The never-minted CA operator level 1 is removed and stays reserved.
+  - One fail-closed covering tier (`ControlledTier.Covering`) replaces the separate total order
+    used to classify groups, roles and deletions: super if present, else the tier that dominates
+    all the others, else system admin.
+  - Ceremony descriptions and the console name the affected scope: a CA, a tenant or the instance.
+  - A CA's key-ceremony quorum, when it comes from a group, comes from the CA's Administrator
+    group. It could come from its Operator group, which also holds `ca.manage`.
+- **S6.** Rename tenant to space in the schema, API, console and docs. `MintedTierLevel`,
+  `MintedTierCaId` and `MintedTierTenantId` are JSON keys in stored ceremony `ParametersJson`, so
+  a rename must keep them with `[JsonPropertyName]` or migrate the stored data.

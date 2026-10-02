@@ -54,10 +54,10 @@ public class ControlledUserCeremonyService(
         {
             var group = await db.CaGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId);
             if (group != null)
-                return ControlledTierResolver.Strongest(roleCaps.Select(c =>
+                return ControlledTier.Covering(roleCaps.Select(c =>
                     ControlledTierResolver.TierForGroupCapability(c, group.IsSystemGroup, group.TenantId, group.CertificateAuthorityId)));
         }
-        return ControlledTierResolver.Strongest(roleCaps.Select(c =>
+        return ControlledTier.Covering(roleCaps.Select(c =>
             ControlledTierResolver.TierFor(c, tenantId, certificateAuthorityId, null)));
     }
 
@@ -153,27 +153,14 @@ public class ControlledUserCeremonyService(
     }
 
     /// <summary>
-    /// The tier an approver must dominate to delete <paramref name="userId"/>: the user's strongest
-    /// tier when it dominates every other tier they hold (e.g. org-admin(T) over ca-admin(X in T)),
-    /// otherwise system-admin, because the holdings span scopes (two tenants, two CAs, or a CA and
-    /// a tenant-wide operator tier) that no single scoped approver covers. Null when the user holds
-    /// no controlled tier.
+    /// The tier an approver must dominate to delete <paramref name="userId"/>: the covering tier
+    /// (<see cref="ControlledTier.Covering"/>) of every tier the user holds, e.g. org-admin(T) over
+    /// ca-admin(X in T), or system-admin when the holdings span scopes (two tenants, two CAs, or a
+    /// CA and a tenant-wide operator tier) that no single scoped approver covers. Null when the user
+    /// holds no controlled tier, so the delete is uncontrolled.
     /// </summary>
     public async Task<ControlledTier?> GetDeletionTierAsync(Guid userId)
-    {
-        var tiers = await GetUserTiersAsync(userId);
-        if (tiers.Count == 0) return null; // not a controlled user — delete is uncontrolled
-
-        if (tiers.Any(t => t.Level == ControlledTierLevel.SystemSuper))
-            return new ControlledTier(ControlledTierLevel.SystemSuper, null);
-        if (tiers.Any(t => t.Level == ControlledTierLevel.SystemAdmin))
-            return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-
-        var strongest = ControlledTierResolver.Strongest(tiers.Select(t => (ControlledTier?)t))!.Value;
-        return tiers.All(strongest.Dominates)
-            ? strongest
-            : new ControlledTier(ControlledTierLevel.SystemAdmin, null);
-    }
+        => ControlledTier.Covering((await GetUserTiersAsync(userId)).Select(t => (ControlledTier?)t));
 
     /// <inheritdoc />
     public Task<int> CountDominatingControlledUsersAsync(
@@ -240,8 +227,8 @@ public class ControlledUserCeremonyService(
         if (targetTiers.Any(t => t.Level == ControlledTierLevel.SystemSuper)) return false;
         var actorTiers = await GetActorTiersAsync(actorUserId);
 
-        // System-group members without a tier (system operators and auditors) hold system-wide
-        // rights, including key-ceremony approval for every tenant; only system-admin administers them.
+        // System-group members (system operators and auditors) hold system-wide rights, including
+        // key-ceremony approval for every tenant; only system-admin administers them.
         if (await db.CaGroupMembers.AnyAsync(m => m.UserId == targetUserId && m.Group.IsSystemGroup)
             && !actorTiers.Any(a => a.Level == ControlledTierLevel.SystemAdmin))
             return false;
@@ -333,7 +320,7 @@ public class ControlledUserCeremonyService(
 
         var ceremony = await keyCeremonyService.InitiateAsync(
             operationType: "ControlledUserChange",
-            description: DescribeChange(parameters, minted),
+            description: await DescribeChangeAsync(parameters, minted),
             targetEntityId: (parameters.TargetUserId != Guid.Empty
                 ? parameters.TargetUserId
                 : parameters.GroupId)?.ToString() ?? "-",
@@ -356,11 +343,29 @@ public class ControlledUserCeremonyService(
         return tracked.Id;
     }
 
-    private static string DescribeChange(ControlledUserChangeParameters p, ControlledTier minted)
+    /// <summary>
+    /// The ceremony description for <paramref name="p"/>, naming the minted tier's scope: on a CA
+    /// (by label), in a tenant (by name), or the instance.
+    /// </summary>
+    private async Task<string> DescribeChangeAsync(ControlledUserChangeParameters p, ControlledTier minted)
     {
         var who = p.TargetUsername
                   ?? (p.TargetUserId != Guid.Empty ? p.TargetUserId.ToString() : (p.GroupId?.ToString() ?? "?"));
-        var scope = minted.CaId != null ? $" on CA {minted.CaId}" : " (system)";
+        string scope;
+        if (minted.CaId is Guid caId)
+        {
+            var label = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(c => c.Id == caId).Select(c => c.Label).FirstOrDefaultAsync();
+            scope = $" on CA {(string.IsNullOrEmpty(label) ? caId.ToString() : label)}";
+        }
+        else if (minted.TenantId is Guid tenantId)
+        {
+            var name = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync();
+            scope = $" in tenant {(string.IsNullOrEmpty(name) ? tenantId.ToString() : name)}";
+        }
+        else
+            scope = " (instance)";
         return p.ChangeType switch
         {
             "GrantCapability" => $"Promote controlled user {who}: grant '{p.Capability}'{scope}",
@@ -712,7 +717,7 @@ public class ControlledUserCeremonyService(
     /// Resolves the user quorum for a change at <paramref name="minted"/>. Scopes are independent —
     /// System does NOT cascade to tenants, and parents are <i>ceilings</i>, not floors:
     /// <list type="bullet">
-    /// <item>System-tier change (system admin/super) → <c>SecurityPolicy.UserQuorum</c> (standalone).</item>
+    /// <item>System-tier change (system admin/operator/super) → <c>SecurityPolicy.UserQuorum</c> (standalone).</item>
     /// <item>CA-scoped change → the CA's override if set, capped at its scope's CA-level quorum (a
     /// CA may require fewer approvals than its tenant, never more); otherwise that quorum. The
     /// scope of an instance CA is the instance, whose CA-level quorum is

@@ -2704,6 +2704,27 @@ if (!isSetupMode && controlActive)
     }
 }
 
+// 0.4.0 S5: ca.manage at instance scope became a controlled tier. Name the accounts that hold it
+// outside the system-operator group, so the change is visible after an upgrade.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var operatorScope = app.Services.CreateScope();
+        var operatorDb = operatorScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var operatorWarning = await ModularCA.Core.Services.InstanceOperatorHolderCheck.WarningAsync(operatorDb);
+        if (operatorWarning is not null)
+        {
+            Log.Warning("{InstanceOperatorWarning}", operatorWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {operatorWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Instance operator holder check skipped: {ex.Message}");
+    }
+}
+
 if (!isSetupMode)
 {
     try

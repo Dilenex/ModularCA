@@ -54,8 +54,10 @@ public sealed record ControlledSourceFilter(
 /// <item>ca-admin(X): <c>system.manage</c> on CA X.</item>
 /// <item>org-operator(T): <c>ca.manage</c> tenant-wide in T, which makes the holder a key-ceremony
 /// approver for the tenant.</item>
+/// <item>system-operator: <c>ca.manage</c> at instance scope, which makes the holder a key-ceremony
+/// approver for every space and the instance.</item>
 /// </list>
-/// System-scoped <c>ca.manage</c> or <c>audit.view</c> alone (system-operator/auditor) confer no tier.
+/// <c>audit.view</c> alone (auditor) confers no tier.
 /// </summary>
 public static class ControlledTierResolver
 {
@@ -71,6 +73,7 @@ public static class ControlledTierResolver
     /// <paramref name="tenantId"/> and <paramref name="caId"/> are null, a CA when
     /// <paramref name="caId"/> is set (which wins over the tenant), otherwise tenant-wide.
     /// <paramref name="caTenantId"/> is stamped on CA tiers so an org admin can dominate them.
+    /// <c>ca.manage</c> on one CA confers none.
     /// </summary>
     public static ControlledTier? TierFor(string capability, Guid? tenantId, Guid? caId, Guid? caTenantId)
     {
@@ -80,9 +83,10 @@ public static class ControlledTierResolver
             if (tenantId != null) return new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = tenantId };
             return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
         }
-        if (string.Equals(capability, Capabilities.CaManage, StringComparison.OrdinalIgnoreCase)
-            && caId == null && tenantId != null)
-            return new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = tenantId };
+        if (string.Equals(capability, Capabilities.CaManage, StringComparison.OrdinalIgnoreCase) && caId == null)
+            return tenantId != null
+                ? new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = tenantId }
+                : new ControlledTier(ControlledTierLevel.SystemOperator, null);
         return null;
     }
 
@@ -99,36 +103,12 @@ public static class ControlledTierResolver
     }
 
     /// <summary>
-    /// Of several tiers, the one that dominates the others (super &gt; system-admin &gt; org-admin &gt;
-    /// ca-admin &gt; org-operator &gt; operator), or null when there are none.
-    /// </summary>
-    public static ControlledTier? Strongest(IEnumerable<ControlledTier?> tiers)
-    {
-        ControlledTier? best = null;
-        foreach (var t in tiers)
-        {
-            if (t == null) continue;
-            if (best == null || Rank(t.Value.Level) > Rank(best.Value.Level)) best = t;
-        }
-        return best;
-    }
-
-    private static int Rank(ControlledTierLevel level) => level switch
-    {
-        ControlledTierLevel.SystemSuper => 6,
-        ControlledTierLevel.SystemAdmin => 5,
-        ControlledTierLevel.OrgAdmin => 4,
-        ControlledTierLevel.CaAdmin => 3,
-        ControlledTierLevel.OrgOperator => 2,
-        _ => 1,
-    };
-
-    /// <summary>
-    /// The tier membership in <paramref name="group"/> confers: the strongest of the structural
-    /// classification (<see cref="ControlledGroupClassifier"/>) and the tiers of every controlled
-    /// capability the group holds through direct grants or role assignments. A non-system group
-    /// that was given a <c>system.manage</c> role therefore classifies as controlled even though
-    /// its template says otherwise.
+    /// The tier membership in <paramref name="group"/> confers: the covering tier
+    /// (<see cref="ControlledTier.Covering"/>) of the structural classification
+    /// (<see cref="ControlledGroupClassifier"/>) and the tiers of every controlled capability the
+    /// group holds through direct grants or role assignments. A non-system group that was given a
+    /// <c>system.manage</c> role therefore classifies as controlled even though its template says
+    /// otherwise.
     /// </summary>
     public static async Task<ControlledTier?> ClassifyGroupAsync(ModularCADbContext db, CaGroupEntity group)
     {
@@ -148,7 +128,7 @@ public static class ControlledTierResolver
         var tiers = granted.Concat(viaRoles)
             .Select(c => TierForGroupCapability(c, group.IsSystemGroup, group.TenantId, group.CertificateAuthorityId))
             .Append(ControlledGroupClassifier.Classify(group));
-        return Strongest(tiers);
+        return ControlledTier.Covering(tiers);
     }
 
     /// <summary>The distinct tiers <paramref name="userId"/> holds, from every grant source.</summary>

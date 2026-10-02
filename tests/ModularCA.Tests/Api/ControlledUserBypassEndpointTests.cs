@@ -408,7 +408,10 @@ public sealed class ControlledUserBypassEndpointTests
         Assert.False(w.Db.RoleCapabilities.Any(c => c.RoleId == assigned.Id));
 
         Assert.Equal(200, Status(await Call(Roles(w, w.SystemAdmin), "AddCapability", unassigned.Id, AddCap(Capabilities.SystemManage))));
-        Assert.Equal(200, Status(await Call(Roles(w, w.SystemAdmin), "AddCapability", assigned.Id, AddCap(Capabilities.CaManage))));
+        // The role is held at instance scope, so ca.manage on it is the controlled system-operator tier.
+        Assert.Equal(403, Status(await Call(Roles(w, w.SystemAdmin), "AddCapability", assigned.Id, AddCap(Capabilities.CaManage))));
+        Assert.False(w.Db.RoleCapabilities.Any(c => c.RoleId == assigned.Id));
+        Assert.Equal(200, Status(await Call(Roles(w, w.Super), "AddCapability", assigned.Id, AddCap(Capabilities.CaManage))));
         Assert.Equal(200, Status(await Call(Roles(w, w.Super), "AddCapability", assigned.Id, AddCap(Capabilities.SystemManage))));
     }
 
@@ -480,6 +483,75 @@ public sealed class ControlledUserBypassEndpointTests
 
         Assert.Equal(403, Status(await Call(Roles(w, w.SystemAdmin), "AddCapability", role.Id, AddCap(Capabilities.SystemManage))));
         Assert.False(w.Db.RoleCapabilities.Any(c => c.RoleId == role.Id && c.Capability == Capabilities.SystemManage));
+    }
+
+    // ---- instance operator rank --------------------------------------------------------------
+
+    private static ModularCA.Auth.Authorization.ControlledUserCeremonyService WithCeremonies(ControlledUserWorld w)
+        => new(w.Db, new KeyCeremonyService(w.Db, new RecordingAuditService()), null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Authorization.ControlledUserCeremonyService>.Instance);
+
+    [Fact]
+    public async Task Granting_or_assigning_instance_ca_manage_opens_a_ceremony_unless_a_super_acts()
+    {
+        var w = new ControlledUserWorld();
+        var controlled = WithCeremonies(w);
+        object Grants(Guid actor) => New(Ns + "AdminUserGrantController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled);
+        object Assignments(Guid actor) => New(Ns + "AdminRoleAssignmentController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled);
+        var role = w.Role(Capabilities.CaManage);
+        var grant = Body(Ns + "CreateUserGrantRequest", ("UserId", w.Plain), ("Capability", Capabilities.CaManage));
+        var assign = Body(Ns + "CreateRoleAssignmentRequest", ("RoleId", role.Id), ("UserId", (Guid?)w.Plain));
+
+        Assert.Equal(202, Status(await Call(Grants(w.SystemAdmin), "Create", grant)));
+        Assert.Equal(202, Status(await Call(Assignments(w.SystemAdmin), "Create", assign)));
+        Assert.False(w.Db.UserCapabilityGrants.Any(g => g.UserId == w.Plain));
+        Assert.False(w.Db.RoleAssignments.Any(ra => ra.RoleId == role.Id));
+        var opened = w.Db.KeyCeremonies.Where(c => c.OperationType == "ControlledUserChange").ToList();
+        Assert.Equal(2, opened.Count);
+        Assert.All(opened, c =>
+        {
+            Assert.Null(c.TenantId);
+            Assert.Equal(new ControlledTier(ControlledTierLevel.SystemOperator, null), controlled.DescribeCeremony(c).Minted);
+        });
+
+        Assert.Equal(201, Status(await Call(Grants(w.Super), "Create", grant)));
+        Assert.Equal(201, Status(await Call(Assignments(w.Super), "Create", assign)));
+        Assert.True(w.Db.UserCapabilityGrants.Any(g => g.UserId == w.Plain && g.Capability == Capabilities.CaManage && g.TenantId == null));
+        Assert.True(w.Db.RoleAssignments.Any(ra => ra.RoleId == role.Id && ra.UserId == w.Plain));
+    }
+
+    [Fact]
+    public async Task A_pending_deletion_whose_target_gained_instance_ca_manage_expires_at_execute()
+    {
+        var w = new ControlledUserWorld();
+        var audit = new RecordingAuditService();
+        var ceremonies = new KeyCeremonyService(w.Db, audit);
+        var controlled = new ModularCA.Auth.Authorization.ControlledUserCeremonyService(w.Db, ceremonies, null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Authorization.ControlledUserCeremonyService>.Instance);
+        var groupAuth = new ModularCA.Auth.Authorization.CaGroupAuthorizationService(w.Db,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Authorization.CaGroupAuthorizationService>.Instance);
+        object Controller(Guid actor, IDistributedCache cache) => New(Ns + "AdminKeyCeremonyController", actor,
+            ceremonies, new CurrentUserStub(actor), audit, cache, new RecordingAlertService(), null, w.Db, groupAuth, null, null, null, controlled);
+
+        var target = w.User("a1-target", w.A1Admin);
+        var approver = w.User("a1-approver", w.A1Admin);
+        var minted = (await controlled.GetDeletionTierAsync(target))!.Value;
+        Assert.Equal(ControlledTierLevel.CaAdmin, minted.Level);
+        var id = await controlled.InitiateChangeAsync(
+            new ControlledUserChangeParameters { ChangeType = "DeleteUser", TargetUserId = target, TargetUsername = "a1-target" },
+            minted, w.A1AdminUser, "a1admin");
+        var cache = NewCache();
+        Assert.Equal(200, Status(await Call(Controller(approver, cache), "Approve", id,
+            SeedStepUp(cache, approver, StepUpOps.ApproveCeremony, id))));
+        Assert.Equal("Approved", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
+
+        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = target, Capability = Capabilities.CaManage });
+        w.Db.SaveChanges();
+
+        Assert.Equal(409, Status(await Call(Controller(w.A1AdminUser, cache), "Execute", id,
+            SeedStepUp(cache, w.A1AdminUser, StepUpOps.ExecuteCeremony, id))));
+        Assert.Equal("Expired", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
+        Assert.True(w.Db.Users.Any(u => u.Id == target));
     }
 
     // ---- ceremony scoping --------------------------------------------------------------------

@@ -158,14 +158,29 @@ public class ControlledUserBypassGuardTests
     }
 
     [Fact]
-    public async Task System_operators_and_auditors_hold_no_tier_and_administer_no_privileged_account()
+    public async Task System_operators_hold_the_system_operator_tier_auditors_none_and_neither_administers_a_privileged_account()
     {
         var w = new ControlledUserWorld();
         var svc = w.Controlled;
+        var sysOp = new ControlledTier(ControlledTierLevel.SystemOperator, null);
 
-        Assert.Empty(await svc.GetUserTiersAsync(w.Operator));
+        Assert.Equal(sysOp, Assert.Single(await svc.GetUserTiersAsync(w.Operator)));
+        Assert.Equal(sysOp, await svc.GetDeletionTierAsync(w.Operator));
         Assert.Empty(await svc.GetUserTiersAsync(w.Auditor));
         Assert.Null(await svc.GetDeletionTierAsync(w.Auditor));
+
+        // ca.manage at instance scope from a direct grant or a role on the account is the same tier.
+        var viaGrant = w.User("global-ca-manage");
+        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = viaGrant, Capability = Capabilities.CaManage });
+        var viaRole = w.User("global-ca-manage-role");
+        w.Db.RoleAssignments.Add(new RoleAssignmentEntity { RoleId = w.Role(Capabilities.CaManage).Id, UserId = viaRole });
+        w.Db.SaveChanges();
+        Assert.Equal(sysOp, Assert.Single(await svc.GetUserTiersAsync(viaGrant)));
+        Assert.Equal(sysOp, Assert.Single(await svc.GetUserTiersAsync(viaRole)));
+        Assert.Equal(sysOp, svc.ClassifyCapabilityGrant(Capabilities.CaManage, null));
+        Assert.Null(svc.ClassifyCapabilityGrant(Capabilities.CaManage, w.CaA1));
+        Assert.False(await svc.CanAdministerAccountAsync(w.A1AdminUser, viaGrant));
+        Assert.True(await svc.CanAdministerAccountAsync(w.SystemAdmin, viaGrant));
 
         foreach (var actor in new[] { w.Operator, w.Auditor })
         {
@@ -548,6 +563,234 @@ public class ControlledUserBypassGuardTests
         public Task<(bool IsValid, List<string> Errors)> ValidateAsync(string password) => Task.FromResult((true, new List<string>()));
         public Task<(bool IsValid, List<string> Errors)> ValidateAsync(Guid userId, string password) => ValidateAsync(password);
         public Task RecordPasswordHistoryAsync(Guid userId, string newPasswordHash) => Task.CompletedTask;
+    }
+
+    // ---- approval at every tier, and the instance operator rank ------------------------------
+
+    private static ControlledTier Minted(ControlledUserWorld w, string tier) => tier switch
+    {
+        "Super" => new(ControlledTierLevel.SystemSuper, null),
+        "Admin" => new(ControlledTierLevel.SystemAdmin, null),
+        "SysOp" => new(ControlledTierLevel.SystemOperator, null),
+        "OA" => new(ControlledTierLevel.OrgAdmin, null) { TenantId = w.TenantA },
+        "OO" => new(ControlledTierLevel.OrgOperator, null) { TenantId = w.TenantA },
+        "CaAdmin" => new(ControlledTierLevel.CaAdmin, w.CaA1) { TenantId = w.TenantA },
+        _ => throw new ArgumentOutOfRangeException(nameof(tier)),
+    };
+
+    /// <summary>One account per tier, plus a plain user, all in tenant A / CA A1.</summary>
+    private static Dictionary<string, Guid> Approvers(ControlledUserWorld w) => new()
+    {
+        ["Super"] = w.Super,
+        ["Admin"] = w.SystemAdmin,
+        ["SysOp"] = w.Operator,
+        ["OA"] = w.User("org-admin-a", w.OrgAdminA),
+        ["OO"] = OrgOperator(w, "org-operator-a"),
+        ["CaAdmin"] = w.A1AdminUser,
+        ["Plain"] = w.Plain,
+    };
+
+    /// <summary>Who may approve a change at each tier, written out rather than derived.</summary>
+    private static readonly Dictionary<string, string[]> ApprovedBy = new()
+    {
+        ["Super"] = ["Super"],
+        ["Admin"] = ["Super", "Admin"],
+        ["SysOp"] = ["Super", "Admin", "SysOp"],
+        ["OA"] = ["Super", "Admin", "OA"],
+        ["OO"] = ["Super", "Admin", "OA", "OO"],
+        ["CaAdmin"] = ["Super", "Admin", "OA", "CaAdmin"],
+    };
+
+    private static KeyCeremonyEntity Pending(ControlledUserWorld w, string parametersJson, Guid initiator)
+    {
+        var ceremony = new KeyCeremonyEntity
+        {
+            OperationType = "ControlledUserChange",
+            CeremonyType = ModularCA.Shared.Enums.CeremonyType.ControlledUserChange,
+            InitiatedByUserId = initiator,
+            RequiredApprovals = 1,
+            Status = "Pending",
+            ExpiresAt = DateTime.UtcNow.AddHours(1),
+            ParametersJson = parametersJson,
+            ApprovalsJson = "[]",
+        };
+        w.Db.KeyCeremonies.Add(ceremony);
+        w.Db.SaveChanges();
+        return ceremony;
+    }
+
+    private static string Params(Guid target, ControlledTier minted) => System.Text.Json.JsonSerializer.Serialize(new ControlledUserChangeParameters
+    {
+        ChangeType = "GrantCapability", TargetUserId = target, Capability = Capabilities.SystemManage,
+        MintedTierLevel = (int)minted.Level, MintedTierCaId = minted.CaId, MintedTierTenantId = minted.TenantId,
+    });
+
+    [Theory]
+    [InlineData("Super")]
+    [InlineData("Admin")]
+    [InlineData("SysOp")]
+    [InlineData("OA")]
+    [InlineData("OO")]
+    [InlineData("CaAdmin")]
+    public async Task Only_a_dominating_account_may_approve_and_never_the_target(string tier)
+    {
+        var w = new ControlledUserWorld();
+        var approvers = Approvers(w);
+        var minted = Minted(w, tier);
+        var ceremony = Pending(w, Params(w.User("target"), minted), w.User("initiator"));
+
+        foreach (var (name, id) in approvers)
+            Assert.True(ApprovedBy[tier].Contains(name) == await w.Controlled.CanApproveAsync(id, ceremony), $"{name} approving {tier}");
+
+        // Each eligible approver is refused once they are the change's target.
+        foreach (var name in ApprovedBy[tier])
+            Assert.False(await w.Controlled.CanApproveAsync(approvers[name], Pending(w, Params(approvers[name], minted), w.User($"init-{name}"))));
+    }
+
+    [Fact]
+    public async Task A_system_operator_change_is_an_instance_ceremony_at_the_system_user_quorum()
+    {
+        var w = new ControlledUserWorld();
+        w.Db.SecurityPolicies.Add(new SecurityPolicyEntity { UserQuorum = 2, UserCeremonyRequiredApprovals = 3 });
+        w.Db.SaveChanges();
+        var ceremonies = new KeyCeremonyService(w.Db, new RecordingAuditService());
+        var svc = new ControlledUserCeremonyService(w.Db, ceremonies, null!, NullLogger<ControlledUserCeremonyService>.Instance);
+        var minted = svc.ClassifyCapabilityGrant(Capabilities.CaManage, null)!.Value;
+
+        var id = await svc.InitiateCapabilityGrantAsync(w.Plain, "plain", Capabilities.CaManage, null, null, null, null, minted, w.Operator, "sysoperator");
+        var ceremony = w.Db.KeyCeremonies.Single(c => c.Id == id);
+        Assert.Equal(2, ceremony.RequiredApprovals);
+        Assert.Null(ceremony.TenantId);
+        Assert.EndsWith("(instance)", ceremony.Description);
+
+        // The initiator never counts; a peer system operator may approve.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ceremonies.ApproveAsync(id, w.Operator, "sysoperator"));
+        Assert.True(await svc.CanApproveAsync(w.User("sysoperator-2", w.SystemOperatorGroup), ceremony));
+        Assert.False(await svc.CanApproveAsync(w.A1AdminUser, ceremony));
+
+        var onCa = await svc.InitiateCapabilityGrantAsync(w.Plain, "plain", Capabilities.SystemManage, null, w.CaA1, null, null,
+            svc.ClassifyCapabilityGrant(Capabilities.SystemManage, w.CaA1)!.Value, w.SystemAdmin, "sysadmin");
+        Assert.EndsWith("on CA a1", w.Db.KeyCeremonies.Single(c => c.Id == onCa).Description);
+        var inTenant = await svc.InitiateCapabilityGrantAsync(w.Plain, "plain", Capabilities.CaManage, w.TenantA, null, null, null,
+            svc.ClassifyCapabilityGrant(Capabilities.CaManage, null, w.TenantA)!.Value, w.SystemAdmin, "sysadmin");
+        Assert.EndsWith("in tenant A", w.Db.KeyCeremonies.Single(c => c.Id == inTenant).Description);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("SysOp")]
+    [InlineData("OA")]
+    [InlineData("OO")]
+    [InlineData("CaAdmin")]
+    public async Task The_last_dominator_of_each_tier_is_not_removed_by_a_peer(string tier)
+    {
+        var w = new ControlledUserWorld();
+        foreach (var u in new[] { w.Super, w.SystemAdmin, w.Operator, w.A1AdminUser })
+            Deactivate(w, u);
+        Guid Holder(string name) => tier switch
+        {
+            "Admin" => w.User(name, w.SystemAdminGroup),
+            "SysOp" => w.User(name, w.SystemOperatorGroup),
+            "OA" => w.User(name, w.OrgAdminA),
+            "OO" => OrgOperator(w, name),
+            _ => w.User(name, w.A1Admin),
+        };
+        var minted = Minted(w, tier);
+        var actor = Holder("actor");
+        var target = Holder("target");
+
+        Assert.Equal(0, await w.Controlled.CountDominatingControlledUsersAsync(minted, target, actorUserId: actor));
+        Holder("third");
+        Assert.Equal(1, await w.Controlled.CountDominatingControlledUsersAsync(minted, target, actorUserId: actor));
+    }
+
+    private sealed class FixedBadge(AccessBadgeFilter? filter) : IAccessBadgeContext
+    {
+        public Task<AccessBadgeFilter?> GetWornAsync(Guid userId) => Task.FromResult(filter);
+    }
+
+    [Fact]
+    public async Task A_system_operator_whose_badge_drops_the_system_operator_group_neither_approves_nor_initiates_at_that_tier()
+    {
+        var w = new ControlledUserWorld();
+        w.Db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = w.A1Requester.Id, UserId = w.Operator });
+        w.Db.SaveChanges();
+        var sysOp = Minted(w, "SysOp");
+        var ceremony = Pending(w, Params(w.User("target"), sysOp), w.SystemAdmin);
+        ControlledUserCeremonyService Wearing(params Guid[] groups) => new(w.Db, null!, null!, NullLogger<ControlledUserCeremonyService>.Instance,
+            new FixedBadge(new AccessBadgeFilter(Guid.NewGuid(), "badge", groups, [], [])));
+
+        var narrow = Wearing(w.A1Requester.Id);
+        Assert.False(await narrow.CanApproveAsync(w.Operator, ceremony));
+        Assert.False(await narrow.CanInitiateAsync(w.Operator, sysOp));
+
+        var full = Wearing(w.SystemOperatorGroup.Id);
+        Assert.True(await full.CanApproveAsync(w.Operator, ceremony));
+        Assert.True(await full.CanInitiateAsync(w.Operator, sysOp));
+    }
+
+    private const string PascalParameters =
+        """{"ChangeType":"GrantCapability","TargetUserId":"TARGET","TargetUsername":"target","Capability":"system.manage","MintedTierLevel":LEVEL,"MintedTierCaId":CA,"MintedTierTenantId":TENANT}""";
+    private const string CamelParameters =
+        """{"changeType":"GrantCapability","targetUserId":"TARGET","targetUsername":"target","capability":"system.manage","mintedTierLevel":LEVEL,"mintedTierCaId":CA,"mintedTierTenantId":TENANT}""";
+
+    [Theory]
+    [InlineData(0, true)] [InlineData(0, false)]
+    [InlineData(1, true)] [InlineData(1, false)]
+    [InlineData(2, true)] [InlineData(2, false)]
+    [InlineData(3, true)] [InlineData(3, false)]
+    [InlineData(4, true)] [InlineData(4, false)]
+    [InlineData(5, true)] [InlineData(5, false)]
+    [InlineData(6, true)] [InlineData(6, false)]
+    public async Task A_stored_legacy_ceremony_reads_and_gates_as_before(int level, bool pascal)
+    {
+        var w = new ControlledUserWorld();
+        var approvers = Approvers(w);
+        var target = w.User("target");
+        // Each stored level with the scope it was minted at; 0 and 1 keep a CA scope they cannot use.
+        var (ca, tenant, approvedBy) = level switch
+        {
+            2 => ((Guid?)w.CaA1, (Guid?)w.TenantA, ApprovedBy["CaAdmin"]),
+            3 => (null, null, ApprovedBy["Admin"]),
+            4 => (null, null, ApprovedBy["Super"]),
+            5 => (null, w.TenantA, ApprovedBy["OO"]),
+            6 => (null, w.TenantA, ApprovedBy["OA"]),
+            _ => (w.CaA1, w.TenantA, new[] { "Super", "Admin" }),
+        };
+        static string G(Guid? id) => id is Guid g ? $"\"{g}\"" : "null";
+        var json = (pascal ? PascalParameters : CamelParameters)
+            .Replace("TARGET", target.ToString()).Replace("LEVEL", level.ToString())
+            .Replace("CA,", G(ca) + ",").Replace("TENANT}", G(tenant) + "}");
+        var ceremony = Pending(w, json, w.User("initiator"));
+
+        var (describedTarget, minted) = w.Controlled.DescribeCeremony(ceremony);
+        Assert.Equal(target, describedTarget);
+        Assert.Equal(new ControlledTier((ControlledTierLevel)level, ca) { TenantId = tenant }, minted);
+        foreach (var (name, id) in approvers)
+            Assert.True(approvedBy.Contains(name) == await w.Controlled.CanApproveAsync(id, ceremony), $"{name} approving level {level}");
+    }
+
+    [Fact]
+    public async Task Startup_names_the_accounts_holding_instance_ca_manage_outside_the_system_operator_group()
+    {
+        var w = new ControlledUserWorld();
+        Assert.Null(await InstanceOperatorHolderCheck.WarningAsync(w.Db));
+
+        var granted = w.User("granted-op");
+        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = granted, Capability = Capabilities.CaManage });
+        var roled = w.User("roled-op");
+        w.Db.RoleAssignments.Add(new RoleAssignmentEntity { RoleId = w.Role(Capabilities.CaManage).Id, UserId = roled });
+        var tenantWide = w.User("tenant-wide-op");
+        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = tenantWide, Capability = Capabilities.CaManage, TenantId = w.TenantA });
+        w.Db.SaveChanges();
+
+        var warning = await InstanceOperatorHolderCheck.WarningAsync(w.Db);
+        Assert.NotNull(warning);
+        Assert.StartsWith("2 account(s)", warning);
+        Assert.Contains("granted-op", warning);
+        Assert.Contains("roled-op", warning);
+        Assert.DoesNotContain("tenant-wide-op", warning);
+        Assert.DoesNotContain("sysoperator", warning);
     }
 
     // ---- LDAP group sync ---------------------------------------------------------------------

@@ -21,8 +21,8 @@ public interface IControlledUserCeremonyService
     ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? tenantId = null);
 
     /// <summary>
-    /// Classifies the tier a role assignment would confer, or <c>null</c> when the role carries no
-    /// controlled capability. An assignment to a group (<paramref name="groupId"/>) takes the group's
+    /// Classifies the tier a role assignment would confer (the covering tier of the role's controlled
+    /// capabilities), or <c>null</c> when the role carries no controlled capability. An assignment to a group (<paramref name="groupId"/>) takes the group's
     /// scope, as the authorization resolver does; otherwise the assignment's own tenant/CA scope.
     /// </summary>
     Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? tenantId = null, Guid? groupId = null);
@@ -35,8 +35,8 @@ public interface IControlledUserCeremonyService
     Task<IReadOnlyList<ControlledTier>> TiersConferredByRoleAsync(Guid roleId, IEnumerable<string> capabilities);
 
     /// <summary>
-    /// Classifies the tier that membership in <paramref name="group"/> confers — the strongest of its
-    /// structural classification and the capabilities it holds through grants and role assignments —
+    /// Classifies the tier that membership in <paramref name="group"/> confers — the covering tier of
+    /// its structural classification and the capabilities it holds through grants and role assignments —
     /// or <c>null</c> when the group is not privilege-controlled.
     /// </summary>
     Task<ControlledTier?> ClassifyGroupAsync(CaGroupEntity group);
@@ -72,8 +72,9 @@ public interface IControlledUserCeremonyService
 
     /// <summary>
     /// The tier an approver must dominate to delete this user, or <c>null</c> if the user holds no
-    /// controlled tier (delete is uncontrolled). Collapses multi-CA holders up to system-admin
-    /// since only system-tier dominates across CAs.
+    /// controlled tier (delete is uncontrolled). The covering tier of everything the user holds
+    /// (<see cref="ControlledTier.Covering"/>): holdings no single scoped tier covers collapse to
+    /// system-admin.
     /// </summary>
     Task<ControlledTier?> GetDeletionTierAsync(Guid userId);
 

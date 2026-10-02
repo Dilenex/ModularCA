@@ -8,6 +8,17 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ### Fixed
 
+- **The instance operator rank is now controlled.** Holding `ca.manage` at instance scope, with
+  no tenant and no CA, makes an account an approver of every key ceremony on the instance and in
+  every tenant. It was not a controlled tier, so a single system admin could grant it by a direct
+  grant, a role assignment or a capability added to a role held instance-wide, with no ceremony,
+  and then fill any quorum with accounts of their choosing. It is now the system-operator tier.
+  Granting it, removing it or deleting a holder needs a controlled-user ceremony at the instance
+  user quorum, approved by a system admin or another system operator, unless a system-super acts.
+  Existing holders keep it; at each start the server names those who hold it by direct grant or
+  role. A key ceremony on a CA whose quorum comes from its groups now takes the Administrator
+  group's quorum, never the Operator group's.
+
 - **Reissuing a CA's responder certificates works again.** Since 0.3.0, reissuing the OCSP,
   TSA or CMP signing certificate of any CA whose scope requires a key ceremony (the default)
   failed with CeremonyRequired: the new responder key was generated under the ceremony purpose

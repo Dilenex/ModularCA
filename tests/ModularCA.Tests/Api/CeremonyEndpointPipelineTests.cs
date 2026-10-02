@@ -266,7 +266,8 @@ public sealed class CeremonyEndpointPipelineTests
         Assert.Equal(200, Status(await w.Send(orgOperator, null, "GetById", other.Id)));
         Assert.Equal("Pending", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
 
-        // A system operator (system-wide ca.manage, no tier) likewise loses the controlled-user row only.
+        // A system operator (system-wide ca.manage) does not dominate a CA admin tier either, so it
+        // likewise loses the controlled-user row only.
         var sysListed = Ids(await w.Send(w.W.Operator, null, "List", (string?)null));
         Assert.DoesNotContain(id, sysListed);
         Assert.Contains(other.Id, sysListed);

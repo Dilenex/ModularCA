@@ -7,7 +7,7 @@ namespace ModularCA.Shared.Authorization;
 /// controlled-user tier its membership confers. Structure alone misses a group that was given a
 /// controlled capability through a grant or role, so enforcement uses
 /// <c>ModularCA.Core.Authorization.ControlledTierResolver.ClassifyGroupAsync</c>, which takes the
-/// strongest of this and the group's capabilities; this synchronous form is its structural floor.
+/// covering tier of this and the group's capabilities; this synchronous form is its structural floor.
 /// </summary>
 public static class ControlledGroupClassifier
 {

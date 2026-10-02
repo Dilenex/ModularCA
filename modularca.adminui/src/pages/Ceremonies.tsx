@@ -50,7 +50,17 @@ const FAMILY_META: Record<Family, { label: string; cls: string }> = {
     ControlledUserChange: { label: 'Controlled User', cls: 'bg-purple-50 dark:bg-purple-900/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700' },
 };
 
-const TIER_LABELS: Record<number, string> = { 1: 'Operator', 2: 'CA Admin', 3: 'System Admin', 4: 'System Super' };
+const TIER_LABELS: Record<number, string> = {
+    2: 'CA Admin', 3: 'System Admin', 4: 'System Super', 5: 'Tenant Operator', 6: 'Tenant Admin', 7: 'System Operator',
+};
+
+/* the scope of a controlled-user ceremony's affected tier: its CA, else its tenant, else the instance */
+function tierScope(params: any): string {
+    const caId = params.mintedTierCaId || params.MintedTierCaId;
+    if (caId) return ` (CA ${caId})`;
+    const tenantId = params.mintedTierTenantId || params.MintedTierTenantId;
+    return tenantId ? ` (tenant ${tenantId})` : ' (instance)';
+}
 
 function controlledChangeLabel(changeType: string): string {
     switch (changeType) {
@@ -109,7 +119,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                     <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Controlled-User Change</span>
                     <DetailField label="Action" value={controlledChangeLabel(params.changeType || params.ChangeType)} />
                     <DetailField label="Target user" value={params.targetUsername || params.TargetUsername || params.targetUserId || params.TargetUserId || '-'} mono />
-                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + ((params.mintedTierCaId || params.MintedTierCaId) ? ` (CA ${params.mintedTierCaId || params.MintedTierCaId})` : ' (system)')} />
+                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + tierScope(params)} />
                     {(params.capability || params.Capability) && <DetailField label="Capability" value={params.capability || params.Capability} mono />}
                     {(params.roleId || params.RoleId) && <DetailField label="Role" value={params.roleId || params.RoleId} mono />}
                     {(params.groupId || params.GroupId) && <DetailField label="Group" value={params.groupId || params.GroupId} mono />}
