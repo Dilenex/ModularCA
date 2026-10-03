@@ -587,7 +587,7 @@ namespace ModularCA.Auth.Services
                 DisplayName = user.DisplayName,
                 IsActive = user.IsActive,
                 IsServiceIdentity = user.IsServiceIdentity,
-                ServiceScopeTenantId = user.ServiceScopeTenantId,
+                ServiceScopeSpaceId = user.ServiceScopeSpaceId,
                 ServiceScopeCaId = user.ServiceScopeCaId,
                 Description = user.Description,
                 IsLocked = user.IsLocked,

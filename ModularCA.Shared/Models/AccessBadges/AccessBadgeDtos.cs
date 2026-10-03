@@ -32,7 +32,7 @@ public class AccessBadgeSourceOptionDto
     public Guid SourceId { get; set; }
     /// <summary>Display name: the group, the role, or the capability.</summary>
     public string Label { get; set; } = string.Empty;
-    /// <summary>Where it applies: "System", the tenant, or the CA label.</summary>
+    /// <summary>Where it applies: "System", the space, or the CA label.</summary>
     public string Scope { get; set; } = string.Empty;
     /// <summary>The capabilities this source contributes, for the picker's preview.</summary>
     public List<string> Capabilities { get; set; } = new();

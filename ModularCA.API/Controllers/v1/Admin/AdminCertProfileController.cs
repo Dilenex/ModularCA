@@ -19,8 +19,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing certificate profiles (extension templates, validity constraints,
 /// algorithm restrictions, and CT log configuration).
-/// Every list, read and write enforces the caller's <see cref="TenantFence"/>
-/// (<see cref="TenantFence.AllowsProfile"/>): there is no query filter behind it.
+/// Every list, read and write enforces the caller's <see cref="SpaceFence"/>
+/// (<see cref="SpaceFence.AllowsProfile"/>): there is no query filter behind it.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/cert-profiles")]
@@ -42,32 +42,34 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Returns all certificate profiles with resolved EKU friendly names.
-    /// The caller sees the profiles inside their <see cref="TenantFence"/>: their spaces'
+    /// The caller sees the profiles inside their <see cref="SpaceFence"/>: their spaces'
     /// profiles, the unbound instance-wide ones, and those bound to an instance CA only with
     /// instance scope; a caller who is not a system admin also only those they hold a
-    /// <c>profile.*</c> grant for. A <paramref name="tenantId"/> view shows that space's profiles
+    /// <c>profile.*</c> grant for. A <paramref name="spaceId"/> view shows that space's profiles
     /// and the unbound instance-wide ones.
     /// </summary>
     /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
     /// <param name="isCaProfile">Optional filter: true returns only CA profiles, false returns only leaf profiles, null returns all.</param>
+    /// <param name="spaceId">Optional space view. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] bool? isCaProfile = null, [FromQuery] Guid? tenantId = null)
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] bool? isCaProfile = null, [FromQuery] Guid? spaceId = null)
     {
         await currentUser.EnsureLoadedAsync();
         var profiles = await certProfileService.GetAllAsync();
 
-        // The console's tenant scope: the tenant's own profiles plus the instance-wide ones not
+        // The console's space scope: the space's own profiles plus the instance-wide ones not
         // bound to an instance CA.
-        if (tenantId.HasValue)
+        if (spaceId.HasValue)
         {
-            var inTenant = await db.CertProfiles
+            var inSpace = await db.CertProfiles
                 .AsNoTracking()
-                .Where(p => (p.TenantId == null && p.CertificateAuthorityId == null) || p.TenantId == tenantId.Value)
+                .Where(p => (p.SpaceId == null && p.CertificateAuthorityId == null) || p.SpaceId == spaceId.Value)
                 .Select(p => p.Id)
                 .ToListAsync();
-            var inTenantSet = new HashSet<Guid>(inTenant);
-            profiles = profiles.Where(p => inTenantSet.Contains(p.Id)).ToList();
+            var inSpaceSet = new HashSet<Guid>(inSpace);
+            profiles = profiles.Where(p => inSpaceSet.Contains(p.Id)).ToList();
         }
 
         // Filter by CA vs leaf profile type when requested
@@ -78,7 +80,7 @@ public class AdminCertProfileController(
         {
             var accessibleProfileIds = await db.CertProfiles
                 .AsNoTracking()
-                .Where(ReadFence.ProfilePredicate<Shared.Entities.CertProfileEntity>(p => p.TenantId, p => p.CertificateAuthorityId))
+                .Where(ReadFence.ProfilePredicate<Shared.Entities.CertProfileEntity>(p => p.SpaceId, p => p.CertificateAuthorityId))
                 .Select(p => p.Id)
                 .ToListAsync();
             var allowedSet = new HashSet<Guid>(accessibleProfileIds);
@@ -102,8 +104,8 @@ public class AdminCertProfileController(
     /// <summary>
     /// Creates a new certificate profile with key usage, EKU, validity, algorithm constraints,
     /// and optional inheritance configuration. Validates that the target
-    /// CA (when supplied) is inside the caller's <see cref="TenantFence"/> and
-    /// populates <c>CertProfileEntity.TenantId</c> from it (null for an instance CA). An
+    /// CA (when supplied) is inside the caller's <see cref="SpaceFence"/> and
+    /// populates <c>CertProfileEntity.SpaceId</c> from it (null for an instance CA). An
     /// inheritance parent outside the fence is not found.
     /// </summary>
     [HttpPost]
@@ -111,30 +113,30 @@ public class AdminCertProfileController(
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
     public async Task<IActionResult> Create([FromBody] CreateCertProfileRequest request)
     {
-        Guid? resolvedTenantId = null;
+        Guid? resolvedSpaceId = null;
         if (request.CertificateAuthorityId.HasValue)
         {
             var ca = await db.CertificateAuthorities
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == request.CertificateAuthorityId.Value);
-            if (ca == null || !WriteFence.Allows(ca.TenantId))
+            if (ca == null || !WriteFence.Allows(ca.SpaceId))
                 return NotFound(new { error = "CA not found" });
-            resolvedTenantId = ca.TenantId;
+            resolvedSpaceId = ca.SpaceId;
         }
 
-        var result = await certProfileService.CreateAsync(request, resolvedTenantId, WriteFence.AllowsProfile);
+        var result = await certProfileService.CreateAsync(request, resolvedSpaceId, WriteFence.AllowsProfile);
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync(AuditActionType.CertProfileCreated, currentUser.User?.Id, currentUser.User?.Username,
-            "CertProfile", null, new { request.Name, TenantId = resolvedTenantId, request.CertificateAuthorityId },
+            "CertProfile", null, new { request.Name, SpaceId = resolvedSpaceId, request.CertificateAuthorityId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: request.CertificateAuthorityId, tenantId: resolvedTenantId);
+            certificateAuthorityId: request.CertificateAuthorityId, spaceId: resolvedSpaceId);
         return CreatedAtAction(nameof(GetAll), new { }, result);
     }
 
     /// <summary>
     /// Updates an existing certificate profile by ID with new constraint values
     /// and optional inheritance configuration. An inheritance parent outside the caller's
-    /// <see cref="TenantFence"/> is not found. Moving the profile to another CA, or unbinding it,
+    /// <see cref="SpaceFence"/> is not found. Moving the profile to another CA, or unbinding it,
     /// needs cert.revoke on the new CA (or across the profile's scope) and a CA of the profile's
     /// own scope (<see cref="CaBindingAccess"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
@@ -151,13 +153,13 @@ public class AdminCertProfileController(
 
         var current = await db.CertProfiles.AsNoTracking()
             .Where(p => p.Id == id)
-            .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+            .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
             .FirstOrDefaultAsync();
-        if (current == null || !WriteFence.AllowsProfile(current.TenantId, current.CertificateAuthorityId))
+        if (current == null || !WriteFence.AllowsProfile(current.SpaceId, current.CertificateAuthorityId))
             return NotFound(new { message = "Profile not found" });
         if (current.CertificateAuthorityId != request.CertificateAuthorityId
             && CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, WriteFence, currentUser.User!.Id,
-                request.CertificateAuthorityId, current.TenantId, Capabilities.CertRevoke)) is { } refused)
+                request.CertificateAuthorityId, current.SpaceId, Capabilities.CertRevoke)) is { } refused)
             return refused;
 
         await certProfileService.UpdateAsync(id, request, WriteFence.AllowsProfile);
@@ -191,7 +193,7 @@ public class AdminCertProfileController(
 
     /// <summary>
     /// Retrieves a single certificate profile by GUID, including resolved EKU names
-    /// and inheritance fields. A profile outside the caller's <see cref="TenantFence"/> is not found:
+    /// and inheritance fields. A profile outside the caller's <see cref="SpaceFence"/> is not found:
     /// the policy admits an unbound profile for anyone holding the capability on any CA.
     /// </summary>
     [HttpGet("{id}")]
@@ -207,7 +209,7 @@ public class AdminCertProfileController(
     /// <summary>
     /// Returns the effective (merged) certificate profile after resolving inheritance
     /// from parent profiles. Useful for previewing the actual constraints that will apply. A
-    /// profile outside the caller's <see cref="TenantFence"/> is not found.
+    /// profile outside the caller's <see cref="SpaceFence"/> is not found.
     /// </summary>
     /// <param name="id">The GUID of the certificate profile to resolve.</param>
     [HttpGet("{id}/resolved")]
@@ -235,17 +237,17 @@ public class AdminCertProfileController(
         return Ok(new { isValid = errors.Count == 0, errors });
     }
 
-    private TenantFence ReadFence => TenantFence.From(HttpContext, Capabilities.CertView);
+    private SpaceFence ReadFence => SpaceFence.From(HttpContext, Capabilities.CertView);
 
-    private TenantFence WriteFence => TenantFence.From(HttpContext, Capabilities.CertRevoke);
+    private SpaceFence WriteFence => SpaceFence.From(HttpContext, Capabilities.CertRevoke);
 
     /// <summary>Whether profile <paramref name="id"/> exists and is inside the caller's cert.view fence.</summary>
     private async Task<bool> InFenceAsync(Guid id)
     {
         var scope = await db.CertProfiles.AsNoTracking()
             .Where(p => p.Id == id)
-            .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+            .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
             .FirstOrDefaultAsync();
-        return scope != null && ReadFence.AllowsProfile(scope.TenantId, scope.CertificateAuthorityId);
+        return scope != null && ReadFence.AllowsProfile(scope.SpaceId, scope.CertificateAuthorityId);
     }
 }

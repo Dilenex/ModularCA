@@ -6,12 +6,12 @@ namespace ModularCA.Database;
 
 /// <summary>
 /// The CA policy that governs one scope. Scopes are independent: the instance's values govern
-/// instance CAs (a null tenant) and a space's values govern that space's CAs. Nothing merges.
+/// instance CAs (a null space) and a space's values govern that space's CAs. Nothing merges.
 /// </summary>
-/// <param name="TenantId">The space the policy belongs to, or null for the instance.</param>
+/// <param name="SpaceId">The space the policy belongs to, or null for the instance.</param>
 /// <param name="Scope">"instance", or the space's name, for diagnostics.</param>
 /// <param name="Found">
-/// False when <paramref name="TenantId"/> names no space. The values are then the strict
+/// False when <paramref name="SpaceId"/> names no space. The values are then the strict
 /// defaults, and a caller that must verify a waiver refuses instead.
 /// </param>
 /// <param name="IsEnabled">Whether the scope may issue. The instance is always enabled.</param>
@@ -21,7 +21,7 @@ namespace ModularCA.Database;
 /// <param name="ValidityCeilingBehavior">What happens above <paramref name="MaxValidityDays"/>.</param>
 /// <param name="UserCeremonyRequiredApprovals">The scope's CA-level user quorum; null means 1.</param>
 public sealed record EffectivePolicy(
-    Guid? TenantId,
+    Guid? SpaceId,
     string Scope,
     bool Found,
     bool IsEnabled,
@@ -34,8 +34,8 @@ public sealed record EffectivePolicy(
     /// <summary>The name used in diagnostics for the instance scope.</summary>
     public const string InstanceScope = "instance";
 
-    /// <summary>"the instance", or "tenant '&lt;name&gt;'", for messages.</summary>
-    public string Describe() => TenantId == null ? "the instance" : $"tenant '{Scope}'";
+    /// <summary>"the instance", or "space '&lt;name&gt;'", for messages.</summary>
+    public string Describe() => SpaceId == null ? "the instance" : $"space '{Scope}'";
 
     /// <summary>The instance's policy from its <see cref="SecurityPolicyEntity"/> row, or the entity defaults when there is none.</summary>
     public static EffectivePolicy ForInstance(SecurityPolicyEntity? policy)
@@ -46,34 +46,34 @@ public sealed record EffectivePolicy(
             policy.UserCeremonyRequiredApprovals);
     }
 
-    /// <summary>A space's policy from its tenant row.</summary>
-    public static EffectivePolicy ForSpace(TenantEntity tenant) =>
-        new(tenant.Id, tenant.Name, true, tenant.IsEnabled, tenant.RequireKeyCeremony,
-            tenant.CeremonyRequiredApprovals, tenant.MaxValidityDays, tenant.ValidityCeilingBehavior,
-            tenant.UserCeremonyRequiredApprovals);
+    /// <summary>A space's policy from its space row.</summary>
+    public static EffectivePolicy ForSpace(SpaceEntity space) =>
+        new(space.Id, space.Name, true, space.IsEnabled, space.RequireKeyCeremony,
+            space.CeremonyRequiredApprovals, space.MaxValidityDays, space.ValidityCeilingBehavior,
+            space.UserCeremonyRequiredApprovals);
 
-    /// <summary>The strict policy reported for a tenant id that names no space.</summary>
-    public static EffectivePolicy Unknown(Guid tenantId)
+    /// <summary>The strict policy reported for a space id that names no space.</summary>
+    public static EffectivePolicy Unknown(Guid spaceId)
     {
-        var strict = new TenantEntity();
-        return new EffectivePolicy(tenantId, tenantId.ToString(), false, false, true,
+        var strict = new SpaceEntity();
+        return new EffectivePolicy(spaceId, spaceId.ToString(), false, false, true,
             strict.CeremonyRequiredApprovals, strict.MaxValidityDays, strict.ValidityCeilingBehavior, null);
     }
 }
 
 /// <summary>
 /// Resolves the CA policy of a scope. Every reader of RequireKeyCeremony, the key-ceremony
-/// quorum, the validity ceiling or the CA-level user quorum goes through it, so a null tenant
+/// quorum, the validity ceiling or the CA-level user quorum goes through it, so a null space
 /// always means the instance's policy and never "no policy".
 /// </summary>
 public interface IEffectivePolicyResolver
 {
     /// <summary>
-    /// The policy of <paramref name="tenantId"/>: the instance's for null, the space's otherwise,
+    /// The policy of <paramref name="spaceId"/>: the instance's for null, the space's otherwise,
     /// and <see cref="EffectivePolicy.Unknown"/> for an id that names no live space; a
     /// soft-deleted space has none.
     /// </summary>
-    Task<EffectivePolicy> ResolveAsync(Guid? tenantId, CancellationToken cancellationToken = default);
+    Task<EffectivePolicy> ResolveAsync(Guid? spaceId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The policy of the CA <paramref name="caId"/>'s scope, or null when no such live CA
@@ -86,13 +86,13 @@ public interface IEffectivePolicyResolver
 public sealed class EffectivePolicyResolver(ModularCADbContext db) : IEffectivePolicyResolver
 {
     /// <inheritdoc />
-    public async Task<EffectivePolicy> ResolveAsync(Guid? tenantId, CancellationToken cancellationToken = default)
+    public async Task<EffectivePolicy> ResolveAsync(Guid? spaceId, CancellationToken cancellationToken = default)
     {
-        if (tenantId is not Guid id)
+        if (spaceId is not Guid id)
             return EffectivePolicy.ForInstance(await db.SecurityPolicies.AsNoTracking().FirstOrDefaultAsync(cancellationToken));
 
-        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
-        return tenant == null ? EffectivePolicy.Unknown(id) : EffectivePolicy.ForSpace(tenant);
+        var space = await db.Spaces.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
+        return space == null ? EffectivePolicy.Unknown(id) : EffectivePolicy.ForSpace(space);
     }
 
     /// <inheritdoc />
@@ -100,8 +100,8 @@ public sealed class EffectivePolicyResolver(ModularCADbContext db) : IEffectiveP
     {
         var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == caId && !c.IsDeleted)
-            .Select(c => new { c.TenantId })
+            .Select(c => new { c.SpaceId })
             .FirstOrDefaultAsync(cancellationToken);
-        return ca == null ? null : await ResolveAsync(ca.TenantId, cancellationToken);
+        return ca == null ? null : await ResolveAsync(ca.SpaceId, cancellationToken);
     }
 }

@@ -45,12 +45,12 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Creates a new certificate profile entity from the given request.
-        /// <paramref name="tenantId"/> stamps the profile with its space (null for the instance).
+        /// <paramref name="spaceId"/> stamps the profile with its space (null for the instance).
         /// The inheritance parent is checked by <see cref="EnsureParentAllowedAsync"/>.
         /// </summary>
-        public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? tenantId = null, Func<Guid?, Guid?, bool>? parentAllowed = null)
+        public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? spaceId = null, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
-            await EnsureParentAllowedAsync(request.InheritsFromId, null, tenantId, request.CertificateAuthorityId, parentAllowed);
+            await EnsureParentAllowedAsync(request.InheritsFromId, null, spaceId, request.CertificateAuthorityId, parentAllowed);
             var profile = new CertProfileEntity
             {
                 Name = request.Name,
@@ -67,7 +67,7 @@ namespace ModularCA.Core.Services
                 AllowedKeySizes = request.AllowedKeySizes,
                 AllowedSignatureAlgorithms = request.AllowedSignatureAlgorithms,
                 CertificateAuthorityId = request.CertificateAuthorityId,
-                TenantId = tenantId,
+                SpaceId = spaceId,
                 InheritsFromId = request.InheritsFromId,
                 InheritanceEnabled = request.InheritanceEnabled
             };
@@ -87,7 +87,7 @@ namespace ModularCA.Core.Services
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null) throw new KeyNotFoundException("Profile not found");
             if (request.InheritsFromId != profile.InheritsFromId || request.CertificateAuthorityId != profile.CertificateAuthorityId)
-                await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.TenantId, request.CertificateAuthorityId, parentAllowed);
+                await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.SpaceId, request.CertificateAuthorityId, parentAllowed);
 
             profile.Name = request.Name;
             profile.Description = request.Description;
@@ -113,25 +113,25 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Refuses an inheritance parent the caller may not see: one that does not exist, is the
         /// child itself, or fails <paramref name="parentAllowed"/> (the caller's fence over the
-        /// parent's tenant and CA) is not found. A parent the caller sees must also be in the
-        /// child's own scope (<paramref name="childTenantId"/>, null for the instance) or be
-        /// instance-wide (no tenant, no CA), and a parent bound to a CA must be bound to the child's
+        /// parent's space and CA) is not found. A parent the caller sees must also be in the
+        /// child's own scope (<paramref name="childSpaceId"/>, null for the instance) or be
+        /// instance-wide (no space, no CA), and a parent bound to a CA must be bound to the child's
         /// CA (<paramref name="childCaId"/>), so a caller in two spaces cannot make one space's
         /// profile inherit from the other's
         /// (<see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/>).
         /// </summary>
-        private async Task EnsureParentAllowedAsync(Guid? parentId, Guid? childId, Guid? childTenantId, Guid? childCaId, Func<Guid?, Guid?, bool>? parentAllowed)
+        private async Task EnsureParentAllowedAsync(Guid? parentId, Guid? childId, Guid? childSpaceId, Guid? childCaId, Func<Guid?, Guid?, bool>? parentAllowed)
         {
             if (parentId is not Guid id)
                 return;
             var parent = id == childId ? null : await _db.CertProfiles.AsNoTracking()
                 .Where(p => p.Id == id)
-                .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
                 .FirstOrDefaultAsync();
-            if (parent == null || (parentAllowed != null && !parentAllowed(parent.TenantId, parent.CertificateAuthorityId)))
+            if (parent == null || (parentAllowed != null && !parentAllowed(parent.SpaceId, parent.CertificateAuthorityId)))
                 throw new ModularCA.Shared.Errors.ResourceNotFoundException(
                     "Certificate profile", $"Parent certificate profile '{id}' not found.", id.ToString());
-            if (parent.TenantId != childTenantId && !(parent.TenantId == null && parent.CertificateAuthorityId == null))
+            if (parent.SpaceId != childSpaceId && !(parent.SpaceId == null && parent.CertificateAuthorityId == null))
                 throw new ModularCA.Shared.Errors.ConfigurationValidationException(
                     $"Parent certificate profile '{id}' belongs to another scope; a profile inherits only from its own scope's profiles or an instance-wide one.");
             if (parent.CertificateAuthorityId != null && parent.CertificateAuthorityId != childCaId)

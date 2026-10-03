@@ -55,10 +55,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetUsers()
         {
-            // Scoped to the caller's tenants. The policy is CaAuditor with no CA in the route, which
+            // Scoped to the caller's spaces. The policy is CaAuditor with no CA in the route, which
             // the handler satisfies for a GET when the capability is held on ANY CA; and the service
-            // has no tenant predicate. A single-CA auditor in one tenant could list every account
-            // in every tenant, with group memberships (system groups included) and password expiry
+            // has no space predicate. A single-CA auditor in one space could list every account
+            // in every space, with group memberships (system groups included) and password expiry
             // dates: a ready-made target list for password spraying.
             var users = await ScopeToCallerAsync(await _userService.GetAllUsers());
             return Ok(users);
@@ -109,15 +109,15 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// fence is instance-wide sees everyone.
         /// </summary>
         /// <remarks>
-        /// Users carry no tenant of their own; their spaces come from their group memberships and
-        /// from tenant- or CA-scoped grants and roles on the user (owner decision Q2). An account is
-        /// visible when one of those lies inside the caller's <see cref="TenantFence"/> (an
+        /// Users carry no space of their own; their spaces come from their group memberships and
+        /// from space- or CA-scoped grants and roles on the user (owner decision Q2). An account is
+        /// visible when one of those lies inside the caller's <see cref="SpaceFence"/> (an
         /// instance group, an instance CA or a global grant needs instance scope). An account with
         /// none is visible only to an instance-wide caller.
         /// </remarks>
         private async Task<List<UserEntityDto>> ScopeToCallerAsync(List<UserEntityDto> users)
         {
-            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
             if (fence.InstanceWide)
                 return users;
             if (fence.IsEmpty)
@@ -125,30 +125,30 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             var visibleGroupIds = await _dbContext.CaGroups
                 .AsNoTracking()
-                .Where(fence.Predicate<ModularCA.Shared.Entities.CaGroupEntity>(g => g.TenantId))
+                .Where(fence.Predicate<ModularCA.Shared.Entities.CaGroupEntity>(g => g.SpaceId))
                 .Select(g => g.Id)
                 .ToHashSetAsync();
 
             var userIds = users.Select(u => u.Id).ToList();
             var grantScopes = await _dbContext.UserCapabilityGrants.AsNoTracking()
                 .Where(g => userIds.Contains(g.UserId))
-                .Select(g => new { g.UserId, g.TenantId, g.CertificateAuthorityId })
+                .Select(g => new { g.UserId, g.SpaceId, g.CertificateAuthorityId })
                 .ToListAsync();
             var roleScopes = await _dbContext.RoleAssignments.AsNoTracking()
                 .Where(r => r.UserId != null && r.GroupId == null && userIds.Contains(r.UserId!.Value))
-                .Select(r => new { UserId = r.UserId!.Value, r.TenantId, r.CertificateAuthorityId })
+                .Select(r => new { UserId = r.UserId!.Value, r.SpaceId, r.CertificateAuthorityId })
                 .ToListAsync();
-            var scopes = grantScopes.Select(g => (g.UserId, g.TenantId, g.CertificateAuthorityId))
-                .Concat(roleScopes.Select(r => (r.UserId, r.TenantId, r.CertificateAuthorityId)))
+            var scopes = grantScopes.Select(g => (g.UserId, g.SpaceId, g.CertificateAuthorityId))
+                .Concat(roleScopes.Select(r => (r.UserId, r.SpaceId, r.CertificateAuthorityId)))
                 .ToList();
             var caIds = scopes.Where(s => s.CertificateAuthorityId != null).Select(s => s.CertificateAuthorityId!.Value).Distinct().ToList();
-            var caTenants = await _dbContext.CertificateAuthorities.AsNoTracking()
+            var caSpaces = await _dbContext.CertificateAuthorities.AsNoTracking()
                 .Where(ca => caIds.Contains(ca.Id))
-                .ToDictionaryAsync(ca => ca.Id, ca => ca.TenantId);
+                .ToDictionaryAsync(ca => ca.Id, ca => ca.SpaceId);
             var grantVisible = scopes
                 .Where(s => s.CertificateAuthorityId is Guid caId
-                    ? caTenants.TryGetValue(caId, out var caTenant) && fence.Allows(caTenant)
-                    : fence.Allows(s.TenantId))
+                    ? caSpaces.TryGetValue(caId, out var caSpace) && fence.Allows(caSpace)
+                    : fence.Allows(s.SpaceId))
                 .Select(s => s.UserId)
                 .ToHashSet();
 
@@ -168,7 +168,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Single-user form of <see cref="ScopeToCallerAsync(List{UserEntityDto})"/>. An account
         /// outside the caller's scope comes back as null, which the endpoints report as not found
         /// rather than forbidden, so a lookup by username or email cannot confirm that an account
-        /// exists in another tenant.
+        /// exists in another space.
         /// </summary>
         private async Task<UserEntityDto?> ScopeToCallerAsync(UserEntityDto? user)
         {
@@ -558,8 +558,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <item><b>Self-assignment always refused</b> — prevents bypass loops where a user
         /// grants themselves into a higher tier.</item>
         /// <item><b>system-super</b> members: may modify any group (system or CA-scoped).</item>
-        /// <item><b>system-admin</b> members (system-tenant, Administrator template): may
-        /// modify any org-tenant CA-scoped group. Cannot touch system-tenant groups — that
+        /// <item><b>system-admin</b> members (system group, Administrator template): may
+        /// modify any space CA-scoped group. Cannot touch system groups — that
         /// requires system-super.</item>
         /// <item><b>CA-scoped admins</b> (org_&lt;ca&gt;_admin): may modify only groups whose
         /// <c>CertificateAuthorityId</c> equals the CA they themselves admin. Cross-CA
@@ -612,12 +612,12 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             var isSuper = callerGroups.Any(g => g.IsSystemTierSuper);
             if (isSuper) return null; // global override
 
-            // System-tenant groups are only writable by system-super.
+            // System groups are only writable by system-super.
             if (group.IsSystemGroup)
-                return StatusCode(403, new { error = "Modifying system-tenant group memberships requires system-super. system-admin/CaAdmin cannot grant system-tier access." });
+                return StatusCode(403, new { error = "Modifying system group memberships requires system-super. system-admin/CaAdmin cannot grant system-tier access." });
 
-            // system-admin members (Administrator template on a system-tenant group) retain
-            // authority over ANY org-tenant CA-scoped group. Everyone else must be an admin
+            // system-admin members (Administrator template on a system group) retain
+            // authority over ANY space CA-scoped group. Everyone else must be an admin
             // on the specific CA that owns the target group. system-admin tier = any system
             // group that is NOT the super tier.
             var isSystemAdmin = callerGroups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper);

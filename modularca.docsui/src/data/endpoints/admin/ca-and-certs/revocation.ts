@@ -17,7 +17,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: RevokeCert or RevokeCa)' },
         ],
         responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
-        notes: 'KC-06: CA certificate revocation is ceremony-gated when the tenant RequireKeyCeremony flag is set. Enforces tenant isolation.',
+        notes: 'KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation.',
     },
     {
         method: 'POST',
@@ -35,7 +35,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: RevokeCert or RevokeCa)' },
         ],
         responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
-        notes: 'KC-06: CA certificate revocation is ceremony-gated when the tenant RequireKeyCeremony flag is set. Enforces tenant isolation.',
+        notes: 'KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation.',
     },
     {
         method: 'POST',
@@ -51,7 +51,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: HoldCert)' },
         ],
         responseDescription: 'Hold details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces tenant isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage.',
     },
     {
         method: 'POST',
@@ -67,7 +67,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: HoldCert)' },
         ],
         responseDescription: 'Hold details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces tenant isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage.',
     },
     {
         method: 'POST',
@@ -83,7 +83,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: UnholdCert)' },
         ],
         responseDescription: 'Reinstatement details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces tenant isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage.',
     },
     {
         method: 'POST',
@@ -99,6 +99,6 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: UnholdCert)' },
         ],
         responseDescription: 'Reinstatement details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces tenant isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage.',
     },
 ];

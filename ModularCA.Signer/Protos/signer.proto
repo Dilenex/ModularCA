@@ -37,11 +37,11 @@ message KeyRef {
 message SigningContext {
   string caller = 1;
   string purpose = 2;
-  string tenant_id = 3;
+  string space_id = 3;
   string ca_id = 4;
   string ceremony_id = 5;
-  // True only when the caller states the operation is for the instance (tenant_id empty).
-  // An older client omits it, and an empty tenant_id alone is never read as the instance.
+  // True only when the caller states the operation is for the instance (space_id empty).
+  // An older client omits it, and an empty space_id alone is never read as the instance.
   bool instance_scope = 6;
 }
 
@@ -132,7 +132,7 @@ message KeyInfo {
   bytes public_key_der = 2;
   string kind = 3;
   string ca_id = 4;
-  string tenant_id = 5;
+  string space_id = 5;
   string backend = 6;
 }
 

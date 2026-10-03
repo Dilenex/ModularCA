@@ -5,7 +5,7 @@ import ConfirmModal from './ConfirmModal';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useAuth } from '../context/AuthContext';
-import { can, canAtTenant, consoleCas, tenantsOf } from '../authz';
+import { can, canAtSpace, consoleCas, spacesOf } from '../authz';
 import { useToast } from '@shared/context/ToastContext';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -18,30 +18,30 @@ import AuditTable from './AuditTable';
 /**
  * Service identities: accounts that hold permissions for a non-person caller, such as the
  * enrollment identity a Kerberos realm acts as, and that can never sign in. Each is confined to
- * the system, one tenant or one CA; the caller sees and manages only the scopes they administer,
+ * the system, one space or one CA; the caller sees and manages only the scopes they administer,
  * and the groups offered are the ones inside that scope.
  */
 export interface ServiceIdentity {
     id: string; username: string; displayName?: string | null; description?: string | null; isActive: boolean; createdAt: string;
-    scope: 'system' | 'tenant' | 'ca'; tenantId?: string | null; tenantName?: string | null; caId?: string | null; caLabel?: string | null;
-    groups: Array<{ groupId: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string | null; templateName?: string | null }>;
+    scope: 'system' | 'space' | 'ca'; spaceId?: string | null; spaceName?: string | null; caId?: string | null; caLabel?: string | null;
+    groups: Array<{ groupId: string; name: string; displayName: string; certificateAuthorityId?: string | null; spaceId: string | null; templateName?: string | null }>;
 }
-interface GroupOption { id: string; name: string; displayName: string; certificateAuthorityId?: string | null; tenantId: string | null; isSystemGroup: boolean; isSystemTierSuper?: boolean; isInstance?: boolean }
+interface GroupOption { id: string; name: string; displayName: string; certificateAuthorityId?: string | null; spaceId: string | null; isSystemGroup: boolean; isSystemTierSuper?: boolean; isInstance?: boolean }
 
-type ScopeChoice = { key: string; label: string; tenantId: string | null; caId: string | null };
+type ScopeChoice = { key: string; label: string; spaceId: string | null; caId: string | null };
 
 const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '-');
-const scopeLabel = (s: ServiceIdentity) => s.scope === 'ca' ? `CA ${s.caLabel || s.caId}` : s.scope === 'tenant' ? `Tenant ${s.tenantName || s.tenantId}` : 'System';
+const scopeLabel = (s: ServiceIdentity) => s.scope === 'ca' ? `CA ${s.caLabel || s.caId}` : s.scope === 'space' ? `Space ${s.spaceName || s.spaceId}` : 'System';
 
 /**
  * The scope a group belongs to fits an identity scope the same way the server decides it. An
- * instance group (no tenant: the system groups and the instance CAs' groups) never fits.
+ * instance group (no space: the system groups and the instance CAs' groups) never fits.
  */
-const groupFits = (g: GroupOption, tenantId: string | null, caId: string | null) => {
-    if (g.isSystemGroup || g.isSystemTierSuper || g.isInstance || g.tenantId == null) return false;
-    if (!tenantId && !caId) return true;
-    if (g.certificateAuthorityId) return caId === g.certificateAuthorityId || (!caId && tenantId === g.tenantId);
-    return !caId && tenantId === g.tenantId;
+const groupFits = (g: GroupOption, spaceId: string | null, caId: string | null) => {
+    if (g.isSystemGroup || g.isSystemTierSuper || g.isInstance || g.spaceId == null) return false;
+    if (!spaceId && !caId) return true;
+    if (g.certificateAuthorityId) return caId === g.certificateAuthorityId || (!caId && spaceId === g.spaceId);
+    return !caId && spaceId === g.spaceId;
 };
 
 const ServiceIdentitiesPanel: React.FC = () => {
@@ -64,18 +64,18 @@ const ServiceIdentitiesPanel: React.FC = () => {
     // the record as reloaded after a save, and disappears when the identity is deleted.
     const [openId, setOpenId] = useState<string | null>(null);
 
-    /** Scopes the caller may create in: system when ca.manage is held at system scope, then tenants held tenant-wide, then single CAs. */
+    /** Scopes the caller may create in: system when ca.manage is held at system scope, then spaces held space-wide, then single CAs. */
     const scopes = useMemo<ScopeChoice[]>(() => {
         const out: ScopeChoice[] = [];
-        if (can(capabilities, Capabilities.SystemManage) || can(capabilities, Capabilities.CaManage)) out.push({ key: 'system', label: 'System (any tenant, any CA)', tenantId: null, caId: null });
-        for (const t of tenantsOf(capabilities)) if (canAtTenant(capabilities, Capabilities.CaManage, t.id)) out.push({ key: `t:${t.id}`, label: `Tenant: ${t.name}`, tenantId: t.id, caId: null });
-        for (const ca of consoleCas(capabilities)) if (can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.tenantId == null ? 'Instance' : ca.tenantName || ca.tenantSlug})`, tenantId: ca.tenantId, caId: ca.id });
+        if (can(capabilities, Capabilities.SystemManage) || can(capabilities, Capabilities.CaManage)) out.push({ key: 'system', label: 'System (any space, any CA)', spaceId: null, caId: null });
+        for (const t of spacesOf(capabilities)) if (canAtSpace(capabilities, Capabilities.CaManage, t.id)) out.push({ key: `t:${t.id}`, label: `Space: ${t.name}`, spaceId: t.id, caId: null });
+        for (const ca of consoleCas(capabilities)) if (can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.spaceId == null ? 'Instance' : ca.spaceName || ca.spaceSlug})`, spaceId: ca.spaceId, caId: ca.id });
         return out;
     }, [capabilities]);
 
     const [form, setForm] = useState({ username: '', displayName: '', description: '', scopeKey: '', groupIds: [] as string[] });
     const scope = scopes.find((s) => s.key === (form.scopeKey || scopes[0]?.key)) || null;
-    const offeredGroups = groups.filter((g) => scope && groupFits(g, scope.tenantId, scope.caId));
+    const offeredGroups = groups.filter((g) => scope && groupFits(g, scope.spaceId, scope.caId));
 
     const load = useCallback(() => {
         setLoading(true);
@@ -101,7 +101,7 @@ const ServiceIdentitiesPanel: React.FC = () => {
         if (!scope) throw new Error('Pick a scope.');
         await apiPostWithMfa('/api/v1/admin/service-identities', {
             username: form.username, displayName: form.displayName || null, description: form.description || null,
-            tenantId: scope.tenantId, caId: scope.caId, groupIds: form.groupIds,
+            spaceId: scope.spaceId, caId: scope.caId, groupIds: form.groupIds,
         }, requireStepUp, StepUpOps.CreateUser);
         showToast('success', `Service identity ${form.username} created.`);
         setForm({ username: '', displayName: '', description: '', scopeKey: form.scopeKey, groupIds: [] });
@@ -130,7 +130,7 @@ const ServiceIdentitiesPanel: React.FC = () => {
         <div className="space-y-3">
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-600 dark:text-gray-400 max-w-3xl">
-                    Accounts that hold permissions for something that is not a person: the identity a Kerberos realm acts as, an integration, a protocol credential. They have no password and can never sign in. Each is confined to the system, one tenant or one CA, and can only hold groups inside that scope. System groups are never available to them.
+                    Accounts that hold permissions for something that is not a person: the identity a Kerberos realm acts as, an integration, a protocol credential. They have no password and can never sign in. Each is confined to the system, one space or one CA, and can only hold groups inside that scope. System groups are never available to them.
                 </p>
                 <button onClick={() => setCreating((v) => !v)} disabled={scopes.length === 0} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
                     {creating ? 'Cancel' : 'New service identity'}
@@ -251,7 +251,7 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
         else onClose();
     }, [overviewDirty, groupsDirty, onClose]);
 
-    const offered = groups.filter((g) => groupFits(g, identity.tenantId || null, identity.caId || null));
+    const offered = groups.filter((g) => groupFits(g, identity.spaceId || null, identity.caId || null));
 
     const run = async (label: string, fn: () => Promise<void>) => {
         setBusy(true);

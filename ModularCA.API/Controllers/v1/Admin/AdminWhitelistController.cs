@@ -45,7 +45,7 @@ public class AdminWhitelistController(
     private readonly ILogger<AdminWhitelistController> _logger = logger;
 
     /// <summary>
-    /// Lists the whitelist rows inside the caller's <see cref="TenantFence"/>, ordered for admin
+    /// Lists the whitelist rows inside the caller's <see cref="SpaceFence"/>, ordered for admin
     /// UI display: a CA's rules follow its CA's scope, and the global rules (no CA) are instance
     /// configuration, which needs instance scope. No step-up MFA is required for read
     /// operations — callers still need the <c>CaOperator</c> policy to reach the endpoint.
@@ -66,23 +66,23 @@ public class AdminWhitelistController(
 
     /// <summary>
     /// Whether a rule of CA <paramref name="caId"/> (null for a global rule, read as the
-    /// instance) is inside the caller's cert.revoke <see cref="TenantFence"/>. A rule whose CA is gone is not.
+    /// instance) is inside the caller's cert.revoke <see cref="SpaceFence"/>. A rule whose CA is gone is not.
     /// </summary>
     private async Task<bool> InFenceAsync(Guid? caId, CancellationToken ct)
     {
-        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
         if (fence.InstanceWide)
             return true;
         if (caId is not Guid id)
             return fence.Allows(null);
         var ca = await _db.CertificateAuthorities.AsNoTracking()
-            .Where(c => c.Id == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync(ct);
-        return ca != null && fence.Allows(ca.TenantId);
+            .Where(c => c.Id == id).Select(c => new { c.SpaceId }).FirstOrDefaultAsync(ct);
+        return ca != null && fence.Allows(ca.SpaceId);
     }
 
     /// <summary>
     /// Fetches a single whitelist rule by its primary key. Returns 404 if no row
-    /// with the supplied identifier exists inside the caller's <see cref="TenantFence"/>.
+    /// with the supplied identifier exists inside the caller's <see cref="SpaceFence"/>.
     /// </summary>
     /// <param name="id">The whitelist rule identifier.</param>
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>

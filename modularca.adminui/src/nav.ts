@@ -78,7 +78,7 @@ export const adminNavSections: NavSection[] = [
             // here rather than CA Management; its quorum config is in Settings, also Administration.
             // Placed at the top of this group as it's used more often than the rest.
             { name: 'Ceremonies', path: '/ceremonies', icon: '☸', gate: CA_MANAGE, keywords: ['quorum', 'approvals', 'key ceremony'] },
-            { name: 'Tenants & Quotas', path: '/tenants', icon: '☖', gate: SYSTEM_ADMIN, keywords: ['tenant', 'quota'] },
+            { name: 'Spaces & Quotas', path: '/spaces', icon: '☖', gate: SYSTEM_ADMIN, keywords: ['space', 'quota', 'delegation'] },
             { name: 'Settings', path: '/settings', icon: '⚙', gate: SYSTEM_ADMIN, keywords: ['configuration', 'security policy', 'password policy', 'feature flags'] },
             { name: 'Audit Logs', path: '/audit', icon: '≣', gate: CA_AUDIT, keywords: ['audit trail', 'events', 'history'] },
             { name: 'Notifications', path: '/notifications', icon: '♪', gate: CA_MANAGE, keywords: ['email', 'webhooks', 'alerts'] },

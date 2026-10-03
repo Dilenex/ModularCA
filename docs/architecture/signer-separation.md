@@ -32,7 +32,7 @@ install is unchanged.
 | **signer** | the keystore, the keystore passwords, the PKCS#11 session | nothing outbound; answers the node |
 | **enrollment** | protocol handlers (ACME, EST, SCEP, CMP, MSAE), the issuance pipeline | database, signer |
 | **validation** | CRL and OCSP serving; the delegated OCSP responder keys only | database (read), signer for responder keys |
-| **control plane** | console, admin API, tenants, principals, ceremonies, audit, the fleet module | database, signer for ceremonies |
+| **control plane** | console, admin API, spaces, principals, ceremonies, audit, the fleet module | database, signer for ceremonies |
 | **ingress** | TLS termination for every hostname, routing by name (YARP) | the other roles over loopback |
 
 Only the signer is separated in stages 1 and 2. Enrollment and control plane stay one process
@@ -62,7 +62,7 @@ list for stage 1; when it is done, nothing outside `ModularCA.Keystore` holds an
 | `StartModularCA` | all | unlock the keystore at startup with the main and secondary passwords |
 
 Not in scope, because they are not signing keys: the console's own TLS key and the tenant
-hostname keys (PKCS#12 files owned by the ingress/TLS layer), the Kerberos realm keys (symmetric,
+hostname keys (PKCS#12 files owned by the ingress/TLS layer, retired in 0.4.0), the Kerberos realm keys (symmetric,
 protected by data protection, used by the acceptor), and DPoP or session secrets.
 
 ## The contract
@@ -83,7 +83,7 @@ HealthAsync() -> unlocked, key count, backend (software | pkcs11)
 
 `KeyRef` is the certificate id the key belongs to plus the keystore name, which is how the
 keystore already addresses entries. `SigningContext` names the caller's identity, the purpose
-(certificate, CRL, OCSP, SCEP, CMP, TSA, ceremony, backup, export) and the tenant and CA the
+(certificate, CRL, OCSP, SCEP, CMP, TSA, ceremony, backup, export) and the space and CA the
 operation is for. The signer decides from that whether the operation is allowed: a CA key signs
 certificates, CRLs and protocol responses for its own CA; a responder key signs OCSP responses
 only; export is allowed only for end-entity keys and only for a caller holding the export right;
@@ -203,7 +203,7 @@ member returning key parameters. Where the code differs from the design above, t
 and this section records why.
 
 - **`CommitKeyAsync` joined the contract.** A generated key is held pending in the signer's memory
-  under a signer-minted reference and signs only under the purpose, tenant and CA it was generated
+  under a signer-minted reference and signs only under the purpose, space and CA it was generated
   for. It is written to the keystore and bound to its certificate row by an explicit, audited
   commit after the CA's database transaction succeeds; any failure before that retires it, so a
   failed creation leaves nothing usable on disk. The keystore format has no entry removal, which
@@ -226,7 +226,7 @@ and this section records why.
 - **Locked means unavailable, visibly.** Enrollment protocol controllers and admin issuance answer
   503 with a retry hint until the signer reports unlocked; the health endpoint and the MSAE
   readiness page both show the signer's state.
-- **Stricter than the table.** Every key is held to its owning CA and, when named, its tenant; a
+- **Stricter than the table.** Every key is held to its owning CA and, when named, its space; a
   CA certificate without a CA row cannot sign; an audit-write failure does not withhold a
   signature in process, which stage 2 must change to fail closed at the signer.
 
@@ -258,9 +258,9 @@ removed, the refusal reason dropped from the wire) each caught by a test.
   before any result leaves; key generation records before the pending key becomes reachable. In
   process the stage 1 behaviour stays.
 - **Ceremony at the signer.** When a context names a ceremony, the signer verifies the row
-  exists, is approved and names the same CA and tenant before generating, committing or
-  importing a key. Contexts without a ceremony id are still allowed, because tenants that do not
-  require ceremonies create CAs directly; the follow-up is for the signer to read the tenant's
+  exists, is approved and names the same CA and space before generating, committing or
+  importing a key. Contexts without a ceremony id are still allowed, because spaces that do not
+  require ceremonies create CAs directly; the follow-up is for the signer to read the space's
   requirement and refuse id-less key management where a ceremony is required. Ceremony expiry
   is not checked, matching the controller.
 - **Operations.** The gRPC channel's reconnect backoff is bounded to five seconds, found by the
@@ -327,14 +327,14 @@ with the contract suite at 440 tests over both bindings and four deliberate brea
 requirement check removed, the expiry check removed, the ceremony id not recorded, the peer
 not recorded) each caught.
 
-- **The tenant's ceremony requirement is enforced at the signer.** A ceremony context that
-  names no ceremony is held to the tenant's own row: the tenant it names, or the tenant of the
-  CA it names. `RequireKeyCeremony` set, or a tenant the signer cannot find, refuses generate,
-  commit and import as `CeremonyRequired`; a context naming neither tenant nor CA is
-  `ContextRequired`. Bootstrap and retire are exempt as before, and a tenant that waives
+- **The space's ceremony requirement is enforced at the signer.** A ceremony context that
+  names no ceremony is held to the space's own row: the space it names, or the space of the
+  CA it names. `RequireKeyCeremony` set, or a space the signer cannot find, refuses generate,
+  commit and import as `CeremonyRequired`; a context naming neither space nor CA is
+  `ContextRequired`. Bootstrap and retire are exempt as before, and a space that waives
   ceremonies is unchanged. A ceremony that is named is also held to its `ExpiresAt`. One
   consequence to weigh: infrastructure reissue (`ReissueInfrastructureCertsAsync`) sends a
-  ceremony context with no ceremony id, so for a tenant that requires ceremonies the signer now
+  ceremony context with no ceremony id, so for a space that requires ceremonies the signer now
   refuses it until the node either gates reissue behind a ceremony or carries one.
 - **The audit row names the ceremony and the peer.** `SignerAudit.CeremonyId` is the ceremony
   the context named, on every decision including refusals of ceremonies the signer could not
@@ -538,7 +538,7 @@ availability question below has to be answered first.
 A CMP caller therefore cannot unwrap a held private key, and the issuance path that wraps a held
 key cannot read one back — reading it back is the export path's right, which is already the
 right a person holds. Wrap and unwrap are separately permitted for that reason. Neither is held
-to a CA or a tenant: the wrapping key is the signer's, not a CA's, so there is no owner to hold it
+to a CA or a space: the wrapping key is the signer's, not a CA's, so there is no owner to hold it
 to. The context still names them and the audit still records them.
 
 Neither operation runs while the signer is locked, and neither runs when the designated key is on
@@ -549,7 +549,7 @@ therefore keeps Data Protection for these columns until the signer gains a token
 ### What the audit row says
 
 One row per call, allowed or refused, as for every other decision. `Operation` is `WrapSecret` or
-`UnwrapSecret`; `Purpose`, `Caller`, `CaId`, `TenantId` and `PeerIdentity` as usual; `SecretKind`
+`UnwrapSecret`; `Purpose`, `Caller`, `CaId`, `SpaceId` and `PeerIdentity` as usual; `SecretKind`
 names what kind of secret it was, and `WrappingKeyId` the key id the blob names, so the record
 shows which key a rotation has left in use. `DataHash` is SHA-256 **of the wrapped blob**, on both
 operations and in both directions — never of the plaintext, which would make the audit a

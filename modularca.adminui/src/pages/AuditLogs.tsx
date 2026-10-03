@@ -216,7 +216,7 @@ const AuditLogs: React.FC = () => {
         if (dateFrom) params.set('from', dateFrom);
         if (dateTo) params.set('to', dateTo);
         if (filterCaId) params.set('caId', filterCaId);
-        else { const scoped = caQuery(); if (scoped.startsWith('?tenantId=')) params.set('tenantId', decodeURIComponent(scoped.slice('?tenantId='.length))); }
+        else { const scoped = caQuery(); if (scoped.startsWith('?spaceId=')) params.set('spaceId', decodeURIComponent(scoped.slice('?spaceId='.length))); }
         if (filterActionType) params.set('actionType', filterActionType);
         if (q.user) params.set('user', q.user);
         if (activeTab === 'General' && q.sort) params.set('sort', q.sort);

@@ -15,7 +15,7 @@ import { ToggleField, labelClass } from '@shared/components/forms';
 
 // MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
 // modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
-// on the tenant page.
+// on the space page.
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
 
@@ -531,7 +531,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'MSAE' && (
                             <div className="space-y-2">
                                 <ToggleField size="md" labelSide="left" label="Username authentication" description="Accept the WS-Security UsernameToken (and HTTP Basic) a client configured for username authentication sends" checked={form.msaeAllowUsernameToken} onChange={(v) => setForm({ ...form, msaeAllowUsernameToken: v })} />
-                                <ToggleField size="md" labelSide="left" label="Windows integrated authentication (Kerberos)" description="Accept tickets from the Active Directory forests bound to this CA's tenant, and challenge credential-less clients with 401. Needs a realm bound on the tenant page." checked={form.msaeAllowKerberos} onChange={(v) => setForm({ ...form, msaeAllowKerberos: v })} />
+                                <ToggleField size="md" labelSide="left" label="Windows integrated authentication (Kerberos)" description="Accept tickets from the Active Directory forests bound to this CA's space, and challenge credential-less clients with 401. Needs a realm bound on the space page." checked={form.msaeAllowKerberos} onChange={(v) => setForm({ ...form, msaeAllowKerberos: v })} />
                                 {!form.msaeAllowUsernameToken && !form.msaeAllowKerberos && (
                                     <p className="text-xs text-amber-700 dark:text-amber-400">At least one authentication method must stay enabled.</p>
                                 )}

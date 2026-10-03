@@ -8,7 +8,8 @@ namespace ModularCA.Migrate;
 /// <summary>
 /// Creates everything the destination needs, in the order that makes each step reversible until
 /// the last one: roles, then databases, then the citext extension and the audit grants, then both
-/// schemas, then a check of who owns them.
+/// frozen baselines, then a check of who owns them. After the copy,
+/// <see cref="ApplyUpgradeMigrationsAsync"/> applies every later migration.
 /// <para>
 /// The SQL comes from <see cref="PostgresRoleLayout"/>, the same builders bootstrap provisions
 /// with, so a migrated install and a fresh one share one layout: the app role owns the
@@ -17,9 +18,9 @@ namespace ModularCA.Migrate;
 /// to either.
 /// </para>
 /// <para>
-/// Nothing here is a copy. When this class finishes, the destination holds two empty ModularCA
-/// databases with the right owners and grants, and if anything after it fails those two databases
-/// can be dropped, because this is what created them.
+/// Nothing here is a copy. When <see cref="BuildAsync"/> finishes, the destination holds two empty
+/// ModularCA databases at the baselines with the right owners and grants, and if anything after it
+/// fails those two databases can be dropped, because this is what created them.
 /// </para>
 /// <para>
 /// Two PostgreSQL rules shape all of it, and both only appear when the administrative account is
@@ -77,8 +78,8 @@ public sealed class DestinationBuilder
 
     /// <summary>
     /// Creates the roles, the databases, the extension and the audit grants, revokes PUBLIC's
-    /// access, applies both schemas as the runtime roles, and proves each role owns its schema
-    /// before anything is copied.
+    /// access, applies both frozen baselines as the runtime roles, and proves each role owns its
+    /// schema before anything is copied.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     public async Task BuildAsync(CancellationToken ct)
@@ -115,7 +116,7 @@ public sealed class DestinationBuilder
         await GrantAuditRightsAsync(ct);
         await RevokePublicAccessAsync(ct);
         await ApplySchemasAsync(ct);
-        await VerifyOwnershipAsync(ct);
+        await VerifyOwnershipAsync("Nothing was copied.", ct);
     }
 
     /// <summary>
@@ -253,31 +254,52 @@ public sealed class DestinationBuilder
     }
 
     /// <summary>
-    /// Applies both schemas, the frozen baseline first, as the runtime roles through
-    /// <see cref="SchemaVersionGate.ApplyAllForBootstrapAsync"/>, the one path that applies a
-    /// baseline. Running as the roles the node uses is what makes them own what they will later
-    /// migrate.
+    /// Applies the frozen baselines only (<see cref="PostgresRoleLayout.AppBaselineMigration"/>,
+    /// <see cref="PostgresRoleLayout.AuditBaselineMigration"/>), the 0.3.0 schema the copy writes
+    /// into, as the runtime roles on migration connections. Running as the roles the node uses is
+    /// what makes them own what they will later migrate.
     /// </summary>
     private async Task ApplySchemasAsync(CancellationToken ct)
     {
-        await using (var app = AppContext(_options.AppInstance(AppPassword)))
-        {
-            ThrowIfFailed("application", await SchemaVersionGate.ApplyAllForBootstrapAsync(app, ct));
-        }
-        _say($"  application schema applied as '{_options.TargetAppRole}'");
+        await using (var app = MigrationContext(DatabaseKind.Application))
+            await SchemaStages.ApplyBaselineAsync(app, PostgresRoleLayout.AppBaselineMigration, "application", ct);
+        _say($"  application baseline {PostgresRoleLayout.AppBaselineMigration} applied as '{_options.TargetAppRole}'");
 
-        await using (var audit = AuditContext(_options.AuditInstance(AuditPassword)))
-        {
-            ThrowIfFailed("audit", await SchemaVersionGate.ApplyAllForBootstrapAsync(audit, ct));
-        }
-        _say($"  audit schema applied as '{_options.TargetAuditRole}', which owns its tables");
+        await using (var audit = MigrationContext(DatabaseKind.Audit))
+            await SchemaStages.ApplyBaselineAsync(audit, PostgresRoleLayout.AuditBaselineMigration, "audit", ct);
+        _say($"  audit baseline {PostgresRoleLayout.AuditBaselineMigration} applied as '{_options.TargetAuditRole}', which owns its tables");
     }
 
     /// <summary>
-    /// Reads the ownership report as each runtime role and fails the run, before anything is
-    /// copied, unless each owns every object in its schema and can create tables.
+    /// After the copy has been verified: applies every later migration, the application
+    /// database's first, as the runtime roles through <see cref="SchemaVersionGate"/>, as the
+    /// control role would at startup, then proves each role still owns its schema. A refusal
+    /// throws <see cref="MigrationFailedException"/> with the migration's message.
     /// </summary>
-    private async Task VerifyOwnershipAsync(CancellationToken ct)
+    /// <param name="ct">Cancellation token.</param>
+    public async Task ApplyUpgradeMigrationsAsync(CancellationToken ct)
+    {
+        foreach (var (kind, name) in new[] { (DatabaseKind.Application, "application"), (DatabaseKind.Audit, "audit") })
+        {
+            await using var db = MigrationContext(kind);
+            var applied = await SchemaStages.ApplyLaterAsync(db, name, ct);
+            _say(applied.Count == 0
+                ? $"  {name} database: no later migrations"
+                : $"  {name} database: {string.Join(", ", applied)} applied");
+        }
+        await VerifyOwnershipAsync("The later migrations were applied.", ct);
+    }
+
+    /// <summary>A context of <paramref name="kind"/> on the migration connection, as that database's runtime role.</summary>
+    private DbContext MigrationContext(DatabaseKind kind) => MigrationConnection.CreateContext(kind,
+        kind == DatabaseKind.Application ? _options.AppInstance(AppPassword) : _options.AuditInstance(AuditPassword),
+        new Shared.Models.Config.SchemaConfig());
+
+    /// <summary>
+    /// Reads the ownership report as each runtime role and fails the run unless each owns every
+    /// object in its schema and can create tables. <paramref name="stage"/> ends the message.
+    /// </summary>
+    private async Task VerifyOwnershipAsync(string stage, CancellationToken ct)
     {
         foreach (var (kind, instance) in new[]
                  {
@@ -292,16 +314,9 @@ public sealed class DestinationBuilder
                     $"'{report.Role}' does not own the schema of '{report.Database}': "
                     + $"{report.NotOwned.Count} object(s) owned by another role "
                     + $"({string.Join(", ", report.NotOwned.Take(10).Select(o => $"{o.Object} owned by {o.Owner}"))}), "
-                    + $"can create tables: {(report.CanCreateTables ? "yes" : "no")}. Nothing was copied.");
+                    + $"can create tables: {(report.CanCreateTables ? "yes" : "no")}. {stage}");
             _say($"  '{report.Role}' owns every object in '{report.Database}'");
         }
-    }
-
-    /// <summary>Throws the operator-facing message for a failed schema application.</summary>
-    private static void ThrowIfFailed(string contextName, MigrationFailure? failure)
-    {
-        if (failure is not null)
-            throw new MigrationFailedException(SchemaVersionGate.MigrationFailedMessage(contextName, failure));
     }
 
     /// <summary>Opens an application context against the destination as a given account.</summary>

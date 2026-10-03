@@ -13,12 +13,12 @@ import { FieldHint } from '@shared/components/forms';
 const INITIATOR_EXCLUDED = 'The initiator is always excluded, so the effective minimum is 1 other approver.';
 
 export interface CaQ { id: string; name: string; label?: string; override: number | null; effective: number; }
-export interface TenantQ { id: string; name: string; override: number | null; effective: number; cas: CaQ[]; }
-/** The instance's CA-level quorum (the ceiling for instance CAs, which have no tenant) and those CAs. */
+export interface SpaceQ { id: string; name: string; override: number | null; effective: number; cas: CaQ[]; }
+/** The instance's CA-level quorum (the ceiling for instance CAs, which have no space) and those CAs. */
 export interface InstanceQ { id: null; name: string; override: number | null; effective: number; cas: CaQ[]; }
-export interface QuorumData { system: { quorum: number }; instance?: InstanceQ; tenants: TenantQ[]; }
+export interface QuorumData { system: { quorum: number }; instance?: InstanceQ; spaces: SpaceQ[]; }
 
-/* one quorum row (system / tenant / CA). Controlled: the parent owns the value. Read-only renders the
+/* one quorum row (system / space / CA). Controlled: the parent owns the value. Read-only renders the
    value as text; `trailing` adds an inline control (e.g. a per-row Save where editing is row-local). */
 export const QuorumRow: React.FC<{
     label: React.ReactNode;
@@ -28,7 +28,7 @@ export const QuorumRow: React.FC<{
     override: number | null;     // source override (null = inheriting); for System it's the value
     effective: number;
     allowInherit: boolean;       // false for System (must always have a value)
-    max?: number;                // ceiling (tenant effective, for CAs) — drives the invalid-border hint
+    max?: number;                // ceiling (space effective, for CAs) — drives the invalid-border hint
     readOnly?: boolean;          // render values without inputs (View mode)
     trailing?: React.ReactNode;  // inline control at the end of the row (editable rows only)
     className?: string;
@@ -49,7 +49,7 @@ export const QuorumRow: React.FC<{
             ) : (
                 <input inputMode="numeric" value={value}
                     placeholder={allowInherit ? `inherit (${effective})` : ''}
-                    title={tooHigh ? `Can't exceed the tenant's quorum (${max})` : allowInherit ? 'Blank = inherit the parent value' : undefined}
+                    title={tooHigh ? `Can't exceed the space's quorum (${max})` : allowInherit ? 'Blank = inherit the parent value' : undefined}
                     onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
                     className={`w-24 px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border rounded text-gray-900 dark:text-white focus:outline-none ${tooHigh ? 'border-red-500' : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
             )}
@@ -63,8 +63,8 @@ export const QuorumRow: React.FC<{
 
 /**
  * System-scope controlled-user approval quorum (standalone), and the instance's CA-level quorum
- * with its CAs (the system signing CA, SSH CAs: no tenant). Tenant- and CA-scope quorums are
- * edited on each tenant's detail page (/tenants/:id). Drop this card on the Tenants & Quotas list
+ * with its CAs (the system signing CA, SSH CAs: no space). Space- and CA-scope quorums are
+ * edited on each space's detail page (/spaces/:id). Drop this card on the Spaces & Quotas list
  * page. Self-saving (step-up MFA) since it isn't part of any page-level edit batch; a non-super
  * change to the instance or an instance CA opens a policy-change ceremony (202).
  */
@@ -114,7 +114,7 @@ export const SystemQuorumCard: React.FC = () => {
     const saveScoped = async (url: string, quorum: number | null, target?: string) => {
         setSaving(true);
         try {
-            const result = await apiPutWithMfa<any>(url, { quorum }, requireStepUp, StepUpOps.UpdateTenantSettings, target);
+            const result = await apiPutWithMfa<any>(url, { quorum }, requireStepUp, StepUpOps.UpdateSpaceSettings, target);
             if (result?.ceremonyId) showToast('info', 'Quorum change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
             else showToast('success', 'Quorum updated');
             load();
@@ -133,7 +133,7 @@ export const SystemQuorumCard: React.FC = () => {
             <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Controlled-User Approval Quorum</h3>
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                    Approvals required to promote/demote/delete a privileged user. The <strong>System</strong> quorum and the <strong>Instance</strong> quorum (for the instance's own CAs, which belong to no tenant) are set here; <strong>tenant</strong> and per-<strong>CA</strong> quorums (which inherit from System and may require fewer, never more) are set on each tenant's page. Separate from the tenant <em>key</em>-ceremony quorum.
+                    Approvals required to promote/demote/delete a privileged user. The <strong>System</strong> quorum and the <strong>Instance</strong> quorum (for the instance's own CAs, which belong to no space) are set here; <strong>space</strong> and per-<strong>CA</strong> quorums (which inherit from System and may require fewer, never more) are set on each space's page. Separate from the space <em>key</em>-ceremony quorum.
                 </p>
             </div>
 
@@ -154,7 +154,7 @@ export const SystemQuorumCard: React.FC = () => {
                 <FieldHint className="px-3 pb-3">{INITIATOR_EXCLUDED}</FieldHint>
                 {!isSuper && (
                     <p className="px-3 pb-3 -mt-1 text-[11px] text-gray-500">
-                        Only a system super-administrator can change the System quorum. Tenant and per-CA quorums are set on each tenant's page (and start a ceremony for non-super admins).
+                        Only a system super-administrator can change the System quorum. Space and per-CA quorums are set on each space's page (and start a ceremony for non-super admins).
                     </p>
                 )}
                 {instance && (
@@ -183,19 +183,19 @@ export const SystemQuorumCard: React.FC = () => {
 };
 
 /**
- * Tenant- and CA-scope controlled-user approval quorums for one tenant, as a section inside
- * TenantDetail. Fully controlled — the parent owns the values and the (page-level) save, so this just
+ * Space- and CA-scope controlled-user approval quorums for one space, as a section inside
+ * SpaceDetail. Fully controlled — the parent owns the values and the (page-level) save, so this just
  * renders the rows. Read-only in View mode; editable in Edit mode.
  */
-export const TenantUserQuorumSection: React.FC<{
-    quorum: TenantQ | null;
+export const SpaceUserQuorumSection: React.FC<{
+    quorum: SpaceQ | null;
     readOnly: boolean;
-    tenantValue: string;
-    onTenantChange: (next: string) => void;
+    spaceValue: string;
+    onSpaceChange: (next: string) => void;
     caValues: Record<string, string>;
     onCaChange: (caId: string, next: string) => void;
-}> = ({ quorum, readOnly, tenantValue, onTenantChange, caValues, onCaChange }) => {
-    if (!quorum) return <div className="py-3 text-xs text-gray-500 text-center border border-gray-300 dark:border-gray-700 rounded-lg">No quorum data for this tenant.</div>;
+}> = ({ quorum, readOnly, spaceValue, onSpaceChange, caValues, onCaChange }) => {
+    if (!quorum) return <div className="py-3 text-xs text-gray-500 text-center border border-gray-300 dark:border-gray-700 rounded-lg">No quorum data for this space.</div>;
 
     return (
         <div className="border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
@@ -205,12 +205,12 @@ export const TenantUserQuorumSection: React.FC<{
                 <span className="w-28 shrink-0">Effective</span>
             </div>
             <QuorumRow
-                label={quorum.name} sublabel="Org administrators / operators"
-                value={tenantValue} onChange={onTenantChange}
+                label={quorum.name} sublabel="Space administrators / operators"
+                value={spaceValue} onChange={onSpaceChange}
                 override={quorum.override} effective={quorum.effective} allowInherit readOnly={readOnly}
                 className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30" />
             {quorum.cas.length === 0 ? (
-                <div className="pl-8 pr-3 py-2 text-[11px] text-gray-500">No CAs in this tenant.</div>
+                <div className="pl-8 pr-3 py-2 text-[11px] text-gray-500">No CAs in this space.</div>
             ) : quorum.cas.map((ca) => (
                 <QuorumRow key={ca.id}
                     label={ca.label || ca.name} sublabel="CA administrators / operators"
@@ -219,7 +219,7 @@ export const TenantUserQuorumSection: React.FC<{
                     className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8" />
             ))}
             <div className="px-3 py-2 text-[11px] text-gray-500 border-t border-gray-200 dark:border-gray-700/60">
-                {!readOnly && <>Blank = inherit the parent value. A CA can require fewer approvals than its tenant, never more. </>}
+                {!readOnly && <>Blank = inherit the parent value. A CA can require fewer approvals than its space, never more. </>}
                 {INITIATOR_EXCLUDED}
             </div>
         </div>

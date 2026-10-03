@@ -142,6 +142,35 @@ namespace ModularCA.Tests.Database
             Assert.Contains("stay applied", message);
         }
 
+        [Fact]
+        public async Task Applying_through_a_migration_leaves_the_later_ones_pending()
+        {
+            Execute("SELECT 1");
+            await using var db = Context();
+
+            Assert.Null(await SchemaVersionGate.ApplyPendingThroughAsync(db, await SchemaVersionGate.ReadAsync(db), B1));
+
+            var state = await SchemaVersionGate.ReadAsync(db);
+            Assert.Equal([A, B1], state.Applied);
+            Assert.Equal([B2, C], state.Pending);
+            Assert.Null(await SchemaVersionGate.ApplyPendingThroughAsync(db, state, C));
+            Assert.Equal([A, B1, B2, C], (await SchemaVersionGate.ReadAsync(db)).Applied);
+        }
+
+        [Fact]
+        public async Task Applying_through_an_older_or_unknown_migration_is_refused_and_never_reverts()
+        {
+            Execute("SELECT 1");
+            await ApplyUpToAsync(C);
+            await using var db = Context();
+            var state = await SchemaVersionGate.ReadAsync(db);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaVersionGate.ApplyPendingThroughAsync(db, state, A));
+            await Assert.ThrowsAsync<ArgumentException>(() => SchemaVersionGate.ApplyPendingThroughAsync(db, state, "20990101000099_NotAMigration"));
+            Assert.Equal([A, B1, B2, C], (await SchemaVersionGate.ReadAsync(db)).Applied);
+            Assert.DoesNotContain("c_down_ran", Tables());
+        }
+
         [Theory]
         [InlineData(true)]
         [InlineData(false)]

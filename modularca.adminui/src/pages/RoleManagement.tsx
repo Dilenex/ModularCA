@@ -40,7 +40,7 @@ interface RoleSummary {
     name: string;
     description: string;
     isBuiltIn: boolean;
-    tenantId: string | null;
+    spaceId: string | null;
     capabilityCount: number;
     createdAt: string;
 }
@@ -57,7 +57,7 @@ interface RoleDetail {
     name: string;
     description: string;
     isBuiltIn: boolean;
-    tenantId: string | null;
+    spaceId: string | null;
     createdAt: string;
     capabilities: RoleCapability[];
 }
@@ -81,7 +81,7 @@ const RoleDrawer: React.FC<{ role: RoleSummary }> = ({ role }) => {
             <DetailField label="Name" value={role.name} mono />
             <DetailField label="Description" value={role.description || '-'} />
             <DetailField label="Type" value={role.isBuiltIn ? 'Built-in' : 'Custom'} />
-            {detail?.tenantId && <DetailField label="Tenant" value={detail.tenantId} mono />}
+            {detail?.spaceId && <DetailField label="Space" value={detail.spaceId} mono />}
             <div className="mt-3">
                 <span className="text-xs text-gray-500">Capabilities ({detail ? caps.length : detailError ? 'unavailable' : '…'})</span>
                 <div className="mt-1 space-y-0.5">

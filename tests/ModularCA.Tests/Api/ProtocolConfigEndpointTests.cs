@@ -74,7 +74,7 @@ public sealed class ProtocolConfigEndpointTests
             Id = Guid.NewGuid(),
             Name = "Test CA",
             Label = "test-ca",
-            TenantId = Guid.NewGuid(),
+            SpaceId = Guid.NewGuid(),
             CertificateId = cert.CertificateId,
             Certificate = cert,
         };
@@ -200,10 +200,10 @@ public sealed class ProtocolConfigEndpointTests
     {
         using var db = InMemoryDbContextFactory.Create();
         var caId = SeedCa(db, RsaCaPem());
-        var caTenant = db.CertificateAuthorities.Single(c => c.Id == caId).TenantId;
-        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "other-space", TenantId = Guid.NewGuid() };
+        var caSpace = db.CertificateAuthorities.Single(c => c.Id == caId).SpaceId;
+        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "other-space", SpaceId = Guid.NewGuid() };
         var instanceBound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "instance-bound", CertificateAuthorityId = Guid.NewGuid() };
-        var own = new CertProfileEntity { Id = Guid.NewGuid(), Name = "own", TenantId = caTenant, CertificateAuthorityId = caId };
+        var own = new CertProfileEntity { Id = Guid.NewGuid(), Name = "own", SpaceId = caSpace, CertificateAuthorityId = caId };
         var unbound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "unbound" };
         db.CertProfiles.AddRange(other, instanceBound, own, unbound);
         db.SaveChanges();
@@ -371,7 +371,7 @@ public sealed class ProtocolConfigEndpointTests
         GiveHttpContext(controller);
         // The hierarchy is fenced; the middleware would store an instance-wide fence for this caller.
         var http = ((ControllerBase)controller).HttpContext;
-        ModularCA.Auth.Authorization.TenantFence.Store(http, ModularCA.Auth.Authorization.TenantFence.Of([], instanceScope: true,
+        ModularCA.Auth.Authorization.SpaceFence.Store(http, ModularCA.Auth.Authorization.SpaceFence.Of([], instanceScope: true,
             systemCapabilities: [ModularCA.Shared.Authorization.Capabilities.CertView]));
 
         var result = await (Task<IActionResult>)type.GetMethod("GetHierarchy")!.Invoke(controller, null)!;

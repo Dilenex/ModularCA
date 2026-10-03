@@ -15,7 +15,7 @@ export const adminSsh: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/ssh/ca-keys',
-        summary: 'Generate a new SSH CA key pair. If the target tenant requires key ceremonies, initiates a ceremony instead.',
+        summary: 'Generate a new SSH CA key pair. If the target space requires key ceremonies, initiates a ceremony instead.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH',
         requestBody: [
@@ -25,7 +25,7 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'isUserCa', type: 'bool', required: false, description: 'Allow user certificate signing (default: true)' },
             { name: 'isHostCa', type: 'bool', required: false, description: 'Allow host certificate signing (default: false)' },
             { name: 'maxValidityHours', type: 'int', required: false, description: 'Maximum certificate validity in hours (default: 24)' },
-            { name: 'tenantId', type: 'guid', required: false, description: 'Tenant ID. If the tenant requires key ceremonies, a ceremony is initiated instead of immediate creation' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Space ID. If the space requires key ceremonies, a ceremony is initiated instead of immediate creation' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -136,7 +136,7 @@ export const adminSsh: ApiEndpoint[] = [
     {
         method: 'DELETE',
         path: '/api/v1/admin/ssh/ca-keys/{id}',
-        summary: 'Disable an SSH CA key and revoke all active certificates issued by it. Requires step-up MFA. If the CA\'s tenant requires key ceremonies, initiates a ceremony instead.',
+        summary: 'Disable an SSH CA key and revoke all active certificates issued by it. Requires step-up MFA. If the CA\'s space requires key ceremonies, initiates a ceremony instead.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH',
         headers: [

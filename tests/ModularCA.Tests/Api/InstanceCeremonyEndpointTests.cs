@@ -18,8 +18,8 @@ using Xunit;
 namespace ModularCA.Tests.Api;
 
 /// <summary>
-/// An instance CA (no tenant: the system signing CA, SSH CAs) is held to the instance's
-/// RequireKeyCeremony. Before the fold a null tenant read as "no policy", so revoking the system
+/// An instance CA (no space: the system signing CA, SSH CAs) is held to the instance's
+/// RequireKeyCeremony. Before the fold a null space read as "no policy", so revoking the system
 /// signing CA or disabling an SSH CA skipped its ceremony.
 /// </summary>
 public sealed class InstanceCeremonyEndpointTests
@@ -56,7 +56,7 @@ public sealed class InstanceCeremonyEndpointTests
         db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = instanceRequiresCeremony, CeremonyRequiredApprovals = 3 });
         var cert = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "01", SubjectDN = "CN=System Signing CA", Issuer = "CN=System Signing CA", Pem = "x", IsCA = true };
         db.Certificates.Add(cert);
-        db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "System Signing CA", Label = "system-signing-ca", TenantId = null, CertificateId = cert.CertificateId });
+        db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "System Signing CA", Label = "system-signing-ca", SpaceId = null, CertificateId = cert.CertificateId });
         await db.SaveChangesAsync();
         var actor = Guid.NewGuid();
         var controller = New(Ns + "AdminRevocationController", actor,
@@ -71,7 +71,7 @@ public sealed class InstanceCeremonyEndpointTests
             Assert.NotNull(result);
             var ceremony = await db.KeyCeremonies.AsNoTracking().SingleAsync();
             Assert.Equal("RevokeCa", ceremony.OperationType);
-            Assert.Null(ceremony.TenantId);
+            Assert.Null(ceremony.SpaceId);
             Assert.Equal(3, ceremony.RequiredApprovals);
         }
         else
@@ -86,7 +86,7 @@ public sealed class InstanceCeremonyEndpointTests
     {
         using var db = InMemoryDbContextFactory.Create();
         db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = true, CeremonyRequiredApprovals = 2 });
-        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", TenantId = null, IsSshCa = true };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", SpaceId = null, IsSshCa = true };
         var key = new SshCaKeyEntity { Id = Guid.NewGuid(), Name = "Ops SSH", PublicKey = "ssh-ed25519 AAAA", PrivateKeyPath = "unused", CertificateAuthorityId = ca.Id, IsEnabled = true };
         db.CertificateAuthorities.Add(ca);
         db.SshCaKeys.Add(key);
@@ -104,14 +104,14 @@ public sealed class InstanceCeremonyEndpointTests
         Assert.IsType<OkObjectResult>(result);
         var ceremony = await db.KeyCeremonies.AsNoTracking().SingleAsync();
         Assert.Equal("DeleteSshCa", ceremony.OperationType);
-        Assert.Null(ceremony.TenantId);
+        Assert.Null(ceremony.SpaceId);
         Assert.Equal(2, ceremony.RequiredApprovals);
         Assert.True((await db.SshCaKeys.AsNoTracking().SingleAsync()).IsEnabled);
     }
 
     /// <summary>
     /// A system-super turning the instance's ceremony requirement off directly is KC-07, as it was
-    /// on the System tenant: the save needs the disable-ceremony-requirement step-up (an
+    /// on the former system tenant: the save needs the disable-ceremony-requirement step-up (an
     /// update-config token does not do), and the audit record carries the
     /// CeremonyRequirementDisabled marker.
     /// </summary>
@@ -129,7 +129,7 @@ public sealed class InstanceCeremonyEndpointTests
             audit, new CurrentUserStub(actor),
             Fake<ModularCA.Auth.Authorization.IControlledUserCeremonyService>.Create(),
             Fake<ModularCA.Auth.Authorization.ICaGroupAuthorizationService>.Create(),
-            Fake<ITenantPolicyChangeService>.Create(), cache);
+            Fake<ISpacePolicyChangeService>.Create(), cache);
         var requestType = ApiAssembly.TypeNamed(Ns + "SecurityPolicyUpdateRequest");
         var request = Activator.CreateInstance(requestType)!;
         requestType.GetProperty("RequireKeyCeremony")!.SetValue(request, false);
@@ -166,7 +166,7 @@ public sealed class InstanceCeremonyEndpointTests
         var pending = new KeyCeremonyEntity
         {
             Id = Guid.NewGuid(), OperationType = nameof(CeremonyType.InstancePolicyChange), CeremonyType = CeremonyType.InstancePolicyChange,
-            Status = "Pending", TenantId = null, Description = "pending", RequiredApprovals = 2, ExpiresAt = DateTime.UtcNow.AddHours(1),
+            Status = "Pending", SpaceId = null, Description = "pending", RequiredApprovals = 2, ExpiresAt = DateTime.UtcNow.AddHours(1),
         };
         db.KeyCeremonies.Add(pending);
         await db.SaveChangesAsync();
@@ -178,7 +178,7 @@ public sealed class InstanceCeremonyEndpointTests
             audit, new CurrentUserStub(actor),
             NotSuper<ModularCA.Auth.Authorization.IControlledUserCeremonyService>.Create(),
             Fake<ModularCA.Auth.Authorization.ICaGroupAuthorizationService>.Create(),
-            new TenantPolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<TenantPolicyChangeService>.Instance),
+            new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<SpacePolicyChangeService>.Instance),
             cache);
         var requestType = ApiAssembly.TypeNamed(Ns + "SecurityPolicyUpdateRequest");
         var request = Activator.CreateInstance(requestType)!;
@@ -238,9 +238,9 @@ public sealed class InstanceCeremonyEndpointTests
     }
 
     /// <summary>
-    /// Creating a CA names its scope: a tenant, or scope "instance". A body with neither (a
-    /// missing or empty tenant id), both, or an unknown scope is a 400 before anything else runs,
-    /// so an omitted tenant can no longer make an instance CA by accident.
+    /// Creating a CA names its scope: a space, or scope "instance". A body with neither (a
+    /// missing or empty space id), both, or an unknown scope is a 400 before anything else runs,
+    /// so an omitted space can no longer make an instance CA by accident.
     /// </summary>
     [Theory]
     [InlineData("CreateRoot", "CreateRootCaRequest")]
@@ -252,11 +252,11 @@ public sealed class InstanceCeremonyEndpointTests
             null, new CurrentUserStub(actor), null, null, null, null, null, null, null, null);
         var requestType = ApiAssembly.TypeNamed(Ns + requestTypeName);
 
-        foreach (var (tenantId, scope) in new (Guid?, string?)[] { (null, null), (Guid.Empty, null), (Guid.NewGuid(), "instance"), (null, "global") })
+        foreach (var (spaceId, scope) in new (Guid?, string?)[] { (null, null), (Guid.Empty, null), (Guid.NewGuid(), "instance"), (null, "global") })
         {
             var request = Activator.CreateInstance(requestType)!;
             requestType.GetProperty("SubjectCN")!.SetValue(request, "Scoped CA");
-            requestType.GetProperty("TenantId")!.SetValue(request, tenantId);
+            requestType.GetProperty("SpaceId")!.SetValue(request, spaceId);
             requestType.GetProperty("Scope")!.SetValue(request, scope);
             var result = await (Task<IActionResult>)controller.GetType().GetMethod(action)!.Invoke(controller, [request])!;
             var bad = Assert.IsType<BadRequestObjectResult>(result);

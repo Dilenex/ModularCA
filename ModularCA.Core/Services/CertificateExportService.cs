@@ -94,8 +94,8 @@ public class CertificateExportService : ICertificateExportService
 
         var issuers = await IssuerChainResolver.ResolveAsync(_db, certEntity, includeChain);
         var context = issuers.CaId is Guid issuerCaId
-            ? SigningContext.ForCa(caller, SigningPurpose.Export, issuerCaId, issuers.TenantId)
-            : new SigningContext(caller, SigningPurpose.Export, issuers.TenantId, null);
+            ? SigningContext.ForCa(caller, SigningPurpose.Export, issuerCaId, issuers.SpaceId)
+            : new SigningContext(caller, SigningPurpose.Export, issuers.SpaceId, null);
         try
         {
             var pkcs12 = await _signer.ExportKeyAsync(

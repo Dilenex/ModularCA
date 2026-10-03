@@ -26,7 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, IAuditService audit, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache) : ControllerBase
 {
     /// <summary>
-    /// Lists the SSH CA keys whose CA is inside the caller's <see cref="TenantFence"/> (SSH CAs are
+    /// Lists the SSH CA keys whose CA is inside the caller's <see cref="SpaceFence"/> (SSH CAs are
     /// instance CAs, so this needs instance scope), with their metadata, including the public KRL
     /// download URL.
     /// </summary>
@@ -38,14 +38,14 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             ? config.Https.GetPublicHttpsBaseUrl()
             : $"{Request.Scheme}://{Request.Host}";
 
-        var fence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRevoke);
+        var fence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRevoke);
         var keys = await sshCaService.GetCaKeysAsync();
         var caIds = keys.Select(k => k.CertificateAuthorityId).Distinct().ToList();
-        var caTenants = await db.CertificateAuthorities.AsNoTracking()
+        var caSpaces = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => caIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.TenantId })
-            .ToDictionaryAsync(c => c.Id, c => c.TenantId);
-        keys = keys.Where(k => caTenants.TryGetValue(k.CertificateAuthorityId, out var t) && fence.Allows(t)).ToList();
+            .Select(c => new { c.Id, c.SpaceId })
+            .ToDictionaryAsync(c => c.Id, c => c.SpaceId);
+        keys = keys.Where(k => caSpaces.TryGetValue(k.CertificateAuthorityId, out var t) && fence.Allows(t)).ToList();
         return Ok(keys.Select(k => new
         {
             k.Id, k.Name, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
@@ -58,8 +58,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <summary>
     /// Generates a new SSH CA key pair using ssh-keygen. SSH CAs are instance CAs: if the
     /// instance requires key ceremonies, initiates a ceremony instead. The derived label is
-    /// checked first, ceremony or not: invalid or reserved is 400, a label or name another CA has
-    /// (or takes while this one is saved) is 409.
+    /// checked first, ceremony or not: a control character in the name or key type, or an invalid
+    /// or reserved label, is 400; a label or name another CA has (or takes while this one is saved)
+    /// is 409.
     /// </summary>
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
@@ -72,6 +73,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.CreateSshCa))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
+
+        if (ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.Name)
+            || ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.KeyType))
+            return BadRequest(new { error = "Name and KeyType must not contain control characters." });
 
         var sshLabel = request.Name.ToLowerInvariant().Replace(" ", "-");
         try
@@ -89,10 +94,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         }
 
         // SSH CA keys are ALWAYS instance CAs (see SshCaService.GenerateKeyPairAsync, which ignores
-        // request.TenantId entirely). The ceremony requirement is therefore the instance's — the
-        // scope the key actually lands in — NOT request.TenantId's. Keying the gate off
-        // request.TenantId once allowed an SSH CA to be created directly, bypassing the ceremony,
-        // whenever the request omitted a ceremony-requiring tenant.
+        // request.SpaceId entirely). The ceremony requirement is therefore the instance's — the
+        // scope the key actually lands in — NOT request.SpaceId's. Keying the gate off
+        // request.SpaceId once allowed an SSH CA to be created directly, bypassing the ceremony,
+        // whenever the request omitted a ceremony-requiring space.
         var sshPolicy = await new EffectivePolicyResolver(db).ResolveAsync(null);
         if (sshPolicy.RequireKeyCeremony)
         {
@@ -104,7 +109,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 IsUserCa = request.IsUserCa ?? true,
                 IsHostCa = request.IsHostCa ?? false,
                 MaxValidityHours = request.MaxValidityHours ?? 24,
-                TenantId = null
+                SpaceId = null
             };
             var ceremony = await ceremonySvc.InitiateAsync(
                 "CreateSshCa",
@@ -345,7 +350,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
     /// <summary>
     /// Downloads the signed SSH certificate content as a text file, when its SSH CA is inside the
-    /// caller's <see cref="TenantFence"/>.
+    /// caller's <see cref="SpaceFence"/>.
     /// </summary>
     [HttpGet("certificates/{id:guid}/download")]
     [Authorize(Policy = "CaOperator")]
@@ -353,11 +358,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     {
         var cert = await sshCaService.GetCertificateByIdAsync(id);
         if (cert == null) return NotFound();
-        var caTenant = await db.SshCaKeys.AsNoTracking()
+        var caSpace = await db.SshCaKeys.AsNoTracking()
             .Where(k => k.Id == cert.SshCaKeyId)
-            .Select(k => new { k.CertificateAuthority.TenantId })
+            .Select(k => new { k.CertificateAuthority.SpaceId })
             .FirstOrDefaultAsync();
-        if (caTenant == null || !TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRevoke).Allows(caTenant.TenantId))
+        if (caSpace == null || !SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRevoke).Allows(caSpace.SpaceId))
             return NotFound();
         return File(
             System.Text.Encoding.UTF8.GetBytes(cert.SignedCertificate),
@@ -427,17 +432,17 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         var key = await db.SshCaKeys.Include(k => k.CertificateAuthority).FirstOrDefaultAsync(k => k.Id == id);
         if (key == null) return NotFound(new { error = "SSH CA key not found." });
 
-        // Check the ceremony requirement of the CA's scope: its tenant, or the instance for an
-        // instance SSH CA (every SSH CA). A null tenant is never read as "no ceremony".
+        // Check the ceremony requirement of the CA's scope: its space, or the instance for an
+        // instance SSH CA (every SSH CA). A null space is never read as "no ceremony".
         {
-            var policy = await new EffectivePolicyResolver(db).ResolveAsync(key.CertificateAuthority?.TenantId);
+            var policy = await new EffectivePolicyResolver(db).ResolveAsync(key.CertificateAuthority?.SpaceId);
             if (policy.RequireKeyCeremony)
             {
                 var sshParams = new SshKeyCeremonyParameters
                 {
                     SshCaKeyId = id,
                     Name = key.Name,
-                    TenantId = policy.TenantId
+                    SpaceId = policy.SpaceId
                 };
                 var ceremony = await ceremonySvc.InitiateAsync(
                     "DeleteSshCa",
@@ -457,6 +462,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     }
 }
 
+/// <summary>
+/// Request model for generating an SSH CA key. An unknown member (a pre-0.4.0 <c>tenantId</c>) is
+/// refused with 400, never read as no space.
+/// </summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class GenerateSshCaKeyRequest
 {
     public string Name { get; set; } = string.Empty;
@@ -470,9 +480,9 @@ public class GenerateSshCaKeyRequest
     public bool? IsHostCa { get; set; }
     public int? MaxValidityHours { get; set; }
     /// <summary>
-    /// Optional tenant ID. If the tenant requires key ceremonies, a ceremony will be initiated instead of immediate creation.
+    /// Optional space ID. If the space requires key ceremonies, a ceremony will be initiated instead of immediate creation.
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 }
 
 /// <summary>Request model for signing a user SSH public key via the admin endpoint.</summary>

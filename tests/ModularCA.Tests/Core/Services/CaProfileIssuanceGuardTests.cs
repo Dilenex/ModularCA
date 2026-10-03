@@ -30,7 +30,7 @@ namespace ModularCA.Tests.Core.Services;
 /// <para>
 /// So <c>POST /api/v1/integration/infra/certificates</c> carrying a CA profile's GUID returned a
 /// <c>cA=TRUE</c> certificate signed by the production CA, auto-approved with no approval step.
-/// The GUID is not a secret: the profile list endpoint returns every profile with no tenant
+/// The GUID is not a secret: the profile list endpoint returns every profile with no space
 /// filter.
 /// </para>
 /// <para>

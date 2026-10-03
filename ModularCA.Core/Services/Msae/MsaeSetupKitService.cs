@@ -10,7 +10,7 @@ namespace ModularCA.Core.Services.Msae;
 
 /// <summary>
 /// Builds the zip a customer's domain administrator needs to point a forest at one CA: the
-/// service-account script, the Group Policy push, the tenant root, a client self-check, and a
+/// service-account script, the Group Policy push, the space root, a client self-check, and a
 /// readme with the two rules that are not obvious.
 /// </summary>
 /// <remarks>
@@ -25,7 +25,7 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
     /// <summary>One file in the kit.</summary>
     public sealed record KitFile(string Name, string Content);
 
-    /// <summary>The kit for <paramref name="realmId"/> against <paramref name="caId"/>, or null when either is missing or they belong to different tenants.</summary>
+    /// <summary>The kit for <paramref name="realmId"/> against <paramref name="caId"/>, or null when either is missing or they belong to different spaces.</summary>
     public async Task<byte[]?> BuildAsync(Guid caId, Guid realmId, CancellationToken cancellation = default)
     {
         var files = await FilesAsync(caId, realmId, cancellation);
@@ -43,13 +43,13 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
         return stream.ToArray();
     }
 
-    /// <summary>The kit's files, unzipped. Null when the CA or realm is missing or they belong to different tenants.</summary>
+    /// <summary>The kit's files, unzipped. Null when the CA or realm is missing or they belong to different spaces.</summary>
     public async Task<IReadOnlyList<KitFile>?> FilesAsync(Guid caId, Guid realmId, CancellationToken cancellation = default)
     {
-        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Certificate).Include(c => c.Tenant)
+        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Certificate).Include(c => c.Space)
             .FirstOrDefaultAsync(c => c.Id == caId, cancellation);
         var realm = await db.KerberosRealms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == realmId, cancellation);
-        if (ca == null || realm == null || realm.TenantId != ca.TenantId) return null;
+        if (ca == null || realm == null || realm.SpaceId != ca.SpaceId) return null;
 
         // The name in the kit is the one the forest issues tickets for, taken from the binding's
         // service principal, when it is a name this service is known by; otherwise the public
@@ -60,12 +60,12 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
         var cepUrl = $"{baseUrl}/msae/{ca.Label}/cep";
         var policyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}";
         var friendlyName = $"{ca.Name} (ModularCA)";
-        var tenantName = ca.Tenant?.Name ?? "tenant";
+        var spaceName = ca.Space?.Name ?? "space";
 
         var files = new List<KitFile>
         {
             new("README.md", Readme(ca.Label, realm.Realm, realm.DnsDomain, cepUrl, policyId, host)),
-            new("1-ad-service-account.ps1", KerberosRealmService.SetupScript(realm, tenantName, cepUrl, null, null)),
+            new("1-ad-service-account.ps1", KerberosRealmService.SetupScript(realm, spaceName, cepUrl, null, null)),
             new("2-gpo-policy-server.ps1", GpoScript(cepUrl, policyId, friendlyName, realm.DnsDomain)),
             new("3-client-check.ps1", ClientCheck(baseUrl, ca.Label, ca.Name, host)),
         };

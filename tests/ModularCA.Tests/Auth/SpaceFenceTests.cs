@@ -26,7 +26,7 @@ public class SpaceFenceTests
 
         public World()
         {
-            W.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = InstanceCa, Name = "Ops SSH", Label = "ops-ssh", TenantId = null, IsSshCa = true });
+            W.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = InstanceCa, Name = "Ops SSH", Label = "ops-ssh", SpaceId = null, IsSshCa = true });
             W.Db.SaveChanges();
         }
 
@@ -51,15 +51,15 @@ public class SpaceFenceTests
             Assert.Contains(w.W.CaA1, ids);
             Assert.Contains(w.W.CaB1, ids);
             Assert.Contains(w.InstanceCa, ids);
-            Assert.Equal([w.W.CaB1], await service.GetAccessibleCaIdsAsync(user, Capabilities.CertView, w.W.TenantB));
+            Assert.Equal([w.W.CaB1], await service.GetAccessibleCaIdsAsync(user, Capabilities.CertView, w.W.SpaceB));
 
             var effective = await service.GetEffectiveCapabilitiesAsync(user);
-            Assert.Contains(effective.Cas, c => c.Id == w.W.CaB1 && c.TenantName == "B");
+            Assert.Contains(effective.Cas, c => c.Id == w.W.CaB1 && c.SpaceName == "B");
             Assert.Contains(effective.Cas, c => c.Id == w.W.CaA1);
 
             var fence = await service.GetFenceAsync(user);
             Assert.True(fence.InstanceWideFor(Capabilities.CertView));
-            Assert.True(fence.For(Capabilities.CertView).Allows(w.W.TenantB));
+            Assert.True(fence.For(Capabilities.CertView).Allows(w.W.SpaceB));
             Assert.False(fence.IsSystemAdmin);
         }
     }
@@ -78,8 +78,8 @@ public class SpaceFenceTests
         Assert.Equal([w.W.CaB1], await service.GetAccessibleCaIdsAsync(holder, Capabilities.CertView));
 
         var fence = await service.GetFenceAsync(holder);
-        Assert.True(fence.Allows(w.W.TenantB));
-        Assert.False(fence.Allows(w.W.TenantA));
+        Assert.True(fence.Allows(w.W.SpaceB));
+        Assert.False(fence.Allows(w.W.SpaceA));
         Assert.False(fence.Allows(null));
     }
 
@@ -104,24 +104,24 @@ public class SpaceFenceTests
     }
 
     [Fact]
-    public async Task Tenant_scoped_grants_and_roles_and_instance_ca_grants_shape_the_fence()
+    public async Task Space_scoped_grants_and_roles_and_instance_ca_grants_shape_the_fence()
     {
         var w = new World();
-        var tenantGrant = w.W.User("tenant-grant");
-        w.W.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = tenantGrant, Capability = Capabilities.CertView, TenantId = w.W.TenantA });
-        var tenantRole = w.W.User("tenant-role");
-        w.W.Db.RoleAssignments.Add(new RoleAssignmentEntity { UserId = tenantRole, RoleId = w.W.Role(Capabilities.CertView).Id, TenantId = w.W.TenantB });
+        var spaceGrant = w.W.User("space-grant");
+        w.W.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = spaceGrant, Capability = Capabilities.CertView, SpaceId = w.W.SpaceA });
+        var spaceRole = w.W.User("space-role");
+        w.W.Db.RoleAssignments.Add(new RoleAssignmentEntity { UserId = spaceRole, RoleId = w.W.Role(Capabilities.CertView).Id, SpaceId = w.W.SpaceB });
         var instanceGrant = w.W.User("instance-grant");
         w.W.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = instanceGrant, Capability = Capabilities.CertView, CertificateAuthorityId = w.InstanceCa });
         w.W.Db.SaveChanges();
         var service = w.Service();
 
-        Assert.Equal([w.W.TenantA], (await service.GetFenceAsync(tenantGrant)).TenantIds);
-        Assert.Equal([w.W.TenantB], (await service.GetFenceAsync(tenantRole)).TenantIds);
+        Assert.Equal([w.W.SpaceA], (await service.GetFenceAsync(spaceGrant)).SpaceIds);
+        Assert.Equal([w.W.SpaceB], (await service.GetFenceAsync(spaceRole)).SpaceIds);
         var instance = await service.GetFenceAsync(instanceGrant);
         Assert.True(instance.Allows(null));
         Assert.False(instance.InstanceWide);
-        Assert.Empty(instance.TenantIds);
+        Assert.Empty(instance.SpaceIds);
     }
 
     [Fact]
@@ -134,9 +134,9 @@ public class SpaceFenceTests
         w.W.Db.AccessBadges.Add(badge);
         w.W.Db.SaveChanges();
 
-        Assert.Equal(2, (await w.Service().GetFenceAsync(user)).TenantIds.Count);
+        Assert.Equal(2, (await w.Service().GetFenceAsync(user)).SpaceIds.Count);
         var worn = await w.Service(user, badge.Id).GetFenceAsync(user);
-        Assert.Equal([w.W.TenantA], worn.TenantIds);
+        Assert.Equal([w.W.SpaceA], worn.SpaceIds);
     }
 
     /// <summary>
@@ -147,7 +147,7 @@ public class SpaceFenceTests
     public async Task A_label_route_resolves_to_one_ca_and_a_deleted_cas_label_never_falls_through()
     {
         var w = new World();
-        w.W.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Gone", Label = "gone", TenantId = w.W.TenantA, IsDeleted = true });
+        w.W.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Gone", Label = "gone", SpaceId = w.W.SpaceA, IsDeleted = true });
         w.W.Db.SaveChanges();
 
         async Task<bool> Allowed(Guid user, string label)

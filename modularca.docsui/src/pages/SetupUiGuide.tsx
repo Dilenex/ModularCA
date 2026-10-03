@@ -110,12 +110,12 @@ export default function SetupUiGuide() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Step 2: Organization</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Configure the organization identity that will appear in CA certificates and the system
-                    tenant.
+                    Configure the organization identity that will appear in CA certificates. Your CAs go into
+                    a first space named after it; spaces group CAs for delegated administration.
                 </p>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Configuration Fields</h3>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
-                    <li><strong>Organization Name:</strong> The O (Organization) field for certificates and the name of the organization tenant (required)</li>
+                    <li><strong>Organization Name:</strong> The O (Organization) field for certificates and the name of the first space (required)</li>
                     <li><strong>Organization Description:</strong> Optional description for display purposes</li>
                 </ul>
             </section>
@@ -312,7 +312,7 @@ export default function SetupUiGuide() {
                     <li>System Signing CA (intermediate) is created for infrastructure certificates</li>
                     <li>Web TLS certificate is issued using the System Signing CA</li>
                     <li>Administrator account is created</li>
-                    <li>The organization tenant, the system groups and the instance CA policy are initialized</li>
+                    <li>The first space, the system groups and the instance CA policy are initialized</li>
                     <li>Configuration files are written (db.yaml, config.yaml, bootstrap.yaml)</li>
                     <li>Cleartext passwords are scrubbed from browser memory</li>
                     <li>Setup is sealed and the system redirects to the Admin UI login</li>

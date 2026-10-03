@@ -80,7 +80,7 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
             .Select(k => ToKey(entity, k))
             .ToList();
 
-        return new KerberosRealmKeys(entity.Realm, entity.TenantId, entity.ServicePrincipal, entity.DnsDomain,
+        return new KerberosRealmKeys(entity.Realm, entity.SpaceId, entity.ServicePrincipal, entity.DnsDomain,
             entity.EnrollmentUserId, entity.EnrollmentUser?.Username ?? string.Empty, entity.AllowMachines, entity.AllowUsers, keys);
     }
 
@@ -96,30 +96,30 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
 
     // ── Management ──
 
-    /// <summary>The tenant's bindings (the instance's for null) with their key versions, newest realm first.</summary>
-    public Task<List<KerberosRealmEntity>> ListAsync(Guid? tenantId)
+    /// <summary>The space's bindings (the instance's for null) with their key versions, newest realm first.</summary>
+    public Task<List<KerberosRealmEntity>> ListAsync(Guid? spaceId)
         => db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
-            .Where(r => r.TenantId == tenantId).OrderBy(r => r.Realm).ToListAsync();
+            .Where(r => r.SpaceId == spaceId).OrderBy(r => r.Realm).ToListAsync();
 
     /// <summary>One binding with its keys, or null.</summary>
     public Task<KerberosRealmEntity?> GetAsync(Guid id)
         => db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser).FirstOrDefaultAsync(r => r.Id == id);
 
     /// <summary>
-    /// Creates a binding for a tenant, or for the instance when null. The realm must be new across
-    /// every tenant, and the enrollment identity must be confined to the realm's scope
+    /// Creates a binding for a space, or for the instance when null. The realm must be new across
+    /// every space, and the enrollment identity must be confined to the realm's scope
     /// (<see cref="EnrollmentIdentityProblem"/>).
     /// </summary>
-    public async Task<KerberosRealmEntity> CreateAsync(Guid? tenantId, KerberosRealmSpec spec)
+    public async Task<KerberosRealmEntity> CreateAsync(Guid? spaceId, KerberosRealmSpec spec)
     {
         var realm = NormalizeRealm(spec.Realm);
         if (await db.KerberosRealms.AnyAsync(r => r.Realm == realm))
             throw new InvalidOperationException($"Realm '{realm}' is already bound.");
-        await ValidateSpecAsync(spec, tenantId, checkIdentity: true);
+        await ValidateSpecAsync(spec, spaceId, checkIdentity: true);
 
         var entity = new KerberosRealmEntity
         {
-            TenantId = tenantId,
+            SpaceId = spaceId,
             Realm = realm,
             DnsDomain = NormalizeDnsDomain(spec.DnsDomain, realm),
             ServicePrincipal = NormalizeSpn(spec.ServicePrincipal),
@@ -154,7 +154,7 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
                 throw new InvalidOperationException($"Realm '{realm}' is already bound.");
             entity.Realm = realm;
         }
-        await ValidateSpecAsync(spec, entity.TenantId,
+        await ValidateSpecAsync(spec, entity.SpaceId,
             checkIdentity: spec.EnrollmentUserId != entity.EnrollmentUserId || (spec.IsEnabled && !entity.IsEnabled));
         entity.DnsDomain = NormalizeDnsDomain(spec.DnsDomain, realm);
         entity.ServicePrincipal = NormalizeSpn(spec.ServicePrincipal);
@@ -167,16 +167,16 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
         return entity;
     }
 
-    /// <summary>Deletes a binding and every key. Refused while a CA of the tenant has Kerberos on and this is its last enabled realm.</summary>
+    /// <summary>Deletes a binding and every key. Refused while a CA of the space has Kerberos on and this is its last enabled realm.</summary>
     public async Task DeleteAsync(Guid id)
     {
         var entity = await db.KerberosRealms.FirstOrDefaultAsync(r => r.Id == id)
             ?? throw new KeyNotFoundException("Realm binding not found.");
-        var others = await db.KerberosRealms.AnyAsync(r => r.TenantId == entity.TenantId && r.Id != id && r.IsEnabled);
+        var others = await db.KerberosRealms.AnyAsync(r => r.SpaceId == entity.SpaceId && r.Id != id && r.IsEnabled);
         if (!others)
         {
             var kerberosCas = await db.CaProtocolConfigs
-                .Where(p => p.Protocol == MsaeEnrollmentService.Protocol && p.MsaeAllowKerberos && p.Ca!.TenantId == entity.TenantId)
+                .Where(p => p.Protocol == MsaeEnrollmentService.Protocol && p.MsaeAllowKerberos && p.Ca!.SpaceId == entity.SpaceId)
                 .Select(p => p.Ca!.Label).ToListAsync();
             if (kerberosCas.Count > 0)
                 throw new InvalidOperationException($"Kerberos is enabled on {string.Join(", ", kerberosCas)}; disable it there first or bind another realm.");
@@ -281,11 +281,11 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
     /// The PowerShell an operator runs in the forest, plus the Group Policy values, generated
     /// from the binding. The password line is included only when one was just generated.
     /// </summary>
-    public static string SetupScript(KerberosRealmEntity realm, string tenantName, string? policyUrl, string? accountName, string? generatedPassword)
+    public static string SetupScript(KerberosRealmEntity realm, string spaceName, string? policyUrl, string? accountName, string? generatedPassword)
     {
         var account = string.IsNullOrWhiteSpace(accountName) ? "svc-modularca-enroll" : accountName.TrimEnd('$');
         var sb = new StringBuilder();
-        sb.AppendLine($"# Generated by ModularCA for realm {realm.Realm} (tenant {tenantName})");
+        sb.AppendLine($"# Generated by ModularCA for realm {realm.Realm} (space {spaceName})");
         sb.AppendLine("# Run in the forest as a domain administrator. Nothing here is a secret except the password line, if present.");
         sb.AppendLine();
         sb.AppendLine("# 1. Service account holding the enrollment SPN, AES only.");
@@ -303,7 +303,7 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
         sb.AppendLine($"#      URI:            {policyUrl ?? "https://<host>/msae/<ca-label>/cep"}");
         sb.AppendLine("#      Authentication: Windows integrated");
         sb.AppendLine("#    Certificate Services Client - Auto-Enrollment: Enabled, renew expired, update pending, remove revoked");
-        sb.AppendLine("#    Trusted Root Certification Authorities: the tenant CA root");
+        sb.AppendLine("#    Trusted Root Certification Authorities: the root of the space's CA");
         return sb.ToString();
     }
 
@@ -371,31 +371,31 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
         return key.GetKey().ToArray();
     }
 
-    private async Task ValidateSpecAsync(KerberosRealmSpec spec, Guid? tenantId, bool checkIdentity)
+    private async Task ValidateSpecAsync(KerberosRealmSpec spec, Guid? spaceId, bool checkIdentity)
     {
         NormalizeSpn(spec.ServicePrincipal);
         var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == spec.EnrollmentUserId)
             ?? throw new InvalidOperationException("The enrollment user does not exist.");
-        if (checkIdentity && EnrollmentIdentityProblem(user, tenantId) is { } problem)
+        if (checkIdentity && EnrollmentIdentityProblem(user, spaceId) is { } problem)
             throw new InvalidOperationException(problem);
     }
 
     /// <summary>
     /// Why <paramref name="user"/> may not be the enrollment identity of a realm of
-    /// <paramref name="realmTenantId"/> (null for an instance realm), or null when it may. Whoever
+    /// <paramref name="realmSpaceId"/> (null for an instance realm), or null when it may. Whoever
     /// holds the realm's keys can mint tickets for any principal, and every accepted ticket acts
     /// with this identity's rights on the realm's CAs, so it must be a service identity, which cannot
-    /// sign in, scoped to the realm's tenant (any scope for an instance realm). A person, or an
-    /// identity of another tenant or of the instance, would let a tenant administrator act with
+    /// sign in, scoped to the realm's space (any scope for an instance realm). A person, or an
+    /// identity of another space or of the instance, would let a space administrator act with
     /// rights they were never given.
     /// </summary>
-    public static string? EnrollmentIdentityProblem(UserEntity user, Guid? realmTenantId)
+    public static string? EnrollmentIdentityProblem(UserEntity user, Guid? realmSpaceId)
     {
         if (!user.IsServiceIdentity)
             return $"The enrollment identity must be a service identity, not '{user.Username}': every ticket from the forest "
                 + "acts with that account's rights. Create one under Users, Service identities.";
-        if (realmTenantId != null && user.ServiceScopeTenantId != realmTenantId)
-            return $"Service identity '{user.Username}' is not scoped to this realm's tenant. Use a service identity of this tenant or one of its CAs.";
+        if (realmSpaceId != null && user.ServiceScopeSpaceId != realmSpaceId)
+            return $"Service identity '{user.Username}' is not scoped to this realm's space. Use a service identity of this space or one of its CAs.";
         return null;
     }
 
@@ -408,11 +408,11 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
     {
         var realms = await db.KerberosRealms.AsNoTracking().Include(r => r.EnrollmentUser)
             .Where(r => r.IsEnabled).OrderBy(r => r.Realm).ToListAsync(ct);
-        var bad = realms.Where(r => r.EnrollmentUser != null && EnrollmentIdentityProblem(r.EnrollmentUser, r.TenantId) != null)
+        var bad = realms.Where(r => r.EnrollmentUser != null && EnrollmentIdentityProblem(r.EnrollmentUser, r.SpaceId) != null)
             .Select(r => $"{r.Realm} (acts as {r.EnrollmentUser!.Username})").ToList();
         if (bad.Count == 0) return null;
         return $"{bad.Count} Kerberos realm binding(s) act as an identity not confined to the realm's scope: {string.Join(", ", bad)}. "
-            + "Point each at a service identity of the realm's tenant; re-pointing or re-enabling a binding now requires one.";
+            + "Point each at a service identity of the realm's space; re-pointing or re-enabling a binding now requires one.";
     }
 
     /// <summary>Upper-case, trimmed, and shaped like a DNS name. Anything else is refused.</summary>

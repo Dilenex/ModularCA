@@ -28,12 +28,12 @@ public class AuditChainConcurrencyTests
             .AddInterceptors(interceptors)
             .Options);
 
-    private static AuditLogEntity Entry(Guid? tenantId = null, string action = "Issued") => new()
+    private static AuditLogEntity Entry(Guid? spaceId = null, string action = "Issued") => new()
     {
         ActionType = action,
         ActorUsername = "admin",
         Success = true,
-        TenantId = tenantId,
+        TenantId = spaceId,
     };
 
     [Fact]
@@ -170,12 +170,12 @@ public class AuditChainConcurrencyTests
     public async Task A_pruned_chain_verifies_from_its_oldest_survivor()
     {
         var name = $"prune-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
         for (var i = 0; i < 6; i++)
         {
             await using var db = Context(name);
-            await chain.AppendAsync(db, Entry(tenant));
+            await chain.AppendAsync(db, Entry(space));
         }
 
         await using (var db = Context(name))
@@ -185,29 +185,29 @@ public class AuditChainConcurrencyTests
             db.AuditLogs.RemoveRange(ordered.Take(3));
             await db.SaveChangesAsync();
 
-            var broken = await chain.VerifyAsync(db, tenant);
+            var broken = await chain.VerifyAsync(db, space);
             Assert.Single(broken.Breaks);
 
-            var marker = await chain.RecordPruneAsync(db, tenant, cutoff);
+            var marker = await chain.RecordPruneAsync(db, space, cutoff);
             Assert.Equal(AuditHashChainService.ChainPrunedAction, marker.ActionType);
             Assert.NotNull(marker.PreviousRecordHash);
         }
 
         await using var verifyDb = Context(name);
-        var result = await chain.VerifyAsync(verifyDb, tenant);
+        var result = await chain.VerifyAsync(verifyDb, space);
         Assert.Empty(result.Breaks);
         Assert.True(result.Pruned);
         Assert.Equal(1, result.Epochs);
         Assert.Equal(4, result.RecordsVerified);
     }
 
-    /// <summary>Six records in a tenant chain with the oldest three deleted; returns the new oldest.</summary>
-    private static async Task<AuditLogEntity> SeedPrunedAsync(string name, Guid tenant, AuditHashChainService chain)
+    /// <summary>Six records in a space chain with the oldest three deleted; returns the new oldest.</summary>
+    private static async Task<AuditLogEntity> SeedPrunedAsync(string name, Guid space, AuditHashChainService chain)
     {
         for (var i = 0; i < 6; i++)
         {
             await using var db = Context(name);
-            await chain.AppendAsync(db, Entry(tenant));
+            await chain.AppendAsync(db, Entry(space));
         }
         await using var del = Context(name);
         var ordered = await del.AuditLogs.OrderBy(a => a.Timestamp).ToListAsync();
@@ -218,9 +218,9 @@ public class AuditChainConcurrencyTests
 
     /// <summary>A hand-built, correctly hashed prune marker declaring <paramref name="anchor"/>.</summary>
     private static async Task<AuditLogEntity> ForgeMarkerAsync(
-        string name, Guid tenant, AuditHashChainService chain, AuditLogEntity anchor, DateTime cutoff)
+        string name, Guid space, AuditHashChainService chain, AuditLogEntity anchor, DateTime cutoff)
     {
-        var marker = Entry(tenant, AuditHashChainService.ChainPrunedAction);
+        var marker = Entry(space, AuditHashChainService.ChainPrunedAction);
         marker.DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
         {
             Reason = "forged",
@@ -237,13 +237,13 @@ public class AuditChainConcurrencyTests
     public async Task A_marker_beyond_the_verification_limit_is_not_honoured()
     {
         var name = $"beyond-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
-        var anchor = await SeedPrunedAsync(name, tenant, chain);
-        await ForgeMarkerAsync(name, tenant, chain, anchor, anchor.Timestamp);
+        var anchor = await SeedPrunedAsync(name, space, chain);
+        await ForgeMarkerAsync(name, space, chain, anchor, anchor.Timestamp);
 
         await using var verifyDb = Context(name);
-        var partial = await chain.VerifyAsync(verifyDb, tenant, limit: 3);
+        var partial = await chain.VerifyAsync(verifyDb, space, limit: 3);
 
         Assert.False(partial.Pruned);
         Assert.Contains(partial.Breaks, b => b.RecordId == anchor.Id && b.Issue.Contains("PreviousRecordHash"));
@@ -253,18 +253,18 @@ public class AuditChainConcurrencyTests
     public async Task A_marker_whose_hash_is_tampered_is_not_honoured()
     {
         var name = $"tampered-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
-        var anchor = await SeedPrunedAsync(name, tenant, chain);
+        var anchor = await SeedPrunedAsync(name, space, chain);
         await using (var db = Context(name))
         {
-            var marker = await chain.RecordPruneAsync(db, tenant, anchor.Timestamp);
+            var marker = await chain.RecordPruneAsync(db, space, anchor.Timestamp);
             marker.ActorUsername = "someone-else";
             await db.SaveChangesAsync();
         }
 
         await using var verifyDb = Context(name);
-        var result = await chain.VerifyAsync(verifyDb, tenant);
+        var result = await chain.VerifyAsync(verifyDb, space);
 
         Assert.False(result.Pruned);
         Assert.Contains(result.Breaks, b => b.RecordId == anchor.Id && b.Issue.Contains("PreviousRecordHash"));
@@ -275,13 +275,13 @@ public class AuditChainConcurrencyTests
     public async Task A_marker_whose_cutoff_is_after_its_anchor_is_not_honoured_and_is_reported()
     {
         var name = $"cutoff-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
-        var anchor = await SeedPrunedAsync(name, tenant, chain);
-        var marker = await ForgeMarkerAsync(name, tenant, chain, anchor, anchor.Timestamp.AddDays(1));
+        var anchor = await SeedPrunedAsync(name, space, chain);
+        var marker = await ForgeMarkerAsync(name, space, chain, anchor, anchor.Timestamp.AddDays(1));
 
         await using var verifyDb = Context(name);
-        var result = await chain.VerifyAsync(verifyDb, tenant);
+        var result = await chain.VerifyAsync(verifyDb, space);
 
         Assert.False(result.Pruned);
         Assert.Contains(result.Breaks, b => b.RecordId == anchor.Id && b.Issue.Contains("PreviousRecordHash"));
@@ -292,14 +292,14 @@ public class AuditChainConcurrencyTests
     public async Task A_legitimate_prune_marker_is_honoured_within_the_limit()
     {
         var name = $"legit-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
-        var anchor = await SeedPrunedAsync(name, tenant, chain);
+        var anchor = await SeedPrunedAsync(name, space, chain);
         await using (var db = Context(name))
-            await chain.RecordPruneAsync(db, tenant, anchor.Timestamp.AddDays(-1));
+            await chain.RecordPruneAsync(db, space, anchor.Timestamp.AddDays(-1));
 
         await using var verifyDb = Context(name);
-        var result = await chain.VerifyAsync(verifyDb, tenant, limit: 4);
+        var result = await chain.VerifyAsync(verifyDb, space, limit: 4);
 
         Assert.True(result.Pruned);
         Assert.Empty(result.Breaks);
@@ -309,18 +309,18 @@ public class AuditChainConcurrencyTests
     public async Task A_prune_that_stopped_short_records_the_anchor_as_its_cutoff()
     {
         var name = $"short-{Guid.NewGuid():N}";
-        var tenant = Guid.NewGuid();
+        var space = Guid.NewGuid();
         var chain = new AuditHashChainService();
-        var anchor = await SeedPrunedAsync(name, tenant, chain);
+        var anchor = await SeedPrunedAsync(name, space, chain);
         await using (var db = Context(name))
         {
-            var marker = await chain.RecordPruneAsync(db, tenant, anchor.Timestamp.AddDays(1));
+            var marker = await chain.RecordPruneAsync(db, space, anchor.Timestamp.AddDays(1));
             var recorded = System.Text.Json.JsonDocument.Parse(marker.DetailsJson!).RootElement.GetProperty("Cutoff").GetDateTime();
             Assert.Equal(AuditHashChainService.ToStorablePrecision(anchor.Timestamp), recorded);
         }
 
         await using var verifyDb = Context(name);
-        var result = await chain.VerifyAsync(verifyDb, tenant);
+        var result = await chain.VerifyAsync(verifyDb, space);
         Assert.True(result.Pruned);
         Assert.Empty(result.Breaks);
     }

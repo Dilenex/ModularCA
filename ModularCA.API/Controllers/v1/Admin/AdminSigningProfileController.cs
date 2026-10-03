@@ -38,18 +38,18 @@ public class AdminSigningProfileController(
 
     /// <summary>
     /// Whether a signing profile issuing from CA certificate <paramref name="issuerId"/> is inside
-    /// the caller's <see cref="TenantFence"/> for <paramref name="capability"/>: one with no issuer
+    /// the caller's <see cref="SpaceFence"/> for <paramref name="capability"/>: one with no issuer
     /// is unbound and is; otherwise the issuing CA's scope decides, and a profile whose CA is gone
     /// or deleted is not.
     /// </summary>
     private async Task<bool> InFenceAsync(Guid? issuerId, string capability)
     {
-        var fence = TenantFence.From(HttpContext, capability);
+        var fence = SpaceFence.From(HttpContext, capability);
         if (issuerId is not Guid id || fence.InstanceWide)
             return true;
         var ca = await db.CertificateAuthorities.AsNoTracking()
-            .Where(c => c.CertificateId == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync();
-        return ca != null && fence.Allows(ca.TenantId);
+            .Where(c => c.CertificateId == id).Select(c => new { c.SpaceId }).FirstOrDefaultAsync();
+        return ca != null && fence.Allows(ca.SpaceId);
     }
 
     /// <summary>
@@ -62,8 +62,8 @@ public class AdminSigningProfileController(
         if (issuerId is not Guid id)
             return null;
         var ca = await db.CertificateAuthorities.AsNoTracking()
-            .Where(c => c.CertificateId == id).Select(c => new { c.Id, c.TenantId }).FirstOrDefaultAsync();
-        if (ca == null || !TenantFence.From(HttpContext, Capabilities.CaManage).Allows(ca.TenantId))
+            .Where(c => c.CertificateId == id).Select(c => new { c.Id, c.SpaceId }).FirstOrDefaultAsync();
+        if (ca == null || !SpaceFence.From(HttpContext, Capabilities.CaManage).Allows(ca.SpaceId))
             return NotFound(new { error = "Issuing CA not found" });
         return await _authService.HasCaCapabilityAsync(userId, ca.Id, Capabilities.CaManage)
             ? null
@@ -71,7 +71,7 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
-    /// Returns the signing profiles inside the caller's <see cref="TenantFence"/> (see
+    /// Returns the signing profiles inside the caller's <see cref="SpaceFence"/> (see
     /// <see cref="InFenceAsync"/>), including their allowed cert profile IDs and inheritance
     /// configuration. A caller who is not a system admin also sees only profiles they have a
     /// profile.* capability grant for.
@@ -174,7 +174,7 @@ public class AdminSigningProfileController(
 
     /// <summary>
     /// Retrieves a single signing profile by its GUID, including allowed cert profile IDs
-    /// and inheritance configuration. A profile outside the caller's <see cref="TenantFence"/> is
+    /// and inheritance configuration. A profile outside the caller's <see cref="SpaceFence"/> is
     /// not found.
     /// </summary>
     [HttpGet("{id}")]
@@ -209,7 +209,7 @@ public class AdminSigningProfileController(
 
     /// <summary>
     /// Returns the list of allowed cert profile IDs for the specified signing profile. A profile
-    /// outside the caller's <see cref="TenantFence"/> is not found.
+    /// outside the caller's <see cref="SpaceFence"/> is not found.
     /// </summary>
     [HttpGet("{id}/allowed-cert-profiles")]
     [Authorize(Policy = "CaAuditor")]

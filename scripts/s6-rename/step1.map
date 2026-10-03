@@ -1,0 +1,41 @@
+# S6 step 1: the schema rename. The application entities, the DbContext set and the stored
+# ceremony parameters. Everything else that says "tenant" is step 2.
+#
+# Run from the repository root:
+#   dotnet run --project scripts/s6-rename -- scripts/s6-rename/step1.map
+#
+# Not renamed here, on purpose: the audit entities (AuditLog, AuditAcme/Cmp/Est/Msae/Network/Scep
+# keep TenantId; the audit database is verbatim), SignerAuditEntity.TenantScope (the persisted
+# 'tenant' token), and every DTO, request and response type (the API is step 3).
+
+exclude: ModularCA.Database/Migrations/
+exclude: ModularCA.Shared/Entities/Audit
+exclude: ModularCA.Core/Services/AuditHashChainService.cs
+
+T:ModularCA.Shared.Entities.TenantEntity => SpaceEntity
+P:ModularCA.Database.ModularCADbContext.Tenants => Spaces
+
+P:ModularCA.Shared.Entities.CaGroupEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.CertProfileEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.CertificateAuthorityEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.CertificateAuthorityEntity.Tenant => Space
+P:ModularCA.Shared.Entities.EnrollmentTokenEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.KerberosRealmEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.KerberosRealmEntity.Tenant => Space
+P:ModularCA.Shared.Entities.KeyCeremonyEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.RoleAssignmentEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.RoleAssignmentEntity.Tenant => Space
+P:ModularCA.Shared.Entities.RoleEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.RoleEntity.Tenant => Space
+P:ModularCA.Shared.Entities.SignerAuditEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.UserCapabilityGrantEntity.TenantId => SpaceId
+P:ModularCA.Shared.Entities.UserCapabilityGrantEntity.Tenant => Space
+P:ModularCA.Shared.Entities.UserEntity.ServiceScopeTenantId => ServiceScopeSpaceId
+
+P:ModularCA.Shared.Models.ControlledUserChangeParameters.TenantId => SpaceId
+P:ModularCA.Shared.Models.ControlledUserChangeParameters.MintedTierTenantId => MintedTierSpaceId
+P:ModularCA.Shared.Models.KeyCeremonyParameters.TenantId => SpaceId
+P:ModularCA.Shared.Models.SshKeyCeremonyParameters.TenantId => SpaceId
+P:ModularCA.Shared.Models.RevokeCaCeremonyParameters.TenantId => SpaceId
+P:ModularCA.Shared.Models.TenantPolicyChangeCeremonyParameters.TenantId => SpaceId
+F:ModularCA.Shared.Enums.CeremonyType.TenantPolicyChange => SpacePolicyChange

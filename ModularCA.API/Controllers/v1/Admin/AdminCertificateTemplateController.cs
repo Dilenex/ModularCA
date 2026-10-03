@@ -13,7 +13,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing certificate templates that bundle a CA, signing profile,
 /// cert profile, and optional request profile into a named enrollment template.
-/// Restricted to SystemOperator because templates are global artifacts that affect every tenant.
+/// Restricted to SystemOperator because templates are global artifacts that affect every space.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/templates")]
@@ -28,11 +28,12 @@ public class AdminCertificateTemplateController(
     /// Returns all certificate templates with resolved CA and profile names.
     /// </summary>
     /// <param name="caId">Optional: only templates issued by this CA (the console's scope).</param>
-    /// <param name="tenantId">Optional: only templates issued by CAs of this tenant.</param>
+    /// <param name="spaceId">Optional: only templates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
-        var templates = await templateService.GetAllAsync(caId, tenantId);
+        var templates = await templateService.GetAllAsync(caId, spaceId);
         return Ok(templates);
     }
 

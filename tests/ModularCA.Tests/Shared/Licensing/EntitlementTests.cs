@@ -240,7 +240,7 @@ public class FeatureCatalogTests
 }
 
 /// <summary>
-/// Covers entitlement resolution and the tenant-creation gate.
+/// Covers entitlement resolution and the space-creation gate.
 /// </summary>
 public class EntitlementServiceTests
 {
@@ -340,33 +340,22 @@ public class EntitlementServiceTests
         Assert.Equal(10, capped.GetLimit(LicenseLimits.MaxTenants));
     }
 
-    // ---- TenantCreationGate ------------------------------------------------------------------
+    // ---- SpaceCreationGate ------------------------------------------------------------------
 
     [Fact]
-    public void The_free_edition_refuses_once_its_ceiling_is_reached()
+    public void The_free_edition_is_recommended_a_licence_from_the_fifth_space()
     {
-        var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
-
-        Assert.NotNull(refusal);
-        Assert.Equal(ErrorCodes.FeatureNotEntitled, refusal!.Code);
-        Assert.Equal(403, refusal.Status);
-        Assert.IsAssignableFrom<RequestValidationException>(refusal);
-        // The refusal must not imply anything was lost.
-        Assert.Contains("unaffected", refusal.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(SpaceCreationGate.LicenceRecommendation,
+            SpaceCreationGate.Recommendation(Free(), SpaceCreationGate.SpacesWithoutLicence));
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
     [InlineData(3)]
-    public void The_free_edition_may_create_tenants_below_its_ceiling(int existing)
+    public void Up_to_four_spaces_nothing_is_said(int existing)
     {
-        // The behaviour the ceiling constant describes. It used to be decoration: the gate consulted
-        // the entitlement first and refused an unlicensed installation its third tenant regardless,
-        // while the message quoted a number the decision never read. A self-hoster separating home,
-        // lab and a side project is the person the free edition exists for, and sending them to a
-        // pricing page was the wrong answer to the wrong question.
-        Assert.Null(TenantCreationGate.Evaluate(Free(), existing));
+        Assert.Null(SpaceCreationGate.Recommendation(Free(), existing));
     }
 
     [Fact]
@@ -374,7 +363,7 @@ public class EntitlementServiceTests
     {
         // The name tells the reader whether this concerns them; the key is what they quote in a
         // ticket. An identifier alone makes them decode it first to find out if it is relevant.
-        var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
+        var refusal = FeatureGate.Require(Free(), FeatureKeys.MultiTenancy, "Creating additional spaces", "Existing spaces are unaffected.");
 
         Assert.NotNull(refusal);
         var nameAt = refusal!.Message.IndexOf("multi-tenancy", StringComparison.Ordinal);
@@ -386,52 +375,25 @@ public class EntitlementServiceTests
     }
 
     [Fact]
-    public void A_lapsed_licence_refuses_with_the_renewal_code_not_the_purchase_code()
+    public void A_lapsed_licence_is_still_recommended_one()
     {
-        // MCA-LIC-003 vs MCA-LIC-001 is the difference between "renew" and "buy", and sending a
-        // paying customer down the purchase path is the failure this separation exists to avoid.
         var lapsed = Licensed(FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value.AddDays(-1));
 
-        // At the ceiling, so the entitlement is actually consulted. This was a literal 2, which
-        // silently meant "the ceiling" until the ceiling moved and the test started dereferencing
-        // a null refusal instead of reading a code.
-        var refusal = TenantCreationGate.Evaluate(lapsed, TenantCreationGate.FreeEditionTenantCeiling);
-
-        Assert.NotNull(refusal);
-        Assert.Equal(ErrorCodes.MaintenanceLapsed, refusal!.Code);
+        Assert.NotNull(SpaceCreationGate.Recommendation(lapsed, SpaceCreationGate.SpacesWithoutLicence));
     }
 
     [Fact]
-    public void An_entitled_installation_with_no_ceiling_may_create_tenants()
+    public void An_entitled_installation_is_never_recommended_a_licence()
     {
-        Assert.Null(TenantCreationGate.Evaluate(Licensed(new DateOnly(2099, 1, 1)), 500));
+        Assert.Null(SpaceCreationGate.Recommendation(Licensed(new DateOnly(2099, 1, 1)), 500));
     }
 
     [Fact]
-    public void A_licence_ceiling_refuses_at_the_limit_and_permits_below_it()
+    public void A_licence_ceiling_no_longer_refuses_creation()
     {
-        var capped = Licensed(new DateOnly(2099, 1, 1), null,
-            new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 3 });
-
-        Assert.Null(TenantCreationGate.Evaluate(capped, 2));
-
-        var refusal = TenantCreationGate.Evaluate(capped, 3);
-        Assert.Equal(ErrorCodes.LicenseLimitReached, refusal!.Code);
-        Assert.Contains("unaffected", refusal.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Being_over_a_reduced_ceiling_refuses_creation_and_nothing_else()
-    {
-        // A downgrade can leave more tenants than the new licence permits. The rule is the same
-        // as everywhere else in this system: never take away what exists. Creation is refused;
-        // the existing tenants are not the gate's business.
         var capped = Licensed(new DateOnly(2099, 1, 1), null,
             new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 2 });
 
-        var refusal = TenantCreationGate.Evaluate(capped, 7);
-
-        Assert.Equal(ErrorCodes.LicenseLimitReached, refusal!.Code);
-        Assert.Contains("7", refusal.Message, StringComparison.Ordinal);
+        Assert.Null(SpaceCreationGate.Recommendation(capped, 7));
     }
 }

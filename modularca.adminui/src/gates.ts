@@ -16,7 +16,7 @@ export interface Gate {
     scoped?: boolean;
 }
 
-/** Installation-wide administration: settings, backup, tenants, roles, schedules, TLS. */
+/** Installation-wide administration: settings, backup, spaces, roles, schedules, TLS. */
 export const SYSTEM_ADMIN: Gate = { requires: Capabilities.SystemManage };
 
 /** Managing a CA within the scope: authorities, profiles, distribution, ceremonies, protocols. */

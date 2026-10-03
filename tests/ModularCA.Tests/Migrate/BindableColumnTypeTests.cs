@@ -34,12 +34,15 @@ public class BindableColumnTypeTests
         typeof(DateTime), typeof(DateTimeOffset), typeof(TimeSpan),
     ];
 
-    public static TheoryData<string> Models() => new() { "application", "audit" };
+    public static TheoryData<string> Models() => new() { "application", "audit", "baseline application", "baseline audit" };
 
-    private static IReadOnlyList<ModelIntrospection.TableInfo> Tables(string which) =>
-        which == "audit"
-            ? ModelIntrospection.Tables(ModelIntrospection.AuditModel())
-            : ModelIntrospection.Tables(ModelIntrospection.DestinationModel());
+    private static IReadOnlyList<ModelIntrospection.TableInfo> Tables(string which) => which switch
+    {
+        "audit" => ModelIntrospection.Tables(ModelIntrospection.AuditModel()),
+        "baseline application" => ModelIntrospection.AppCopyTables(),
+        "baseline audit" => ModelIntrospection.AuditCopyTables(),
+        _ => ModelIntrospection.Tables(ModelIntrospection.DestinationModel()),
+    };
 
     [Theory]
     [MemberData(nameof(Models))]

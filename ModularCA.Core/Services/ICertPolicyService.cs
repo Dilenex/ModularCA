@@ -66,7 +66,7 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// When true, this is an infrastructure certificate (TSA, OCSP, Web TLS). These are
-        /// exempt from several issuance-time limits, including the tenant validity ceiling —
+        /// exempt from several issuance-time limits, including the space validity ceiling —
         /// their validity is governed by their cert profile and clamped to the issuing CA.
         /// </summary>
         public bool IsInfrastructureCert { get; set; } = false;

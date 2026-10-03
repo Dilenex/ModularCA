@@ -6,7 +6,7 @@ namespace ModularCA.Shared.Models.Issuance;
 /// <remarks>
 /// Naming the binding layer is the whole value of the pre-flight. "Max 730 days" on its own sends
 /// an operator to the wrong screen half the time — they lengthen the certificate profile, reload,
-/// and get the same 730 days because it was the tenant all along.
+/// and get the same 730 days because it was the space all along.
 /// </remarks>
 public enum ValidityCeilingSource
 {
@@ -17,8 +17,8 @@ public enum ValidityCeilingSource
     /// </summary>
     CertProfile = 0,
 
-    /// <summary>The tenant's <c>MaxValidityDays</c> bound it.</summary>
-    Tenant = 1,
+    /// <summary>The space's <c>MaxValidityDays</c> bound it.</summary>
+    Space = 1,
 
     /// <summary>The issuing CA's own <c>notAfter</c> bound it; a leaf cannot outlive its issuer.</summary>
     IssuingCa = 2,
@@ -37,7 +37,7 @@ public enum ValidityCeilingSource
 /// </param>
 /// <param name="BoundBy">The narrowest layer.</param>
 /// <param name="CertProfileNotAfter">Where the cert profile alone would have put the expiry.</param>
-/// <param name="TenantNotAfter">Where the tenant alone would have, or null when it is unlimited.</param>
+/// <param name="SpaceNotAfter">Where the space alone would have, or null when it is unlimited.</param>
 /// <param name="IssuingCaNotAfter">
 /// Where the issuing CA alone would have — its own expiry less the clock-skew margin — or null
 /// when the CA could not be resolved.
@@ -48,5 +48,5 @@ public sealed record ValidityCeilingResolution(
     int EffectiveMaxDays,
     ValidityCeilingSource BoundBy,
     DateTime CertProfileNotAfter,
-    DateTime? TenantNotAfter,
+    DateTime? SpaceNotAfter,
     DateTime? IssuingCaNotAfter);

@@ -39,7 +39,7 @@ public class ComplianceReportService : IComplianceReportService
     public async Task<ComplianceReport> GenerateReportAsync(ComplianceReportRequest request)
     {
         // Compliance reports aggregate the full certificate history for
-        // a tenant, which may legitimately exceed the default 30s command timeout on busy
+        // a space, which may legitimately exceed the default 30s command timeout on busy
         // installs. Bump to 5 minutes for this call only.
         _db.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
 

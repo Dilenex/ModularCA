@@ -24,7 +24,7 @@ namespace ModularCA.API.Controllers.v1.User
         private readonly ModularCADbContext _db = db;
 
         /// <summary>
-        /// Lists valid CA certificates visible to the user, filtered by tenant scope, with pagination.
+        /// Lists valid CA certificates visible to the user, filtered by space scope, with pagination.
         /// </summary>
         /// <param name="page">Page number (1-based). Defaults to 1.</param>
         /// <param name="pageSize">Number of items per page. Defaults to 25, clamped to 1-100.</param>
@@ -46,11 +46,11 @@ namespace ModularCA.API.Controllers.v1.User
                 .Where(c => c.IsCA && !(c.SubjectDN?.Contains("System Signing CA") ?? false))
                 .ToList();
 
-            var fence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+            var fence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
             if (!fence.InstanceWide)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
-                    .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                    .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
                     .Where(ca => ca.CertificateId != null)
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
@@ -85,21 +85,21 @@ namespace ModularCA.API.Controllers.v1.User
         }
 
         /// <summary>
-        /// Returns true when the caller's <see cref="TenantFence"/> admits the CA's tenant; an
+        /// Returns true when the caller's <see cref="SpaceFence"/> admits the CA's space; an
         /// instance-wide caller always passes. Otherwise false when the certificate is not bound to
         /// any CA row — legacy/standalone trust anchors are not exposed through this API surface.
         /// </summary>
         private async Task<bool> CallerCanSeeCaCertAsync(Guid certificateId)
         {
-            var fence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+            var fence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
             if (fence.InstanceWide)
                 return true;
             var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.CertificateId == certificateId)
-                .Select(c => new { c.TenantId })
+                .Select(c => new { c.SpaceId })
                 .FirstOrDefaultAsync();
-            return ca != null && fence.Allows(ca.TenantId);
+            return ca != null && fence.Allows(ca.SpaceId);
         }
 
         [HttpGet("{serial}")]
@@ -113,7 +113,7 @@ namespace ModularCA.API.Controllers.v1.User
             if (cert.SubjectDN?.Contains("System Signing CA") ?? false)
                 return NotFound();
 
-            // Tenant fence. Collapse cross-tenant mismatches to 404 to
+            // Space fence. Collapse cross-space mismatches to 404 to
             // avoid existence oracles.
             if (!await CallerCanSeeCaCertAsync(cert.CertificateId))
                 return NotFound();
@@ -129,7 +129,7 @@ namespace ModularCA.API.Controllers.v1.User
             if (raw == null || raw.IsCA || raw.SubjectDN?.Contains("System Signing CA") == true)
                 return NotFound();
 
-            // Tenant fence.
+            // Space fence.
             if (!await CallerCanSeeCaCertAsync(raw.CertificateId))
                 return NotFound();
 
@@ -154,9 +154,9 @@ namespace ModularCA.API.Controllers.v1.User
         /// <summary>
         /// Downloads the PEM trust chain for a CA certificate, including the specified CA and all
         /// intermediate issuers. The self-signed root CA is excluded per RFC 8446 best practice.
-        /// Every hop in the chain is tenant-checked so a low-privilege user
-        /// cannot walk up the hierarchy into another tenant's CA. The walk stops at the first
-        /// cross-tenant parent so the caller still receives the in-scope portion of the chain.
+        /// Every hop in the chain is space-checked so a low-privilege user
+        /// cannot walk up the hierarchy into another space's CA. The walk stops at the first
+        /// cross-space parent so the caller still receives the in-scope portion of the chain.
         /// </summary>
         [HttpGet("{serial}/chain")]
         public async Task<IActionResult> GetCaChain(string serial)
@@ -169,11 +169,11 @@ namespace ModularCA.API.Controllers.v1.User
             if (caCert.SubjectDN?.Contains("System Signing CA") ?? false)
                 return NotFound();
 
-            // Start-of-chain tenant fence.
+            // Start-of-chain space fence.
             if (!await CallerCanSeeCaCertAsync(caCert.CertificateId))
                 return NotFound();
 
-            var chainFence = TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+            var chainFence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
 
             var chainPems = new List<string> { caCert.Pem.Trim() };
 
@@ -208,9 +208,9 @@ namespace ModularCA.API.Controllers.v1.User
                     if (parentCa.ParentCaId == null && !directParentIsRoot)
                         break;
 
-                    // Tenant check every hop — stop the walk at the first
-                    // cross-tenant parent instead of adding that parent's PEM to the bundle.
-                    if (!chainFence.Allows(parentCa.TenantId))
+                    // Space check every hop — stop the walk at the first
+                    // cross-space parent instead of adding that parent's PEM to the bundle.
+                    if (!chainFence.Allows(parentCa.SpaceId))
                         break;
 
                     chainPems.Add(parentCa.Certificate.Pem.Trim());

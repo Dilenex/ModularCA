@@ -166,14 +166,14 @@ public class AuditChainEpochTests
     [Fact]
     public async Task Legacy_chains_are_restarted_once_at_startup_and_not_again()
     {
-        var tenantA = Guid.NewGuid();
+        var spaceA = Guid.NewGuid();
 
         await using var db = Context();
         var chain = new AuditHashChainService();
 
         // Two chains with legacy rows, one chain that was always current.
         db.AuditLogs.Add(Legacy(1, null));
-        var a = Legacy(1, null); a.TenantId = tenantA; db.AuditLogs.Add(a);
+        var a = Legacy(1, null); a.TenantId = spaceA; db.AuditLogs.Add(a);
         await db.SaveChangesAsync();
         var fresh = Guid.NewGuid();
         var entry = new AuditLogEntity { Timestamp = At(1), ActionType = "X", Success = true, TenantId = fresh };
@@ -184,7 +184,7 @@ public class AuditChainEpochTests
 
         Assert.Equal(2, first.Count);
         Assert.Contains(null, first);
-        Assert.Contains(tenantA, first);
+        Assert.Contains(spaceA, first);
         Assert.DoesNotContain(fresh, first);
         Assert.Empty(second);
 

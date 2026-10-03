@@ -5,8 +5,8 @@ namespace ModularCA.Shared.Entities
 {
     /// <summary>
     /// Represents a certificate authority in the PKI hierarchy. May be scoped to a
-    /// <see cref="TenantEntity"/> for multi-tenant isolation, or remain tenant-less
-    /// as a system-wide CA.
+    /// <see cref="SpaceEntity"/> for delegated administration, or have no space as an
+    /// instance CA.
     /// </summary>
     public class CertificateAuthorityEntity
     {
@@ -127,20 +127,20 @@ namespace ModularCA.Shared.Entities
         public bool IsSshCa { get; set; } = false;
 
         /// <summary>
-        /// The space (tenant) this CA belongs to, or null for an instance CA such as the system
+        /// The space this CA belongs to, or null for an instance CA such as the system
         /// signing CA or an SSH CA.
         /// </summary>
-        public Guid? TenantId { get; set; }
+        public Guid? SpaceId { get; set; }
 
-        /// <summary>Navigation property to the owning tenant; null for an instance CA.</summary>
-        [ForeignKey("TenantId")]
-        public virtual TenantEntity? Tenant { get; set; }
+        /// <summary>Navigation property to the owning space; null for an instance CA.</summary>
+        [ForeignKey(nameof(SpaceId))]
+        public virtual SpaceEntity? Space { get; set; }
 
         /// <summary>
         /// Optional per-CA override for the controlled-user ceremony ("user") quorum — how many
         /// approvals a promote/demote/delete of a CA-scoped controlled user requires. Null = inherit
-        /// the owning tenant's value. Capped by the tenant (a CA may require fewer approvals than its
-        /// tenant, never more). Distinct from the CA admin group's <i>key</i>-ceremony quorum.
+        /// the owning space's value. Capped by the space (a CA may require fewer approvals than its
+        /// space, never more). Distinct from the CA admin group's <i>key</i>-ceremony quorum.
         /// </summary>
         public int? UserCeremonyRequiredApprovals { get; set; }
 

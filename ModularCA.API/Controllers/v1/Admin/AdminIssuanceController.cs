@@ -63,11 +63,11 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Resolve the CA via CSR → SigningProfile → IssuerId → CA, then
-        /// enforce that the caller's <see cref="TenantFence"/> admits the CA's tenant.
+        /// enforce that the caller's <see cref="SpaceFence"/> admits the CA's space.
         /// Returns null on allow, an <see cref="IActionResult"/>
-        /// (404) on deny. Collapses cross-tenant mismatches to 404 to avoid existence oracles.
+        /// (404) on deny. Collapses cross-space mismatches to 404 to avoid existence oracles.
         /// </summary>
-        private async Task<IActionResult?> EnforceTenantFenceForCsrAsync(Guid csrId)
+        private async Task<IActionResult?> EnforceSpaceFenceForCsrAsync(Guid csrId)
         {
             var csr = await _dbContext.CertificateRequests
                 .AsNoTracking()
@@ -76,14 +76,14 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (csr == null)
                 return NotFound();
             var info = await ResolveCaFromSigningProfileAsync(csr.SigningProfileId);
-            return EnforceTenantFence(info);
+            return EnforceSpaceFence(info);
         }
 
         /// <summary>
         /// Resolve the CA via Certificate → SigningProfile → IssuerId → CA,
-        /// then enforce tenant access. Handles both cert-id and serial-number variants.
+        /// then enforce space access. Handles both cert-id and serial-number variants.
         /// </summary>
-        private async Task<IActionResult?> EnforceTenantFenceForCertAsync(Guid? certId, string? serial)
+        private async Task<IActionResult?> EnforceSpaceFenceForCertAsync(Guid? certId, string? serial)
         {
             Shared.Entities.CertificateEntity? cert = null;
             if (certId.HasValue)
@@ -101,25 +101,25 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (cert == null)
                 return NotFound();
             var info = await ResolveCaFromSigningProfileAsync(cert.SigningProfileId);
-            return EnforceTenantFence(info);
+            return EnforceSpaceFence(info);
         }
 
         /// <summary>
-        /// Null when the caller's cert.revoke <see cref="TenantFence"/> admits the CA's tenant, else
+        /// Null when the caller's cert.revoke <see cref="SpaceFence"/> admits the CA's space, else
         /// 404. A signing profile with no CA link is system-wide and admits only a system admin.
         /// </summary>
-        private IActionResult? EnforceTenantFence((Guid CaId, Guid? TenantId)? info)
+        private IActionResult? EnforceSpaceFence((Guid CaId, Guid? SpaceId)? info)
         {
-            var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
             if (info == null)
                 return fence.IsSystemAdmin ? null : NotFound();
-            return fence.Allows(info.Value.TenantId) ? null : NotFound();
+            return fence.Allows(info.Value.SpaceId) ? null : NotFound();
         }
 
         /// <summary>
         /// Pre-flight: reports the longest validity a given signing profile / certificate profile
         /// pairing could actually issue for, and which of the three layers — certificate profile,
-        /// tenant, issuing CA — is the one setting it.
+        /// space, issuing CA — is the one setting it.
         /// </summary>
         /// <remarks>
         /// <para>
@@ -136,8 +136,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// profile edit, a reload, and the same 730 days.
         /// </para>
         /// <para>
-        /// Same tenant fence and the same <c>profile.use</c> checks as issuance: the answer reveals
-        /// a tenant's configured ceiling and a CA's expiry, so it must not be readable by someone
+        /// Same space fence and the same <c>profile.use</c> checks as issuance: the answer reveals
+        /// a space's configured ceiling and a CA's expiry, so it must not be readable by someone
         /// who could not have issued under those profiles anyway.
         /// </para>
         /// <para>
@@ -146,7 +146,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// would be a second contract able to drift from the one the browser compiles against.
         /// </para>
         /// </remarks>
-        /// <param name="signingProfileId">The signing profile, which determines the issuing CA and tenant.</param>
+        /// <param name="signingProfileId">The signing profile, which determines the issuing CA and space.</param>
         /// <param name="certProfileId">The certificate profile whose maximum validity is the baseline.</param>
         /// <param name="notBefore">Optional proposed start; defaults to what issuance would use.</param>
         [HttpGet("validity-ceiling")]
@@ -160,7 +160,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            var fence = EnforceTenantFence(await ResolveCaFromSigningProfileAsync(signingProfileId));
+            var fence = EnforceSpaceFence(await ResolveCaFromSigningProfileAsync(signingProfileId));
             if (fence != null)
                 return fence;
 
@@ -177,7 +177,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Issues a certificate from an approved CSR. Enforces tenant access and profile.use
+        /// Issues a certificate from an approved CSR. Enforces space access and profile.use
         /// capability checks before delegating to the issuance service.
         /// </summary>
         [HttpPost("issue")]
@@ -189,8 +189,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            // Enforce tenant access on the target CSR's CA before issuance.
-            var fenceResult = await EnforceTenantFenceForCsrAsync(req.CsrId);
+            // Enforce space access on the target CSR's CA before issuance.
+            var fenceResult = await EnforceSpaceFenceForCsrAsync(req.CsrId);
             if (fenceResult != null)
                 return fenceResult;
 
@@ -207,7 +207,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Select(c => new { c.RequestedNotBefore, c.RequestedNotAfter })
                 .FirstOrDefaultAsync();
 
-            // HonourTenantPolicy: this is the interactive admin path, so a tenant configured to
+            // HonourSpacePolicy: this is the interactive admin path, so a space configured to
             // refuse over-long validity refuses here rather than handing back a certificate quietly
             // shorter than the operator asked for. They can see the ceiling (the pre-flight endpoint
             // below tells them before they submit) and they can act on the refusal — neither of
@@ -216,7 +216,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 req.CsrId,
                 req.NotBefore ?? requested?.RequestedNotBefore,
                 req.NotAfter ?? requested?.RequestedNotAfter,
-                ValidityCeilingEnforcement.HonourTenantPolicy);
+                ValidityCeilingEnforcement.HonourSpacePolicy);
             var cert = result.Pem;
             var certDer = CertificateUtil.ParseFromPem(cert);
             var certName = CertificateUtil.ParseCnFromPem(cert);
@@ -236,7 +236,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 "Certificate", certEntry.SerialNumber,
                 new { CsrId = req.CsrId, SubjectDN = certEntry.SubjectDN },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
-                certificateAuthorityId: caInfo?.CaId, tenantId: caInfo?.TenantId);
+                certificateAuthorityId: caInfo?.CaId, spaceId: caInfo?.SpaceId);
 
             if (accept.Contains("application/x-x509-cert") || accept.Contains("application/pkix-cert") || accept.Contains("application/octet-stream") || accept.Contains(".der") || accept.Contains(".cer"))
             {
@@ -297,9 +297,9 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (req.SigningProfileId == Guid.Empty)
                 return BadRequest(new { error = "Signing profile ID is required." });
 
-            // Enforce tenant access against the chosen signing profile's CA.
+            // Enforce space access against the chosen signing profile's CA.
             var caInfoForFence = await ResolveCaFromSigningProfileAsync(req.SigningProfileId);
-            var fence = EnforceTenantFence(caInfoForFence);
+            var fence = EnforceSpaceFence(caInfoForFence);
             if (fence != null) return fence;
 
             // Enforce profile.use capability on both profiles
@@ -414,10 +414,10 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Resolves the CA ID and tenant ID from a signing profile via the CaProtocolConfig linkage.
+        /// Resolves the CA ID and space ID from a signing profile via the CaProtocolConfig linkage.
         /// Returns null if the signing profile is not linked to a CA.
         /// </summary>
-        private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
+        private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
         {
             if (signingProfileId == null) return null;
             var config = await _dbContext.CaProtocolConfigs
@@ -425,7 +425,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .AsNoTracking()
                 .FirstOrDefaultAsync(pc => pc.SigningProfileId == signingProfileId);
             if (config?.Ca == null) return null;
-            return (config.Ca.Id, config.Ca.TenantId);
+            return (config.Ca.Id, config.Ca.SpaceId);
         }
 
         /// <summary>
@@ -492,8 +492,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            // Tenant fence.
-            var fence = await EnforceTenantFenceForCertAsync(request.CertificateId, null);
+            // Space fence.
+            var fence = await EnforceSpaceFenceForCertAsync(request.CertificateId, null);
             if (fence != null) return fence;
 
             // Enforce profile.use capability on the profiles referenced by the original CSR
@@ -505,7 +505,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Interactive admin reissue: same reasoning as the issue path above — an operator who
-            // can see the tenant ceiling is refused by it rather than handed a shorter certificate.
+            // can see the space ceiling is refused by it rather than handed a shorter certificate.
             var reissueResult = await _certificateIssuanceService.ReissueCertificateAsync(
                 request.CertificateId,
                 null,
@@ -514,7 +514,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotAfter,
                 request.NewSubjectDn,
                 request.NewSans,
-                ValidityCeilingEnforcement.HonourTenantPolicy);
+                ValidityCeilingEnforcement.HonourSpacePolicy);
             var newCertPem = reissueResult.Pem;
 
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
@@ -544,7 +544,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     OverridesApplied = request.NewSubjectDn != null || request.NewSans != null
                 },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
-                certificateAuthorityId: caInfoReissue?.CaId, tenantId: caInfoReissue?.TenantId);
+                certificateAuthorityId: caInfoReissue?.CaId, spaceId: caInfoReissue?.SpaceId);
 
             var accept = Request.Headers.Accept.ToString().ToLowerInvariant();
             if (accept.Contains("application/x-x509-cert") || accept.Contains("application/pkix-cert") || accept.Contains("application/octet-stream") || accept.Contains(".der") || accept.Contains(".cer"))
@@ -575,7 +575,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>
         /// Reissues a certificate identified by serial number. Emits a
         /// <see cref="AuditActionType.CertificateReissued"/> record after the new cert is
-        /// persisted, mirroring <see cref="ReissueCertId"/>. Enforces tenant fence,
+        /// persisted, mirroring <see cref="ReissueCertId"/>. Enforces space fence,
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
         /// </summary>
         [HttpPost("serial/{serial}/reissue")]
@@ -586,8 +586,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            // Tenant fence.
-            var fence = await EnforceTenantFenceForCertAsync(null, request.SerialNumber);
+            // Space fence.
+            var fence = await EnforceSpaceFenceForCertAsync(null, request.SerialNumber);
             if (fence != null) return fence;
 
             // Enforce profile.use capability on the profiles referenced by the original CSR
@@ -607,7 +607,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotAfter,
                 request.NewSubjectDn,
                 request.NewSans,
-                ValidityCeilingEnforcement.HonourTenantPolicy);
+                ValidityCeilingEnforcement.HonourSpacePolicy);
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
@@ -637,7 +637,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     OverridesApplied = request.NewSubjectDn != null || request.NewSans != null
                 },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
-                certificateAuthorityId: caInfoReissueSn?.CaId, tenantId: caInfoReissueSn?.TenantId);
+                certificateAuthorityId: caInfoReissueSn?.CaId, spaceId: caInfoReissueSn?.SpaceId);
 
             var accept = Request.Headers.Accept.ToString().ToLowerInvariant();
             if (accept.Contains("application/x-x509-cert") || accept.Contains("application/pkix-cert") || accept.Contains("application/octet-stream") || accept.Contains(".der") || accept.Contains(".cer"))
@@ -669,7 +669,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>
         /// Reissues a certificate from an existing CSR. Emits a
         /// <see cref="AuditActionType.CertificateReissued"/> record (target type
-        /// <c>CertificateRequest</c>) after the new cert is persisted. Enforces tenant fence,
+        /// <c>CertificateRequest</c>) after the new cert is persisted. Enforces space fence,
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
         /// </summary>
         [HttpPost("csr/{csrId:guid}/reissue")]
@@ -681,8 +681,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            // Tenant fence.
-            var fence = await EnforceTenantFenceForCsrAsync(request.CsrId);
+            // Space fence.
+            var fence = await EnforceSpaceFenceForCsrAsync(request.CsrId);
             if (fence != null) return fence;
 
             // Enforce profile.use capability on the profiles referenced by the CSR
@@ -702,7 +702,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 request.NotAfter,
                 request.NewSubjectDn,
                 request.NewSans,
-                ValidityCeilingEnforcement.HonourTenantPolicy);
+                ValidityCeilingEnforcement.HonourSpacePolicy);
             var newCertPem = reissueResult.Pem;
             var certDer = CertificateUtil.ParseFromPem(newCertPem);
             var certName = CertificateUtil.ParseCnFromPem(newCertPem);
@@ -735,7 +735,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     OverridesApplied = request.NewSubjectDn != null || request.NewSans != null
                 },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
-                certificateAuthorityId: caInfoReissueCsr?.CaId, tenantId: caInfoReissueCsr?.TenantId);
+                certificateAuthorityId: caInfoReissueCsr?.CaId, spaceId: caInfoReissueCsr?.SpaceId);
 
             var accept = Request.Headers.Accept.ToString().ToLowerInvariant();
             if (accept.Contains("application/x-x509-cert") || accept.Contains("application/pkix-cert") || accept.Contains("application/octet-stream") || accept.Contains(".der") || accept.Contains(".cer"))

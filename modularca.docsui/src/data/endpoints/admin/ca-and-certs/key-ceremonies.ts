@@ -4,14 +4,14 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/ceremonies',
-        summary: 'Initiate a key ceremony to create a root or intermediate CA. CA revocation, SSH CA, tenant policy and controlled-user ceremonies are opened by their own endpoints. Requires step-up MFA.',
+        summary: 'Initiate a key ceremony to create a root or intermediate CA. CA revocation, SSH CA, space policy and controlled-user ceremonies are opened by their own endpoints. Requires step-up MFA.',
         auth: 'Authorize (CaAdmin)',
         category: 'Admin Key Ceremonies',
         requestBody: [
             { name: 'operationType', type: 'string', required: true, description: 'Operation type: CreateRootCA or CreateIntermediateCA. Any other value returns 400' },
             { name: 'description', type: 'string', required: false, description: 'Human-readable description of the ceremony\'s purpose (max 1000 chars)' },
             { name: 'targetEntityId', type: 'string', required: false, description: 'Target entity ID (e.g., CA ID for revocation). Empty for new entity creation' },
-            { name: 'parameters', type: 'KeyCeremonyParameters', required: true, description: 'Structured CA creation parameters. Locked at initiation and cannot be modified after. Approvers review these parameters. They name the CA\'s scope: tenantId, or scope "instance" for an instance CA; neither (or both) is refused with 400' },
+            { name: 'parameters', type: 'KeyCeremonyParameters', required: true, description: 'Structured CA creation parameters. Locked at initiation and cannot be modified after. Approvers review these parameters. They name the CA\'s scope: spaceId, or scope "instance" for an instance CA; neither (or both) is refused with 400' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -23,7 +23,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/ceremonies',
-        summary: 'List key ceremonies scoped by tenant. System admins see all; tenant-level CA admins see only their tenant ceremonies.',
+        summary: 'List key ceremonies scoped by space. System admins see all; space-level CA admins see only their space ceremonies.',
         auth: 'Authorize (per-ceremony access check)',
         category: 'Admin Key Ceremonies',
         queryParams: [
@@ -33,7 +33,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Array of key ceremony records with ID, operationType, description, targetEntityId, initiatedBy, approvals, status, timestamps, canApprove for the caller, and approvalRefusal: why the caller may not approve a pending controlled-user ceremony, or null.',
-        notes: 'Automatically expires stale ceremonies before listing. CA-scoped admins (without tenant-wide CaManage) cannot see ceremonies.',
+        notes: 'Automatically expires stale ceremonies before listing. CA-scoped admins (without space-wide CaManage) cannot see ceremonies.',
     },
     {
         method: 'GET',
@@ -45,7 +45,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Full ceremony detail including parametersJson, approvalsJson, canApprove and approvalRefusal.',
-        notes: 'Returns 403 if the caller does not have access to the ceremony\'s tenant.',
+        notes: 'Returns 403 if the caller does not have access to the ceremony\'s space.',
     },
     {
         method: 'POST',

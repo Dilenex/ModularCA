@@ -88,8 +88,9 @@ export type AuditFailMode = (typeof AuditFailMode)[keyof typeof AuditFailMode];
 /** From `ModularCA.Shared/Enums/CeremonyType.cs`. */
 export const CeremonyType = {
     CaCreation: 'CaCreation',
-    TenantPolicyChange: 'TenantPolicyChange',
+    SpacePolicyChange: 'SpacePolicyChange',
     ControlledUserChange: 'ControlledUserChange',
+    InstancePolicyChange: 'InstancePolicyChange',
 } as const;
 export type CeremonyType = (typeof CeremonyType)[keyof typeof CeremonyType];
 
@@ -171,14 +172,14 @@ export type ValidityCeilingBehavior = (typeof ValidityCeilingBehavior)[keyof typ
 /** From `ModularCA.Shared/Enums/ValidityCeilingEnforcement.cs`. */
 export const ValidityCeilingEnforcement = {
     AlwaysShorten: 'AlwaysShorten',
-    HonourTenantPolicy: 'HonourTenantPolicy',
+    HonourSpacePolicy: 'HonourSpacePolicy',
 } as const;
 export type ValidityCeilingEnforcement = (typeof ValidityCeilingEnforcement)[keyof typeof ValidityCeilingEnforcement];
 
 /** From `ModularCA.Shared/Models/Issuance/ValidityCeilingResolution.cs`. */
 export const ValidityCeilingSource = {
     CertProfile: 'CertProfile',
-    Tenant: 'Tenant',
+    Space: 'Space',
     IssuingCa: 'IssuingCa',
 } as const;
 export type ValidityCeilingSource = (typeof ValidityCeilingSource)[keyof typeof ValidityCeilingSource];

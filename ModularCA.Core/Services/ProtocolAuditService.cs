@@ -28,7 +28,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogEstAsync(string operation, string? subjectDN, string? certSerial,
         string? keyAlgorithm, string? keySize, string? caLabel, string? sourceIp,
         bool success = true, string? errorMessage = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        Guid? certificateAuthorityId = null, Guid? spaceId = null,
         string? callerPrincipal = null)
     {
         if (!ShouldLog()) return;
@@ -46,7 +46,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                TenantId = spaceId,
                 CallerPrincipal = Truncate(callerPrincipal, 255)
             });
             await _auditDb.SaveChangesAsync();
@@ -58,7 +58,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
         string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
         string? sourceIp, bool success = true, string? errorMessage = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        Guid? certificateAuthorityId = null, Guid? spaceId = null,
         string? callerPrincipal = null, string? realm = null, string? authMethod = null)
     {
         if (!ShouldLog()) return;
@@ -77,7 +77,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Success = success,
                 ErrorMessage = Truncate(errorMessage, 500),
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                TenantId = spaceId,
                 CallerPrincipal = Truncate(callerPrincipal, 255),
                 Realm = Truncate(realm, 255),
                 AuthMethod = Truncate(authMethod, 32),
@@ -93,7 +93,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogScepAsync(string operation, string? subjectDN, string? certSerial,
         string? keyAlgorithm, string? keySize, string? caLabel, string? transactionId,
         string? sourceIp, bool success = true, string? errorMessage = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        Guid? certificateAuthorityId = null, Guid? spaceId = null,
         string? callerPrincipal = null)
     {
         if (!ShouldLog()) return;
@@ -112,7 +112,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                TenantId = spaceId,
                 CallerPrincipal = Truncate(callerPrincipal, 255)
             });
             await _auditDb.SaveChangesAsync();
@@ -126,7 +126,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogCmpAsync(string messageType, string? subjectDN, string? certSerial,
         string? keyAlgorithm, string? keySize, string? caLabel, string? transactionId,
         string? revocationReason, string? sourceIp, bool success = true, string? errorMessage = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        Guid? certificateAuthorityId = null, Guid? spaceId = null,
         string? callerPrincipal = null)
     {
         if (!ShouldLog()) return;
@@ -146,7 +146,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                TenantId = spaceId,
                 CallerPrincipal = Truncate(callerPrincipal, 255)
             });
             await _auditDb.SaveChangesAsync();
@@ -169,7 +169,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogAcmeAsync(string operation, Guid? accountId, Guid? orderId,
         string? subjectDN, string? certSerial, string? identifiers, string? revocationReason,
         string? sourceIp, bool success = true, string? errorMessage = null,
-        string? caLabel = null, Guid? certificateAuthorityId = null, Guid? tenantId = null,
+        string? caLabel = null, Guid? certificateAuthorityId = null, Guid? spaceId = null,
         Guid? signingProfileId = null, Guid? certProfileId = null)
     {
         if (!ShouldLog()) return;
@@ -189,7 +189,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                TenantId = spaceId,
                 SigningProfileId = signingProfileId,
                 CertProfileId = certProfileId
             });
@@ -205,7 +205,7 @@ public class ProtocolAuditService : IProtocolAuditService
     public async Task LogNetworkRequestAsync(string sourceIp, string requestPath, string httpMethod,
         int statusCode, long? responseTimeMs, string? protocol, string? caLabel,
         bool blocked, string? reason, string? userAgent,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null)
+        Guid? certificateAuthorityId = null, Guid? spaceId = null)
     {
         if (!ShouldLog()) return;
         try
@@ -223,7 +223,7 @@ public class ProtocolAuditService : IProtocolAuditService
                 Reason = reason ?? string.Empty,
                 UserAgent = userAgent,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId
+                TenantId = spaceId
             });
             await _auditDb.SaveChangesAsync();
         }

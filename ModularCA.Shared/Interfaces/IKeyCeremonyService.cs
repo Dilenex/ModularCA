@@ -16,7 +16,10 @@ public interface IKeyCeremonyService
     /// <param name="targetEntityId">The ID of the target entity (e.g., CA ID).</param>
     /// <param name="initiatorUserId">The user ID of the initiator.</param>
     /// <param name="initiatorUsername">The username of the initiator.</param>
-    /// <param name="parametersJson">Serialized JSON of the operation parameters.</param>
+    /// <param name="parametersJson">
+    /// Serialized JSON of the operation parameters. Its top-level <c>SpaceId</c> stamps the
+    /// ceremony's space; a pre-0.4.0 <c>TenantId</c> key throws <see cref="System.Text.Json.JsonException"/>.
+    /// </param>
     /// <param name="quorumOverride">Optional explicit quorum. If null, resolved from the CA admin group.</param>
     /// <returns>The created ceremony entity.</returns>
     Task<KeyCeremonyEntity> InitiateAsync(
@@ -71,10 +74,10 @@ public interface IKeyCeremonyService
     Task<List<KeyCeremonyEntity>> ListAsync(string? statusFilter = null);
 
     /// <summary>
-    /// Lists ceremonies filtered to specific tenant IDs, plus the instance's (no tenant) when
+    /// Lists ceremonies filtered to specific space IDs, plus the instance's (no space) when
     /// <paramref name="includeInstance"/>, optionally filtered by status.
     /// </summary>
-    Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null, bool includeInstance = false);
+    Task<List<KeyCeremonyEntity>> ListBySpacesAsync(IEnumerable<Guid> spaceIds, string? statusFilter = null, bool includeInstance = false);
 
     /// <summary>
     /// Expires all pending ceremonies whose ExpiresAt has passed.

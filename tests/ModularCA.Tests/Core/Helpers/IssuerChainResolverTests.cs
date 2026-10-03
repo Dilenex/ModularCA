@@ -42,9 +42,9 @@ public sealed class IssuerChainResolverTests
         var intermediate = Cert("Int", isCa: true, issuerCertId: root.CertificateId, issuerCn: "Root");
         var profile = new SigningProfileEntity { Name = "p", IssuerId = intermediate.CertificateId };
         var leaf = Cert("Leaf", isCa: false, issuerCertId: intermediate.CertificateId, signingProfileId: profile.Id, issuerCn: "Int");
-        var tenant = Guid.NewGuid();
-        var rootCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Root", Label = "root", TenantId = tenant, CertificateId = root.CertificateId };
-        var intCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Int", Label = "int", TenantId = tenant, CertificateId = intermediate.CertificateId, ParentCaId = rootCa.Id };
+        var space = Guid.NewGuid();
+        var rootCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Root", Label = "root", SpaceId = space, CertificateId = root.CertificateId };
+        var intCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Int", Label = "int", SpaceId = space, CertificateId = intermediate.CertificateId, ParentCaId = rootCa.Id };
         db.Certificates.AddRange(root, intermediate, leaf);
         db.SigningProfiles.Add(profile);
         db.CertificateAuthorities.AddRange(rootCa, intCa);
@@ -121,9 +121,9 @@ public sealed class IssuerChainResolverTests
         var policy = Cert("Policy", isCa: true, issuerCn: "Offline Root");
         var issuing = Cert("Issuing", isCa: true, issuerCertId: policy.CertificateId, issuerCn: "Policy");
         var leaf = Cert("Leaf", isCa: false, issuerCertId: issuing.CertificateId, issuerCn: "Issuing");
-        var tenant = Guid.NewGuid();
-        var policyCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Policy", Label = "policy", TenantId = tenant, CertificateId = policy.CertificateId };
-        var issuingCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Issuing", Label = "issuing", TenantId = tenant, CertificateId = issuing.CertificateId, ParentCaId = policyCa.Id };
+        var space = Guid.NewGuid();
+        var policyCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Policy", Label = "policy", SpaceId = space, CertificateId = policy.CertificateId };
+        var issuingCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Issuing", Label = "issuing", SpaceId = space, CertificateId = issuing.CertificateId, ParentCaId = policyCa.Id };
         db.Certificates.AddRange(policy, issuing, leaf);
         db.CertificateAuthorities.AddRange(policyCa, issuingCa);
         db.SaveChanges();
@@ -191,7 +191,7 @@ public sealed class IssuerChainResolverTests
         var resolved = await IssuerChainResolver.ResolveAsync(db, h.Leaf, includeChain: true);
 
         Assert.Equal(h.IntCa.Id, resolved.CaId);
-        Assert.Equal(h.IntCa.TenantId, resolved.TenantId);
+        Assert.Equal(h.IntCa.SpaceId, resolved.SpaceId);
         using var x509 = X509CertificateLoader.LoadCertificate(Assert.Single(resolved.Chain));
         Assert.Equal(h.Int.Pem, x509.ExportCertificatePem());
     }
@@ -212,10 +212,10 @@ public sealed class IssuerChainResolverTests
     }
 
     [Fact]
-    public async Task A_key_match_outranks_a_same_named_ca_in_another_tenant()
+    public async Task A_key_match_outranks_a_same_named_ca_in_another_space()
     {
         // The renewed intermediate kept its key but moved under a new root, so its issuer DN no
-        // longer matches the superseded one; a same-named CA in another tenant has the old issuer
+        // longer matches the superseded one; a same-named CA in another space has the old issuer
         // DN. Ranking the DN above the key attributed the superseded certificate to the stranger.
         using var db = InMemoryDbContextFactory.Create();
         var h = Seed(db);
@@ -230,7 +230,7 @@ public sealed class IssuerChainResolverTests
         db.Certificates.Add(stranger);
         db.CertificateAuthorities.Add(new CertificateAuthorityEntity
         {
-            Id = Guid.NewGuid(), Name = "Int", Label = "int-elsewhere", TenantId = Guid.NewGuid(), CertificateId = stranger.CertificateId,
+            Id = Guid.NewGuid(), Name = "Int", Label = "int-elsewhere", SpaceId = Guid.NewGuid(), CertificateId = stranger.CertificateId,
         });
         db.SaveChanges();
 
@@ -241,18 +241,18 @@ public sealed class IssuerChainResolverTests
     }
 
     [Fact]
-    public void A_dn_only_match_is_restricted_to_the_superseded_certificates_tenant()
+    public void A_dn_only_match_is_restricted_to_the_superseded_certificates_space()
     {
         using var db = InMemoryDbContextFactory.Create();
         var h = Seed(db);
         Supersede(db, h);
-        h.RootCa.TenantId = Guid.NewGuid();
-        h.IntCa.TenantId = h.RootCa.TenantId;
+        h.RootCa.SpaceId = Guid.NewGuid();
+        h.IntCa.SpaceId = h.RootCa.SpaceId;
         var stranger = Cert("Int", isCa: true, issuerCn: "Root");
         db.Certificates.Add(stranger);
         db.CertificateAuthorities.Add(new CertificateAuthorityEntity
         {
-            Id = Guid.NewGuid(), Name = "Int", Label = "int-elsewhere", TenantId = Guid.NewGuid(), CertificateId = stranger.CertificateId,
+            Id = Guid.NewGuid(), Name = "Int", Label = "int-elsewhere", SpaceId = Guid.NewGuid(), CertificateId = stranger.CertificateId,
         });
         db.SaveChanges();
 
@@ -264,7 +264,7 @@ public sealed class IssuerChainResolverTests
     }
 
     [Fact]
-    public async Task A_hop_takes_its_ca_tenant_and_parent_from_one_ca_row()
+    public async Task A_hop_takes_its_ca_space_and_parent_from_one_ca_row()
     {
         using var db = InMemoryDbContextFactory.Create();
         var h = Seed(db);
@@ -274,7 +274,7 @@ public sealed class IssuerChainResolverTests
         var resolved = await IssuerChainResolver.ResolveAsync(db, h.Leaf, includeChain: true);
 
         Assert.Equal(h.IntCa.Id, resolved.CaId);
-        Assert.Equal(h.IntCa.TenantId, resolved.TenantId);
+        Assert.Equal(h.IntCa.SpaceId, resolved.SpaceId);
         Assert.Equal([h.Root.CertificateId], Ids(await IssuerChainResolver.ResolveIssuerCertificatesAsync(db, h.Int)));
     }
 
@@ -287,7 +287,7 @@ public sealed class IssuerChainResolverTests
         var chain = await IssuerChainResolver.ResolveAsync(db, h.Leaf, includeChain: true);
 
         Assert.Equal(h.IntCa.Id, chain.CaId);
-        Assert.Equal(h.IntCa.TenantId, chain.TenantId);
+        Assert.Equal(h.IntCa.SpaceId, chain.SpaceId);
         var der = Assert.Single(chain.Chain);
         using var x509 = X509CertificateLoader.LoadCertificate(der);
         Assert.Equal(h.Int.SubjectDN, x509.Subject);

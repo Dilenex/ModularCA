@@ -46,14 +46,14 @@ public sealed record ControlledSourceFilter(
 /// what a user can actually do, from every grant source the authorization resolver honours: direct
 /// group grants, roles on groups, direct user grants and roles on the user. It mirrors
 /// <c>CaGroupAuthorizationService</c>'s scoping (a group's scope comes from the group, a user grant's
-/// from its own tenant/CA) but ignores worn badges, because a tier describes what the account holds.
+/// from its own space/CA) but ignores worn badges, because a tier describes what the account holds.
 /// <list type="bullet">
 /// <item>system-super: membership of an <see cref="CaGroupEntity.IsSystemTierSuper"/> group.</item>
 /// <item>system-admin: <c>system.manage</c> at system scope.</item>
-/// <item>org-admin(T): <c>system.manage</c> tenant-wide in T.</item>
+/// <item>space-admin(T): <c>system.manage</c> space-wide in T.</item>
 /// <item>ca-admin(X): <c>system.manage</c> on CA X.</item>
-/// <item>org-operator(T): <c>ca.manage</c> tenant-wide in T, which makes the holder a key-ceremony
-/// approver for the tenant.</item>
+/// <item>space-operator(T): <c>ca.manage</c> space-wide in T, which makes the holder a key-ceremony
+/// approver for the space.</item>
 /// <item>system-operator: <c>ca.manage</c> at instance scope, which makes the holder a key-ceremony
 /// approver for every space and the instance.</item>
 /// </list>
@@ -70,36 +70,36 @@ public static class ControlledTierResolver
 
     /// <summary>
     /// The tier that <paramref name="capability"/> confers at a scope: system when both
-    /// <paramref name="tenantId"/> and <paramref name="caId"/> are null, a CA when
-    /// <paramref name="caId"/> is set (which wins over the tenant), otherwise tenant-wide.
-    /// <paramref name="caTenantId"/> is stamped on CA tiers so an org admin can dominate them.
+    /// <paramref name="spaceId"/> and <paramref name="caId"/> are null, a CA when
+    /// <paramref name="caId"/> is set (which wins over the space), otherwise space-wide.
+    /// <paramref name="caSpaceId"/> is stamped on CA tiers so a space admin can dominate them.
     /// <c>ca.manage</c> on one CA confers none.
     /// </summary>
-    public static ControlledTier? TierFor(string capability, Guid? tenantId, Guid? caId, Guid? caTenantId)
+    public static ControlledTier? TierFor(string capability, Guid? spaceId, Guid? caId, Guid? caSpaceId)
     {
         if (string.Equals(capability, Capabilities.SystemManage, StringComparison.OrdinalIgnoreCase))
         {
-            if (caId != null) return new ControlledTier(ControlledTierLevel.CaAdmin, caId) { TenantId = caTenantId };
-            if (tenantId != null) return new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = tenantId };
+            if (caId != null) return new ControlledTier(ControlledTierLevel.CaAdmin, caId) { SpaceId = caSpaceId };
+            if (spaceId != null) return new ControlledTier(ControlledTierLevel.SpaceAdmin, null) { SpaceId = spaceId };
             return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
         }
         if (string.Equals(capability, Capabilities.CaManage, StringComparison.OrdinalIgnoreCase) && caId == null)
-            return tenantId != null
-                ? new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = tenantId }
+            return spaceId != null
+                ? new ControlledTier(ControlledTierLevel.SpaceOperator, null) { SpaceId = spaceId }
                 : new ControlledTier(ControlledTierLevel.SystemOperator, null);
         return null;
     }
 
     /// <summary>
     /// The tier a capability held through a group confers; the group's own scope applies. Only
-    /// a system group confers a system tier: a non-system group with neither tenant nor CA
-    /// confers none, so a null tenant can never widen a group into system scope.
+    /// a system group confers a system tier: a non-system group with neither space nor CA
+    /// confers none, so a null space can never widen a group into system scope.
     /// </summary>
-    public static ControlledTier? TierForGroupCapability(string capability, bool isSystemGroup, Guid? groupTenantId, Guid? groupCaId)
+    public static ControlledTier? TierForGroupCapability(string capability, bool isSystemGroup, Guid? groupSpaceId, Guid? groupCaId)
     {
         if (isSystemGroup) return TierFor(capability, null, null, null);
-        if (groupCaId == null && groupTenantId == null) return null;
-        return TierFor(capability, groupTenantId, groupCaId, groupTenantId);
+        if (groupCaId == null && groupSpaceId == null) return null;
+        return TierFor(capability, groupSpaceId, groupCaId, groupSpaceId);
     }
 
     /// <summary>
@@ -126,7 +126,7 @@ public static class ControlledTierResolver
             .ToListAsync();
 
         var tiers = granted.Concat(viaRoles)
-            .Select(c => TierForGroupCapability(c, group.IsSystemGroup, group.TenantId, group.CertificateAuthorityId))
+            .Select(c => TierForGroupCapability(c, group.IsSystemGroup, group.SpaceId, group.CertificateAuthorityId))
             .Append(ControlledGroupClassifier.Classify(group));
         return ControlledTier.Covering(tiers);
     }
@@ -175,7 +175,7 @@ public static class ControlledTierResolver
 
         var assignments = (await db.RoleAssignments.AsNoTracking()
                 .Where(ra => roleIds.Contains(ra.RoleId) && (ra.GroupId != null || userId == null || ra.UserId == userId))
-                .Select(ra => new { ra.Id, ra.RoleId, ra.GroupId, ra.UserId, ra.TenantId, ra.CertificateAuthorityId })
+                .Select(ra => new { ra.Id, ra.RoleId, ra.GroupId, ra.UserId, ra.SpaceId, ra.CertificateAuthorityId })
                 .ToListAsync())
             .Where(ra => ra.Id != ignoreAssignment
                 && (only == null || ra.GroupId != null || only.RoleAssignmentIds.Contains(ra.Id)))
@@ -200,7 +200,7 @@ public static class ControlledTierResolver
         var capGroupIds = groupCaps.Keys.ToList();
         var groups = await db.CaGroups.AsNoTracking()
             .Where(g => (capGroupIds.Contains(g.Id) || g.IsSystemTierSuper) && (ignoreGroup == null || g.Id != ignoreGroup))
-            .Select(g => new { g.Id, g.IsSystemGroup, g.IsSystemTierSuper, g.TenantId, g.CertificateAuthorityId })
+            .Select(g => new { g.Id, g.IsSystemGroup, g.IsSystemTierSuper, g.SpaceId, g.CertificateAuthorityId })
             .ToListAsync();
 
         var tiersByGroup = new Dictionary<Guid, List<ControlledTier>>();
@@ -210,7 +210,7 @@ public static class ControlledTierResolver
             if (g.IsSystemTierSuper) tiers.Add(new ControlledTier(ControlledTierLevel.SystemSuper, null));
             if (groupCaps.TryGetValue(g.Id, out var gc))
                 foreach (var cap in gc)
-                    if (TierForGroupCapability(cap, g.IsSystemGroup, g.TenantId, g.CertificateAuthorityId) is { } t)
+                    if (TierForGroupCapability(cap, g.IsSystemGroup, g.SpaceId, g.CertificateAuthorityId) is { } t)
                         tiers.Add(t);
             if (tiers.Count > 0) tiersByGroup[g.Id] = tiers;
         }
@@ -230,7 +230,7 @@ public static class ControlledTierResolver
         // User-sourced capabilities.
         var userGrants = await db.UserCapabilityGrants.AsNoTracking()
             .Where(ug => ug.ResourceType == null && caps.Contains(ug.Capability) && (userId == null || ug.UserId == userId))
-            .Select(ug => new { ug.Id, ug.UserId, ug.Capability, ug.TenantId, ug.CertificateAuthorityId })
+            .Select(ug => new { ug.Id, ug.UserId, ug.Capability, ug.SpaceId, ug.CertificateAuthorityId })
             .ToListAsync();
         if (only != null) userGrants.RemoveAll(ug => !only.CapabilityGrantIds.Contains(ug.Id));
         var userAssignments = assignments.Where(a => a.GroupId == null && a.UserId != null).ToList();
@@ -238,19 +238,19 @@ public static class ControlledTierResolver
         var caIds = userGrants.Select(g => g.CertificateAuthorityId)
             .Concat(userAssignments.Select(a => a.CertificateAuthorityId))
             .Where(id => id != null).Select(id => id!.Value).Distinct().ToList();
-        var caTenants = caIds.Count == 0
+        var caSpaces = caIds.Count == 0
             ? new Dictionary<Guid, Guid?>()
             : await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
                 .Where(c => caIds.Contains(c.Id))
-                .ToDictionaryAsync(c => c.Id, c => c.TenantId);
-        Guid? CaTenant(Guid? caId) => caId is Guid id && caTenants.TryGetValue(id, out var t) ? t : null;
+                .ToDictionaryAsync(c => c.Id, c => c.SpaceId);
+        Guid? CaSpace(Guid? caId) => caId is Guid id && caSpaces.TryGetValue(id, out var t) ? t : null;
 
         foreach (var ug in userGrants)
-            if (TierFor(ug.Capability, ug.TenantId, ug.CertificateAuthorityId, CaTenant(ug.CertificateAuthorityId)) is { } t)
+            if (TierFor(ug.Capability, ug.SpaceId, ug.CertificateAuthorityId, CaSpace(ug.CertificateAuthorityId)) is { } t)
                 holdings.Add(new ControlledHolding(ug.UserId, t));
         foreach (var ra in userAssignments)
             foreach (var cap in capsByRole[ra.RoleId])
-                if (TierFor(cap, ra.TenantId, ra.CertificateAuthorityId, CaTenant(ra.CertificateAuthorityId)) is { } t)
+                if (TierFor(cap, ra.SpaceId, ra.CertificateAuthorityId, CaSpace(ra.CertificateAuthorityId)) is { } t)
                     holdings.Add(new ControlledHolding(ra.UserId!.Value, t));
 
         if (userId != null) return holdings.ToList();

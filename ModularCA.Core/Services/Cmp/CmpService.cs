@@ -524,7 +524,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         {
                             secret = await _signer.UnwrapSecretAsync(
                                 Convert.FromBase64String(tokenEntity.CmpSecretWrapped),
-                                new SigningContext(SignerCaller, SigningPurpose.Cmp, tokenEntity.TenantId, caId));
+                                new SigningContext(SignerCaller, SigningPurpose.Cmp, tokenEntity.SpaceId, caId));
                         }
                         catch (SigningRefusedException ex)
                         {
@@ -677,7 +677,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         // REQUEST ADDRESSES, not merely by some CA in the deployment.
         //
         // This used to search every CA row whose subject matched the signer's issuer DN and accept
-        // a signature that verified against any of them. A certificate issued by a lab or tenant CA
+        // a signature that verified against any of them. A certificate issued by a lab or space CA
         // therefore authenticated CMP requests to the production CA: the caller picked the target
         // by URL, and nothing tied the credential to it. Combined with revocation being authorized
         // for anything the addressed CA had issued, that was a cross-CA revocation primitive.
@@ -1453,7 +1453,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             EnrollmentAuditEvent.Issued => _protocolAudit.LogCmpAsync(
                 IssueOperation, record.Subject, record.SerialNumber,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
 
             // A request an approver owns is one this client can never collect, so it is recorded as
@@ -1462,14 +1462,14 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 RejectOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: ApprovalUnsupported,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
 
             _ => _protocolAudit.LogCmpAsync(
                 RejectOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused.",
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
         };
 
@@ -1967,7 +1967,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
-                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.TenantId);
+                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.SpaceId);
                 var held = await _signer.ListKeysAsync(caContext);
 
                 if (context.Ca.CmpSigningCertificateId != null)
@@ -2014,7 +2014,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
             var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
             if (info != null)
-                return (signer.PublicCertificate, new CmpSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, info.CaId!.Value, info.TenantId)), null);
+                return (signer.PublicCertificate, new CmpSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, info.CaId!.Value, info.SpaceId)), null);
         }
         return null;
     }

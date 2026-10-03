@@ -9,7 +9,7 @@ import React from 'react';
  *
  *  - *"all users interacting with it remotely"* — so this has to appear on the unauthenticated
  *    surface too, not only behind a login. publicui is the load-bearing placement; the others
- *    matter because operators and tenant staff are remote users as well.
+ *    matter because operators and space administrators are remote users as well.
  *  - *"the Corresponding Source"* — of the running build, not of whatever `main` happens to be.
  *    So the notice names the version and commit, taken from the build-time constants each SPA
  *    already carries, rather than linking to a moving branch.

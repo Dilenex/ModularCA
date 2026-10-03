@@ -62,7 +62,7 @@ public class CaCreationService(
     /// </summary>
     private async Task<bool> SignerHoldsKeyAsync(CertificateAuthorityEntity ca, Guid certificateId)
     {
-        var keys = await signer.ListKeysAsync(SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, ca.Id, ca.TenantId));
+        var keys = await signer.ListKeysAsync(SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, ca.Id, ca.SpaceId));
         return keys.Any(k => k.Key.CertificateId == certificateId);
     }
 
@@ -171,7 +171,7 @@ public class CaCreationService(
     /// NameConstraints extension AND copied onto the per-CA signing profile so the same
     /// constraints flow through to every leaf the CA later issues.
     /// <paramref name="ceremonyId"/> is the approved key ceremony this creation executes, when
-    /// the tenant required one; the signer verifies it before it generates or commits a key.
+    /// the space required one; the signer verifies it before it generates or commits a key.
     /// An invalid or reserved label, or a label or name another CA of the instance has
     /// (soft-deleted CAs included), is refused before any key is generated.
     /// </summary>
@@ -179,7 +179,7 @@ public class CaCreationService(
         string subjectCN, string? subjectO, string? subjectOU,
         string? subjectL, string? subjectST, string? subjectC,
         string keyAlgorithm, int keySize, int validityYears, string? label,
-        Guid? tenantId,
+        Guid? spaceId,
         string? publicBaseUrl = null,
         string? nameConstraintsPermittedJson = null,
         string? nameConstraintsExcludedJson = null,
@@ -191,7 +191,7 @@ public class CaCreationService(
         // it signs only under it until it is committed to the certificate row, and is retired
         // if anything fails before then. The ceremony's id rides the context so the signer can
         // verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, tenantId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
         X509Certificate newCaCert;
@@ -210,7 +210,7 @@ public class CaCreationService(
 
         return await PersistAndRegisterAsync(
             certEntity, newCaCert, generated.Key, ceremony, subjectCN, label,
-            tenantId: tenantId,
+            spaceId: spaceId,
             caType: "Root", parentCaId: null,
             parentCertificateId: null,
             publicBaseUrl: publicBaseUrl,
@@ -306,7 +306,7 @@ public class CaCreationService(
     /// <paramref name="nameConstraintsExcludedJson"/> are baked into the cert's NameConstraints
     /// extension AND copied onto the per-CA signing profile so downstream issuance honours
     /// the same constraints. <paramref name="ceremonyId"/> is the approved key ceremony this
-    /// creation executes, when the tenant required one; the signer verifies it before it
+    /// creation executes, when the space required one; the signer verifies it before it
     /// generates or commits a key. A parent that is disabled, deleted, revoked or outside its
     /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated,
     /// as is an invalid or reserved label, or a label or name another CA of the instance has. A
@@ -318,7 +318,7 @@ public class CaCreationService(
         string subjectCN, string? subjectO, string? subjectOU,
         string? subjectL, string? subjectST, string? subjectC,
         string keyAlgorithm, int keySize, int validityYears, string? label,
-        Guid? tenantId,
+        Guid? spaceId,
         string? publicBaseUrl = null,
         Guid? certProfileId = null,
         string? nameConstraintsPermittedJson = null,
@@ -344,7 +344,7 @@ public class CaCreationService(
         CertProfileEntity caCertProfile;
         if (certProfileId.HasValue)
         {
-            await EnsureCaCertProfileAdmittedAsync(certProfileId, parentCa.Id, tenantId);
+            await EnsureCaCertProfileAdmittedAsync(certProfileId, parentCa.Id, spaceId);
             caCertProfile = await db.CertProfiles.FirstAsync(cp => cp.Id == certProfileId.Value);
         }
         else
@@ -382,7 +382,7 @@ public class CaCreationService(
         // ceremony context; it signs the CSR under it, and is retired if anything fails before
         // it is committed to the issued certificate. The ceremony's id rides the context so the
         // signer can verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, tenantId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
 
@@ -449,7 +449,7 @@ public class CaCreationService(
 
         return await PersistAndRegisterAsync(
             certEntity, newCaCert, generated.Key, ceremony, subjectCN, label,
-            tenantId: tenantId,
+            spaceId: spaceId,
             caType: "Intermediate", parentCaId: parentCa.Id,
             parentCertificateId: parentCert.CertificateId,
             publicBaseUrl: publicBaseUrl,
@@ -476,7 +476,7 @@ public class CaCreationService(
     /// insert for self-signed roots). The keys are committed to the signer after DB commit:
     /// <paramref name="caKey"/> is the pending key the signer generated under
     /// <paramref name="ceremony"/>, and the infrastructure keys are generated the same way here.
-    /// A null <paramref name="tenantId"/> creates an instance CA, whose groups are prefixed
+    /// A null <paramref name="spaceId"/> creates an instance CA, whose groups are prefixed
     /// <c>system_</c>, as bootstrap names the system signing CA's.
     /// </summary>
     private async Task<CertificateAuthorityEntity> PersistAndRegisterAsync(
@@ -486,7 +486,7 @@ public class CaCreationService(
         SigningContext ceremony,
         string name,
         string? label,
-        Guid? tenantId,
+        Guid? spaceId,
         string caType,
         Guid? parentCaId,
         Guid? parentCertificateId,
@@ -494,15 +494,15 @@ public class CaCreationService(
         string? nameConstraintsPermittedJson = null,
         string? nameConstraintsExcludedJson = null)
     {
-        // Validate the tenant exists and is enabled; the instance always is.
-        string tenantSlug = "system";
-        if (tenantId is Guid tid)
+        // Validate the space exists and is enabled; the instance always is.
+        string spaceSlug = "system";
+        if (spaceId is Guid tid)
         {
-            var tenant = await db.Tenants.FindAsync(tid);
-            if (tenant == null || !tenant.IsEnabled)
+            var space = await db.Spaces.FindAsync(tid);
+            if (space == null || !space.IsEnabled)
                 throw new ResourceNotFoundException(
-                    "Tenant", $"Tenant '{tid}' not found or is disabled.", tid.ToString());
-            tenantSlug = tenant.Slug;
+                    "Space", $"Space '{tid}' not found or is disabled.", tid.ToString());
+            spaceSlug = space.Slug;
         }
 
         // Validate the label against a strict char set BEFORE any DB work so we
@@ -592,8 +592,8 @@ public class CaCreationService(
             // its space's profiles bound to no CA.
             var eligibleCertProfiles = await db.CertProfiles
                 .Where(cp => !cp.IsCaProfile
-                    && ((cp.TenantId == null && cp.CertificateAuthorityId == null)
-                        || (tenantId != null && cp.TenantId == tenantId && cp.CertificateAuthorityId == null)))
+                    && ((cp.SpaceId == null && cp.CertificateAuthorityId == null)
+                        || (spaceId != null && cp.SpaceId == spaceId && cp.CertificateAuthorityId == null)))
                 .ToListAsync();
             foreach (var cp in eligibleCertProfiles)
             {
@@ -615,7 +615,7 @@ public class CaCreationService(
                 IsDefault = false,
                 IsEnabled = true,
                 ParentCaId = parentCaId,
-                TenantId = tenantId,
+                SpaceId = spaceId,
             };
             db.CertificateAuthorities.Add(caEntity);
             await db.SaveChangesAsync();
@@ -629,15 +629,15 @@ public class CaCreationService(
                 ("user", "Requester")
             };
 
-            // Namespace group names with the tenant slug so two tenants can
+            // Namespace group names with the space slug so two spaces can
             // have CAs with the same label without colliding on the CaGroups.Name index.
             var groupsCreated = 0;
             foreach (var (suffix, templateName) in templates)
             {
-                // `{tenantSlug}_{caLabel}_{role}` — underscore separators
+                // `{spaceSlug}_{caLabel}_{role}` — underscore separators
                 // between the three segments remove the hyphen-boundary ambiguity in names
                 // like `modularca_modularca-root-cert-1_admin`.
-                var groupName = $"{tenantSlug}_{caLabel}_{suffix}";
+                var groupName = $"{spaceSlug}_{caLabel}_{suffix}";
                 // Collisions here are NOT a silent skip anymore — they indicate
                 // leftover groups or a reserved-name clash and must abort the creation so
                 // the transaction rolls back rather than leaving a CA with fewer auth groups
@@ -658,7 +658,7 @@ public class CaCreationService(
                     IsSystemGroup = false,
                     IsAutoGenerated = true,
                     RequiredQuorum = 1,
-                    TenantId = tenantId,
+                    SpaceId = spaceId,
                     CreatedAt = DateTime.UtcNow
                 };
                 db.CaGroups.Add(group);
@@ -697,7 +697,7 @@ public class CaCreationService(
                 "OCSP Responder Certificate Profile", "OCSP Responder", logger);
 
             // Seed default protocol configs using the per-CA signing profile
-            var defaultCertProfile = await DefaultLeafProfileAsync(db, caEntity.Id, tenantId);
+            var defaultCertProfile = await DefaultLeafProfileAsync(db, caEntity.Id, spaceId);
             if (defaultCertProfile != null)
             {
                 foreach (var protocol in new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" })
@@ -769,7 +769,7 @@ public class CaCreationService(
                             IncludesOcspKey = true,
                         },
                         certificateAuthorityId: caEntity.Id,
-                        tenantId: caEntity.TenantId);
+                        spaceId: caEntity.SpaceId);
 
                     await audit.LogAsync(
                         AuditActionType.KeystoreKeyAdded,
@@ -786,7 +786,7 @@ public class CaCreationService(
                             EntryCount = 3,
                         },
                         certificateAuthorityId: caEntity.Id,
-                        tenantId: caEntity.TenantId);
+                        spaceId: caEntity.SpaceId);
                 }
                 catch (Exception auditEx)
                 {
@@ -977,10 +977,10 @@ public class CaCreationService(
             throw new ConfigurationValidationException(
                 "No private key is available for this CA, so it cannot sign a new responder certificate.", ErrorCodes.IssuingCaKeyUnavailable);
         var caKey = new KeyRef(caCertEntity.CertificateId);
-        var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
+        var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
         // Reissuing a CA's delegated signers is an operator's action on an existing CA, not a
         // ceremony: the keys are generated under the infrastructure context and can never become CA keys.
-        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.TenantId);
+        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.
@@ -1295,36 +1295,36 @@ public class CaCreationService(
     /// <summary>
     /// The leaf profile a new CA's default protocol configurations use: the first, by name then
     /// id, of the non-CA profiles <see cref="CertProfileScope"/> admits for CA
-    /// <paramref name="caId"/> of <paramref name="tenantId"/>; null when there is none.
+    /// <paramref name="caId"/> of <paramref name="spaceId"/>; null when there is none.
     /// </summary>
-    internal static Task<CertProfileEntity?> DefaultLeafProfileAsync(ModularCADbContext db, Guid caId, Guid? tenantId)
+    internal static Task<CertProfileEntity?> DefaultLeafProfileAsync(ModularCADbContext db, Guid caId, Guid? spaceId)
         => db.CertProfiles
             .Where(cp => !cp.IsCaProfile
-                && ((cp.TenantId == null && cp.CertificateAuthorityId == null)
-                    || (cp.TenantId == tenantId && (cp.CertificateAuthorityId == null || cp.CertificateAuthorityId == caId))))
+                && ((cp.SpaceId == null && cp.CertificateAuthorityId == null)
+                    || (cp.SpaceId == spaceId && (cp.CertificateAuthorityId == null || cp.CertificateAuthorityId == caId))))
             .OrderBy(cp => cp.Name).ThenBy(cp => cp.Id)
             .FirstOrDefaultAsync();
 
     /// <summary>
     /// Throws <see cref="ResourceNotFoundException"/> when CA certificate profile
     /// <paramref name="certProfileId"/> is missing, not a CA profile, or not admitted for a child
-    /// CA of <paramref name="tenantId"/> under <paramref name="parentCaId"/>. Admitted are an
+    /// CA of <paramref name="spaceId"/> under <paramref name="parentCaId"/>. Admitted are an
     /// unbound profile, one bound to the parent CA (the CA that issues the child's certificate),
     /// and one space-wide in the child's space; out of scope reads as missing, so there is no
     /// existence oracle.
     /// </summary>
-    public async Task EnsureCaCertProfileAdmittedAsync(Guid? certProfileId, Guid parentCaId, Guid? tenantId)
+    public async Task EnsureCaCertProfileAdmittedAsync(Guid? certProfileId, Guid parentCaId, Guid? spaceId)
     {
         if (certProfileId is not Guid id)
             return;
         var profile = await db.CertProfiles.AsNoTracking()
             .Where(cp => cp.Id == id && cp.IsCaProfile)
-            .Select(cp => new { cp.TenantId, cp.CertificateAuthorityId })
+            .Select(cp => new { cp.SpaceId, cp.CertificateAuthorityId })
             .FirstOrDefaultAsync();
         var admitted = profile != null
-            && ((profile.TenantId == null && profile.CertificateAuthorityId == null)
+            && ((profile.SpaceId == null && profile.CertificateAuthorityId == null)
                 || profile.CertificateAuthorityId == parentCaId
-                || (profile.CertificateAuthorityId == null && profile.TenantId == tenantId));
+                || (profile.CertificateAuthorityId == null && profile.SpaceId == spaceId));
         if (!admitted)
             throw new ResourceNotFoundException(
                 "Certificate profile", $"CA Certificate Profile '{id}' not found or is not a CA profile.", id.ToString());
@@ -1539,8 +1539,8 @@ public class CaCreationService(
             ?? throw new InvalidOperationException($"Infrastructure cert profile '{certProfileName}' not found. Run bootstrap to seed it.");
 
         var keyContext = caSigningContext.Purpose == SigningPurpose.Ceremony
-            ? SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, caEntity.TenantId, caEntity.Id, caSigningContext.CeremonyId)
-            : SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.TenantId);
+            ? SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, caEntity.SpaceId, caEntity.Id, caSigningContext.CeremonyId)
+            : SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
         try

@@ -147,7 +147,7 @@ const Certificates: React.FC = () => {
     }, []);
 
     // Build the query params for the active filter (page/size supplied by the caller). The
-    // tenant scope arrives through caQuery when no single CA is pinned.
+    // space scope arrives through caQuery when no single CA is pinned.
     const buildParams = useCallback((pageNum: number, size: number) => {
         const params = new URLSearchParams({ page: String(pageNum), pageSize: String(size) });
         if (q.sort) params.set('sort', q.sort);
@@ -157,7 +157,7 @@ const Certificates: React.FC = () => {
         if (q.san) params.set('san', q.san);
         if (q.issuer) params.set('issuer', q.issuer);
         if (caIdFilter) params.set('caId', caIdFilter);
-        else { const scoped = caQuery(); if (scoped.startsWith('?tenantId=')) params.set('tenantId', decodeURIComponent(scoped.slice('?tenantId='.length))); }
+        else { const scoped = caQuery(); if (scoped.startsWith('?spaceId=')) params.set('spaceId', decodeURIComponent(scoped.slice('?spaceId='.length))); }
         if (keyAlgorithmFilter) params.set('keyAlgorithm', keyAlgorithmFilter);
         if (notAfterFrom) params.set('notAfterFrom', notAfterFrom);
         if (notAfterTo) params.set('notAfterTo', notAfterTo);

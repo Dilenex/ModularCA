@@ -17,23 +17,23 @@ public class ControlledTierDominanceTests
     private static readonly Guid Y = Guid.Parse("00000000-0000-0000-0000-0000000000c3");
     private static readonly Guid I = Guid.Parse("00000000-0000-0000-0000-0000000000c4");
 
-    // Undefined levels carry CA X1 in tenant T1, so neither a CA nor a tenant scope can rescue them.
+    // Undefined levels carry CA X1 in space T1, so neither a CA nor a space scope can rescue them.
     private static readonly Dictionary<string, ControlledTier> Tiers = new()
     {
         ["Super"] = new(ControlledTierLevel.SystemSuper, null),
         ["Admin"] = new(ControlledTierLevel.SystemAdmin, null),
         ["SysOp"] = new(ControlledTierLevel.SystemOperator, null),
-        ["OA(T1)"] = new(ControlledTierLevel.OrgAdmin, null) { TenantId = T1 },
-        ["OA(T2)"] = new(ControlledTierLevel.OrgAdmin, null) { TenantId = T2 },
-        ["OO(T1)"] = new(ControlledTierLevel.OrgOperator, null) { TenantId = T1 },
-        ["OO(T2)"] = new(ControlledTierLevel.OrgOperator, null) { TenantId = T2 },
-        ["CA(X1|T1)"] = new(ControlledTierLevel.CaAdmin, X1) { TenantId = T1 },
-        ["CA(X2|T1)"] = new(ControlledTierLevel.CaAdmin, X2) { TenantId = T1 },
-        ["CA(Y|T2)"] = new(ControlledTierLevel.CaAdmin, Y) { TenantId = T2 },
+        ["OA(T1)"] = new(ControlledTierLevel.SpaceAdmin, null) { SpaceId = T1 },
+        ["OA(T2)"] = new(ControlledTierLevel.SpaceAdmin, null) { SpaceId = T2 },
+        ["OO(T1)"] = new(ControlledTierLevel.SpaceOperator, null) { SpaceId = T1 },
+        ["OO(T2)"] = new(ControlledTierLevel.SpaceOperator, null) { SpaceId = T2 },
+        ["CA(X1|T1)"] = new(ControlledTierLevel.CaAdmin, X1) { SpaceId = T1 },
+        ["CA(X2|T1)"] = new(ControlledTierLevel.CaAdmin, X2) { SpaceId = T1 },
+        ["CA(Y|T2)"] = new(ControlledTierLevel.CaAdmin, Y) { SpaceId = T2 },
         ["CA(I|null)"] = new(ControlledTierLevel.CaAdmin, I),
-        ["raw0"] = new((ControlledTierLevel)0, X1) { TenantId = T1 },
-        ["raw1"] = new((ControlledTierLevel)1, X1) { TenantId = T1 },
-        ["raw99"] = new((ControlledTierLevel)99, X1) { TenantId = T1 },
+        ["raw0"] = new((ControlledTierLevel)0, X1) { SpaceId = T1 },
+        ["raw1"] = new((ControlledTierLevel)1, X1) { SpaceId = T1 },
+        ["raw99"] = new((ControlledTierLevel)99, X1) { SpaceId = T1 },
     };
 
     private static readonly string[] All = Tiers.Keys.ToArray();
@@ -74,12 +74,12 @@ public class ControlledTierDominanceTests
     }
 
     [Fact]
-    public void A_ca_tier_matches_on_the_ca_not_the_tenant()
+    public void A_ca_tier_matches_on_the_ca_not_the_space()
     {
-        var x1NoTenant = new ControlledTier(ControlledTierLevel.CaAdmin, X1);
-        Assert.True(Tiers["CA(X1|T1)"].Dominates(x1NoTenant));
-        Assert.True(x1NoTenant.Dominates(Tiers["CA(X1|T1)"]));
-        Assert.False(Tiers["OA(T1)"].Dominates(x1NoTenant));
+        var x1NoSpace = new ControlledTier(ControlledTierLevel.CaAdmin, X1);
+        Assert.True(Tiers["CA(X1|T1)"].Dominates(x1NoSpace));
+        Assert.True(x1NoSpace.Dominates(Tiers["CA(X1|T1)"]));
+        Assert.False(Tiers["OA(T1)"].Dominates(x1NoSpace));
     }
 
     [Fact]
@@ -88,8 +88,8 @@ public class ControlledTierDominanceTests
         Assert.Equal(2, (int)ControlledTierLevel.CaAdmin);
         Assert.Equal(3, (int)ControlledTierLevel.SystemAdmin);
         Assert.Equal(4, (int)ControlledTierLevel.SystemSuper);
-        Assert.Equal(5, (int)ControlledTierLevel.OrgOperator);
-        Assert.Equal(6, (int)ControlledTierLevel.OrgAdmin);
+        Assert.Equal(5, (int)ControlledTierLevel.SpaceOperator);
+        Assert.Equal(6, (int)ControlledTierLevel.SpaceAdmin);
         Assert.Equal(7, (int)ControlledTierLevel.SystemOperator);
         Assert.False(Enum.IsDefined(typeof(ControlledTierLevel), 1));
         Assert.Equal(new[] { 2, 3, 4, 5, 6, 7 }, Enum.GetValues<ControlledTierLevel>().Select(l => (int)l).OrderBy(v => v));

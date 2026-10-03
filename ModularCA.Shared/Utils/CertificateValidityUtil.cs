@@ -4,7 +4,7 @@ using ModularCA.Shared.Models.Issuance;
 namespace ModularCA.Shared.Utils;
 
 /// <summary>
-/// What the tenant validity ceiling did to a request.
+/// What the space validity ceiling did to a request.
 /// </summary>
 /// <remarks>
 /// Deliberately not in <c>Shared/Enums</c>: this never crosses the wire, and the shared-type
@@ -12,7 +12,7 @@ namespace ModularCA.Shared.Utils;
 /// </remarks>
 public enum ValidityCeilingOutcome
 {
-    /// <summary>Within the ceiling, exempt from it, or the tenant has none. Issue as asked.</summary>
+    /// <summary>Within the ceiling, exempt from it, or the space has none. Issue as asked.</summary>
     Unchanged = 0,
 
     /// <summary>Over the ceiling; issue with a shortened expiry and raise <c>MCA-ISS-004</c>.</summary>
@@ -22,7 +22,7 @@ public enum ValidityCeilingOutcome
     Refused = 2,
 }
 
-/// <summary>The outcome of applying a tenant validity ceiling, and the expiry that follows from it.</summary>
+/// <summary>The outcome of applying a space validity ceiling, and the expiry that follows from it.</summary>
 /// <param name="Outcome">What the ceiling did.</param>
 /// <param name="NotAfter">
 /// The expiry to use. Equal to the requested one for <see cref="ValidityCeilingOutcome.Unchanged"/>,
@@ -165,7 +165,7 @@ public static class CertificateValidityUtil
     /// Shortens <paramref name="notAfter"/> to at most <paramref name="maxValidityDays"/> measured
     /// from <paramref name="notBefore"/>.
     /// <para>
-    /// This is the tenant validity ceiling, and it replaced a single global setting that defaulted
+    /// This is the space validity ceiling, and it replaced a single global setting that defaulted
     /// to 825 days — the CA/Browser Forum baseline for publicly trusted TLS, applied to every leaf
     /// in the installation whether or not it was a public web certificate. A private CA issuing
     /// five-year device identities was refused by a number that only ever meant anything to public
@@ -173,8 +173,8 @@ public static class CertificateValidityUtil
     /// </para>
     /// <para>
     /// It shortens rather than refuses. Every enrollment protocol derives its requested expiry from
-    /// the certificate profile without any knowledge of the tenant, so refusing would fail every
-    /// ACME, EST and CMP enrollment whose profile out-reaches its tenant, over a condition the
+    /// the certificate profile without any knowledge of the space, so refusing would fail every
+    /// ACME, EST and CMP enrollment whose profile out-reaches its space, over a condition the
     /// enrolling client can neither see nor fix. Callers report the change through the
     /// <c>MCA-ISS-004</c> diagnostic, which is what keeps "shortened" from meaning "silently
     /// different".
@@ -182,15 +182,15 @@ public static class CertificateValidityUtil
     /// </summary>
     /// <param name="notAfter">The proposed certificate expiry.</param>
     /// <param name="notBefore">The certificate start, which the ceiling is measured from.</param>
-    /// <param name="maxValidityDays">The tenant's ceiling in days; 0 or less means unlimited.</param>
+    /// <param name="maxValidityDays">The space's ceiling in days; 0 or less means unlimited.</param>
     /// <param name="wasClamped">True when the value was shortened.</param>
     /// <returns>The expiry to use, never later than <paramref name="notAfter"/>.</returns>
     public static DateTime ClampToValidityCeiling(
         DateTime notAfter, DateTime notBefore, int maxValidityDays, out bool wasClamped)
     {
-        // 0 is unlimited, matching the tenant quota fields beside it. A negative value cannot be
+        // 0 is unlimited, matching the space quota fields beside it. A negative value cannot be
         // set through the API, and is read as unlimited rather than as a ceiling of zero because
-        // the alternative failure mode is a tenant that can issue nothing at all.
+        // the alternative failure mode is a space that can issue nothing at all.
         if (maxValidityDays <= 0)
         {
             wasClamped = false;
@@ -203,8 +203,8 @@ public static class CertificateValidityUtil
     }
 
     /// <summary>
-    /// The whole tenant-ceiling decision in one place: the three exemptions, the caller's
-    /// enforcement mode, the tenant's configured behaviour, and the clamp itself.
+    /// The whole space-ceiling decision in one place: the three exemptions, the caller's
+    /// enforcement mode, the space's configured behaviour, and the clamp itself.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -216,25 +216,25 @@ public static class CertificateValidityUtil
     /// </para>
     /// <para>
     /// <b>Exemptions are checked first and are absolute.</b> An infrastructure certificate (TSA,
-    /// OCSP, Web TLS) or a CA certificate is never shortened and never refused, whatever the tenant
+    /// OCSP, Web TLS) or a CA certificate is never shortened and never refused, whatever the space
     /// says. The CA exemption is the important one: silently reissuing a ten-year intermediate as a
     /// two-year one takes down everything beneath it, years later, long after anyone connects the
-    /// outage to a tenant setting. Before this it was exempt only by accident — CA creation happens
+    /// outage to a space setting. Before this it was exempt only by accident — CA creation happens
     /// to route through an infrastructure CSR helper — so the caller now asserts it in its own
     /// right.
     /// </para>
     /// <para>
-    /// <b>Refusal needs both halves.</b> The tenant set to <see cref="ValidityCeilingBehavior.Refuse"/>
-    /// AND the caller passing <see cref="ValidityCeilingEnforcement.HonourTenantPolicy"/>. Either
-    /// alone shortens. That is what keeps a tenant setting from failing ACME, EST, SCEP and CMP
+    /// <b>Refusal needs both halves.</b> The space set to <see cref="ValidityCeilingBehavior.Refuse"/>
+    /// AND the caller passing <see cref="ValidityCeilingEnforcement.HonourSpacePolicy"/>. Either
+    /// alone shortens. That is what keeps a space setting from failing ACME, EST, SCEP and CMP
     /// enrollments and scheduled renewals, none of which can see the ceiling or change their
     /// request.
     /// </para>
     /// </remarks>
     /// <param name="notAfter">The requested expiry.</param>
     /// <param name="notBefore">The certificate start, which the ceiling is measured from.</param>
-    /// <param name="maxValidityDays">The tenant's ceiling in days; 0 or less means unlimited.</param>
-    /// <param name="behavior">The tenant's configured behaviour when the ceiling is exceeded.</param>
+    /// <param name="maxValidityDays">The space's ceiling in days; 0 or less means unlimited.</param>
+    /// <param name="behavior">The space's configured behaviour when the ceiling is exceeded.</param>
     /// <param name="enforcement">Whether this caller may be refused rather than shortened.</param>
     /// <param name="isInfrastructureCert">True for a TSA/OCSP/Web TLS certificate; exempt.</param>
     /// <param name="isCaCertificate">True when the issuance produces a CA certificate; exempt.</param>
@@ -256,7 +256,7 @@ public static class CertificateValidityUtil
             return new ValidityCeilingDecision(ValidityCeilingOutcome.Unchanged, notAfter);
 
         if (behavior == ValidityCeilingBehavior.Refuse
-            && enforcement == ValidityCeilingEnforcement.HonourTenantPolicy)
+            && enforcement == ValidityCeilingEnforcement.HonourSpacePolicy)
         {
             return new ValidityCeilingDecision(ValidityCeilingOutcome.Refused, notAfter);
         }
@@ -273,12 +273,12 @@ public static class CertificateValidityUtil
     /// This is the pre-flight half of the clamps above: the same three limits, evaluated before
     /// the operator submits rather than after. Nothing told them about any ceiling until the
     /// certificate came back shorter than they asked for — by which point the certificate exists,
-    /// carries a serial, and has to be revoked and reissued to fix. Being told "capped by tenant
+    /// carries a serial, and has to be revoked and reissued to fix. Being told "capped by space
     /// 'Acme Corp'" while the form is still open costs nothing.
     /// </para>
     /// <para>
     /// Narrowest wins. Ties go to the widest-scoped layer that produced the value — the profile
-    /// before the tenant, the tenant before the CA — because a layer only displaces another when
+    /// before the space, the space before the CA — because a layer only displaces another when
     /// it is <em>strictly</em> narrower. Reporting "capped by the issuing CA" for a date the
     /// profile would have produced anyway sends the operator to renew a CA that is not the
     /// problem.
@@ -293,7 +293,7 @@ public static class CertificateValidityUtil
     /// The arithmetic deliberately mirrors the three enforcement sites rather than simplifying
     /// them into one rule, because they genuinely differ: the profile ceiling is measured from
     /// <em>now</em> (<c>IssuanceValidationService.NotBeyondMaximumDate</c> and the <c>timeMax</c>
-    /// default both do), the tenant ceiling from <em>notBefore</em>
+    /// default both do), the space ceiling from <em>notBefore</em>
     /// (<see cref="ClampToValidityCeiling"/>), and the CA ceiling is its <c>notAfter</c> less the
     /// skew margin. A pre-flight that used one rule for all three would promise dates issuance
     /// then clamps, which is worse than promising nothing.
@@ -302,28 +302,28 @@ public static class CertificateValidityUtil
     /// <param name="notBefore">The certificate start the request would carry.</param>
     /// <param name="now">Current UTC time, from which the cert profile's maximum is measured.</param>
     /// <param name="certProfileMax">The cert profile's <c>ValidityPeriodMax</c>, already parsed and defaulted.</param>
-    /// <param name="tenantMaxValidityDays">The tenant's ceiling in days; 0 or less means unlimited.</param>
+    /// <param name="spaceMaxValidityDays">The space's ceiling in days; 0 or less means unlimited.</param>
     /// <param name="issuingCaNotAfter">The issuing CA certificate's expiry, or null when it is unknown.</param>
     /// <returns>The effective ceiling and the layer that set it.</returns>
     public static ValidityCeilingResolution ResolveCeiling(
         DateTime notBefore,
         DateTime now,
         TimeSpan certProfileMax,
-        int tenantMaxValidityDays,
+        int spaceMaxValidityDays,
         DateTime? issuingCaNotAfter)
     {
         var profileCeiling = now + certProfileMax;
-        DateTime? tenantCeiling = tenantMaxValidityDays > 0 ? notBefore.AddDays(tenantMaxValidityDays) : null;
+        DateTime? spaceCeiling = spaceMaxValidityDays > 0 ? notBefore.AddDays(spaceMaxValidityDays) : null;
         // The same 5-minute margin the issuing-CA clamp applies, so the number shown here is the
         // number issuance will honour rather than five minutes more than it.
         DateTime? caCeiling = issuingCaNotAfter.HasValue ? issuingCaNotAfter.Value - SkewAllowance : null;
 
         var effective = profileCeiling;
         var boundBy = ValidityCeilingSource.CertProfile;
-        if (tenantCeiling.HasValue && tenantCeiling.Value < effective)
+        if (spaceCeiling.HasValue && spaceCeiling.Value < effective)
         {
-            effective = tenantCeiling.Value;
-            boundBy = ValidityCeilingSource.Tenant;
+            effective = spaceCeiling.Value;
+            boundBy = ValidityCeilingSource.Space;
         }
         if (caCeiling.HasValue && caCeiling.Value < effective)
         {
@@ -337,7 +337,7 @@ public static class CertificateValidityUtil
         if (days < 0) days = 0;
 
         return new ValidityCeilingResolution(
-            notBefore, effective, days, boundBy, profileCeiling, tenantCeiling, caCeiling);
+            notBefore, effective, days, boundBy, profileCeiling, spaceCeiling, caCeiling);
     }
 
     /// <summary>Shortest life a certificate may be issued with, counted from the moment of issuance.</summary>
@@ -359,6 +359,6 @@ public static class CertificateValidityUtil
         if (validTo - from < MinimumValidity)
             throw new ModularCA.Shared.Errors.InvalidRequestException(
                 $"The resolved validity window runs from {validFrom:O} to {validTo:O}, leaving under the {MinimumValidity.TotalMinutes:0} minute minimum from now; " +
-                "the certificate would be expired at issuance. Check the certificate profile's maximum validity, the signing profile and the tenant ceiling.");
+                "the certificate would be expired at issuance. Check the certificate profile's maximum validity, the signing profile and the space ceiling.");
     }
 }

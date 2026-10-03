@@ -14,8 +14,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing Certificate Transparency log configurations.
 /// CT log URL + public key are system-wide artifacts — corrupting them silently breaks
-/// SCT embedding for every tenant — so mutations require <c>SystemOperator</c>, not the
-/// tenant-scoped <c>CaOperator</c>.
+/// SCT embedding for every space — so mutations require <c>SystemOperator</c>, not the
+/// space-scoped <c>CaOperator</c>.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ct-logs")]

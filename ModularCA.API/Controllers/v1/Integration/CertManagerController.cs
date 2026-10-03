@@ -121,10 +121,10 @@ public class CertManagerController : ControllerBase
         if (signingProfile == null)
             return BadRequest(new { error = $"Signing profile not found: {signingProfileId}" });
 
-        // AUTH-06: verify the signing profile's issuing CA belongs to the configured tenant
-        var tenantCheck = await VerifySigningProfileTenantAsync(signingProfile);
-        if (tenantCheck != null)
-            return tenantCheck;
+        // AUTH-06: verify the signing profile's issuing CA belongs to the configured space
+        var spaceCheck = await VerifySigningProfileSpaceAsync(signingProfile);
+        if (spaceCheck != null)
+            return spaceCheck;
 
         // Calculate validity period
         var notBefore = DateTime.UtcNow;
@@ -227,13 +227,13 @@ public class CertManagerController : ControllerBase
 
     /// <summary>
     /// AUTH-06: verifies that the signing profile's issuing CA belongs to the configured
-    /// tenant. Returns null if the check passes (or no tenant restriction is configured),
-    /// or an <see cref="IActionResult"/> to short-circuit the action if the tenant does not match.
+    /// space. Returns null if the check passes (or no space restriction is configured),
+    /// or an <see cref="IActionResult"/> to short-circuit the action if the space does not match.
     /// </summary>
-    private async Task<IActionResult?> VerifySigningProfileTenantAsync(SigningProfileEntity signingProfile)
+    private async Task<IActionResult?> VerifySigningProfileSpaceAsync(SigningProfileEntity signingProfile)
     {
-        var tenantId = _config.CertManager.TenantId;
-        if (tenantId == null)
+        var spaceId = _config.CertManager.SpaceId;
+        if (spaceId == null)
             return null;
 
         if (signingProfile.IssuerId == null)
@@ -246,11 +246,11 @@ public class CertManagerController : ControllerBase
         if (ca == null)
             return null;
 
-        if (ca.TenantId != tenantId.Value)
+        if (ca.SpaceId != spaceId.Value)
         {
-            _logger.LogWarning("AUTH-06: cert-manager tenant isolation violation — API key tenant {ConfiguredTenant} attempted to use CA {CaId} belonging to tenant {CaTenant}",
-                tenantId.Value, ca.Id, ca.TenantId);
-            return new ObjectResult(new { error = "Access denied: the target CA does not belong to the configured tenant." })
+            _logger.LogWarning("AUTH-06: cert-manager space isolation violation — API key space {ConfiguredSpace} attempted to use CA {CaId} belonging to space {CaSpace}",
+                spaceId.Value, ca.Id, ca.SpaceId);
+            return new ObjectResult(new { error = "Access denied: the target CA does not belong to the configured space." })
             {
                 StatusCode = 403
             };

@@ -68,7 +68,7 @@ export default function AdminUiGuide() {
                     <strong>CA Management:</strong> Authorities, Profiles, Templates, CRL Management,
                         Trust Anchors, Key Ceremonies, SSH CA, Protocol Config<br />
                     <strong>Access &amp; Identity:</strong> Users, Groups, Roles, Enrollment, ACME<br />
-                    <strong>Administration:</strong> Tenants, Settings, Audit Logs, Notifications, Quotas,
+                    <strong>Administration:</strong> Spaces, Settings, Audit Logs, Notifications, Quotas,
                         Whitelists, Backup &amp; Restore, Web TLS Certificate
                 </div>
             </section>
@@ -596,7 +596,7 @@ export default function AdminUiGuide() {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>Set certificate issuance limits</li>
-                    <li>Configure rate limits per tenant</li>
+                    <li>Configure pending-request limits per CA</li>
                     <li>Monitor quota usage and remaining capacity</li>
                     <li>Alert thresholds for quota exhaustion</li>
                 </ul>
@@ -715,27 +715,29 @@ export default function AdminUiGuide() {
                 </div>
             </section>
 
-            {/* Tenant Management */}
+            {/* Spaces & Quotas */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Tenant Management</h2>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Spaces &amp; Quotas</h2>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    Route: /admin/tenants
+                    Route: /admin/spaces, /admin/spaces/&#123;id&#125; (the old /admin/tenants paths redirect here until 0.5)
                 </div>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Multi-tenant management for organizations sharing a single ModularCA deployment. Each tenant
-                    has isolated CAs, users, and quotas.
+                    Spaces delegate administration within one organisation. They share sign-in, backups, the
+                    audit trail and instance administrators; for a separate customer, create a separate
+                    instance. Each space holds its CAs, its ceilings and per-CA quotas.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
-                    <li>Create and manage tenants</li>
-                    <li>Configure each tenant's validity ceiling and ceremony policy</li>
-                    <li>View tenant resource usage</li>
-                    <li>Enable/disable tenants</li>
-                    <li>The instance (its own CAs, system groups and CA policy) vs. organization tenants</li>
+                    <li>Create and manage spaces. The Create Space dialog says what a space shares, and from the fifth space that a licence is recommended; creation always succeeds</li>
+                    <li>Configure each space's validity ceiling and ceremony policy</li>
+                    <li>View each space's CAs, users and per-CA quota usage</li>
+                    <li>Enable/disable spaces</li>
+                    <li>The instance (its own CAs, system groups and CA policy) beside the spaces</li>
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    GET /api/v1/admin/tenants<br />
-                    POST /api/v1/admin/tenants<br />
-                    PUT /api/v1/admin/tenants/&#123;id&#125;
+                    GET /api/v1/admin/quotas/by-space<br />
+                    POST /api/v1/admin/spaces<br />
+                    PUT /api/v1/admin/spaces/&#123;id&#125;<br />
+                    PUT /api/v1/admin/spaces/&#123;id&#125;/settings
                 </div>
             </section>
 
@@ -758,7 +760,7 @@ export default function AdminUiGuide() {
                 </ul>
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
                     GET /api/v1/admin/config<br />
-                    PUT /api/v1/admin/tenants/&#123;id&#125;/settings
+                    PUT /api/v1/admin/config/security
                 </div>
             </section>
 

@@ -4,7 +4,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace ModularCA.Shared.Entities;
 
 /// <summary>
-/// Assigns a role to a user or group with optional scope (global, tenant, or CA).
+/// Assigns a role to a user or group with optional scope (global, space, or CA).
 /// Exactly one of UserId or GroupId must be set.
 /// </summary>
 public class RoleAssignmentEntity
@@ -23,12 +23,12 @@ public class RoleAssignmentEntity
     public Guid? GroupId { get; set; }
 
     /// <summary>
-    /// Tenant scope. Null = global (all tenants).
+    /// Space scope. Null = the instance (all spaces).
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     /// <summary>
-    /// CA scope. Null = all CAs in scope (tenant-wide or global).
+    /// CA scope. Null = all CAs in scope (space-wide or global).
     /// </summary>
     public Guid? CertificateAuthorityId { get; set; }
 
@@ -48,8 +48,8 @@ public class RoleAssignmentEntity
     [ForeignKey("GroupId")]
     public virtual CaGroupEntity? Group { get; set; }
 
-    [ForeignKey("TenantId")]
-    public virtual TenantEntity? Tenant { get; set; }
+    [ForeignKey(nameof(SpaceId))]
+    public virtual SpaceEntity? Space { get; set; }
 
     [ForeignKey("CertificateAuthorityId")]
     public virtual CertificateAuthorityEntity? CertificateAuthority { get; set; }

@@ -30,7 +30,7 @@ public class AdminSecurityPolicyController(
     ICurrentUserService currentUser,
     IControlledUserCeremonyService controlledUserSvc,
     ICaGroupAuthorizationService groupAuth,
-    ModularCA.Core.Services.ITenantPolicyChangeService policyChanges,
+    ModularCA.Core.Services.ISpacePolicyChangeService policyChanges,
     IDistributedCache cache) : ControllerBase
 {
     /// <summary>Returns the current security policy row.</summary>

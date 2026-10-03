@@ -51,7 +51,7 @@ namespace ModularCA.Core.Services
         /// <param name="serialNumber">The serial number for the new certificate.</param>
         /// <param name="issuerCert">The issuing CA certificate.</param>
         /// <param name="caKey">The reference to the issuing CA key; the signer resolves it from the same certificate row.</param>
-        /// <param name="signingContext">Who is asking and for which CA and tenant; the signer holds the key to it.</param>
+        /// <param name="signingContext">Who is asking and for which CA and space; the signer holds the key to it.</param>
         /// <param name="subjectDn">The subject distinguished name.</param>
         /// <param name="subjectPublicKey">The subject public key from the CSR.</param>
         /// <param name="validFrom">The NotBefore date.</param>

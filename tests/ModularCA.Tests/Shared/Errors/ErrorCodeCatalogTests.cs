@@ -76,7 +76,7 @@ public class ErrorCodeCatalogTests
             // Two subtypes read Code from constructor-captured state, so an uninitialized
             // instance legitimately reads null; construct those for real.
             var code =
-                type == typeof(ResourceNotFoundException) ? new ResourceNotFoundException("Tenant", "gone").Code
+                type == typeof(ResourceNotFoundException) ? new ResourceNotFoundException("Space", "gone").Code
                 : type == typeof(LicensingException) ? new LicensingException("x", ErrorCodes.LicenseRefused).Code
                 : instance.Code;
 
@@ -135,6 +135,24 @@ public class ErrorCodeCatalogTests
         Assert.True(missing.Count == 0,
             "these codes were removed or renumbered, which silently repoints anything keyed on "
             + "them: " + string.Join(", ", missing));
+    }
+
+    [Fact]
+    public void A_retired_code_stays_in_the_catalog_and_is_never_reused()
+    {
+        // MCA-CFG-017 refused a second space in single-organisation mode, which 0.4.0 retired.
+        // It stays declared so its number is never handed to a different failure.
+        Assert.Equal(["MCA-CFG-017"], ErrorCodes.Retired);
+        Assert.All(ErrorCodes.Retired, code => Assert.Contains(code, ErrorCodes.All));
+        Assert.Equal("MCA-CFG-017", ErrorCodes.MultipleOrganizationsDisabled);
+    }
+
+    [Fact]
+    public void The_space_codes_kept_their_numbers()
+    {
+        Assert.Equal("MCA-CFG-006", ErrorCodes.SpaceDisabled);
+        Assert.Equal("MCA-ISS-004", ErrorCodes.ValidityClampedToSpace);
+        Assert.Equal("MCA-ISS-005", ErrorCodes.ValidityExceedsSpaceCeiling);
     }
 
     [Fact]

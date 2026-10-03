@@ -1,0 +1,113 @@
+import type { ApiEndpoint } from '../../types';
+
+const auth = [
+    { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+];
+
+const stepUp = { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token, when the change needs one' };
+
+export const adminSpaces: ApiEndpoint[] = [
+    {
+        method: 'GET',
+        path: '/api/v1/admin/spaces',
+        summary: 'List every space with summary counts for CAs and users. A space groups CAs for delegated administration within one organisation.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Spaces',
+        headers: auth,
+        responseDescription: 'Array of spaces with id, name, slug, description, isEnabled, createdAt, maxValidityDays, validityCeilingBehavior, requireKeyCeremony, ceremonyRequiredApprovals, caCount and userCount.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/spaces/{id}',
+        summary: 'Get one space with its CA, user and certificate counts.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Spaces',
+        headers: auth,
+        responseDescription: 'The space with its policy fields, caCount, userCount and certificateCount.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/spaces',
+        summary: 'Create a space. Creates its space-{slug}-admin, -operator, -auditor and -user groups.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Spaces',
+        requestBody: [
+            { name: 'name', type: 'string', required: true, description: 'Space name, unique across the instance' },
+            { name: 'slug', type: 'string', required: false, description: 'URL-safe slug, generated from the name when omitted. "system" is reserved' },
+            { name: 'description', type: 'string', required: false, description: 'Description' },
+            { name: 'maxValidityDays', type: 'int', required: false, description: 'Longest leaf validity for the space\'s CAs; 0 = unlimited' },
+            { name: 'validityCeilingBehavior', type: 'string', required: false, description: '"Shorten" (default) or "Refuse" when a request exceeds the ceiling' },
+        ],
+        headers: auth,
+        responseDescription: '201 with the created space and recommendation: "A licence is recommended for more than four spaces." from the fifth space on (null otherwise, or with a licence that carries the feature).',
+        notes: 'Creation always succeeds; the recommendation never blocks. Spaces share sign-in, backups, the audit trail and instance administrators; a separate customer belongs in a separate instance.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/spaces/{id}',
+        summary: 'Update a space\'s name, slug, description, validity ceiling, enabled state or key-ceremony policy.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Spaces',
+        requestBody: [
+            { name: 'name', type: 'string', required: false, description: 'New name' },
+            { name: 'slug', type: 'string', required: false, description: 'New slug' },
+            { name: 'description', type: 'string', required: false, description: 'New description' },
+            { name: 'maxValidityDays', type: 'int', required: false, description: 'Validity ceiling in days; 0 = unlimited' },
+            { name: 'validityCeilingBehavior', type: 'string', required: false, description: '"Shorten" or "Refuse"' },
+            { name: 'isEnabled', type: 'bool', required: false, description: 'Enable or disable the space (step-up enable-space / disable-space)' },
+            { name: 'requireKeyCeremony', type: 'bool', required: false, description: 'Whether creating a CA in the space needs a key ceremony' },
+            { name: 'ceremonyRequiredApprovals', type: 'int', required: false, description: 'Approvals a key ceremony needs (minimum 1; the initiator never counts)' },
+        ],
+        headers: [...auth, stepUp],
+        responseDescription: 'The updated space, or 202 with ceremonyId when a key-ceremony policy change needs a ceremony.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/spaces/{id}/settings',
+        summary: 'Save a space\'s settings in one request: ceilings, key-ceremony policy, per-CA issuance quotas, and the space and per-CA user-approval quorums.',
+        auth: 'Authorize (SystemAdmin) + step-up update-space-settings',
+        category: 'Admin Spaces',
+        headers: [...auth, stepUp],
+        responseDescription: 'The settings, or 202 with ceremonyId when a ceremony or quorum change by a non-super opens a ceremony.',
+    },
+    {
+        method: 'DELETE',
+        path: '/api/v1/admin/spaces/{id}',
+        summary: 'Disable a space (soft delete). Its data is kept.',
+        auth: 'Authorize (SystemAdmin) + step-up disable-space',
+        category: 'Admin Spaces',
+        headers: [...auth, stepUp],
+        responseDescription: 'Confirmation that the space has been disabled.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/quotas/by-space',
+        summary: 'Every space with its CAs and each CA\'s issuance quota and usage, plus the instance\'s own CAs, for the Spaces & Quotas page.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Spaces',
+        headers: auth,
+        responseDescription: '{ spaces: [...], instance: {...}, totals: { totalSpaces, totalCAs, casAtLimit, casNearLimit } }.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/spaces/{spaceId}/kerberos-realms',
+        summary: 'A space\'s Kerberos realm bindings for Windows autoenrollment, with key versions. Key bytes are never returned.',
+        auth: 'Authorize (ca.manage space-wide)',
+        category: 'Admin Spaces',
+        headers: auth,
+        responseDescription: 'Array of realm bindings with id, spaceId, realm, dnsDomain, servicePrincipal, enrollment identity and keys.',
+        notes: 'The instance\'s realms are under /api/v1/admin/instance/kerberos-realms.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/user-quorum/space/{id}',
+        summary: 'Set or clear a space\'s user-approval quorum override. A non-super caller opens a space policy-change ceremony.',
+        auth: 'Authorize (SystemAdmin) + step-up update-space-settings',
+        category: 'Admin Spaces',
+        requestBody: [
+            { name: 'quorum', type: 'int', required: false, description: 'The override, at least 1; null inherits the system quorum' },
+        ],
+        headers: [...auth, stepUp],
+        responseDescription: 'The new quorum, or 202 with ceremonyId.',
+    },
+];

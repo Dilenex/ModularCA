@@ -51,7 +51,7 @@ public class AdminUserGrantController(
             g.Id,
             g.UserId,
             g.Capability,
-            g.TenantId,
+            g.SpaceId,
             g.CertificateAuthorityId,
             g.ResourceType,
             g.ResourceId,
@@ -81,23 +81,23 @@ public class AdminUserGrantController(
         if (!userExists)
             return NotFound(new { error = $"User with ID {request.UserId} not found" });
 
-        // Validate tenant exists if provided
-        if (request.TenantId.HasValue)
+        // Validate space exists if provided
+        if (request.SpaceId.HasValue)
         {
-            var tenantExists = await _db.Tenants.AnyAsync(t => t.Id == request.TenantId.Value);
-            if (!tenantExists)
-                return BadRequest(new { error = $"Tenant with ID {request.TenantId.Value} not found." });
+            var spaceExists = await _db.Spaces.AnyAsync(t => t.Id == request.SpaceId.Value);
+            if (!spaceExists)
+                return BadRequest(new { error = $"Space with ID {request.SpaceId.Value} not found." });
         }
 
-        // Validate CA exists if provided, and belongs to the specified tenant
+        // Validate CA exists if provided, and belongs to the specified space
         if (request.CertificateAuthorityId.HasValue)
         {
             var ca = await _db.CertificateAuthorities.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == request.CertificateAuthorityId.Value);
             if (ca == null)
                 return BadRequest(new { error = $"Certificate Authority with ID {request.CertificateAuthorityId.Value} not found." });
-            if (request.TenantId.HasValue && ca.TenantId != request.TenantId.Value)
-                return BadRequest(new { error = $"CA {request.CertificateAuthorityId.Value} does not belong to tenant {request.TenantId.Value}." });
+            if (request.SpaceId.HasValue && ca.SpaceId != request.SpaceId.Value)
+                return BadRequest(new { error = $"CA {request.CertificateAuthorityId.Value} does not belong to space {request.SpaceId.Value}." });
         }
 
         // Rate limit: prevent more than 1000 direct capability grants per user
@@ -109,7 +109,7 @@ public class AdminUserGrantController(
         // promotes a controlled user. A system-super applies it directly (falls through); any
         // other actor must route it through a ControlledUserChange ceremony approved by a quorum
         // that dominates the affected tier.
-        var minted = _controlledUserSvc.ClassifyCapabilityGrant(request.Capability, request.CertificateAuthorityId, request.TenantId);
+        var minted = _controlledUserSvc.ClassifyCapabilityGrant(request.Capability, request.CertificateAuthorityId, request.SpaceId);
         if (minted != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, minted.Value))
@@ -125,7 +125,7 @@ public class AdminUserGrantController(
             {
                 ceremonyId = await _controlledUserSvc.InitiateCapabilityGrantAsync(
                     request.UserId, targetUsername, request.Capability,
-                    request.TenantId, request.CertificateAuthorityId, request.ResourceType, request.ResourceId,
+                    request.SpaceId, request.CertificateAuthorityId, request.ResourceType, request.ResourceId,
                     minted.Value, _currentUser.User.Id, _currentUser.User.Username ?? string.Empty);
             }
             catch (ControlledUserInitiationRefusedException ex)
@@ -146,7 +146,7 @@ public class AdminUserGrantController(
         {
             UserId = request.UserId,
             Capability = request.Capability,
-            TenantId = request.TenantId,
+            SpaceId = request.SpaceId,
             CertificateAuthorityId = request.CertificateAuthorityId,
             ResourceType = request.ResourceType,
             ResourceId = request.ResourceId,
@@ -158,7 +158,7 @@ public class AdminUserGrantController(
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "UserCapabilityGrant", grant.Id.ToString(),
-            new { grant.UserId, grant.Capability, grant.TenantId, grant.CertificateAuthorityId, grant.ResourceType, grant.ResourceId },
+            new { grant.UserId, grant.Capability, grant.SpaceId, grant.CertificateAuthorityId, grant.ResourceType, grant.ResourceId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return CreatedAtAction(nameof(GetAll), new { userId = grant.UserId }, new
@@ -166,7 +166,7 @@ public class AdminUserGrantController(
             grant.Id,
             grant.UserId,
             grant.Capability,
-            grant.TenantId,
+            grant.SpaceId,
             grant.CertificateAuthorityId,
             grant.ResourceType,
             grant.ResourceId,
@@ -195,7 +195,7 @@ public class AdminUserGrantController(
         // Controlled-user gate (demote): revoking a controlled capability demotes a controlled
         // user — non-super must route it through a ceremony, and we hard-refuse removing the last
         // dominating controlled user of the scope.
-        var demoteTier = _controlledUserSvc.ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.TenantId);
+        var demoteTier = _controlledUserSvc.ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.SpaceId);
         if (demoteTier != null && _currentUser.User != null
             && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, grant.UserId, actorUserId: _currentUser.User.Id) == 0)
             return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
@@ -211,7 +211,7 @@ public class AdminUserGrantController(
                     TargetUserId = grant.UserId,
                     RecordId = grant.Id,
                     Capability = grant.Capability,
-                    TenantId = grant.TenantId,
+                    SpaceId = grant.SpaceId,
                     CertificateAuthorityId = grant.CertificateAuthorityId,
                 },
                 demoteTier.Value,
@@ -259,7 +259,7 @@ public class AdminUserGrantController(
             {
                 g.Id,
                 g.Capability,
-                g.TenantId,
+                g.SpaceId,
                 g.CertificateAuthorityId,
                 g.ResourceType,
                 g.ResourceId,
@@ -286,7 +286,7 @@ public class AdminUserGrantController(
             }),
             Scope = new
             {
-                ra.TenantId,
+                ra.SpaceId,
                 ra.CertificateAuthorityId
             }
         }).ToList();
@@ -339,7 +339,7 @@ public class AdminUserGrantController(
                     }),
                     Scope = new
                     {
-                        ra.TenantId,
+                        ra.SpaceId,
                         ra.CertificateAuthorityId
                     }
                 })
@@ -356,8 +356,10 @@ public class AdminUserGrantController(
 }
 
 /// <summary>
-/// Request body for creating a direct user capability grant.
+/// Request body for creating a direct user capability grant. An unknown member (a pre-0.4.0
+/// <c>tenantId</c>) is refused with 400, never read as no space.
 /// </summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class CreateUserGrantRequest
 {
     /// <summary>The user to grant the capability to.</summary>
@@ -366,8 +368,8 @@ public class CreateUserGrantRequest
     /// <summary>The capability to grant (must be a value from <see cref="Capabilities.All"/>).</summary>
     public string Capability { get; set; } = string.Empty;
 
-    /// <summary>Optional tenant scope. Null for global.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Optional space scope. Null for global.</summary>
+    public Guid? SpaceId { get; set; }
 
     /// <summary>Optional CA scope. Null for all CAs in scope.</summary>
     public Guid? CertificateAuthorityId { get; set; }

@@ -54,7 +54,7 @@ public static class WireMapping
     {
         Caller = context.Caller ?? string.Empty,
         Purpose = context.Purpose.ToString(),
-        TenantId = ToWire(context.TenantId),
+        SpaceId = ToWire(context.SpaceId),
         CaId = ToWire(context.CaId),
         CeremonyId = ToWire(context.CeremonyId),
         InstanceScope = context.InstanceScope,
@@ -63,7 +63,7 @@ public static class WireMapping
     /// <summary>
     /// Reads a context from the wire; an unknown purpose or a missing message is an argument
     /// error. The instance marker crosses only as sent: an omitted one is false, so an empty
-    /// tenant id from an older client is an unstated scope, not the instance.
+    /// space id from an older client is an unstated scope, not the instance.
     /// </summary>
     public static Shared.Signing.SigningContext FromWire(SigningContext? context)
     {
@@ -73,7 +73,7 @@ public static class WireMapping
         return new Shared.Signing.SigningContext(
             context.Caller,
             purpose,
-            ToNullableGuid(context.TenantId, "context.tenant_id"),
+            ToNullableGuid(context.SpaceId, "context.space_id"),
             ToNullableGuid(context.CaId, "context.ca_id"),
             ToNullableGuid(context.CeremonyId, "context.ceremony_id"))
         {
@@ -142,7 +142,7 @@ public static class WireMapping
         PublicKeyDer = ByteString.CopyFrom(info.PublicKeyDer),
         Kind = info.Kind.ToString(),
         CaId = ToWire(info.CaId),
-        TenantId = ToWire(info.TenantId),
+        SpaceId = ToWire(info.SpaceId),
         Backend = info.Backend,
     };
 
@@ -156,7 +156,7 @@ public static class WireMapping
             info.PublicKeyDer.ToByteArray(),
             kind,
             ToNullableGuid(info.CaId, "keys.ca_id"),
-            ToNullableGuid(info.TenantId, "keys.tenant_id"),
+            ToNullableGuid(info.SpaceId, "keys.space_id"),
             info.Backend);
     }
 

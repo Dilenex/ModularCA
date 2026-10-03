@@ -34,35 +34,35 @@ function ceremonyBadgeStatus(status: CeremonyStatus): 'expired' | 'active' | 're
     }
 }
 
-type Family = 'CaCreation' | 'TenantPolicyChange' | 'ControlledUserChange';
+type Family = 'CaCreation' | 'PolicyChange' | 'ControlledUserChange';
 
 function ceremonyFamily(c: any): Family {
     const ct = c?.ceremonyType;
-    // The instance's policy changes (no tenant) belong to the same family as a tenant's.
-    if (ct === 'TenantPolicyChange' || ct === 'InstancePolicyChange'
-        || c?.operationType === 'TenantPolicyChange' || c?.operationType === 'InstancePolicyChange') return 'TenantPolicyChange';
+    // The instance's policy changes (no space) belong to the same family as a space's.
+    if (ct === 'SpacePolicyChange' || ct === 'InstancePolicyChange'
+        || c?.operationType === 'SpacePolicyChange' || c?.operationType === 'InstancePolicyChange') return 'PolicyChange';
     if (ct === 'ControlledUserChange' || c?.operationType === 'ControlledUserChange') return 'ControlledUserChange';
     return 'CaCreation';
 }
 
 const FAMILY_META: Record<Family, { label: string; cls: string }> = {
     CaCreation: { label: 'CA', cls: 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
-    TenantPolicyChange: { label: 'Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
+    PolicyChange: { label: 'Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
     ControlledUserChange: { label: 'Controlled User', cls: 'bg-purple-50 dark:bg-purple-900/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700' },
 };
 
 const TIER_LABELS: Record<number, string> = {
-    2: 'CA Admin', 3: 'System Admin', 4: 'System Super', 5: 'Tenant Operator', 6: 'Tenant Admin', 7: 'System Operator',
+    2: 'CA Admin', 3: 'System Admin', 4: 'System Super', 5: 'Space Operator', 6: 'Space Admin', 7: 'System Operator',
 };
 
 /* the scope of a controlled-user ceremony's affected tier, as the server names it (CA label,
-   tenant name or instance); the raw ids only if the server did not name it */
+   space name or instance); the raw ids only if the server did not name it */
 function tierScope(detail: any, params: any): string {
     if (detail?.tierScope) return detail.tierScope === 'instance' ? ' (instance)' : ` (${detail.tierScope})`;
     const caId = params.mintedTierCaId || params.MintedTierCaId;
     if (caId) return ` (CA ${caId})`;
-    const tenantId = params.mintedTierTenantId || params.MintedTierTenantId;
-    return tenantId ? ` (tenant ${tenantId})` : ' (instance)';
+    const spaceId = params.mintedTierSpaceId || params.MintedTierSpaceId;
+    return spaceId ? ` (space ${spaceId})` : ' (instance)';
 }
 
 function controlledChangeLabel(changeType: string): string {
@@ -180,10 +180,10 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                 </div>
             )}
 
-            {params && family === 'TenantPolicyChange' && (
+            {params && family === 'PolicyChange' && (
                 <div>
                     <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Policy Change</span>
-                    <DetailField label="Scope" value={params.tenantId || params.TenantId || 'Instance'} mono={!!(params.tenantId || params.TenantId)} />
+                    <DetailField label="Scope" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(() => {
                         const pReq = params.proposedRequireKeyCeremony ?? params.ProposedRequireKeyCeremony;
                         const cReq = params.currentRequireKeyCeremony ?? params.CurrentRequireKeyCeremony;
@@ -204,7 +204,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                     <DetailField label="Algorithm" value={params.keyAlgorithm || params.KeyAlgorithm || '-'} />
                     <DetailField label="Key Size" value={params.keySize || params.KeySize || '-'} />
                     <DetailField label="Validity (Years)" value={params.validityYears || params.ValidityYears || '-'} />
-                    <DetailField label="Tenant ID" value={params.tenantId || params.TenantId || 'Instance'} mono={!!(params.tenantId || params.TenantId)} />
+                    <DetailField label="Space ID" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(params.parentCaId || params.ParentCaId) && <DetailField label="Parent CA ID" value={params.parentCaId || params.ParentCaId} mono />}
                     {(params.label || params.Label) && <DetailField label="Label" value={params.label || params.Label} />}
                 </div>
@@ -417,7 +417,7 @@ const Ceremonies: React.FC = () => {
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded-lg p-4 text-xs text-blue-800 dark:text-blue-300">
                 Ceremonies are created automatically when a multi-party action is required — you don't start one here.
                 They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
-                Tenant settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
+                Space settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
                 (promoting, demoting, or deleting a controlled user, or resetting their password or MFA or changing their account,
                 as a non-super). Select one below to approve or reject.
             </div>
@@ -432,7 +432,7 @@ const Ceremonies: React.FC = () => {
                     className="px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
                     <option value="all">All types</option>
                     <option value="CaCreation">CA</option>
-                    <option value="TenantPolicyChange">Policy (tenant or instance)</option>
+                    <option value="PolicyChange">Policy (space or instance)</option>
                     <option value="ControlledUserChange">Controlled User</option>
                 </select>
             </div>

@@ -408,12 +408,12 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("RequiredQuorum")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("TemplateName")
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
-
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
 
                     b.Property<uint>("xmin")
                         .IsConcurrencyToken()
@@ -430,7 +430,7 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("TenantId");
+                    b.HasIndex("SpaceId");
 
                     b.ToTable("CaGroups", t =>
                         {
@@ -724,7 +724,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("Revision")
                         .HasColumnType("integer");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -747,7 +747,7 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("TenantId");
+                    b.HasIndex("SpaceId");
 
                     b.ToTable("CertProfiles", t =>
                         {
@@ -968,7 +968,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("ParentCaId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("TsaCertificateId")
@@ -1003,7 +1003,7 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("ParentCaId");
 
-                    b.HasIndex("TenantId");
+                    b.HasIndex("SpaceId");
 
                     b.ToTable("CertificateAuthorities", t =>
                         {
@@ -1531,12 +1531,12 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("SigningProfileId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("SubjectRestriction")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
-
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
 
                     b.Property<string>("Token")
                         .IsRequired()
@@ -1671,7 +1671,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
@@ -1681,7 +1681,7 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Realm")
                         .IsUnique();
 
-                    b.HasIndex("TenantId");
+                    b.HasIndex("SpaceId");
 
                     b.ToTable("KerberosRealms", t =>
                         {
@@ -1783,6 +1783,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("RequiredApprovals")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -1791,9 +1794,6 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("TargetEntityId")
                         .IsRequired()
                         .HasColumnType("text");
-
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
 
                     b.Property<uint>("xmin")
                         .IsConcurrencyToken()
@@ -2374,7 +2374,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("RoleId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("UserId")
@@ -2390,7 +2390,7 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("GroupId", "RoleId");
 
-                    b.HasIndex("TenantId", "CertificateAuthorityId");
+                    b.HasIndex("SpaceId", "CertificateAuthorityId");
 
                     b.HasIndex("UserId", "RoleId");
 
@@ -2449,7 +2449,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("citext");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
@@ -2459,7 +2459,7 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("TenantId");
+                    b.HasIndex("SpaceId");
 
                     b.ToTable("Roles", t =>
                         {
@@ -2761,7 +2761,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("WrappingKeyId")
@@ -2862,6 +2862,76 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("SigningProfiles", t =>
                         {
                             t.HasCheckConstraint("CK_SigningProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SpaceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("CanBeDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("CeremonyRequiredApprovals")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("MaxValidityDays")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("citext");
+
+                    b.Property<bool>("RequireKeyCeremony")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("citext");
+
+                    b.Property<int?>("UserCeremonyRequiredApprovals")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ValidityCeilingBehavior")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsDeleted");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.HasIndex("Slug")
+                        .IsUnique();
+
+                    b.ToTable("Spaces", t =>
+                        {
+                            t.HasCheckConstraint("CK_Spaces_Name_Length", "length(\"Name\") <= 255");
+
+                            t.HasCheckConstraint("CK_Spaces_Slug_Length", "length(\"Slug\") <= 255");
                         });
                 });
 
@@ -3181,76 +3251,6 @@ namespace ModularCA.Database.Migrations
                         });
                 });
 
-            modelBuilder.Entity("ModularCA.Shared.Entities.TenantEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("CanBeDeleted")
-                        .HasColumnType("boolean");
-
-                    b.Property<int>("CeremonyRequiredApprovals")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("DeletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<bool>("IsDeleted")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<bool>("IsEnabled")
-                        .HasColumnType("boolean");
-
-                    b.Property<int>("MaxValidityDays")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("citext");
-
-                    b.Property<bool>("RequireKeyCeremony")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Slug")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("citext");
-
-                    b.Property<int?>("UserCeremonyRequiredApprovals")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("ValidityCeilingBehavior")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("IsDeleted");
-
-                    b.HasIndex("Name")
-                        .IsUnique();
-
-                    b.HasIndex("Slug")
-                        .IsUnique();
-
-                    b.ToTable("Tenants", t =>
-                        {
-                            t.HasCheckConstraint("CK_Tenants_Name_Length", "length(\"Name\") <= 255");
-
-                            t.HasCheckConstraint("CK_Tenants_Slug_Length", "length(\"Slug\") <= 255");
-                        });
-                });
-
             modelBuilder.Entity("ModularCA.Shared.Entities.TotpRecoveryCodeEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3414,7 +3414,7 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
-                    b.Property<Guid?>("TenantId")
+                    b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid>("UserId")
@@ -3426,7 +3426,7 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("GrantedByUserId");
 
-                    b.HasIndex("TenantId", "CertificateAuthorityId");
+                    b.HasIndex("SpaceId", "CertificateAuthorityId");
 
                     b.HasIndex("UserId", "Capability");
 
@@ -3516,7 +3516,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("ServiceScopeCaId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("ServiceScopeTenantId")
+                    b.Property<Guid?>("ServiceScopeSpaceId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Username")
@@ -3544,7 +3544,7 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("ServiceScopeCaId");
 
-                    b.HasIndex("ServiceScopeTenantId");
+                    b.HasIndex("ServiceScopeSpaceId");
 
                     b.HasIndex("Username")
                         .IsUnique();
@@ -3912,16 +3912,16 @@ namespace ModularCA.Database.Migrations
                         .HasForeignKey("ParentCaId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                    b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("SpaceId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Certificate");
 
                     b.Navigation("ParentCa");
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Space");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CertificateEntity", b =>
@@ -4057,14 +4057,14 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                    b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("SpaceId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("EnrollmentUser");
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Space");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmKeyEntity", b =>
@@ -4182,9 +4182,9 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                    b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("SpaceId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
@@ -4200,7 +4200,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Navigation("Role");
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Space");
 
                     b.Navigation("User");
                 });
@@ -4223,14 +4223,14 @@ namespace ModularCA.Database.Migrations
                         .HasForeignKey("CreatedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                    b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("SpaceId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("CreatedByUser");
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Space");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.ScepTransactionEntity", b =>
@@ -4360,9 +4360,9 @@ namespace ModularCA.Database.Migrations
                         .HasForeignKey("GrantedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("ModularCA.Shared.Entities.TenantEntity", "Tenant")
+                    b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("SpaceId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
@@ -4375,7 +4375,7 @@ namespace ModularCA.Database.Migrations
 
                     b.Navigation("GrantedByUser");
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Space");
 
                     b.Navigation("User");
                 });

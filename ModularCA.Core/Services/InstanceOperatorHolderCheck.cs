@@ -16,12 +16,12 @@ public static class InstanceOperatorHolderCheck
     public static async Task<string?> WarningAsync(ModularCADbContext db, CancellationToken ct = default)
     {
         var viaGrants = await db.UserCapabilityGrants.AsNoTracking()
-            .Where(ug => ug.TenantId == null && ug.CertificateAuthorityId == null && ug.ResourceType == null
+            .Where(ug => ug.SpaceId == null && ug.CertificateAuthorityId == null && ug.ResourceType == null
                 && ug.Capability == Capabilities.CaManage)
             .Select(ug => ug.UserId)
             .ToListAsync(ct);
         var viaRoles = await db.RoleAssignments.AsNoTracking()
-            .Where(ra => ra.UserId != null && ra.GroupId == null && ra.TenantId == null && ra.CertificateAuthorityId == null
+            .Where(ra => ra.UserId != null && ra.GroupId == null && ra.SpaceId == null && ra.CertificateAuthorityId == null
                 && ra.Role.Capabilities.Any(rc => rc.ResourceType == null && rc.Capability == Capabilities.CaManage))
             .Select(ra => ra.UserId!.Value)
             .ToListAsync(ct);

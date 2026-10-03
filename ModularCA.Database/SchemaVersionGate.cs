@@ -116,7 +116,8 @@ public sealed record MigrationFailure(
 /// role first, then the rest.
 /// </para>
 /// <para>
-/// Only <see cref="ApplyAllForBootstrapAsync"/> applies a baseline.
+/// Only <see cref="ApplyAllForBootstrapAsync"/> and <see cref="ApplyBaselineForBootstrapAsync"/>
+/// apply a baseline, and only to an empty database.
 /// </para>
 /// </remarks>
 public static class SchemaVersionGate
@@ -270,9 +271,51 @@ public static class SchemaVersionGate
     }
 
     /// <summary>
+    /// Applies the pending migrations of <paramref name="state"/> up to and including
+    /// <paramref name="target"/>, through <see cref="ApplyPendingAsync"/>, and leaves the later
+    /// ones pending. Never reverts: throws when the database has applied a migration that sorts
+    /// after <paramref name="target"/>, or when this build does not carry <paramref name="target"/>.
+    /// </summary>
+    public static Task<MigrationFailure?> ApplyPendingThroughAsync(
+        DbContext db, SchemaState state, string target, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(state);
+        var known = state.Known.ToList();
+        var at = known.IndexOf(target);
+        if (at < 0)
+            throw new ArgumentException($"This build carries no migration '{target}'.", nameof(target));
+        var later = state.Applied.Where(id => known.IndexOf(id) > at).ToList();
+        if (later.Count > 0)
+            throw new InvalidOperationException(
+                $"The database has already applied {string.Join(", ", later)}, after {target}; migrations are never reverted.");
+        var through = new SchemaState(state.Applied, state.Known.Take(at + 1).ToList()) { Presence = state.Presence };
+        return ApplyPendingAsync(db, through, ct);
+    }
+
+    /// <summary>
+    /// Applies only the frozen <paramref name="baseline"/> to a database just created for it, so
+    /// data in the baseline's shape can be loaded before the later migrations transform it, as
+    /// they would on an upgrade. Throws when the database is not
+    /// <see cref="DatabasePresence.Empty"/> or <paramref name="baseline"/> is not the first
+    /// migration this build carries.
+    /// </summary>
+    public static async Task<MigrationFailure?> ApplyBaselineForBootstrapAsync(DbContext db, string baseline, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        var state = await ReadAsync(db, ct);
+        if (state.Presence != DatabasePresence.Empty)
+            throw new InvalidOperationException(
+                $"A baseline is applied only to an empty database; this one is {state.Presence}.");
+        if (state.Known.Count == 0 || !string.Equals(state.Known[0], baseline, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"'{baseline}' is not this build's first migration ({(state.Known.Count == 0 ? "none" : state.Known[0])}).");
+        return await ApplyPendingThroughAsync(db, state, baseline, ct);
+    }
+
+    /// <summary>
     /// Applies every migration, the frozen baseline first, to a database bootstrap has just
-    /// created. The only place a baseline is applied. Throws when the database is not
-    /// <see cref="DatabasePresence.Empty"/>.
+    /// created. Throws when the database is not <see cref="DatabasePresence.Empty"/>.
     /// </summary>
     public static async Task<MigrationFailure?> ApplyAllForBootstrapAsync(DbContext db, CancellationToken ct = default)
     {

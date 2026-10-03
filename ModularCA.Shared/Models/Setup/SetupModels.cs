@@ -17,14 +17,14 @@ public class SetupRequest
 }
 
 /// <summary>
-/// Organization / tenant details for the setup wizard.
+/// Organization / space details for the setup wizard.
 /// </summary>
 public class SetupOrganization
 {
-    /// <summary>Organization/tenant name (e.g., "Acme Corp").</summary>
+    /// <summary>Organization/space name (e.g., "Acme Corp").</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Optional description for the tenant.</summary>
+    /// <summary>Optional description for the space.</summary>
     public string? Description { get; set; }
 }
 
@@ -36,7 +36,7 @@ public class SetupRootCa
     /// <summary>Root CA Common Name (e.g., "Acme Corp Root CA").</summary>
     public string CommonName { get; set; } = string.Empty;
 
-    /// <summary>Organization name for the CA subject (usually same as tenant name).</summary>
+    /// <summary>Organization name for the CA subject (usually same as space name).</summary>
     public string Organization { get; set; } = string.Empty;
 
     /// <summary>Organizational unit (optional).</summary>

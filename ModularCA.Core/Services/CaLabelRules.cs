@@ -16,8 +16,11 @@ public static class CaLabelRules
     private static readonly System.Text.RegularExpressions.Regex Pattern =
         new(@"^[a-z0-9][a-z0-9-]{0,62}$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    /// <summary>Prefixes kept for the CAs and groups bootstrap creates.</summary>
-    public static readonly string[] ReservedPrefixes = ["system-", "org-"];
+    /// <summary>
+    /// Prefixes kept for the CAs and groups bootstrap creates: <c>space-</c> names a space's
+    /// groups from 0.4.0, and <c>org-</c> named them before.
+    /// </summary>
+    public static readonly string[] ReservedPrefixes = ["system-", "space-", "org-"];
 
     /// <summary>
     /// Throws <see cref="ArgumentException"/> when <paramref name="label"/> does not match the
@@ -30,7 +33,7 @@ public static class CaLabelRules
                 $"Invalid CA label '{label}'. Labels must match ^[a-z0-9][a-z0-9-]{{0,62}}$.", paramName);
         if (!allowReserved && ReservedPrefixes.Any(p => label.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException(
-                $"CA label '{label}' uses a reserved prefix (system- / org-). Choose a different label.", paramName);
+                $"CA label '{label}' uses a reserved prefix (system- / space- / org-). Choose a different label.", paramName);
     }
 
     /// <summary>

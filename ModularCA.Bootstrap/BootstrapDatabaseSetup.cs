@@ -251,24 +251,10 @@ public static class BootstrapDatabaseSetup
     /// A context of <paramref name="kind"/> on the migration connection for
     /// <paramref name="instance"/>: unpooled, with the server-side lock and statement timeouts of
     /// <paramref name="schema"/> and a client timeout slightly longer. The same shape the control
-    /// role migrates with at startup.
+    /// role migrates with at startup (<see cref="MigrationConnection"/>).
     /// </summary>
-    private static DbContext CreateMigrationContext(DatabaseKind kind, DbInstance instance, SchemaConfig schema)
-    {
-        var clientTimeout = schema.MigrationCommandTimeoutSeconds > 0 ? schema.MigrationCommandTimeoutSeconds + 30 : 0;
-        var connectionString = new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance))
-        {
-            Pooling = false,
-            CommandTimeout = clientTimeout,
-            Options = $"-c lock_timeout={Math.Max(0, schema.MigrationLockTimeoutSeconds) * 1000L} "
-                + $"-c statement_timeout={Math.Max(0, schema.MigrationCommandTimeoutSeconds) * 1000L}",
-        }.ConnectionString;
-        return kind == DatabaseKind.Application
-            ? new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseNpgsql(connectionString, o => o.CommandTimeout(clientTimeout)).Options)
-            : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
-                .UseNpgsql(connectionString, o => o.CommandTimeout(clientTimeout)).Options);
-    }
+    private static DbContext CreateMigrationContext(DatabaseKind kind, DbInstance instance, SchemaConfig schema) =>
+        MigrationConnection.CreateContext(kind, instance, schema);
 
     /// <summary>Throws the operator-facing migration failure, or the login refusal it hides, when <paramref name="failure"/> is set.</summary>
     private static void ThrowIfFailed(DbInstance instance, string contextName, MigrationFailure? failure, SchemaConfig schema)

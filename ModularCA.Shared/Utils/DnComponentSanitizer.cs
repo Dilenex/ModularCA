@@ -20,6 +20,10 @@ namespace ModularCA.Shared.Utils
         /// <summary>Generic RDN value cap applied when no field-specific limit is provided.</summary>
         public const int DefaultMaxLength = 128;
 
+        /// <summary>True when <paramref name="value"/> holds a control character (U+0000 to U+001F, or U+007F).</summary>
+        public static bool HasControlCharacter(string? value) =>
+            value != null && value.Any(c => c < (char)0x20 || c == (char)0x7F);
+
         /// <summary>
         /// Validates a single RDN value. Rejects control characters (U+0000–U+001F,
         /// U+007F), BIDI overrides (U+202A–U+202E, U+2066–U+2069), unpaired surrogates,

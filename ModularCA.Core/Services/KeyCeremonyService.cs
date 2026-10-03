@@ -41,18 +41,11 @@ public class KeyCeremonyService : IKeyCeremonyService
         string parametersJson,
         int? quorumOverride = null)
     {
-        // Extract tenant ID from parameters for quorum resolution
-        Guid? tenantId = null;
-        if (!string.IsNullOrEmpty(parametersJson))
-        {
-            try
-            {
-                var parameters = JsonSerializer.Deserialize<ModularCA.Shared.Models.KeyCeremonyParameters>(parametersJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                tenantId = parameters?.TenantId;
-            }
-            catch { /* Fall through to default quorum */ }
-        }
-        var quorum = quorumOverride ?? await ResolveQuorumAsync(operationType, targetEntityId, tenantId);
+        // A legacy scope key throws rather than reading as the instance.
+        Guid? spaceId = string.IsNullOrEmpty(parametersJson)
+            ? null
+            : ModularCA.Shared.Models.CeremonyParametersJson.ReadSpaceId(parametersJson);
+        var quorum = quorumOverride ?? await ResolveQuorumAsync(operationType, targetEntityId, spaceId);
 
         // Minimum quorum is 1: since self-approval is blocked, a quorum of 1 still
         // requires at least one other person to approve. A quorum of 0 would auto-approve
@@ -74,7 +67,7 @@ public class KeyCeremonyService : IKeyCeremonyService
             ExpiresAt = DateTime.UtcNow.AddHours(24),
             ParametersJson = parametersJson,
             ApprovalsJson = "[]",
-            TenantId = tenantId
+            SpaceId = spaceId
         };
 
         _db.KeyCeremonies.Add(ceremony);
@@ -304,11 +297,11 @@ public class KeyCeremonyService : IKeyCeremonyService
     }
 
     /// <inheritdoc />
-    public async Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null, bool includeInstance = false)
+    public async Task<List<KeyCeremonyEntity>> ListBySpacesAsync(IEnumerable<Guid> spaceIds, string? statusFilter = null, bool includeInstance = false)
     {
-        var ids = tenantIds.ToList();
+        var ids = spaceIds.ToList();
         var query = _db.KeyCeremonies.AsNoTracking()
-            .Where(c => (c.TenantId == null && includeInstance) || (c.TenantId != null && ids.Contains(c.TenantId.Value)));
+            .Where(c => (c.SpaceId == null && includeInstance) || (c.SpaceId != null && ids.Contains(c.SpaceId.Value)));
 
         if (!string.IsNullOrWhiteSpace(statusFilter))
             query = query.Where(c => c.Status == statusFilter);
@@ -345,19 +338,20 @@ public class KeyCeremonyService : IKeyCeremonyService
 
     /// <summary>
     /// Resolves the raw quorum from the scope's policy or the CA admin group. For the scoped
-    /// operations a null tenant means the instance, whose own CeremonyRequiredApprovals applies.
+    /// operations a null space means the instance, whose own CeremonyRequiredApprovals applies.
     /// The CA admin group is the CA's <c>Administrator</c>-template group holding <c>ca.manage</c>
     /// (the auto-generated one first); the CA's Operator group also holds <c>ca.manage</c> and
     /// never sets the quorum. The caller clamps the result to a minimum of 1.
     /// </summary>
-    private async Task<int> ResolveQuorumAsync(string operationType, string targetEntityId, Guid? tenantId)
+    private async Task<int> ResolveQuorumAsync(string operationType, string targetEntityId, Guid? spaceId)
     {
         // For new CA creation, use the scope-level ceremony approval count since the target CA
-        // (and its admin group) don't exist yet. TenantPolicyChange and InstancePolicyChange are
+        // (and its admin group) don't exist yet. SpacePolicyChange and InstancePolicyChange are
         // scope-level too and use the same quorum.
-        if (operationType is "CreateRootCA" or "CreateIntermediateCA" or "CreateSshCa" or "DeleteSshCa" or "RevokeCa" or "TenantPolicyChange" or "InstancePolicyChange")
+        if (operationType is "CreateRootCA" or "CreateIntermediateCA" or "CreateSshCa" or "DeleteSshCa" or "RevokeCa"
+            or nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange))
         {
-            var policy = await _policies.ResolveAsync(tenantId);
+            var policy = await _policies.ResolveAsync(spaceId);
             if (policy.Found)
                 return Math.Max(1, policy.CeremonyRequiredApprovals);
         }

@@ -582,7 +582,7 @@ public class CrlService : ICrlService
     /// Resolves the CA public certificate from the database-backed <see cref="CertificateEntity"/>
     /// without round-tripping through the <c>SubjectDN</c> string (<c>RawCertificate</c> when
     /// present, the keystore's public copy for legacy rows), together with the reference the
-    /// signer knows the CA key by and the context naming the CA and its tenant. The key itself is
+    /// signer knows the CA key by and the context naming the CA and its space. The key itself is
     /// never resolved here.
     /// </summary>
     private async Task<(X509Certificate Cert, KeyRef Key, SigningContext Context)> ResolveCaKeyAsync(CertificateEntity ca, CancellationToken cancellationToken)
@@ -607,11 +607,11 @@ public class CrlService : ICrlService
         var owner = await _dbContext.CertificateAuthorities
             .AsNoTracking()
             .Where(c => c.CertificateId == ca.CertificateId)
-            .Select(c => new { c.Id, c.TenantId })
+            .Select(c => new { c.Id, c.SpaceId })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException($"No certificate authority record names CA certificate {ca.CertificateId}; the signer cannot attribute its key.");
 
-        return (caCert, new KeyRef(ca.CertificateId), SigningContext.ForCa(SignerCaller, SigningPurpose.Crl, owner.Id, owner.TenantId));
+        return (caCert, new KeyRef(ca.CertificateId), SigningContext.ForCa(SignerCaller, SigningPurpose.Crl, owner.Id, owner.SpaceId));
     }
 
     /// <summary>

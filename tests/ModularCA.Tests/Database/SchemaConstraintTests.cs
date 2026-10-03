@@ -75,12 +75,12 @@ public class SchemaConstraintTests
         Assert.Equal(DeleteBehavior.Restrict, crlToConfig.DeleteBehavior);
     }
 
-    // ── Naming and tenant foreign keys ────────────────────────────────────────
+    // ── Naming and space foreign keys ────────────────────────────────────────
 
     /// <summary>
     /// From 0.4.0 S4 a CA's label and name are unique across the instance over all rows, deleted
     /// ones included (no filter): the label is the path of the CA's CRL, OCSP, AIA and enrolment URLs.
-    /// The per-tenant and instance-only indexes are gone.
+    /// The per-space and instance-only indexes are gone.
     /// </summary>
     [Theory]
     [InlineData(nameof(CertificateAuthorityEntity.Label))]
@@ -100,25 +100,25 @@ public class SchemaConstraintTests
     [InlineData(typeof(RoleAssignmentEntity))]
     [InlineData(typeof(UserCapabilityGrantEntity))]
     [InlineData(typeof(CertificateAuthorityEntity))]
-    public void Deleting_a_tenant_is_restricted_never_cascaded_or_nulled(Type entity)
+    public void Deleting_a_space_is_restricted_never_cascaded_or_nulled(Type entity)
     {
-        // A null tenant means instance scope: SET NULL on a deleted space would promote its grants
+        // A null space means instance scope: SET NULL on a deleted space would promote its grants
         // to the instance, and CASCADE would take a realm or a CA with it.
-        var fk = Assert.Single(Model().FindEntityType(entity)!.GetForeignKeys(), f => f.PrincipalEntityType.ClrType == typeof(TenantEntity));
+        var fk = Assert.Single(Model().FindEntityType(entity)!.GetForeignKeys(), f => f.PrincipalEntityType.ClrType == typeof(SpaceEntity));
         Assert.Equal(DeleteBehavior.Restrict, fk.DeleteBehavior);
     }
 
     [Fact]
     public void Profiles_groups_and_roles_are_still_globally_unique_on_purpose()
     {
-        // These three carry a TenantId and "should" be per-tenant, but the CODE resolves them by
+        // These three carry a SpaceId and "should" be per-space, but the CODE resolves them by
         // bare name — CaCreationService looks up "Main CA Certificate Profile", bootstrap looks
         // up "system-super", RoleAssignmentHelper looks up a role template. The unique index is
         // what makes those lookups deterministic.
         //
         // This test exists so relaxing the index is a deliberate act with a failing test attached,
-        // not a tidy-up. Doing it without first making those lookups tenant-aware would trade an
-        // inconvenience for a cross-tenant resolution bug. If you are here because this test
+        // not a tidy-up. Doing it without first making those lookups space-aware would trade an
+        // inconvenience for a cross-space resolution bug. If you are here because this test
         // failed: fix the lookups, then change this.
         Assert.True(HasUniqueIndexOver<CertProfileEntity>(nameof(CertProfileEntity.Name)));
         Assert.True(HasUniqueIndexOver<CaGroupEntity>(nameof(CaGroupEntity.Name)));

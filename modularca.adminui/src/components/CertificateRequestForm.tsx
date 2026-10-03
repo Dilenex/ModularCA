@@ -446,9 +446,9 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
     // --- Validity ceiling pre-flight ---
     // Re-asked whenever the profile pair changes, because both selections feed the answer: the
-    // signing profile determines the issuing CA and therefore the tenant, and the cert profile
+    // signing profile determines the issuing CA and therefore the space, and the cert profile
     // supplies the baseline maximum. Deliberately NOT re-asked as notBefore is typed — the server
-    // measures the tenant ceiling from notBefore, but a request per keystroke to move a number by
+    // measures the space ceiling from notBefore, but a request per keystroke to move a number by
     // a few hours is not worth it, and the default start is what nearly every request uses.
     useEffect(() => {
         if (!showCeilingPreflight || !selectedSigningProfile || !effectiveCertProfileId) {
@@ -1224,7 +1224,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                     )}
                                     {notAfterExceedsCeiling && ceiling && (
                                         <p className="text-[11px] mt-1 text-red-700 dark:text-red-400">
-                                            {ceiling.tenantBehavior === 'Refuse' && ceiling.tenantCeilingApplies && ceiling.resolution.boundBy === 'Tenant'
+                                            {ceiling.spaceBehavior === 'Refuse' && ceiling.spaceCeilingApplies && ceiling.resolution.boundBy === 'Space'
                                                 ? 'This exceeds the ceiling above and will be refused.'
                                                 : 'This exceeds the ceiling above and will be shortened at issuance.'}
                                         </p>

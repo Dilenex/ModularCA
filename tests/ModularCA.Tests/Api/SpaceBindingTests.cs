@@ -38,7 +38,7 @@ public sealed class SpaceBindingTests
 
     /// <summary>A user in space A's CA-X admin group who also holds <paramref name="template"/> on B's CA.</summary>
     private static Guid AdminOfAWith(World w, string name, string[] template)
-        => w.User(name, w.Db.CaGroups.Single(g => g.Name == "ca-a-admin").Id, w.Group($"{name}-b", w.B.TenantId, w.B.CaId, template));
+        => w.User(name, w.Db.CaGroups.Single(g => g.Name == "ca-a-admin").Id, w.Group($"{name}-b", w.B.SpaceId, w.B.CaId, template));
 
     /// <summary>
     /// A user in <paramref name="baseGroup"/> who also operates another CA of space B, not the
@@ -46,19 +46,19 @@ public sealed class SpaceBindingTests
     /// </summary>
     private static Guid OperatorOfAnotherCaOfB(World w, string name, Guid baseGroup, bool ssh = false)
     {
-        var other = ssh ? SshCa(w, $"{name}-ssh", w.B.TenantId).CaId : Guid.NewGuid();
+        var other = ssh ? SshCa(w, $"{name}-ssh", w.B.SpaceId).CaId : Guid.NewGuid();
         if (!ssh)
         {
-            w.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = other, Name = $"{name} ca", Label = $"{name}-ca", TenantId = w.B.TenantId, Type = "Root", IsEnabled = true });
+            w.Db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = other, Name = $"{name} ca", Label = $"{name}-ca", SpaceId = w.B.SpaceId, Type = "Root", IsEnabled = true });
             w.Db.SaveChanges();
         }
-        return w.User(name, baseGroup, w.Group($"{name}-b", w.B.TenantId, other, Capabilities.OperatorTemplate));
+        return w.User(name, baseGroup, w.Group($"{name}-b", w.B.SpaceId, other, Capabilities.OperatorTemplate));
     }
 
-    /// <summary>An SSH CA and key in <paramref name="tenantId"/>, for rebinding SSH rows across scopes.</summary>
-    private static (Guid CaId, Guid KeyId) SshCa(World w, string label, Guid? tenantId)
+    /// <summary>An SSH CA and key in <paramref name="spaceId"/>, for rebinding SSH rows across scopes.</summary>
+    private static (Guid CaId, Guid KeyId) SshCa(World w, string label, Guid? spaceId)
     {
-        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label, Label = label, TenantId = tenantId, IsSshCa = true, Type = "SSH", IsEnabled = true };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label, Label = label, SpaceId = spaceId, IsSshCa = true, Type = "SSH", IsEnabled = true };
         var key = new SshCaKeyEntity { Id = Guid.NewGuid(), Name = label, KeyType = "ed25519", PublicKey = "ssh-ed25519 AAAA", PrivateKeyPath = "x", CertificateAuthorityId = ca.Id, IsUserCa = true, MaxValidityHours = 24, IsEnabled = true };
         w.Db.CertificateAuthorities.Add(ca);
         w.Db.SshCaKeys.Add(key);
@@ -169,11 +169,11 @@ public sealed class SpaceBindingTests
     public async Task Ssh_rows_move_only_to_an_ssh_ca_of_their_scope_the_caller_operates()
     {
         var w = new World();
-        var (bSsh, bKey) = SshCa(w, "b-ssh", w.B.TenantId);
+        var (bSsh, bKey) = SshCa(w, "b-ssh", w.B.SpaceId);
         var sshAdmin = w.Instance.SshMember;
-        var auditorOfB = w.User("ssh-b-viewer", w.Instance.SshCaGroup, w.Group("b-ssh-auditor", w.B.TenantId, bSsh, Capabilities.AuditorTemplate));
+        var auditorOfB = w.User("ssh-b-viewer", w.Instance.SshCaGroup, w.Group("b-ssh-auditor", w.B.SpaceId, bSsh, Capabilities.AuditorTemplate));
         var viewerOfB = OperatorOfAnotherCaOfB(w, "ssh-b-other", w.Instance.SshCaGroup, ssh: true);
-        var operatorOfB = w.User("ssh-b-operator", w.Instance.SshCaGroup, w.Group("b-ssh-operator", w.B.TenantId, bSsh, Capabilities.OperatorTemplate));
+        var operatorOfB = w.User("ssh-b-operator", w.Instance.SshCaGroup, w.Group("b-ssh-operator", w.B.SpaceId, bSsh, Capabilities.OperatorTemplate));
 
         Task<(int Status, string Body)> Template(Guid user, Guid key) => SendAsync(w, user, Send("PUT", SshTemplates, "Update",
             $"/api/v1/admin/ssh/templates/{w.Instance.SshTemplate}", ("id", w.Instance.SshTemplate),
@@ -236,7 +236,8 @@ public sealed class SpaceBindingTests
     /// <summary>
     /// Protocol audit rows are scoped by their CA id, so a row of B's CA carrying A's label is not
     /// shown to A's auditor and a row of A's CA under an old label is; only a legacy row with no CA
-    /// id falls back to its label. The list, its CA filter and the by-id read agree.
+    /// id falls back to its label. The list, its CA filter and the by-id read agree, and name the
+    /// row's space <c>spaceId</c>.
     /// </summary>
     [Fact]
     public async Task Protocol_audit_rows_are_scoped_by_ca_id_and_by_label_only_without_one()
@@ -260,6 +261,9 @@ public sealed class SpaceBindingTests
             Assert.Contains(relabelled.Id.ToString(), body, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(legacy.Id.ToString(), body, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(foreign.Id.ToString(), body, StringComparison.OrdinalIgnoreCase);
+            // The audit database keeps its TenantId column; the API names it spaceId.
+            Assert.Contains("\"spaceId\"", body);
+            Assert.DoesNotContain("tenantId", body, StringComparison.OrdinalIgnoreCase);
         }
         Call ById(Guid id) => Get(Audit, "GetEstAuditById", $"/api/v1/admin/audit/est/{id}", ("id", id));
         Assert.Equal(404, (await SendAsync(w, auditor, ById(foreign.Id))).Status);
@@ -294,7 +298,7 @@ public sealed class SpaceBindingTests
         var w = new World();
         var dual = w.User("dual", w.A.Group, w.B.Group);
         var grantInB = w.User("grant-in-b");
-        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = grantInB, Capability = Capabilities.CertView, TenantId = w.B.TenantId });
+        w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = grantInB, Capability = Capabilities.CertView, SpaceId = w.B.SpaceId });
         w.Db.SaveChanges();
 
         var (status, body) = await SendAsync(w, w.Users["space admin"], Get("Admin.Management.AdminUserManagerController", "GetUsers", "/api/v1/admin/users"));

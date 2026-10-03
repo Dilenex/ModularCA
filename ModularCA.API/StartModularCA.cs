@@ -113,7 +113,7 @@ if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
     }
 
     // Print the retention-by-design warning in the reset banner so
-    // operators are not surprised when audit rows from the previous tenant reappear.
+    // operators are not surprised when audit rows from the previous space reappear.
     Console.WriteLine("================================================================");
     Console.WriteLine("FACTORY RESET — Destroying all data...");
     Console.WriteLine();
@@ -436,7 +436,16 @@ bool isSetupMode = false;
 
 if (File.Exists(configPath))
 {
-    config = YamlConfigLoader.Load(configPath);
+    try
+    {
+        config = YamlConfigLoader.Load(configPath);
+    }
+    catch (ConfigKeyConflictException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(ModularCA.API.Startup.SchemaStartup.ExitCode);
+        throw;
+    }
 }
 else
 {
@@ -945,7 +954,7 @@ builder.Services.AddScoped<CertificateBuilderService>();
 builder.Services.AddSingleton<IPqcKeyGenerationService, PqcKeyGenerationService>();
 builder.Services.AddScoped<ICertPolicyService, CertPolicyService>();
 builder.Services.AddScoped<IQuotaService, QuotaService>();
-builder.Services.AddScoped<ITenantPolicyChangeService, TenantPolicyChangeService>();
+builder.Services.AddScoped<ISpacePolicyChangeService, SpacePolicyChangeService>();
 builder.Services.AddScoped<IEffectivePolicyResolver, EffectivePolicyResolver>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.IControlledUserCeremonyService, ModularCA.Auth.Authorization.ControlledUserCeremonyService>();
 builder.Services.AddScoped<ICertificateIssuanceService, CertificateIssuanceService>();
@@ -1165,7 +1174,7 @@ builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHand
 
 builder.Services.AddAuthorization(options =>
 {
-    // System-level (system scope only) and CA-scoped (system, tenant, or CA) capability policies.
+    // System-level (system scope only) and CA-scoped (system, space, or CA) capability policies.
     ModularCA.Auth.Authorization.PolicyDefinitions.AddTo(options);
 
     // Fail closed. Any controller/action without an
@@ -1498,14 +1507,7 @@ builder.Services.AddScoped<ICsrService, CsrService>();
 builder.Services.AddControllers(options =>
 {
     options.Conventions.Add(new ModularCA.API.Startup.NodeRoleConvention(processRoles));
-}).AddJsonOptions(opts =>
-{
-    opts.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
-    // Emit every DateTime as ISO-8601 UTC with a trailing 'Z'. EF (MySQL datetime) and NCrontab
-    // hand us DateTimeKind.Unspecified values, which System.Text.Json would otherwise serialize
-    // without a zone — causing browsers to parse UTC instants as local time. See the converter.
-    opts.JsonSerializerOptions.Converters.Add(new ModularCA.API.Json.UtcDateTimeJsonConverter());
-});
+}).AddJsonOptions(opts => ModularCA.API.Json.ApiJsonOptions.Apply(opts.JsonSerializerOptions));
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -2440,8 +2442,8 @@ else
             // cannot use HTTPS to fetch the CRL/OCSP that validates that same cert). Those are
             // the validation role's endpoints, so the listener is the validation role's: a
             // process without it serves nothing that belongs on plain HTTP.
-            // The ingress opens it as well, routing by Host, so a tenant's revocation URLs reach
-            // that tenant's node on plain HTTP without a redirect.
+            // The ingress opens it as well, routing by Host, so a space's revocation URLs reach
+            // that space's node on plain HTTP without a redirect.
             if (config.Http.Port > 0
                 && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation)
                 && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
@@ -2584,33 +2586,24 @@ if (!isSetupMode && !controlActive)
     Console.WriteLine("[STARTUP] Migrations and startup repairs are the control role's; this process applies none.");
 }
 
-// Single-organisation mode refuses a new organisation; it does not remove existing ones. An
-// instance already holding several (disabled ones count) is told so at every start.
-if (!isSetupMode && controlActive && !config.Features.AllowMultipleOrganizations)
+if (!isSetupMode && controlActive && !string.IsNullOrWhiteSpace(config.LdapAuth.GroupToRoleMappings))
 {
     try
     {
-        using var orgScope = app.Services.CreateScope();
-        var orgDb = orgScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-        var organisations = await orgDb.Tenants
-            .Where(t => !t.IsDeleted)
-            .OrderBy(t => t.Name)
-            .Select(t => new { t.Name, t.IsEnabled })
-            .ToListAsync();
-        var organisationWarning = ModularCA.Shared.Licensing.TenantCreationGate.SingleOrganizationStartupWarning(
-            config.Features.AllowMultipleOrganizations,
-            organisations.Select(o => (o.Name, o.IsEnabled)).ToList());
-        if (organisationWarning is not null)
+        using var ldapScope = app.Services.CreateScope();
+        var renamedWarning = await ldapScope.ServiceProvider.GetRequiredService<ILdapGroupSyncService>().RenamedMappingTargetsWarningAsync();
+        if (renamedWarning is not null)
         {
-            Log.Warning("{SingleOrganizationWarning}", organisationWarning);
-            Console.WriteLine($"[STARTUP] WARNING: {organisationWarning}");
+            Log.Warning("{RenamedLdapMappings}", renamedWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {renamedWarning}");
         }
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[STARTUP] Organisation count check skipped: {ex.Message}");
+        Console.WriteLine($"[STARTUP] LDAP mapping check skipped: {ex.Message}");
     }
 }
+
 if (!isSetupMode && controlActive)
 {
     // New templates are minted under this product's own arc with nothing configured. Identifiers
@@ -2699,15 +2692,15 @@ if (!isSetupMode && controlActive)
         {
             var restarted = await chainService.RestartLegacyChainsAsync(chainAuditDb);
             if (restarted.Count > 0)
-                Console.WriteLine($"[STARTUP] Audit chain restarted for {restarted.Count} tenant chain(s): records before "
+                Console.WriteLine($"[STARTUP] Audit chain restarted for {restarted.Count} chain(s): records before "
                     + "this start were hashed under the previous canonical form and stay link-checked only.");
 
-            // 0.4.0 S3: new records go to the instance chain; each per-tenant chain is sealed once,
+            // 0.4.0 S3: new records go to the instance chain; each per-space chain is sealed once,
             // and its final hash anchored in the instance chain. The migration cannot reach the
             // audit database, so the control role does it here.
             var sealedChains = await chainService.SealRetiredChainsAsync(chainAuditDb);
             if (sealedChains.Count > 0)
-                Console.WriteLine($"[STARTUP] Sealed {sealedChains.Count} retired tenant audit chain(s); their final hashes are anchored in the instance chain.");
+                Console.WriteLine($"[STARTUP] Sealed {sealedChains.Count} retired per-space audit chain(s); their final hashes are anchored in the instance chain.");
         }
     }
     catch (Exception ex)
@@ -3148,7 +3141,7 @@ if (controlActive)
 app.UseRouting();
 app.UseAuthentication();
 app.UseMiddleware<ModularCA.API.Middleware.TokenRevocationMiddleware>();
-app.UseMiddleware<ModularCA.API.Middleware.TenantResolutionMiddleware>();
+app.UseMiddleware<ModularCA.API.Middleware.SpaceFenceMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<ModularCA.API.Middleware.ReservedCaLabelGuardMiddleware>(); // Reject reserved system CA labels on any /{caLabel}/ protocol route
 app.UseMiddleware<ModularCA.API.Middleware.ProtocolFeatureGateMiddleware>(); // Gate protocol endpoints by feature flag

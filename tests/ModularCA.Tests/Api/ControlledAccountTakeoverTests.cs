@@ -105,7 +105,7 @@ public sealed class ControlledAccountTakeoverTests
             {
                 User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("sub", actor.ToString()) }, "test")),
             };
-            TenantFence.Store(http, TenantFence.Of([], instanceScope: true, isSystemAdmin: true));
+            SpaceFence.Store(http, SpaceFence.Of([], instanceScope: true, isSystemAdmin: true));
             controller.GetType().GetProperty("ControllerContext", BindingFlags.Instance | BindingFlags.Public)!
                 .SetValue(controller, new ControllerContext { HttpContext = http });
             return controller;
@@ -212,7 +212,7 @@ public sealed class ControlledAccountTakeoverTests
         foreach (var id in new[] { resetPassword, resetMfa, email })
         {
             Assert.Equal(new ControlledTier(ControlledTierLevel.SystemAdmin, null), h.Controlled().DescribeCeremony(h.Ceremony(id)).Minted);
-            Assert.Null(h.Ceremony(id).TenantId);
+            Assert.Null(h.Ceremony(id).SpaceId);
         }
 
         // The initiator never counts, and the target may not approve its own takeover.
@@ -787,7 +787,7 @@ public sealed class ControlledAccountTakeoverTests
         Assert.False(h.W.Db.CaGroupMembers.Any(m => m.UserId == u && m.GroupId == h.W.A1Admin.Id));
     }
 
-    public static TheoryData<string> DominatedApprovers => new() { "SysOp", "OrgAdmin", "OrgOperator", "CaAdmin" };
+    public static TheoryData<string> DominatedApprovers => new() { "SysOp", "SpaceAdmin", "SpaceOperator", "CaAdmin" };
 
     [Theory]
     [MemberData(nameof(DominatedApprovers))]
@@ -802,19 +802,19 @@ public sealed class ControlledAccountTakeoverTests
                 target = h.W.User("sysop", h.W.SystemOperatorGroup);
                 expected = new ControlledTier(ControlledTierLevel.SystemOperator, null);
                 break;
-            case "OrgAdmin":
-                target = h.W.User("org-admin", h.W.OrgAdminA);
-                expected = new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = h.W.TenantA };
+            case "SpaceAdmin":
+                target = h.W.User("org-admin", h.W.SpaceAdminA);
+                expected = new ControlledTier(ControlledTierLevel.SpaceAdmin, null) { SpaceId = h.W.SpaceA };
                 break;
-            case "OrgOperator":
+            case "SpaceOperator":
                 target = h.W.User("org-operator");
-                h.W.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = target, Capability = Capabilities.CaManage, TenantId = h.W.TenantA });
+                h.W.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = target, Capability = Capabilities.CaManage, SpaceId = h.W.SpaceA });
                 h.W.Db.SaveChanges();
-                expected = new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = h.W.TenantA };
+                expected = new ControlledTier(ControlledTierLevel.SpaceOperator, null) { SpaceId = h.W.SpaceA };
                 break;
             default:
                 target = h.W.User("ca-admin", h.W.A1Admin);
-                expected = new ControlledTier(ControlledTierLevel.CaAdmin, h.W.CaA1) { TenantId = h.W.TenantA };
+                expected = new ControlledTier(ControlledTierLevel.CaAdmin, h.W.CaA1) { SpaceId = h.W.SpaceA };
                 break;
         }
         var hash = h.User(target).PasswordHash;
@@ -832,6 +832,6 @@ public sealed class ControlledAccountTakeoverTests
 
         var detail = await Call(h.CeremonyController(h.W.SystemAdmin), "GetById", ids[0]);
         var scope = (string)Prop(detail, "TierScope")!;
-        Assert.Equal(kind switch { "SysOp" => "instance", "CaAdmin" => "on CA a1", _ => "in tenant A" }, scope);
+        Assert.Equal(kind switch { "SysOp" => "instance", "CaAdmin" => "on CA a1", _ => "in space A" }, scope);
     }
 }

@@ -26,8 +26,8 @@ public class ControlledUserChangeParameters
     /// <summary>Capability to grant on execute.</summary>
     public string? Capability { get; set; }
 
-    /// <summary>Tenant scope of the grant. Also used by the ceremony layer to stamp the ceremony's tenant.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Space scope of the grant. Also used by the ceremony layer to stamp the ceremony's space.</summary>
+    public Guid? SpaceId { get; set; }
 
     /// <summary>CA scope of the grant.</summary>
     public Guid? CertificateAuthorityId { get; set; }
@@ -83,8 +83,8 @@ public class ControlledUserChangeParameters
     /// <summary>CA scope of the affected tier (null for system-scoped tiers).</summary>
     public Guid? MintedTierCaId { get; set; }
 
-    /// <summary>Tenant scope of the affected tier (set for org- and CA-scoped tiers; null for system).</summary>
-    public Guid? MintedTierTenantId { get; set; }
+    /// <summary>Space scope of the affected tier (set for space- and CA-scoped tiers; null for system).</summary>
+    public Guid? MintedTierSpaceId { get; set; }
 }
 
 /// <summary>
@@ -169,7 +169,7 @@ public record ControlledUserChangeResult(
     string ChangeType,
     Guid TargetUserId,
     string? Capability,
-    Guid? TenantId,
+    Guid? SpaceId,
     Guid? CertificateAuthorityId)
 {
     /// <summary>
@@ -184,7 +184,7 @@ public record ControlledUserChangeResult(
     protected virtual bool PrintMembers(System.Text.StringBuilder builder)
     {
         builder.Append($"ChangeType = {ChangeType}, TargetUserId = {TargetUserId}, Capability = {Capability}, ")
-            .Append($"TenantId = {TenantId}, CertificateAuthorityId = {CertificateAuthorityId}");
+            .Append($"SpaceId = {SpaceId}, CertificateAuthorityId = {CertificateAuthorityId}");
         return true;
     }
 }

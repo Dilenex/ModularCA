@@ -37,10 +37,10 @@ namespace ModularCA.Shared.Entities
         /// </summary>
         public bool IsServiceIdentity { get; set; } = false;
 
-        /// <summary>Service identities only: the tenant the identity is confined to. Null with a null CA means system scope.</summary>
-        public Guid? ServiceScopeTenantId { get; set; }
+        /// <summary>Service identities only: the space the identity is confined to. Null with a null CA means system scope.</summary>
+        public Guid? ServiceScopeSpaceId { get; set; }
 
-        /// <summary>Service identities only: the CA the identity is confined to, when narrower than a tenant.</summary>
+        /// <summary>Service identities only: the CA the identity is confined to, when narrower than a space.</summary>
         public Guid? ServiceScopeCaId { get; set; }
 
         /// <summary>Free-text purpose, shown in the console. Service identities mostly.</summary>

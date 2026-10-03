@@ -209,8 +209,8 @@ CertPolicy:
   RsaSignaturePadding: "PSS"
   MinRsaKeySize: 2048
   ExpireCheckSchedule: "0 1 * * *"
-  # No MaxValidityDays. Certificate lifetime is capped per tenant
-  # (Tenants & Quotas -> Max Cert Validity), not installation-wide.
+  # No MaxValidityDays. Certificate lifetime is capped per space
+  # (Spaces & Quotas -> Max Cert Validity), not installation-wide.
 
 # Audit retention, expiry notifications, vulnerability scan, auto-renewal,
 # and backup schedules are flat cron strings — see "Scheduler Jobs" below.`}</pre>

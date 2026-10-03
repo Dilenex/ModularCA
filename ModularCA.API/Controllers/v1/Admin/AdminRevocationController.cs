@@ -21,7 +21,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for revoking certificates and placing/removing certificate holds.
 /// All endpoints require step-up MFA verification. KC-06: CA certificate revocation is
-/// ceremony-gated when the tenant's <c>RequireKeyCeremony</c> flag is set.
+/// ceremony-gated when the space's <c>RequireKeyCeremony</c> flag is set.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/certificates")]
@@ -47,7 +47,7 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Revokes a certificate by its ID. Requires step-up MFA verification.
-    /// KC-06: when the certificate is a CA cert and the tenant requires key ceremonies,
+    /// KC-06: when the certificate is a CA cert and the space requires key ceremonies,
     /// a <c>RevokeCa</c> ceremony is created instead of performing immediate revocation.
     /// Audit findings #32: emits the success-path action type with <c>success=false</c> when
     /// the underlying revocation service throws, so SIEM can correlate failed attempts.
@@ -61,8 +61,8 @@ public class AdminRevocationController(
         // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
         // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
         // could pass one of its certificates in the path to satisfy the policy and a different
-        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
-        // this never crossed a tenant — but within one it crossed CAs freely.
+        // CA's certificate in the body to act on. The space fence below checks the body id, so
+        // this never crossed a space — but within one it crossed CAs freely.
         //
         // The route is the resource identity; a body field must not be able to redirect it.
         if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
@@ -80,10 +80,10 @@ public class AdminRevocationController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(certId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
-        // KC-06: if the cert is a CA cert, check if the tenant requires a ceremony.
+        // KC-06: if the cert is a CA cert, check if the space requires a ceremony.
         if (cert.IsCA)
         {
             var ceremonyResult = await TryCreateRevokeCaCeremonyAsync(cert, request.Reason);
@@ -109,7 +109,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", certId.ToString(), new { request.Reason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoById?.CaId, tenantId: caInfoById?.TenantId);
+            certificateAuthorityId: caInfoById?.CaId, spaceId: caInfoById?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {certId} revoked by {_currentUser.User?.Username}", new { CertificateId = certId, request.Reason });
         return Ok(new
         {
@@ -125,7 +125,7 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Revokes a certificate by its serial number. Requires step-up MFA verification.
-    /// KC-06: when the certificate is a CA cert and the tenant requires key ceremonies,
+    /// KC-06: when the certificate is a CA cert and the space requires key ceremonies,
     /// a <c>RevokeCa</c> ceremony is created instead of performing immediate revocation.
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateRevoked"/> with
     /// <c>success=false</c> when the revocation service throws so SIEM can correlate
@@ -149,13 +149,13 @@ public class AdminRevocationController(
 
         // Resolve the target ONCE, then key every subsequent step off the primary key.
         //
-        // This method used to look the serial up four separate times — here, inside the tenant
+        // This method used to look the serial up four separate times — here, inside the space
         // fence, inside the revocation service, and again for audit attribution. Because a serial
         // is unique only per issuer (the unique index is (SerialNumber, Issuer)), those were four
         // independent "give me any row with this serial" queries with no defined ordering, and
         // nothing guaranteed they agreed. A serial present under two issuers could therefore have
-        // the step-up requirement and the tenant check evaluated against one certificate while the
-        // revocation landed on the other — a confused deputy across the tenant boundary, not just
+        // the step-up requirement and the space check evaluated against one certificate while the
+        // revocation landed on the other — a confused deputy across the space boundary, not just
         // a cosmetically wrong row.
         var (cert, resolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
         if (resolveError != null) return resolveError;
@@ -165,10 +165,10 @@ public class AdminRevocationController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(cert.CertificateId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(cert.CertificateId, null);
         if (fence != null) return fence;
 
-        // KC-06: if the cert is a CA cert, check if the tenant requires a ceremony.
+        // KC-06: if the cert is a CA cert, check if the space requires a ceremony.
         if (cert.IsCA)
         {
             var ceremonyResult = await TryCreateRevokeCaCeremonyAsync(cert, request.Reason);
@@ -192,7 +192,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber, new { request.Reason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoBySn?.CaId, tenantId: caInfoBySn?.TenantId);
+            certificateAuthorityId: caInfoBySn?.CaId, spaceId: caInfoBySn?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {request.SerialNumber} revoked by {_currentUser.User?.Username}", new { request.SerialNumber, request.Reason });
         return Ok(new
         {
@@ -210,7 +210,7 @@ public class AdminRevocationController(
     /// Bulk-revokes several LEAF certificates by serial with a single shared reason, authorized by ONE
     /// step-up token (<see cref="StepUpOps.RevokeCert"/>, batch-scoped / no target). CA certificates are
     /// skipped (status <c>skipped_ca</c>) because they use the RevokeCa op and may be ceremony-gated —
-    /// they must be revoked individually. Already-revoked / not-found / cross-tenant entries are skipped
+    /// they must be revoked individually. Already-revoked / not-found / cross-space entries are skipped
     /// too. Never aborts the batch on one failure; returns a per-serial summary.
     /// </summary>
     [HttpPost("bulk-revoke")]
@@ -244,7 +244,7 @@ public class AdminRevocationController(
             if (cert.IsCA) { results.Add(new { serialNumber = serial, status = "skipped_ca" }); skipped++; continue; }
             if (cert.Revoked) { results.Add(new { serialNumber = serial, status = "already_revoked" }); skipped++; continue; }
 
-            var fence = await EnforceTenantFenceForCertAsync(cert.CertificateId, null);
+            var fence = await EnforceSpaceFenceForCertAsync(cert.CertificateId, null);
             if (fence != null) { results.Add(new { serialNumber = serial, status = "denied" }); skipped++; continue; }
 
             try
@@ -254,7 +254,7 @@ public class AdminRevocationController(
                 await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
                     "Certificate", serial, new { request.Reason, Bulk = true },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: caInfo?.CaId, tenantId: caInfo?.TenantId);
+                    certificateAuthorityId: caInfo?.CaId, spaceId: caInfo?.SpaceId);
                 results.Add(new { serialNumber = serial, status = "revoked" });
                 revoked++;
             }
@@ -287,8 +287,8 @@ public class AdminRevocationController(
         // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
         // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
         // could pass one of its certificates in the path to satisfy the policy and a different
-        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
-        // this never crossed a tenant — but within one it crossed CAs freely.
+        // CA's certificate in the body to act on. The space fence below checks the body id, so
+        // this never crossed a space — but within one it crossed CAs freely.
         //
         // The route is the resource identity; a body field must not be able to redirect it.
         if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
@@ -299,7 +299,7 @@ public class AdminRevocationController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(certId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult holdResult;
@@ -316,7 +316,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateHeld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", certId.ToString(),
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoHoldId?.CaId, tenantId: caInfoHoldId?.TenantId);
+            certificateAuthorityId: caInfoHoldId?.CaId, spaceId: caInfoHoldId?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateHold", AlertSeverity.Critical, $"Certificate {certId} placed on hold by {_currentUser.User?.Username}", new { CertificateId = certId });
         return Ok(new
         {
@@ -353,7 +353,7 @@ public class AdminRevocationController(
         var (holdCert, holdResolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
         if (holdResolveError != null) return holdResolveError;
 
-        var fence = await EnforceTenantFenceForCertAsync(holdCert!.CertificateId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(holdCert!.CertificateId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult holdSnResult;
@@ -370,7 +370,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateHeld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoHoldSn?.CaId, tenantId: caInfoHoldSn?.TenantId);
+            certificateAuthorityId: caInfoHoldSn?.CaId, spaceId: caInfoHoldSn?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateHold", AlertSeverity.Critical, $"Certificate {request.SerialNumber} placed on hold by {_currentUser.User?.Username}", new { request.SerialNumber });
         return Ok(new
         {
@@ -397,8 +397,8 @@ public class AdminRevocationController(
         // split: CaGroupAuthorizationHandler resolves the CA to authorize against from the
         // ROUTE's certId (see ResolveCaFromCertIdAsync), so an operator holding rights on one CA
         // could pass one of its certificates in the path to satisfy the policy and a different
-        // CA's certificate in the body to act on. The tenant fence below checks the body id, so
-        // this never crossed a tenant — but within one it crossed CAs freely.
+        // CA's certificate in the body to act on. The space fence below checks the body id, so
+        // this never crossed a space — but within one it crossed CAs freely.
         //
         // The route is the resource identity; a body field must not be able to redirect it.
         if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
@@ -409,7 +409,7 @@ public class AdminRevocationController(
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-        var fence = await EnforceTenantFenceForCertAsync(certId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(certId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult unholdResult;
@@ -426,7 +426,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateUnheld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", certId.ToString(),
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoUnholdId?.CaId, tenantId: caInfoUnholdId?.TenantId);
+            certificateAuthorityId: caInfoUnholdId?.CaId, spaceId: caInfoUnholdId?.SpaceId);
         return Ok(new
         {
             message = "Certificate reinstated from hold.",
@@ -461,7 +461,7 @@ public class AdminRevocationController(
         var (unholdCert, unholdResolveError) = await ResolveUniqueCertBySerialAsync(request.SerialNumber);
         if (unholdResolveError != null) return unholdResolveError;
 
-        var fence = await EnforceTenantFenceForCertAsync(unholdCert!.CertificateId, null);
+        var fence = await EnforceSpaceFenceForCertAsync(unholdCert!.CertificateId, null);
         if (fence != null) return fence;
 
         Shared.Interfaces.RevocationResult unholdSnResult;
@@ -478,7 +478,7 @@ public class AdminRevocationController(
         await _audit.LogAsync(AuditActionType.CertificateUnheld, _currentUser.User?.Id, _currentUser.User?.Username,
             "Certificate", request.SerialNumber,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoUnholdSn?.CaId, tenantId: caInfoUnholdSn?.TenantId);
+            certificateAuthorityId: caInfoUnholdSn?.CaId, spaceId: caInfoUnholdSn?.SpaceId);
         return Ok(new
         {
             message = "Certificate reinstated from hold.",
@@ -492,10 +492,10 @@ public class AdminRevocationController(
 
     /// <summary>
     /// KC-06: checks whether a CA certificate revocation requires a key ceremony. If the CA's
-    /// scope (its tenant, or the instance for an instance CA such as the system signing CA) has
+    /// scope (its space, or the instance for an instance CA such as the system signing CA) has
     /// <c>RequireKeyCeremony</c> set, creates a <c>RevokeCa</c> ceremony and returns an
     /// <see cref="IActionResult"/> with the ceremony details. Returns null if no ceremony is
-    /// required, allowing the caller to proceed with direct revocation. A null tenant is never
+    /// required, allowing the caller to proceed with direct revocation. A null space is never
     /// read as "no policy".
     /// </summary>
     private async Task<IActionResult?> TryCreateRevokeCaCeremonyAsync(
@@ -508,7 +508,7 @@ public class AdminRevocationController(
         if (ca == null)
             return null; // No CA linkage — allow direct revocation.
 
-        var policy = await new EffectivePolicyResolver(_dbContext).ResolveAsync(ca.TenantId);
+        var policy = await new EffectivePolicyResolver(_dbContext).ResolveAsync(ca.SpaceId);
         if (!policy.RequireKeyCeremony)
             return null; // The scope does not require ceremonies.
 
@@ -519,7 +519,7 @@ public class AdminRevocationController(
             CertificateId = cert.CertificateId,
             SerialNumber = cert.SerialNumber,
             Reason = reason.ToString(),
-            TenantId = ca.TenantId,
+            SpaceId = ca.SpaceId,
         }, ModularCA.Shared.Utils.SafeJsonOptions.Stored);
 
         var ceremony = await _ceremonySvc.InitiateAsync(
@@ -536,7 +536,7 @@ public class AdminRevocationController(
             "KeyCeremony", ceremony.Id.ToString(),
             new { ceremony.OperationType, CertificateId = cert.CertificateId, cert.SerialNumber },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+            certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
         _ = _alertService.RaiseAlertAsync(
             "KeyCeremonyInitiated", AlertSeverity.Critical,
@@ -558,13 +558,13 @@ public class AdminRevocationController(
     }
 
     /// <summary>
-    /// Enforces tenant isolation for certificate operations. Resolves the certificate's CA
-    /// tenant via the signing profile linkage and checks that the caller's <see cref="TenantFence"/>
+    /// Enforces space isolation for certificate operations. Resolves the certificate's CA
+    /// space via the signing profile linkage and checks that the caller's <see cref="SpaceFence"/>
     /// admits it for cert.revoke. An instance-wide caller passes. Returns null on allow, NotFound on deny.
     /// </summary>
-    private async Task<IActionResult?> EnforceTenantFenceForCertAsync(Guid? certId, string? serial)
+    private async Task<IActionResult?> EnforceSpaceFenceForCertAsync(Guid? certId, string? serial)
     {
-        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
         if (fence.InstanceWide) return null;
 
         Shared.Entities.CertificateEntity? cert = null;
@@ -574,9 +574,9 @@ public class AdminRevocationController(
         }
         else if (!string.IsNullOrWhiteSpace(serial))
         {
-            // Ambiguity denies. This method is the tenant isolation boundary, so resolving an
+            // Ambiguity denies. This method is the space isolation boundary, so resolving an
             // ambiguous serial to an arbitrary row could authorize against a certificate in a
-            // tenant the caller can reach while the operation targets one they cannot.
+            // space the caller can reach while the operation targets one they cannot.
             cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
             if (cert == null)
                 return NotFound();
@@ -590,7 +590,7 @@ public class AdminRevocationController(
             .AsNoTracking()
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
         if (config?.Ca == null) return NotFound();
-        return fence.Allows(config.Ca.TenantId) ? null : NotFound();
+        return fence.Allows(config.Ca.SpaceId) ? null : NotFound();
     }
 
     /// <summary>
@@ -629,9 +629,9 @@ public class AdminRevocationController(
     }
 
     /// <summary>
-    /// Resolves the CA ID and tenant ID from a certificate ID via its signing profile linkage.
+    /// Resolves the CA ID and space ID from a certificate ID via its signing profile linkage.
     /// </summary>
-    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromCertIdAsync(Guid certId)
+    private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromCertIdAsync(Guid certId)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId);
         if (cert?.SigningProfileId == null) return null;
@@ -640,13 +640,13 @@ public class AdminRevocationController(
             .AsNoTracking()
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
         if (config?.Ca == null) return null;
-        return (config.Ca.Id, config.Ca.TenantId);
+        return (config.Ca.Id, config.Ca.SpaceId);
     }
 
     /// <summary>
-    /// Resolves the CA ID and tenant ID from a certificate serial number via its signing profile linkage.
+    /// Resolves the CA ID and space ID from a certificate serial number via its signing profile linkage.
     /// </summary>
-    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromSerialAsync(string serial)
+    private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromSerialAsync(string serial)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
         if (cert?.SigningProfileId == null) return null;
@@ -655,7 +655,7 @@ public class AdminRevocationController(
             .AsNoTracking()
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
         if (config?.Ca == null) return null;
-        return (config.Ca.Id, config.Ca.TenantId);
+        return (config.Ca.Id, config.Ca.SpaceId);
     }
 
     /// <summary>
@@ -688,7 +688,7 @@ public class AdminRevocationController(
                 success: false,
                 errorMessage: ex.Message,
                 certificateAuthorityId: caInfo?.CaId,
-                tenantId: caInfo?.TenantId);
+                spaceId: caInfo?.SpaceId);
         }
         catch
         {
@@ -724,7 +724,7 @@ public class AdminRevocationController(
                 success: false,
                 errorMessage: ex.Message,
                 certificateAuthorityId: caInfo?.CaId,
-                tenantId: caInfo?.TenantId);
+                spaceId: caInfo?.SpaceId);
         }
         catch
         {

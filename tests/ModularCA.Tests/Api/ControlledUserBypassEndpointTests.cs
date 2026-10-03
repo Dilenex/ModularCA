@@ -39,22 +39,22 @@ public sealed class ControlledUserBypassEndpointTests
         public Task EnsureLoadedAsync() => Task.CompletedTask;
     }
 
-    private sealed class RecordingTenantPolicy : ITenantPolicyChangeService
+    private sealed class RecordingSpacePolicy : ISpacePolicyChangeService
     {
-        public List<(Guid? TenantId, bool UserQuorumIncluded, int? ProposedUserQuorum, IReadOnlyList<CaUserQuorumChange>? Cas)> Calls { get; } = new();
+        public List<(Guid? SpaceId, bool UserQuorumIncluded, int? ProposedUserQuorum, IReadOnlyList<CaUserQuorumChange>? Cas)> Calls { get; } = new();
 
         public bool IsDowngrade(bool currentRequireKeyCeremony, int currentCeremonyRequiredApprovals,
             bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals) => false;
 
-        public Task<Guid> InitiateChangeAsync(Guid? tenantId, bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals,
+        public Task<Guid> InitiateChangeAsync(Guid? spaceId, bool? proposedRequireKeyCeremony, int? proposedCeremonyRequiredApprovals,
             Guid initiatorUserId, string initiatorUsername, bool userQuorumIncluded = false, int? proposedUserQuorum = null,
             IReadOnlyList<CaUserQuorumChange>? caUserQuorums = null)
         {
-            Calls.Add((tenantId, userQuorumIncluded, proposedUserQuorum, caUserQuorums));
+            Calls.Add((spaceId, userQuorumIncluded, proposedUserQuorum, caUserQuorums));
             return Task.FromResult(Guid.NewGuid());
         }
 
-        public Task<TenantPolicyChangeAppliedResult> ApplyApprovedChangeAsync(Guid ceremonyId) => throw new NotSupportedException();
+        public Task<SpacePolicyChangeAppliedResult> ApplyApprovedChangeAsync(Guid ceremonyId) => throw new NotSupportedException();
     }
 
     private static IDistributedCache NewCache() => new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
@@ -73,7 +73,7 @@ public sealed class ControlledUserBypassEndpointTests
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("sub", actor.ToString()) }, "test")),
         };
-        ModularCA.Auth.Authorization.TenantFence.Store(http, ModularCA.Auth.Authorization.TenantFence.Of([], instanceScope: true, isSystemAdmin: true));
+        ModularCA.Auth.Authorization.SpaceFence.Store(http, ModularCA.Auth.Authorization.SpaceFence.Of([], instanceScope: true, isSystemAdmin: true));
         controller.GetType().GetProperty("ControllerContext", BindingFlags.Instance | BindingFlags.Public)!
             .SetValue(controller, new ControllerContext { HttpContext = http });
         return controller;
@@ -174,6 +174,76 @@ public sealed class ControlledUserBypassEndpointTests
         Assert.Equal(403, Status(await Call(controller, "ResetUserPassword", holder, SeedStepUp(cache, w.A1AdminUser, StepUpOps.ResetPassword, holder))));
     }
 
+    // ---- control characters ------------------------------------------------------------------
+
+    private static (bool Valid, string Errors) Validate(string validatorName, object request)
+    {
+        var validator = Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Validation.Users." + validatorName))!;
+        var result = validator.GetType().GetMethod("Validate", [request.GetType()])!.Invoke(validator, [request])!;
+        var errors = (System.Collections.IEnumerable)result.GetType().GetProperty("Errors")!.GetValue(result)!;
+        return ((bool)result.GetType().GetProperty("IsValid")!.GetValue(result)!,
+            string.Join("; ", errors.Cast<object>().Select(e => e.GetType().GetProperty("ErrorMessage")!.GetValue(e))));
+    }
+
+    public static TheoryData<string, int> ControlCharacters()
+    {
+        var data = new TheoryData<string, int>();
+        foreach (var field in new[] { "Username", "Email", "FirstName", "LastName", "DisplayName" })
+            foreach (var code in new[] { 0x00, 0x09, 0x0A, 0x1F, 0x7F })
+                data.Add(field, code);
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(ControlCharacters))]
+    public void Every_name_field_refuses_a_control_character_on_create_and_update(string field, int code)
+    {
+        var value = field == "Email" ? $"bob{(char)code}@example.com" : $"bob{(char)code}x";
+
+        var update = new UpdateUserRequest();
+        typeof(UpdateUserRequest).GetProperty(field)!.SetValue(update, value);
+        var (updateValid, updateErrors) = Validate("UpdateUserRequestValidator", update);
+        Assert.False(updateValid);
+        Assert.Contains("must not contain control characters", updateErrors);
+
+        var create = NewUser("bob");
+        create.FirstName = "Bob";
+        create.LastName = "Smith";
+        typeof(CreateUserRequest).GetProperty(field)!.SetValue(create, value);
+        var (createValid, createErrors) = Validate("CreateUserRequestValidator", create);
+        Assert.False(createValid);
+        Assert.Contains("must not contain control characters", createErrors);
+    }
+
+    [Fact]
+    public void Names_without_control_characters_still_pass()
+    {
+        var update = new UpdateUserRequest { Username = "bob.smith", Email = "bob@example.com", FirstName = "Zoë", LastName = "O'Neil-Smith", DisplayName = "Zoë O'Neil" };
+        Assert.True(Validate("UpdateUserRequestValidator", update).Valid);
+        var create = NewUser("bob");
+        create.FirstName = "Zoë";
+        create.LastName = "O'Neil";
+        create.DisplayName = null;
+        Assert.True(Validate("CreateUserRequestValidator", create).Valid);
+    }
+
+    [Fact]
+    public async Task An_update_with_a_nul_in_a_name_is_refused_with_400_and_opens_no_ceremony()
+    {
+        var w = new ControlledUserWorld();
+        var cache = NewCache();
+        var validator = Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Validation.Users.UpdateUserRequestValidator"));
+        var controller = UserManager(w, w.Super, cache, validator);
+        var ceremonies = w.Db.KeyCeremonies.Count();
+
+        var result = await Call(controller, "UpdateUser", w.SystemAdmin, new UpdateUserRequest { FirstName = "Bob" + (char)0 },
+            SeedStepUp(cache, w.Super, StepUpOps.UpdateUser, w.SystemAdmin));
+
+        Assert.Equal(400, Status(result));
+        Assert.Equal(ceremonies, w.Db.KeyCeremonies.Count());
+        Assert.DoesNotContain((char)0, w.Db.Users.Single(u => u.Id == w.SystemAdmin).FirstName ?? "");
+    }
+
     // ---- user creation -----------------------------------------------------------------------
 
     private static object Creator(ControlledUserWorld w, Guid actor, IDistributedCache cache)
@@ -235,22 +305,22 @@ public sealed class ControlledUserBypassEndpointTests
     }
 
     [Fact]
-    public async Task A_lone_super_may_remove_the_only_tenant_admin()
+    public async Task A_lone_super_may_remove_the_only_space_admin()
     {
         var w = new ControlledUserWorld();
-        var tenantAdmin = w.User("tenant-admin", w.OrgAdminA);
+        var spaceAdmin = w.User("space-admin", w.SpaceAdminA);
         w.Db.Users.Single(u => u.Id == w.SystemAdmin).IsActive = false;
         w.Db.SaveChanges();
 
-        Assert.Equal(200, Status(await Call(Groups(w, w.Super), "RemoveMember", w.OrgAdminA.Id, tenantAdmin)));
-        Assert.False(w.Db.CaGroupMembers.Any(m => m.GroupId == w.OrgAdminA.Id && m.UserId == tenantAdmin));
+        Assert.Equal(200, Status(await Call(Groups(w, w.Super), "RemoveMember", w.SpaceAdminA.Id, spaceAdmin)));
+        Assert.False(w.Db.CaGroupMembers.Any(m => m.GroupId == w.SpaceAdminA.Id && m.UserId == spaceAdmin));
     }
 
     [Fact]
     public async Task A_group_holding_a_system_manage_role_is_controlled_for_deletion()
     {
         var w = new ControlledUserWorld();
-        var custom = w.Group("custom-with-role", w.TenantA, w.CaA1, "Requester");
+        var custom = w.Group("custom-with-role", w.SpaceA, w.CaA1, "Requester");
         w.Db.SaveChanges();
         w.Db.RoleAssignments.Add(new RoleAssignmentEntity { RoleId = w.Role(Capabilities.SystemManage).Id, GroupId = custom.Id });
         w.User("member", custom);
@@ -453,7 +523,7 @@ public sealed class ControlledUserBypassEndpointTests
     public async Task Deleting_a_controlled_group_with_members_is_super_only()
     {
         var w = new ControlledUserWorld();
-        var custom = w.Group("custom-a1-admins", w.TenantA, w.CaA1, "Administrator");
+        var custom = w.Group("custom-a1-admins", w.SpaceA, w.CaA1, "Administrator");
         w.User("member", custom);
 
         var asAdmin = New(Ns + "AdminGroupController", w.SystemAdmin,
@@ -573,7 +643,7 @@ public sealed class ControlledUserBypassEndpointTests
             OperationType = "ControlledUserChange", Status = "Pending", ExpiresAt = DateTime.UtcNow.AddHours(1),
             ParametersJson = System.Text.Json.JsonSerializer.Serialize(new ControlledUserChangeParameters
             {
-                ChangeType = "AssignRole", TargetUserId = w.Plain, RoleId = role.Id, TenantId = w.TenantA,
+                ChangeType = "AssignRole", TargetUserId = w.Plain, RoleId = role.Id, SpaceId = w.SpaceA,
             }),
         });
         w.Db.SaveChanges();
@@ -607,13 +677,13 @@ public sealed class ControlledUserBypassEndpointTests
         Assert.Equal(2, opened.Count);
         Assert.All(opened, c =>
         {
-            Assert.Null(c.TenantId);
+            Assert.Null(c.SpaceId);
             Assert.Equal(new ControlledTier(ControlledTierLevel.SystemOperator, null), controlled.DescribeCeremony(c).Minted);
         });
 
         Assert.Equal(201, Status(await Call(Grants(w.Super), "Create", grant)));
         Assert.Equal(201, Status(await Call(Assignments(w.Super), "Create", assign)));
-        Assert.True(w.Db.UserCapabilityGrants.Any(g => g.UserId == w.Plain && g.Capability == Capabilities.CaManage && g.TenantId == null));
+        Assert.True(w.Db.UserCapabilityGrants.Any(g => g.UserId == w.Plain && g.Capability == Capabilities.CaManage && g.SpaceId == null));
         Assert.True(w.Db.RoleAssignments.Any(ra => ra.RoleId == role.Id && ra.UserId == w.Plain));
     }
 
@@ -676,13 +746,13 @@ public sealed class ControlledUserBypassEndpointTests
             minted, initiator, "a1-initiator").GetAwaiter().GetResult();
 
         var id = Start();
-        Assert.Equal(w.TenantA, w.Db.KeyCeremonies.Single(c => c.Id == id).TenantId);
+        Assert.Equal(w.SpaceA, w.Db.KeyCeremonies.Single(c => c.Id == id).SpaceId);
 
-        // Another CA's admin in the same tenant neither sees nor reaches it.
+        // Another CA's admin in the same space neither sees nor reaches it.
         Assert.Equal(403, Status(await Call(Controller(a2Admin, NewCache()), "GetById", id)));
         Assert.Equal(0, Count(await Call(Controller(a2Admin, NewCache()), "List", (string?)null)));
 
-        // The CA's own admin, who holds no tenant-wide ca.manage, sees and approves it.
+        // The CA's own admin, who holds no space-wide ca.manage, sees and approves it.
         Assert.Equal(200, Status(await Call(Controller(w.A1AdminUser, NewCache()), "GetById", id)));
         Assert.Equal(1, Count(await Call(Controller(w.A1AdminUser, NewCache()), "List", (string?)null)));
         var cache = NewCache();
@@ -706,18 +776,18 @@ public sealed class ControlledUserBypassEndpointTests
 
     // ---- user-approval quorum ----------------------------------------------------------------
 
-    private static object Quorum(ControlledUserWorld w, Guid actor, ITenantPolicyChangeService policy)
+    private static object Quorum(ControlledUserWorld w, Guid actor, ISpacePolicyChangeService policy)
         => New(Ns + "AdminUserQuorumController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), policy, w.Controlled);
 
     [Fact]
-    public async Task A_non_super_quorum_change_opens_a_tenant_policy_ceremony()
+    public async Task A_non_super_quorum_change_opens_a_space_policy_ceremony()
     {
         var w = new ControlledUserWorld();
-        var policy = new RecordingTenantPolicy();
+        var policy = new RecordingSpacePolicy();
         var controller = Quorum(w, w.SystemAdmin, policy);
 
-        Assert.Equal(202, Status(await Call(controller, "SetTenant", w.TenantA, Body(Ns + "QuorumValueRequest", ("Quorum", (int?)3)))));
-        Assert.Null(w.Db.Tenants.Single(t => t.Id == w.TenantA).UserCeremonyRequiredApprovals);
+        Assert.Equal(202, Status(await Call(controller, "SetSpace", w.SpaceA, Body(Ns + "QuorumValueRequest", ("Quorum", (int?)3)))));
+        Assert.Null(w.Db.Spaces.Single(t => t.Id == w.SpaceA).UserCeremonyRequiredApprovals);
 
         Assert.Equal(202, Status(await Call(controller, "SetCa", w.CaA1, Body(Ns + "QuorumValueRequest", ("Quorum", (int?)1)))));
         Assert.Null(w.Db.CertificateAuthorities.Single(c => c.Id == w.CaA1).UserCeremonyRequiredApprovals);
@@ -725,7 +795,7 @@ public sealed class ControlledUserBypassEndpointTests
         Assert.Equal(2, policy.Calls.Count);
         Assert.True(policy.Calls[0].UserQuorumIncluded);
         Assert.Equal(3, policy.Calls[0].ProposedUserQuorum);
-        Assert.Equal(w.TenantA, policy.Calls[1].TenantId);
+        Assert.Equal(w.SpaceA, policy.Calls[1].SpaceId);
         Assert.Equal(w.CaA1, Assert.Single(policy.Calls[1].Cas!).CaId);
     }
 
@@ -733,11 +803,11 @@ public sealed class ControlledUserBypassEndpointTests
     public async Task A_super_quorum_change_applies_directly()
     {
         var w = new ControlledUserWorld();
-        var policy = new RecordingTenantPolicy();
+        var policy = new RecordingSpacePolicy();
         var controller = Quorum(w, w.Super, policy);
 
-        Assert.Equal(200, Status(await Call(controller, "SetTenant", w.TenantA, Body(Ns + "QuorumValueRequest", ("Quorum", (int?)3)))));
-        Assert.Equal(3, w.Db.Tenants.Single(t => t.Id == w.TenantA).UserCeremonyRequiredApprovals);
+        Assert.Equal(200, Status(await Call(controller, "SetSpace", w.SpaceA, Body(Ns + "QuorumValueRequest", ("Quorum", (int?)3)))));
+        Assert.Equal(3, w.Db.Spaces.Single(t => t.Id == w.SpaceA).UserCeremonyRequiredApprovals);
         Assert.Empty(policy.Calls);
     }
 }

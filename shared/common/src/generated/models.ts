@@ -265,7 +265,7 @@ export interface BulkUserGroupsRequest {
     removeGroupIds: string[];
 }
 
-/** From `ModularCA.Shared/Models/TenantPolicyChangeCeremonyParameters.cs`. */
+/** From `ModularCA.Shared/Models/SpacePolicyChangeCeremonyParameters.cs`. */
 export interface CaUserQuorumChange {
     caId: string;
     currentQuorum?: number | null;
@@ -391,7 +391,7 @@ export interface CertManagerConfig {
     apiKey: string;
     defaultCertProfileId?: string | null;
     defaultSigningProfileId?: string | null;
-    tenantId?: string | null;
+    spaceId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -460,21 +460,66 @@ export interface ComplianceScanConfig {
 }
 
 /** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
+export interface ControlledAccountState {
+    username: string;
+    email: string;
+    isActive: boolean;
+    isLocked: boolean;
+    passwordNeverExpires: boolean;
+    passwordChangeOnNextLogon: boolean;
+}
+
+/** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
+export interface ControlledCredentialReset {
+    userId: string;
+    username?: string | null;
+    what: string;
+    actorUserId?: string | null;
+    actorUsername?: string | null;
+    at: string;
+}
+
+/** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
+export interface ControlledCredentialSnapshot {
+    userId: string;
+    securityStamp: string;
+    mfaMarker: string;
+}
+
+/** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
+export interface ControlledIdentityChange {
+    username?: string | null;
+    email?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    displayName?: string | null;
+    isActive?: boolean | null;
+    isLocked?: boolean | null;
+    passwordNeverExpires?: boolean | null;
+    passwordChangeOnNextLogon?: boolean | null;
+    before?: ControlledAccountState | null;
+}
+
+/** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
 export interface ControlledUserChangeParameters {
     changeType: string;
     targetUserId: string;
     targetUsername?: string | null;
     capability?: string | null;
-    tenantId?: string | null;
+    spaceId?: string | null;
     certificateAuthorityId?: string | null;
     resourceType?: string | null;
     resourceId?: string | null;
     recordId?: string | null;
     roleId?: string | null;
     groupId?: string | null;
+    identity?: ControlledIdentityChange | null;
+    credentialSnapshots?: ControlledCredentialSnapshot[] | null;
+    recentCredentialResets?: ControlledCredentialReset[] | null;
+    recentResetsUnchecked: boolean;
     mintedTierLevel: number;
     mintedTierCaId?: string | null;
-    mintedTierTenantId?: string | null;
+    mintedTierSpaceId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
@@ -482,8 +527,9 @@ export interface ControlledUserChangeResult {
     changeType: string;
     targetUserId: string;
     capability?: string | null;
-    tenantId?: string | null;
+    spaceId?: string | null;
     certificateAuthorityId?: string | null;
+    temporaryPassword?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Acme/CreateAcmeAccountRequest.cs`. */
@@ -685,11 +731,6 @@ export interface EventLogConfig {
     logName: string;
 }
 
-/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
-export interface FeaturesConfig {
-    allowMultipleOrganizations: boolean;
-}
-
 /** From `ModularCA.Shared/Models/Csr/ValidateAgainstProfileRequest.cs`. */
 export interface FieldValidationResult {
     field: string;
@@ -816,7 +857,7 @@ export interface IngressRouteConfig {
 export interface IntegrationApiConfig {
     enabled: boolean;
     apiKey: string;
-    tenantId?: string | null;
+    spaceId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -868,7 +909,7 @@ export interface KeyCeremonyParameters {
     keyAlgorithm: string;
     keySize: number;
     validityYears: number;
-    tenantId: string;
+    scope?: string | null;
     parentCaId?: string | null;
     label?: string | null;
     publicBaseUrl?: string | null;
@@ -946,7 +987,7 @@ export interface MetricsConfig {
 export interface MsaeReadiness {
     caId: string;
     caLabel: string;
-    tenantId?: string | null;
+    spaceId?: string | null;
     ready: boolean;
     cepUrl: string;
     policyId: string;
@@ -1103,7 +1144,6 @@ export interface RevokeCaCeremonyParameters {
     certificateId: string;
     serialNumber: string;
     reason: string;
-    tenantId: string;
 }
 
 /** From `ModularCA.Shared/Models/Revocation/RevokeCertificateRequest.cs`. */
@@ -1373,6 +1413,18 @@ export interface SourceCodeConfig {
     license: string;
 }
 
+/** From `ModularCA.Shared/Models/SpacePolicyChangeCeremonyParameters.cs`. */
+export interface SpacePolicyChangeCeremonyParameters {
+    currentRequireKeyCeremony: boolean;
+    currentCeremonyRequiredApprovals: number;
+    proposedRequireKeyCeremony?: boolean | null;
+    proposedCeremonyRequiredApprovals?: number | null;
+    userQuorumIncluded: boolean;
+    currentUserQuorum?: number | null;
+    proposedUserQuorum?: number | null;
+    caUserQuorums: CaUserQuorumChange[];
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface SshCaConfig {
     sshKeygenPath: string;
@@ -1387,7 +1439,6 @@ export interface SshKeyCeremonyParameters {
     isUserCa: boolean;
     isHostCa: boolean;
     maxValidityHours: number;
-    tenantId: string;
     sshCaKeyId?: string | null;
 }
 
@@ -1454,21 +1505,7 @@ export interface SystemConfig {
     sourceCode: SourceCodeConfig;
     redis: RedisConfig;
     audit: AuditConfig;
-    features: FeaturesConfig;
     schema: SchemaConfig;
-}
-
-/** From `ModularCA.Shared/Models/TenantPolicyChangeCeremonyParameters.cs`. */
-export interface TenantPolicyChangeCeremonyParameters {
-    tenantId: string;
-    currentRequireKeyCeremony: boolean;
-    currentCeremonyRequiredApprovals: number;
-    proposedRequireKeyCeremony?: boolean | null;
-    proposedCeremonyRequiredApprovals?: number | null;
-    userQuorumIncluded: boolean;
-    currentUserQuorum?: number | null;
-    proposedUserQuorum?: number | null;
-    caUserQuorums: CaUserQuorumChange[];
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1567,7 +1604,7 @@ export interface UserEntityDto {
     displayName?: string | null;
     isActive: boolean;
     isServiceIdentity: boolean;
-    serviceScopeTenantId?: string | null;
+    serviceScopeSpaceId?: string | null;
     serviceScopeCaId?: string | null;
     description?: string | null;
     isLocked: boolean;
@@ -1600,10 +1637,10 @@ export interface ValidityCeilingPreflight {
     certProfileValidityPeriodMax?: string | null;
     issuingCaName?: string | null;
     issuingCaNotAfter?: string | null;
-    tenantName?: string | null;
-    tenantMaxValidityDays: number;
-    tenantBehavior: E.ValidityCeilingBehavior;
-    tenantCeilingApplies: boolean;
+    spaceName?: string | null;
+    spaceMaxValidityDays: number;
+    spaceBehavior: E.ValidityCeilingBehavior;
+    spaceCeilingApplies: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Issuance/ValidityCeilingResolution.cs`. */
@@ -1613,7 +1650,7 @@ export interface ValidityCeilingResolution {
     effectiveMaxDays: number;
     boundBy: E.ValidityCeilingSource;
     certProfileNotAfter: string;
-    tenantNotAfter?: string | null;
+    spaceNotAfter?: string | null;
     issuingCaNotAfter?: string | null;
 }
 

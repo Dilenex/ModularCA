@@ -37,8 +37,9 @@ namespace ModularCA.Tests.Database
     /// <c>migrated</c> (ModularCA.Migrate's <see cref="DestinationBuilder"/>), <c>fresh</c>
     /// (bootstrap's provisioning, schema and ownership check) and <c>legacy</c> (the 0.3.1
     /// bootstrap: baselines applied as the superuser, the application database handed to the app
-    /// role, the old audit grants). Test-only probe contexts with their own history tables carry
-    /// migrations that alter real tables, run through <c>SchemaStartup.EnforceAllAsync</c> as the
+    /// role, the old audit grants), optionally stopped at the frozen baselines. Test-only probe
+    /// contexts with their own history tables carry migrations that alter <c>Users</c>, a table
+    /// every stage of the schema has, run through <c>SchemaStartup.EnforceAllAsync</c> as the
     /// runtime roles.
     /// </summary>
     [Trait("Category", "PostgreSQL")]
@@ -69,6 +70,57 @@ namespace ModularCA.Tests.Database
             Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
             Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
             Assert.True(log.Has(LogEventLevel.Information, "Schema check passed"), Dump(log));
+        }
+
+        /// <summary>
+        /// The migration tool's destination: rows written into the baselines as the app role, by the
+        /// baseline's names as the copier writes them, then every later migration applied by
+        /// <see cref="DestinationBuilder.ApplyUpgradeMigrationsAsync"/>. The copied system tenant is
+        /// folded and a copied space CA keeps its tenant; read through the current model, which the
+        /// schema now matches.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_migration_tool_takes_rows_copied_into_the_baselines_through_every_later_migration()
+        {
+            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+            Assert.Equal(1, await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql);
+
+            await f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None);
+
+            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
+            await using var app = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+                .UseNpgsql(f.RuntimeConnectionString(f.App, f.AppDatabase)).Options);
+            var cas = await app.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(c => c.Id);
+            Assert.Equal(PostgresUpgradeHarnessTests.OrgTenantId, cas[PostgresUpgradeHarnessTests.RootCaId].SpaceId);
+            Assert.Equal(2, cas.Values.Count(c => c.SpaceId is null));
+            Assert.Equal([PostgresUpgradeHarnessTests.OrgTenantId], await app.Spaces.IgnoreQueryFilters().Select(t => t.Id).ToListAsync());
+        }
+
+        /// <summary>
+        /// A precondition that refuses the copied data fails the migration tool with the
+        /// migration's own message, leaves the migrations before it committed, and the tool's
+        /// rollback then removes both databases and all three roles.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_refusal_after_the_copy_fails_the_migration_tool_and_its_rollback_removes_the_destination()
+        {
+            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
+            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql
+                + PostgresUpgradeHarnessTests.SeedSecondOrganisationSql);
+
+            var refused = await Assert.ThrowsAsync<MigrationFailedException>(() => f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None));
+
+            Assert.Contains("_" + PostgresUpgradeHarnessTests.FoldSystemTenant, refused.Message);
+            Assert.Contains("This instance has 2 organisation tenants (Acme, Globex)", refused.Message);
+            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+
+            await DestinationBuilder.RollbackAsync(f.MigrateOptions!, _ => { }, CancellationToken.None);
+            Assert.Equal(0, await f.CountAsync(null,
+                $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname IN ('{f.AppDatabase}','{f.AuditDatabase}')"));
+            Assert.Equal(0, await f.CountAsync(null,
+                $"SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname IN ('{f.App.Username}','{f.Audit.Username}','{f.AuditOwner}')"));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -127,7 +179,7 @@ namespace ModularCA.Tests.Database
                 Assert.True(log.Has(LogEventLevel.Fatal, "Nothing was applied to either database"), Dump(log));
                 Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
                 Assert.Equal(1, await f.CountAsync(f.AuditDatabase, $"SELECT count(*) FROM public.\"{AuditProbeContext.History}\""));
-                Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Tenants", "GateProbe"));
+                Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
 
                 await f.RepairAsync(DatabaseKind.Application);
                 await f.RepairAsync(DatabaseKind.Audit);
@@ -135,7 +187,7 @@ namespace ModularCA.Tests.Database
             }
 
             Assert.True(exit is null, Dump(log));
-            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Tenants", "GateProbe"));
+            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
             Assert.Equal(1, await f.ColumnCountAsync(f.AuditDatabase, "AuditLogs", "GateProbe"));
             Assert.Equal(2, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
             Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
@@ -148,7 +200,7 @@ namespace ModularCA.Tests.Database
         [InlineData(OwnershipLayout.Legacy)]
         public async Task The_tenant_hostname_retirement_refuses_while_a_row_remains_then_applies_as_the_runtime_role(OwnershipLayout layout)
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+            await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
             using var log = new CapturedSerilog();
             const string retire = "RetireTenantHostnames";
             var history = "SELECT count(*) FROM public.\"__EFMigrationsHistory\"";
@@ -158,16 +210,6 @@ namespace ModularCA.Tests.Database
             {
                 await f.RepairAsync(DatabaseKind.Application);
                 await f.RepairAsync(DatabaseKind.Audit);
-            }
-            else
-            {
-                // Bootstrap and the migration tool apply every migration; step back to the 0.3.x
-                // schema as the runtime role, so the upgrade below is the one a live install makes.
-                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
-                Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
-                await using var runtime = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
-                    .UseNpgsql(f.RuntimeConnectionString(f.App, f.AppDatabase)).Options);
-                await runtime.GetService<IMigrator>().MigrateAsync(PostgresUpgradeHarnessTests.AppBaseline);
             }
             Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
             Assert.Equal(1, await f.CountAsync(f.AppDatabase, tableExists));
@@ -186,7 +228,8 @@ namespace ModularCA.Tests.Database
             Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
             Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
             Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
-            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"Tenants\""));
+            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"Users\""));
+            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"CaGroupMembers\""));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -349,7 +392,7 @@ namespace ModularCA.Tests.Database
             await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
             await holder.OpenAsync();
             await using var tx = await holder.BeginTransactionAsync();
-            await new NpgsqlCommand("LOCK TABLE public.\"Tenants\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
+            await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
 
             var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true,
                 new SchemaConfig { WaitSeconds = 1, MigrationLockTimeoutSeconds = 1 });
@@ -357,7 +400,7 @@ namespace ModularCA.Tests.Database
             Assert.Equal(75, exit);
             Assert.True(log.Has(LogEventLevel.Fatal, "55P03"), Dump(log));
             await tx.RollbackAsync();
-            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Tenants", "GateProbe"));
+            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -374,7 +417,7 @@ namespace ModularCA.Tests.Database
             Assert.Equal(75, exit);
             Assert.True(Logged(log, "Only the control role applies migrations"), Dump(log));
             Assert.True(log.Has(LogEventLevel.Error, "Gave up after 1 s (Schema.WaitSeconds)"), Dump(log));
-            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Tenants", "GateProbe"));
+            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -399,7 +442,7 @@ namespace ModularCA.Tests.Database
         [InlineData(OwnershipLayout.Legacy)]
         public async Task A_backup_restores_as_the_runtime_roles(OwnershipLayout layout)
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+            await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
             if (layout == OwnershipLayout.Legacy)
             {
                 await f.ExecuteAsync(f.AppDatabase, PostgresUpgradeHarnessTests.Seed030Sql);
@@ -442,7 +485,7 @@ namespace ModularCA.Tests.Database
         [RequiresEnvironmentFact(ServerVariable)]
         public async Task A_reset_whose_drop_fails_leaves_the_old_database_and_its_rows_in_place()
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh, atBaseline: true);
             await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql);
             await f.ExecuteAsync(null, $"ALTER DATABASE {Q(f.AppDatabase)} IS_TEMPLATE true");
             try
@@ -473,7 +516,7 @@ namespace ModularCA.Tests.Database
             await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
             await holder.OpenAsync();
             var tx = await holder.BeginTransactionAsync();
-            await new NpgsqlCommand("LOCK TABLE public.\"Tenants\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
+            await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
             var release = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(3));
@@ -487,7 +530,7 @@ namespace ModularCA.Tests.Database
             Assert.True(exit is null, Dump(log));
             Assert.True(log.Has(LogEventLevel.Warning, "55P03"), Dump(log));
             Assert.True(Logged(log, "retrying in"), Dump(log));
-            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Tenants", "GateProbe"));
+            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -694,16 +737,20 @@ namespace ModularCA.Tests.Database
         /// <summary>The NOLOGIN owner of the audit database in the migrated and fresh layouts.</summary>
         public string AuditOwner => Names.AuditOwnerRole;
 
-        /// <summary>Builds the fixture in <paramref name="layout"/>; drops what it made when that fails.</summary>
-        public static async Task<OwnershipFixture> CreateAsync(string server, OwnershipLayout layout)
+        /// <summary>
+        /// Builds the fixture in <paramref name="layout"/>; drops what it made when that fails. With
+        /// <paramref name="atBaseline"/> both databases stop at the frozen baselines, as the 0.3.x
+        /// schema a live upgrade starts from (the legacy layout always does).
+        /// </summary>
+        public static async Task<OwnershipFixture> CreateAsync(string server, OwnershipLayout layout, bool atBaseline = false)
         {
             var f = new OwnershipFixture(server);
             try
             {
                 switch (layout)
                 {
-                    case OwnershipLayout.Migrated: await f.BuildMigratedAsync(); break;
-                    case OwnershipLayout.Fresh: await f.BuildFreshAsync(); break;
+                    case OwnershipLayout.Migrated: await f.BuildMigratedAsync(atBaseline); break;
+                    case OwnershipLayout.Fresh: await f.BuildFreshAsync(atBaseline); break;
                     default: await f.BuildLegacyAsync(); break;
                 }
                 return f;
@@ -832,11 +879,21 @@ namespace ModularCA.Tests.Database
             return int.Parse(match!.Groups[1].Value);
         }
 
-        /// <summary>The layout ModularCA.Migrate builds, through <see cref="DestinationBuilder.BuildAsync"/> itself.</summary>
-        private async Task BuildMigratedAsync()
+        /// <summary>The migration tool's options for this fixture's names, in the migrated layout.</summary>
+        public MigrationOptions? MigrateOptions { get; private set; }
+
+        /// <summary>The migration tool's builder, in the migrated layout.</summary>
+        public DestinationBuilder? Builder { get; private set; }
+
+        /// <summary>
+        /// The layout ModularCA.Migrate builds, through <see cref="DestinationBuilder.BuildAsync"/>
+        /// itself, then, unless <paramref name="atBaseline"/>, its
+        /// <see cref="DestinationBuilder.ApplyUpgradeMigrationsAsync"/> as after a copy.
+        /// </summary>
+        private async Task BuildMigratedAsync(bool atBaseline)
         {
             var b = new NpgsqlConnectionStringBuilder(_server);
-            var options = new MigrationOptions
+            MigrateOptions = new MigrationOptions
             {
                 SourceHost = "unused", SourcePort = 3306, SourceUser = "unused", SourcePassword = "unused",
                 SourceAppDatabase = "unused", SourceAuditDatabase = "unused",
@@ -845,21 +902,37 @@ namespace ModularCA.Tests.Database
                 TargetAppDatabase = Names.AppDatabase, TargetAuditDatabase = Names.AuditDatabase,
                 TargetAppRole = Names.AppRole, TargetAuditRole = Names.AuditRole, TargetAuditOwnerRole = Names.AuditOwnerRole,
             };
-            var builder = new DestinationBuilder(options, _ => { });
-            await builder.BuildAsync(CancellationToken.None);
-            App = Instance(Names.AppDatabase, Names.AppRole, builder.AppPassword);
-            Audit = Instance(Names.AuditDatabase, Names.AuditRole, builder.AuditPassword);
+            Builder = new DestinationBuilder(MigrateOptions, _ => { });
+            await Builder.BuildAsync(CancellationToken.None);
+            App = Instance(Names.AppDatabase, Names.AppRole, Builder.AppPassword);
+            Audit = Instance(Names.AuditDatabase, Names.AuditRole, Builder.AuditPassword);
+            if (!atBaseline)
+                await Builder.ApplyUpgradeMigrationsAsync(CancellationToken.None);
         }
 
-        /// <summary>The layout 0.4.0 bootstrap builds: provisioning, the schemas as the runtime roles, the ownership check.</summary>
-        private async Task BuildFreshAsync()
+        /// <summary>
+        /// The layout 0.4.0 bootstrap builds: provisioning, the schemas as the runtime roles, the
+        /// ownership check. With <paramref name="atBaseline"/> the runtime roles apply only the
+        /// frozen baselines, through the gate on migration connections.
+        /// </summary>
+        private async Task BuildFreshAsync(bool atBaseline)
         {
             var (appPassword, auditPassword) = await PostgresRoleLayout.ProvisionAsync(
                 _server, Names, new ProvisioningMode(ResetApp: true, WipeAudit: false));
             App = Instance(Names.AppDatabase, Names.AppRole, appPassword);
             Audit = Instance(Names.AuditDatabase, Names.AuditRole, auditPassword);
             var databases = new ProvisionedDatabases(App, Audit);
-            await BootstrapDatabaseSetup.ApplySchemasAsync(databases, null);
+            if (atBaseline)
+            {
+                await using (var app = MigrationConnection.CreateContext(DatabaseKind.Application, App, new SchemaConfig()))
+                    await SchemaStages.ApplyBaselineAsync(app, PostgresRoleLayout.AppBaselineMigration, "application", CancellationToken.None);
+                await using (var audit = MigrationConnection.CreateContext(DatabaseKind.Audit, Audit, new SchemaConfig()))
+                    await SchemaStages.ApplyBaselineAsync(audit, PostgresRoleLayout.AuditBaselineMigration, "audit", CancellationToken.None);
+            }
+            else
+            {
+                await BootstrapDatabaseSetup.ApplySchemasAsync(databases, null);
+            }
             await BootstrapDatabaseSetup.VerifyOwnershipAsync(databases, null);
         }
 
@@ -953,7 +1026,7 @@ namespace ModularCA.Tests.Database.ProbeMigrations
         public const string Id = "20990201000001_ProbeBase";
     }
 
-    /// <summary>Alters the application database's <c>Tenants</c> table and indexes the new column.</summary>
+    /// <summary>Alters the application database's <c>Users</c> table, which every stage of the schema has, and indexes the new column.</summary>
     public sealed class AppProbeContext(DbContextOptions<AppProbeContext> options) : DbContext(options)
     {
         /// <summary>Its history table.</summary>
@@ -1011,7 +1084,7 @@ namespace ModularCA.Tests.Database.ProbeMigrations
         protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("SELECT 1");
     }
 
-    /// <summary>Adds and indexes <c>Tenants.GateProbe</c>, which only the table's owner may do.</summary>
+    /// <summary>Adds and indexes <c>Users.GateProbe</c>, which only the table's owner may do.</summary>
     [DbContext(typeof(AppProbeContext))]
     [Migration("20990201000002_ProbeAlter")]
     public sealed class AppProbeAlter : Migration
@@ -1019,8 +1092,8 @@ namespace ModularCA.Tests.Database.ProbeMigrations
         /// <summary>ALTER TABLE and CREATE INDEX on an existing table.</summary>
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("ALTER TABLE public.\"Tenants\" ADD COLUMN \"GateProbe\" integer");
-            migrationBuilder.Sql("CREATE INDEX \"IX_Tenants_GateProbe\" ON public.\"Tenants\" (\"GateProbe\")");
+            migrationBuilder.Sql("ALTER TABLE public.\"Users\" ADD COLUMN \"GateProbe\" integer");
+            migrationBuilder.Sql("CREATE INDEX \"IX_Users_GateProbe\" ON public.\"Users\" (\"GateProbe\")");
         }
     }
 

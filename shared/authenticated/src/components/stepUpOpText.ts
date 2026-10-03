@@ -101,9 +101,9 @@ const TEXT: Record<string, string> = {
     'webauthn-delete': 'Remove a security key',
     'mtls-enroll': 'Enroll a client certificate for sign-in',
     'mtls-delete': 'Remove a client certificate used for sign-in',
-    'enable-tenant': 'Enable a tenant',
-    'disable-tenant': 'Disable a tenant',
-    'update-tenant-settings': "Change a tenant's settings",
+    'enable-space': 'Enable a space',
+    'disable-space': 'Disable a space',
+    'update-space-settings': "Change a space's settings",
 };
 
 /** The sentence for an operation id, or the id itself when none is known. */

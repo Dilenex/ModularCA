@@ -76,7 +76,7 @@ const GroupDrawer: React.FC<{ group: any; caNameById: (id: string | null) => str
     );
 };
 
-/** The tenant-select value for an instance group: sent as no tenant. */
+/** The space-select value for an instance group: sent as no space. */
 const INSTANCE = 'instance';
 
 const GroupManagement: React.FC = () => {
@@ -89,7 +89,7 @@ const GroupManagement: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [groups, setGroups] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
-    const [tenants, setTenants] = useState<any[]>([]);
+    const [spaces, setSpaces] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -104,7 +104,7 @@ const GroupManagement: React.FC = () => {
     const [search, setSearch] = useState('');
 
     const [showCreate, setShowCreate] = useState(false);
-    const [createForm, setCreateForm] = useState({ name: '', displayName: '', templateName: 'Requester' as string | null, certificateAuthorityId: '', tenantId: '' });
+    const [createForm, setCreateForm] = useState({ name: '', displayName: '', templateName: 'Requester' as string | null, certificateAuthorityId: '', spaceId: '' });
     const [creating, setCreating] = useState(false);
 
     const [confirmBulk, setConfirmBulk] = useState<any[] | null>(null);
@@ -117,8 +117,8 @@ const GroupManagement: React.FC = () => {
         Promise.all([
             apiGet<any>('/api/v1/admin/groups'),
             apiGet<any>('/api/v1/admin/authorities').catch(() => []),
-            apiGet<any>('/api/v1/admin/tenants').catch(() => []),
-        ]).then(([groupsData, authData, tenantsData]) => {
+            apiGet<any>('/api/v1/admin/spaces').catch(() => []),
+        ]).then(([groupsData, authData, spacesData]) => {
             if (cancelled) return;
             setGroups(Array.isArray(groupsData) ? groupsData : (groupsData.items || groupsData.groups || []));
             const cas = Array.isArray(authData) ? authData : (authData.items || authData.authorities || []);
@@ -126,7 +126,7 @@ const GroupManagement: React.FC = () => {
             const flatten = (l: any[]) => { for (const c of l) { flat.push(c); if (c.children) flatten(c.children); } };
             flatten(cas);
             setAuthorities(flat);
-            setTenants(Array.isArray(tenantsData) ? tenantsData : (tenantsData.items || tenantsData.tenants || []));
+            setSpaces(Array.isArray(spacesData) ? spacesData : (spacesData.items || spacesData.spaces || []));
             setLoading(false);
         }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load groups')); setLoading(false); } });
         return () => { cancelled = true; };
@@ -161,11 +161,11 @@ const GroupManagement: React.FC = () => {
             await apiPostWithMfa('/api/v1/admin/groups', {
                 ...createForm,
                 certificateAuthorityId: createForm.certificateAuthorityId || null,
-                // With neither a CA nor a tenant the server makes an instance (system) group.
-                tenantId: createForm.certificateAuthorityId || createForm.tenantId === INSTANCE ? null : (createForm.tenantId || null),
+                // With neither a CA nor a space the server makes an instance (system) group.
+                spaceId: createForm.certificateAuthorityId || createForm.spaceId === INSTANCE ? null : (createForm.spaceId || null),
             }, requireStepUp, StepUpOps.CreateGroup);
             setShowCreate(false);
-            setCreateForm({ name: '', displayName: '', templateName: 'Requester', certificateAuthorityId: '', tenantId: '' });
+            setCreateForm({ name: '', displayName: '', templateName: 'Requester', certificateAuthorityId: '', spaceId: '' });
             setRefreshTrigger((t) => t + 1);
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to create group');
@@ -192,7 +192,7 @@ const GroupManagement: React.FC = () => {
         }
     };
 
-    const scopeOf = (g: any) => g.tenantId == null ? 'Instance' : (tenants.find((t: any) => t.id === g.tenantId)?.name ?? g.tenantId);
+    const scopeOf = (g: any) => g.spaceId == null ? 'Instance' : (spaces.find((t: any) => t.id === g.spaceId)?.name ?? g.spaceId);
 
     const columns: DataTableColumn<any>[] = [
         {
@@ -255,15 +255,15 @@ const GroupManagement: React.FC = () => {
                         </div>
                         <select value={createForm.certificateAuthorityId} onChange={(e) => setCreateForm({ ...createForm, certificateAuthorityId: e.target.value })}
                             className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
-                            <option value="">Tenant-wide (no CA)</option>
+                            <option value="">Space-wide (no CA)</option>
                             {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.commonName || ca.id}</option>)}
                         </select>
                         {!createForm.certificateAuthorityId && (
-                            <select value={createForm.tenantId} onChange={(e) => setCreateForm({ ...createForm, tenantId: e.target.value })} required
+                            <select value={createForm.spaceId} onChange={(e) => setCreateForm({ ...createForm, spaceId: e.target.value })} required
                                 className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
-                                <option value="">Select Tenant...</option>
-                                <option value={INSTANCE}>Instance (system group, no tenant)</option>
-                                {tenants.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                <option value="">Select Space...</option>
+                                <option value={INSTANCE}>Instance (system group, no space)</option>
+                                {spaces.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
                             </select>
                         )}
                     </div>

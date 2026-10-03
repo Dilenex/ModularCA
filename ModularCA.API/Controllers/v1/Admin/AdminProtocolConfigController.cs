@@ -219,11 +219,11 @@ public class AdminProtocolConfigController(
         {
             var profile = await _db.CertProfiles.AsNoTracking()
                 .Where(p => p.Id == certProfileId)
-                .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
                 .FirstOrDefaultAsync();
             if (profile == null)
                 return BadRequest(new { error = "Certificate profile not found." });
-            if (!ModularCA.Core.Authorization.CertProfileScope.Admits(profile.TenantId, profile.CertificateAuthorityId, ca.Id, ca.TenantId))
+            if (!ModularCA.Core.Authorization.CertProfileScope.Admits(profile.SpaceId, profile.CertificateAuthorityId, ca.Id, ca.SpaceId))
                 return BadRequest(new { error = "The certificate profile belongs to another scope than this CA.", code = ModularCA.Shared.Errors.ErrorCodes.CertProfileOutOfScope });
         }
 
@@ -289,8 +289,8 @@ public class AdminProtocolConfigController(
         {
             // Kerberos is only meaningful with a forest to accept tickets from; refusing here keeps
             // the switch from silently producing 401 challenges no client can answer.
-            if (request.MsaeAllowKerberos.Value && !await _db.KerberosRealms.AnyAsync(r => r.TenantId == ca.TenantId && r.IsEnabled))
-                return BadRequest(new { error = "Kerberos needs an enabled realm binding on this tenant. Add one on the tenant page first." });
+            if (request.MsaeAllowKerberos.Value && !await _db.KerberosRealms.AnyAsync(r => r.SpaceId == ca.SpaceId && r.IsEnabled))
+                return BadRequest(new { error = "Kerberos needs an enabled realm binding on this space. Add one on the space page first." });
             config.MsaeAllowKerberos = request.MsaeAllowKerberos.Value;
         }
         if (string.Equals(normalizedProtocol, "MSAE", StringComparison.OrdinalIgnoreCase) && !config.MsaeAllowUsernameToken && !config.MsaeAllowKerberos)
@@ -367,6 +367,6 @@ public class ProtocolConfigUpdateRequest
 
     /// <summary>MSAE: accept UsernameToken and Basic credentials. Null leaves the setting unchanged.</summary>
     public bool? MsaeAllowUsernameToken { get; set; }
-    /// <summary>MSAE: accept Kerberos tickets from the tenant's bound forests. Needs an enabled realm binding.</summary>
+    /// <summary>MSAE: accept Kerberos tickets from the space's bound forests. Needs an enabled realm binding.</summary>
     public bool? MsaeAllowKerberos { get; set; }
 }

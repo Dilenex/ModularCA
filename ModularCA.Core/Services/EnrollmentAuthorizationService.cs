@@ -130,7 +130,7 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
     /// HTTP authentication is satisfied only when the authenticated account holds the enrollment
     /// capability on <paramref name="ca"/>. Before this, the check was <c>isAuthenticated</c>
     /// alone, which the default bearer scheme sets for every valid session token: any user in any
-    /// tenant could enroll at any EST-enabled CA. A password proves who is asking, not whether they
+    /// space could enroll at any EST-enabled CA. A password proves who is asking, not whether they
     /// may ask here.
     /// </para>
     /// <para>

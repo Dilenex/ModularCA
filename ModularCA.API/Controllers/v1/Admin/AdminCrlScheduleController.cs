@@ -18,9 +18,9 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// <summary>
     /// Admin endpoints for managing CRL generation schedules and configurations.
     /// Mutations require step-up MFA via <c>X-MFA-Token</c> and enforce the standard
-    /// tenant fence: the schedule's owning CA must be inside the caller's
-    /// <see cref="TenantFence"/>. Audit events are emitted on both success and failure
-    /// paths so cross-tenant probes are recorded.
+    /// space fence: the schedule's owning CA must be inside the caller's
+    /// <see cref="SpaceFence"/>. Audit events are emitted on both success and failure
+    /// paths so cross-space probes are recorded.
     /// </summary>
     [ApiController]
     [Route("api/v1/admin/crl-schedules")]
@@ -40,12 +40,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly ModularCADbContext _db = db;
 
         /// <summary>
-        /// Resolves a CRL schedule's owning CA + tenant from its <paramref name="taskId"/>
-        /// and verifies the caller's <see cref="TenantFence"/> for <paramref name="capability"/>
-        /// admits that tenant. Returns the (CaId, TenantId) tuple on success, or null when the
+        /// Resolves a CRL schedule's owning CA + space from its <paramref name="taskId"/>
+        /// and verifies the caller's <see cref="SpaceFence"/> for <paramref name="capability"/>
+        /// admits that space. Returns the (CaId, SpaceId) tuple on success, or null when the
         /// schedule is missing, the CA is unresolvable or deleted, or the request is outside the fence.
         /// </summary>
-        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceScheduleAsync(Guid taskId, string capability = Capabilities.CertRevoke)
+        private async Task<(Guid CaId, Guid? SpaceId)?> ResolveAndFenceScheduleAsync(Guid taskId, string capability = Capabilities.CertRevoke)
         {
             var config = await _db.CrlConfigurations.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.TaskId == taskId);
@@ -55,23 +55,23 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Resolves the CA + tenant for a Create request, where the CA is supplied by
+        /// Resolves the CA + space for a Create request, where the CA is supplied by
         /// <paramref name="caCertificateId"/> rather than an existing schedule row, under the
         /// same fence.
         /// </summary>
-        private async Task<(Guid CaId, Guid? TenantId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId, string capability = Capabilities.CertRevoke)
+        private async Task<(Guid CaId, Guid? SpaceId)?> ResolveAndFenceByCaCertificateAsync(Guid caCertificateId, string capability = Capabilities.CertRevoke)
         {
             var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId);
-            if (ca == null || !TenantFence.From(HttpContext, capability).Allows(ca.TenantId))
+            if (ca == null || !SpaceFence.From(HttpContext, capability).Allows(ca.SpaceId))
                 return null;
-            return (ca.Id, ca.TenantId);
+            return (ca.Id, ca.SpaceId);
         }
 
         /// <summary>
         /// Lists every CRL scheduled job whose owning CA is inside the caller's
-        /// <see cref="TenantFence"/> (a space they belong to, or the instance when they have
+        /// <see cref="SpaceFence"/> (a space they belong to, or the instance when they have
         /// instance scope; everything when instance-wide).
         /// </summary>
         [HttpGet]
@@ -80,7 +80,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             var jobs = (await _crlConfigService.GetAllAsync()).ToList();
 
-            var fence = TenantFence.From(HttpContext, Capabilities.CertView);
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
             if (!fence.InstanceWide)
             {
                 if (fence.IsEmpty)
@@ -89,7 +89,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 var caCertIds = jobs.Select(j => j.CaCertificateId).Distinct().ToList();
                 var allowedCaCertIds = await _db.CertificateAuthorities
                     .AsNoTracking()
-                    .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                    .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
                     .Where(ca => ca.CertificateId != null && caCertIds.Contains(ca.CertificateId.Value))
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
@@ -103,7 +103,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>
         /// Creates a new CRL scheduled job. Requires <c>CaOperator</c> + step-up MFA
         /// (<see cref="StepUpOps.CreateCrlSchedule"/>) and verifies the caller can
-        /// access the target CA's tenant. Audit fires on success and on access-failure paths.
+        /// access the target CA's space. Audit fires on success and on access-failure paths.
         /// </summary>
         [HttpPost]
         [Authorize]
@@ -124,10 +124,10 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 await _audit.LogAsync(AuditActionType.CrlScheduleCreated, _currentUser.User?.Id, _currentUser.User?.Username,
                     "CrlSchedule", null,
-                    new { request.Name, request.CaCertificateId, request.IsDelta, Reason = "ca-not-found-or-cross-tenant" },
+                    new { request.Name, request.CaCertificateId, request.IsDelta, Reason = "ca-not-found-or-cross-space" },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     success: false,
-                    errorMessage: "Certificate authority not found or outside accessible tenants.");
+                    errorMessage: "Certificate authority not found or outside accessible spaces.");
                 return NotFound(new { error = "Certificate authority not found." });
             }
 
@@ -138,13 +138,13 @@ namespace ModularCA.API.Controllers.v1.Admin
                 new { job.Id, request.Name, request.CaCertificateId, request.IsDelta },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 certificateAuthorityId: fence.Value.CaId,
-                tenantId: fence.Value.TenantId);
+                spaceId: fence.Value.SpaceId);
 
             return CreatedAtAction(nameof(GetById), new { id = job.Id }, job);
         }
 
         /// <summary>
-        /// Returns a CRL scheduled job by ID. Enforces the tenant fence so cross-tenant
+        /// Returns a CRL scheduled job by ID. Enforces the space fence so cross-space
         /// callers receive a 404 even if the row exists.
         /// </summary>
         [HttpGet("{id:guid}")]
@@ -162,9 +162,9 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Updates a CRL scheduled job. Requires <c>CaOperator</c> + step-up MFA
-        /// (<see cref="StepUpOps.UpdateCrlSchedule"/>) and enforces the tenant fence.
+        /// (<see cref="StepUpOps.UpdateCrlSchedule"/>) and enforces the space fence.
         /// Captures before/after snapshots in the audit payload so changes to schedule
-        /// cadence/overlap/delta config are reviewable. Failure paths (cross-tenant or
+        /// cadence/overlap/delta config are reviewable. Failure paths (cross-space or
         /// missing schedule) emit a failure audit row.
         /// </summary>
         [HttpPut("{id:guid}")]
@@ -182,10 +182,10 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 await _audit.LogAsync(AuditActionType.CrlScheduleUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
                     "CrlSchedule", id.ToString(),
-                    new { ScheduleId = id, Reason = "schedule-not-found-or-cross-tenant" },
+                    new { ScheduleId = id, Reason = "schedule-not-found-or-cross-space" },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     success: false,
-                    errorMessage: "CRL schedule not found or outside accessible tenants.");
+                    errorMessage: "CRL schedule not found or outside accessible spaces.");
                 return NotFound(new { error = "CRL schedule not found." });
             }
 
@@ -206,7 +206,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 new { ScheduleId = id, Before = before, After = after },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 certificateAuthorityId: fence.Value.CaId,
-                tenantId: fence.Value.TenantId);
+                spaceId: fence.Value.SpaceId);
 
             return NoContent();
         }
@@ -214,7 +214,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>
         /// Toggles the enabled flag on a CRL scheduled job. Requires <c>CaOperator</c> +
         /// step-up MFA (<see cref="StepUpOps.ToggleCrlSchedule"/>) and enforces the
-        /// tenant fence. Toggling is treated as a sensitive operation because disabling
+        /// space fence. Toggling is treated as a sensitive operation because disabling
         /// CRL generation silently degrades revocation freshness for an entire CA.
         /// </summary>
         [HttpPut("{id:guid}/status")]
@@ -229,10 +229,10 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 await _audit.LogAsync(AuditActionType.CrlScheduleStatusChanged, _currentUser.User?.Id, _currentUser.User?.Username,
                     "CrlSchedule", id.ToString(),
-                    new { ScheduleId = id, request.Enabled, Reason = "schedule-not-found-or-cross-tenant" },
+                    new { ScheduleId = id, request.Enabled, Reason = "schedule-not-found-or-cross-space" },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     success: false,
-                    errorMessage: "CRL schedule not found or outside accessible tenants.");
+                    errorMessage: "CRL schedule not found or outside accessible spaces.");
                 return NotFound(new { error = "CRL schedule not found." });
             }
 
@@ -243,14 +243,14 @@ namespace ModularCA.API.Controllers.v1.Admin
                 new { ScheduleId = id, Enabled = request.Enabled },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 certificateAuthorityId: fence.Value.CaId,
-                tenantId: fence.Value.TenantId);
+                spaceId: fence.Value.SpaceId);
 
             return NoContent();
         }
 
         /// <summary>
         /// Deletes a CRL scheduled job. Requires <c>CaOperator</c> + step-up MFA
-        /// (<see cref="StepUpOps.DeleteCrlSchedule"/>) and enforces the tenant fence.
+        /// (<see cref="StepUpOps.DeleteCrlSchedule"/>) and enforces the space fence.
         /// Captures the deleted resource's identifying fields in the audit payload so
         /// deletes are reviewable after the row is gone. Failure paths emit a failure audit row.
         /// </summary>
@@ -266,10 +266,10 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 await _audit.LogAsync(AuditActionType.CrlScheduleDeleted, _currentUser.User?.Id, _currentUser.User?.Username,
                     "CrlSchedule", id.ToString(),
-                    new { ScheduleId = id, Reason = "schedule-not-found-or-cross-tenant" },
+                    new { ScheduleId = id, Reason = "schedule-not-found-or-cross-space" },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     success: false,
-                    errorMessage: "CRL schedule not found or outside accessible tenants.");
+                    errorMessage: "CRL schedule not found or outside accessible spaces.");
                 return NotFound(new { error = "CRL schedule not found." });
             }
 
@@ -285,7 +285,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 new { ScheduleId = id, Deleted = deletedSnapshot },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 certificateAuthorityId: fence.Value.CaId,
-                tenantId: fence.Value.TenantId);
+                spaceId: fence.Value.SpaceId);
 
             return NoContent();
         }
@@ -294,7 +294,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Applies a batch of enable/disable/delete actions across several CRL schedules behind a
         /// SINGLE step-up token (<see cref="StepUpOps.BulkCrlSchedule"/>, batch-scoped / no target),
         /// so a multi-row selection on the Distribution page prompts for MFA exactly once instead of
-        /// once per row. Each action is fenced independently (missing / cross-tenant rows are skipped,
+        /// once per row. Each action is fenced independently (missing / cross-space rows are skipped,
         /// not failed) and the batch never aborts on a single error; a per-id summary is returned.
         /// Requires <c>CaOperator</c>.
         /// </summary>
@@ -361,7 +361,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                             new { ScheduleId = id, Bulk = true, Deleted = deletedSnapshot },
                             HttpContext.Connection.RemoteIpAddress?.ToString(),
                             certificateAuthorityId: fence.Value.CaId,
-                            tenantId: fence.Value.TenantId);
+                            spaceId: fence.Value.SpaceId);
                     }
                     else
                     {
@@ -373,7 +373,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                             new { ScheduleId = id, Enabled = enabled, Bulk = true },
                             HttpContext.Connection.RemoteIpAddress?.ToString(),
                             certificateAuthorityId: fence.Value.CaId,
-                            tenantId: fence.Value.TenantId);
+                            spaceId: fence.Value.SpaceId);
                     }
 
                     results.Add(new { id, status = "ok" });

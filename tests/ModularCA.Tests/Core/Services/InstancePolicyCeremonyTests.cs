@@ -24,32 +24,34 @@ public class InstancePolicyCeremonyTests
     [InlineData("CreateSshCa")]
     [InlineData("DeleteSshCa")]
     [InlineData("InstancePolicyChange")]
-    public async Task A_ceremony_with_no_tenant_takes_the_instance_quorum(string operation)
+    [InlineData("SpacePolicyChange")]
+    public async Task A_ceremony_with_no_space_takes_the_instance_quorum(string operation)
     {
         using var db = InMemoryDbContextFactory.Create();
         db.SecurityPolicies.Add(new SecurityPolicyEntity { CeremonyRequiredApprovals = 3 });
-        var space = new TenantEntity { Name = "Acme", Slug = "acme", CeremonyRequiredApprovals = 2 };
-        db.Tenants.Add(space);
+        var space = new SpaceEntity { Name = "Acme", Slug = "acme", CeremonyRequiredApprovals = 2 };
+        db.Spaces.Add(space);
         await db.SaveChangesAsync();
         var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
 
-        var instance = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { TenantId = (Guid?)null }));
-        var spaced = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { TenantId = space.Id }));
+        var instance = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { SpaceId = (Guid?)null }));
+        var spaced = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { SpaceId = space.Id }));
 
         Assert.Equal(3, instance.RequiredApprovals);
-        Assert.Null(instance.TenantId);
+        Assert.Null(instance.SpaceId);
         Assert.Equal(2, spaced.RequiredApprovals);
-        Assert.Equal(space.Id, spaced.TenantId);
+        Assert.Equal(space.Id, spaced.SpaceId);
     }
 
     [Fact]
-    public void An_empty_tenant_id_in_stored_parameters_reads_as_the_instance()
+    public void An_empty_space_id_in_stored_parameters_reads_as_the_instance()
     {
-        var parameters = JsonSerializer.Deserialize<KeyCeremonyParameters>($"{{\"TenantId\":\"{Guid.Empty}\",\"SubjectCN\":\"x\"}}")!;
-        Assert.Null(parameters.TenantId);
-        Assert.Null(JsonSerializer.Deserialize<RevokeCaCeremonyParameters>($"{{\"TenantId\":\"{Guid.Empty}\"}}")!.TenantId);
-        var tenant = Guid.NewGuid();
-        Assert.Equal(tenant, JsonSerializer.Deserialize<SshKeyCeremonyParameters>($"{{\"TenantId\":\"{tenant}\"}}")!.TenantId);
+        var parameters = JsonSerializer.Deserialize<KeyCeremonyParameters>($"{{\"SpaceId\":\"{Guid.Empty}\",\"SubjectCN\":\"x\"}}")!;
+        Assert.Null(parameters.SpaceId);
+        Assert.Null(JsonSerializer.Deserialize<RevokeCaCeremonyParameters>($"{{\"SpaceId\":\"{Guid.Empty}\"}}")!.SpaceId);
+        Assert.Null(ModularCA.Shared.Models.CeremonyParametersJson.ReadSpaceId($"{{\"SpaceId\":\"{Guid.Empty}\"}}"));
+        var space = Guid.NewGuid();
+        Assert.Equal(space, JsonSerializer.Deserialize<SshKeyCeremonyParameters>($"{{\"SpaceId\":\"{space}\"}}")!.SpaceId);
     }
 
     [Fact]
@@ -58,14 +60,14 @@ public class InstancePolicyCeremonyTests
         using var db = InMemoryDbContextFactory.Create();
         var space = Guid.NewGuid();
         db.KeyCeremonies.AddRange(
-            new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", TenantId = null, ExpiresAt = DateTime.UtcNow.AddHours(1) },
-            new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", TenantId = space, ExpiresAt = DateTime.UtcNow.AddHours(1) });
+            new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", SpaceId = null, ExpiresAt = DateTime.UtcNow.AddHours(1) },
+            new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", SpaceId = space, ExpiresAt = DateTime.UtcNow.AddHours(1) });
         await db.SaveChangesAsync();
         var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
 
-        Assert.Equal([space], (await ceremonies.ListByTenantsAsync([space])).Select(c => c.TenantId!.Value));
-        Assert.Equal(2, (await ceremonies.ListByTenantsAsync([space], includeInstance: true)).Count);
-        Assert.Single(await ceremonies.ListByTenantsAsync([], includeInstance: true));
+        Assert.Equal([space], (await ceremonies.ListBySpacesAsync([space])).Select(c => c.SpaceId!.Value));
+        Assert.Equal(2, (await ceremonies.ListBySpacesAsync([space], includeInstance: true)).Count);
+        Assert.Single(await ceremonies.ListBySpacesAsync([], includeInstance: true));
     }
 
     [Fact]
@@ -75,14 +77,14 @@ public class InstancePolicyCeremonyTests
         using var db = InMemoryDbContextFactory.Create(name);
         var policy = new SecurityPolicyEntity { RequireKeyCeremony = true, CeremonyRequiredApprovals = 3, UserCeremonyRequiredApprovals = null };
         db.SecurityPolicies.Add(policy);
-        var space = new TenantEntity { Name = "Acme", Slug = "acme", RequireKeyCeremony = true, CeremonyRequiredApprovals = 2 };
-        db.Tenants.Add(space);
-        var instanceCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", TenantId = null };
-        var spaceCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Acme Root", Label = "acme-root", TenantId = space.Id };
+        var space = new SpaceEntity { Name = "Acme", Slug = "acme", RequireKeyCeremony = true, CeremonyRequiredApprovals = 2 };
+        db.Spaces.Add(space);
+        var instanceCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", SpaceId = null };
+        var spaceCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Acme Root", Label = "acme-root", SpaceId = space.Id };
         db.CertificateAuthorities.AddRange(instanceCa, spaceCa);
         await db.SaveChangesAsync();
         var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
-        var changes = new TenantPolicyChangeService(db, ceremonies, NullLogger<TenantPolicyChangeService>.Instance);
+        var changes = new SpacePolicyChangeService(db, ceremonies, NullLogger<SpacePolicyChangeService>.Instance);
 
         var id = await changes.InitiateChangeAsync(null, false, 1, Guid.NewGuid(), "admin",
             userQuorumIncluded: true, proposedUserQuorum: 2,
@@ -91,7 +93,7 @@ public class InstancePolicyCeremonyTests
         var ceremony = await db.KeyCeremonies.AsNoTracking().SingleAsync(c => c.Id == id);
         Assert.Equal(CeremonyType.InstancePolicyChange, ceremony.CeremonyType);
         Assert.Equal("InstancePolicyChange", ceremony.OperationType);
-        Assert.Null(ceremony.TenantId);
+        Assert.Null(ceremony.SpaceId);
         Assert.Equal(3, ceremony.RequiredApprovals);
         // One pending at a time.
         await Assert.ThrowsAsync<InvalidOperationException>(() => changes.InitiateChangeAsync(null, false, null, Guid.NewGuid(), "admin"));
@@ -101,13 +103,13 @@ public class InstancePolicyCeremonyTests
         await db.SaveChangesAsync();
         var result = await changes.ApplyApprovedChangeAsync(id);
 
-        Assert.Null(result.TenantId);
+        Assert.Null(result.SpaceId);
         using var check = InMemoryDbContextFactory.Create(name);
         var after = await check.SecurityPolicies.SingleAsync();
         Assert.False(after.RequireKeyCeremony);
         Assert.Equal(1, after.CeremonyRequiredApprovals);
         Assert.Equal(2, after.UserCeremonyRequiredApprovals);
-        var spaceAfter = await check.Tenants.SingleAsync();
+        var spaceAfter = await check.Spaces.SingleAsync();
         Assert.True(spaceAfter.RequireKeyCeremony);
         Assert.Equal(2, spaceAfter.CeremonyRequiredApprovals);
         Assert.Equal(1, (await check.CertificateAuthorities.SingleAsync(c => c.Id == instanceCa.Id)).UserCeremonyRequiredApprovals);
@@ -116,19 +118,19 @@ public class InstancePolicyCeremonyTests
     }
 
     [Fact]
-    public async Task A_tenant_ceremony_cannot_be_applied_to_the_instance()
+    public async Task A_space_ceremony_cannot_be_applied_to_the_instance()
     {
         using var db = InMemoryDbContextFactory.Create();
         db.SecurityPolicies.Add(new SecurityPolicyEntity());
         await db.SaveChangesAsync();
-        var parameters = JsonSerializer.Serialize(new TenantPolicyChangeCeremonyParameters
+        var parameters = JsonSerializer.Serialize(new SpacePolicyChangeCeremonyParameters
         {
-            TenantId = null, CurrentRequireKeyCeremony = true, CurrentCeremonyRequiredApprovals = 2, ProposedRequireKeyCeremony = false,
+            SpaceId = null, CurrentRequireKeyCeremony = true, CurrentCeremonyRequiredApprovals = 2, ProposedRequireKeyCeremony = false,
         });
-        var ceremony = new KeyCeremonyEntity { OperationType = "TenantPolicyChange", CeremonyType = CeremonyType.TenantPolicyChange, Status = "Approved", ParametersJson = parameters, ExpiresAt = DateTime.UtcNow.AddHours(1) };
+        var ceremony = new KeyCeremonyEntity { OperationType = "SpacePolicyChange", CeremonyType = CeremonyType.SpacePolicyChange, Status = "Approved", ParametersJson = parameters, ExpiresAt = DateTime.UtcNow.AddHours(1) };
         db.KeyCeremonies.Add(ceremony);
         await db.SaveChangesAsync();
-        var changes = new TenantPolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), NullLogger<TenantPolicyChangeService>.Instance);
+        var changes = new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), NullLogger<SpacePolicyChangeService>.Instance);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => changes.ApplyApprovedChangeAsync(ceremony.Id));
         Assert.True((await db.SecurityPolicies.AsNoTracking().SingleAsync()).RequireKeyCeremony);
@@ -151,7 +153,7 @@ public class InstancePolicyCeremonyTests
     {
         using var db = InMemoryDbContextFactory.Create();
         db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = true, CeremonyRequiredApprovals = 2 });
-        var group = new CaGroupEntity { Id = Guid.NewGuid(), Name = "system-operator", IsSystemGroup = true, TenantId = null };
+        var group = new CaGroupEntity { Id = Guid.NewGuid(), Name = "system-operator", IsSystemGroup = true, SpaceId = null };
         db.CaGroups.Add(group);
         db.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = group.Id, Capability = ModularCA.Shared.Authorization.Capabilities.CaManage });
         foreach (var n in new[] { "a", "b" })

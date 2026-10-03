@@ -30,15 +30,15 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
 
     /// <summary>
     /// Lists the SSH certificate templates whose SSH CA is inside the caller's
-    /// <see cref="TenantFence"/> (SSH CAs are instance CAs), with resolved profile and CA key names.
+    /// <see cref="SpaceFence"/> (SSH CAs are instance CAs), with resolved profile and CA key names.
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll()
     {
-        var fence = TenantFence.From(HttpContext, Capabilities.CertRevoke);
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
         var visibleCaIds = _db.CertificateAuthorities.AsNoTracking()
-            .Where(fence.Predicate<CertificateAuthorityEntity>(ca => ca.TenantId))
+            .Where(fence.Predicate<CertificateAuthorityEntity>(ca => ca.SpaceId))
             .Select(ca => ca.Id);
         var templates = await _db.SshCertificateTemplates
             .AsNoTracking()
@@ -148,13 +148,13 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
         if (request.SshCaKeyId is Guid newKeyId && newKeyId != entity.SshCaKeyId)
         {
             if (_currentUser.User == null) return Unauthorized();
-            var oldTenant = await _db.SshCaKeys.AsNoTracking()
-                .Where(k => k.Id == entity.SshCaKeyId).Select(k => k.CertificateAuthority.TenantId).FirstOrDefaultAsync();
+            var oldSpace = await _db.SshCaKeys.AsNoTracking()
+                .Where(k => k.Id == entity.SshCaKeyId).Select(k => k.CertificateAuthority.SpaceId).FirstOrDefaultAsync();
             var newCaId = await _db.SshCaKeys.AsNoTracking()
                 .Where(k => k.Id == newKeyId).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync();
             if (newCaId == null) return NotFound();
-            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(authService, _db, TenantFence.From(HttpContext, Capabilities.CertRevoke),
-                    _currentUser.User.Id, newCaId, oldTenant, Capabilities.CertRevoke)) is { } refused)
+            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(authService, _db, SpaceFence.From(HttpContext, Capabilities.CertRevoke),
+                    _currentUser.User.Id, newCaId, oldSpace, Capabilities.CertRevoke)) is { } refused)
                 return refused;
         }
 

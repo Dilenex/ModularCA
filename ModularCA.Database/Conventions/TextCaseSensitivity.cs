@@ -66,9 +66,9 @@ public static class TextCaseSensitivity
         new(typeof(UserEntity), nameof(UserEntity.Email)),
 
         // Names that appear in a URL, where the browser, the operator and the client each supply
-        // their own capitalisation: the tenant slug in a path and the CA label in /scep/{label}
+        // their own capitalisation: the space slug in a path and the CA label in /scep/{label}
         // and /acme/{label}.
-        new(typeof(TenantEntity), nameof(TenantEntity.Slug)),
+        new(typeof(SpaceEntity), nameof(SpaceEntity.Slug)),
         new(typeof(CertificateAuthorityEntity), nameof(CertificateAuthorityEntity.Label)),
 
         // Authorization subjects. Two roles or two groups differing only in case would each carry
@@ -86,7 +86,7 @@ public static class TextCaseSensitivity
 
         // Operator-facing names. Uniqueness here is what stops two profiles a human would read as
         // the same name from existing side by side.
-        new(typeof(TenantEntity), nameof(TenantEntity.Name)),
+        new(typeof(SpaceEntity), nameof(SpaceEntity.Name)),
         new(typeof(CertificateAuthorityEntity), nameof(CertificateAuthorityEntity.Name)),
         new(typeof(CertProfileEntity), nameof(CertProfileEntity.Name)),
         new(typeof(SigningProfileEntity), nameof(SigningProfileEntity.Name)),

@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -9,12 +9,12 @@ import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
 import { AuthClientProvider } from '@shared-auth/api/AuthClientContext';
 import { apiGet, apiPut, authClient } from './api/client';
 import { ToastProvider } from '@shared/context/ToastContext';
-import { TenantProvider } from './context/TenantContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
+import { legacySpacePath } from './legacyPaths';
 import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
@@ -73,8 +73,8 @@ const AccountDetail = React.lazy(() =>
 const CertInventory = React.lazy(() => import('./pages/CertInventory'));
 const Compliance = React.lazy(() => import('./pages/Compliance'));
 const Ceremonies = React.lazy(() => import('./pages/Ceremonies'));
-const TenantsAndQuotas = React.lazy(() => import('./pages/TenantsAndQuotas'));
-const TenantDetail = React.lazy(() => import('./pages/TenantDetail'));
+const SpacesAndQuotas = React.lazy(() => import('./pages/SpacesAndQuotas'));
+const SpaceDetail = React.lazy(() => import('./pages/SpaceDetail'));
 const Whitelists = React.lazy(() => import('./pages/Whitelists'));
 const WhitelistDetail = React.lazy(() => import('./pages/WhitelistDetail'));
 const Schedules = React.lazy(() => import('./pages/Schedules'));
@@ -98,6 +98,12 @@ const SelfCaInformation = React.lazy(() => import('./pages/self/CaInformation'))
 const LdapCaRedirect: React.FC = () => {
     const { caId } = useParams<{ caId: string }>();
     return <Navigate to={`/distribution?tab=ldap${caId ? `&caId=${caId}` : ''}`} replace />;
+};
+
+/** `/tenants` and `/tenants/:id`, renamed to spaces in 0.4.0, keep their id and query string. */
+const LegacySpaceRedirect: React.FC = () => {
+    const { pathname, search } = useLocation();
+    return <Navigate to={legacySpacePath(pathname, search) ?? '/spaces'} replace />;
 };
 
 const PageLoader = () => (
@@ -171,7 +177,6 @@ const App: React.FC = () => {
                 <TablePrefsProvider transport={{ apiGet, apiPut }}>
                 <ToastProvider>
                     <AuthProvider>
-                        <TenantProvider>
                             <Router basename={BASENAME}>
                                 <ScrollToTop />
                                 <TitleManager />
@@ -245,8 +250,8 @@ const App: React.FC = () => {
                                                             <Route path="/roles/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><RoleDetail /></ProtectedRoute>} />
                                                             <Route path="/enrollment" element={<ProtectedRoute {...TOKEN_MANAGE}><EnrollmentManagement /></ProtectedRoute>} />
                                                             <Route path="/ceremonies" element={<ProtectedRoute {...CA_MANAGE}><Ceremonies /></ProtectedRoute>} />
-                                                            {/* Quotas merged into Tenants & Quotas — redirect the old path. */}
-                                                            <Route path="/quotas" element={<Navigate to="/tenants" replace />} />
+                                                            {/* Quotas merged into Spaces & Quotas — redirect the old path. */}
+                                                            <Route path="/quotas" element={<Navigate to="/spaces" replace />} />
 
                                                             {/* Intelligence */}
                                                             <Route path="/intel/inventory" element={<ProtectedRoute {...CERT_VIEW}><CertInventory /></ProtectedRoute>} />
@@ -265,8 +270,11 @@ const App: React.FC = () => {
                                                             <Route path="/security" element={<Navigate to="/account" replace />} />
 
                                                             {/* Administration */}
-                                                            <Route path="/tenants" element={<ProtectedRoute {...SYSTEM_ADMIN}><TenantsAndQuotas /></ProtectedRoute>} />
-                                                            <Route path="/tenants/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><TenantDetail /></ProtectedRoute>} />
+                                                            <Route path="/spaces" element={<ProtectedRoute {...SYSTEM_ADMIN}><SpacesAndQuotas /></ProtectedRoute>} />
+                                                            <Route path="/spaces/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><SpaceDetail /></ProtectedRoute>} />
+                                                            {/* Renamed in 0.4.0; remove these redirects in 0.5. */}
+                                                            <Route path="/tenants" element={<LegacySpaceRedirect />} />
+                                                            <Route path="/tenants/:id" element={<LegacySpaceRedirect />} />
                                                             <Route path="/whitelists" element={<ProtectedRoute {...SYSTEM_ADMIN}><Whitelists /></ProtectedRoute>} />
                                                             <Route path="/whitelists/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><WhitelistDetail /></ProtectedRoute>} />
                                                             <Route path="/settings" element={<ProtectedRoute {...SYSTEM_ADMIN}><Settings /></ProtectedRoute>} />
@@ -276,7 +284,7 @@ const App: React.FC = () => {
                                                             <Route path="/webtls" element={<ProtectedRoute {...SYSTEM_ADMIN}><WebTlsManagement /></ProtectedRoute>} />
 
                                                             {/* Catch-all 404 — must come last. Renders inside the authenticated
-                                                                Layout so the operator keeps the sidebar and tenant context
+                                                                Layout so the operator keeps the sidebar and scope context
                                                                 while seeing the page-not-found message. */}
                                                             <Route path="*" element={<NotFound />} />
                                                         </Routes>
@@ -291,7 +299,6 @@ const App: React.FC = () => {
                                 </Routes>
                                 )}
                             </Router>
-                        </TenantProvider>
                     </AuthProvider>
                 </ToastProvider>
                 </TablePrefsProvider>

@@ -183,10 +183,10 @@ public class MtlsController : ControllerBase
         var caCert = caCertParser.ReadCertificate(caCertEntity.RawCertificate);
 
         // The CA key is the signer's. The controller holds a reference and a context; the
-        // signer judges whether this CA's key signs a certificate for this CA and tenant, and
+        // signer judges whether this CA's key signs a certificate for this CA and space, and
         // records the decision, before any bytes are signed.
         var caKey = new KeyRef(caCertEntity.CertificateId);
-        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.TenantId);
+        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId);
 
         // Generate RSA-2048 keypair for the client cert
         var keyGenParams = new Org.BouncyCastle.Crypto.Parameters.RsaKeyGenerationParameters(

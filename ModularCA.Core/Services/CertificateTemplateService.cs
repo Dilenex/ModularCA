@@ -29,13 +29,13 @@ public class CertificateTemplateService
     /// those issued by one CA.
     /// </summary>
     /// <param name="caId">When set, only templates whose issuing CA this is.</param>
-    /// <param name="tenantId">When set, only templates whose issuing CA belongs to this tenant.</param>
-    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null, Guid? tenantId = null)
+    /// <param name="spaceId">When set, only templates whose issuing CA belongs to this space.</param>
+    public async Task<List<CertificateTemplateDto>> GetAllAsync(Guid? caId = null, Guid? spaceId = null)
     {
         var entities = await _db.CertificateTemplates
             .AsNoTracking()
             .Where(t => caId == null || t.CaId == caId)
-            .Where(t => tenantId == null || t.Ca.TenantId == tenantId)
+            .Where(t => spaceId == null || t.Ca.SpaceId == spaceId)
             .Include(t => t.Ca)
             .Include(t => t.CertProfile)
             .Include(t => t.SigningProfile)
@@ -142,12 +142,12 @@ public class CertificateTemplateService
     private async Task EnsureProfileInScopeAsync(Guid caId, Guid certProfileId)
     {
         var ca = await _db.CertificateAuthorities.AsNoTracking()
-            .Where(c => c.Id == caId).Select(c => new { c.Id, c.TenantId }).FirstOrDefaultAsync()
+            .Where(c => c.Id == caId).Select(c => new { c.Id, c.SpaceId }).FirstOrDefaultAsync()
             ?? throw new ArgumentException("Certificate authority not found.");
         var profile = await _db.CertProfiles.AsNoTracking()
-            .Where(p => p.Id == certProfileId).Select(p => new { p.TenantId, p.CertificateAuthorityId }).FirstOrDefaultAsync()
+            .Where(p => p.Id == certProfileId).Select(p => new { p.SpaceId, p.CertificateAuthorityId }).FirstOrDefaultAsync()
             ?? throw new ArgumentException("Certificate profile not found.");
-        if (!Authorization.CertProfileScope.Admits(profile.TenantId, profile.CertificateAuthorityId, ca.Id, ca.TenantId))
+        if (!Authorization.CertProfileScope.Admits(profile.SpaceId, profile.CertificateAuthorityId, ca.Id, ca.SpaceId))
             throw new ArgumentException("The certificate profile belongs to another scope than the template's CA.");
     }
 

@@ -27,7 +27,7 @@ public sealed class InProcessKdc
 
     public string Realm { get; }
     public string DnsDomain => Realm.ToLowerInvariant();
-    /// <summary>The service account's long-term key: what the tenant would import into ModularCA.</summary>
+    /// <summary>The service account's long-term key: what the space would import into ModularCA.</summary>
     public KerberosKey ServiceKey { get; }
 
     public InProcessKdc(string realm, string servicePassword = "Svc-P@ssw0rd-1")

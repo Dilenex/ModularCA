@@ -9,23 +9,23 @@ namespace ModularCA.Tests.Msae.Kerberos;
 
 /// <summary>
 /// The acceptor takes real tickets from in-process forests and proves the isolation rule: a
-/// ticket is accepted only for the tenant its realm is bound to, only when it names the bound
+/// ticket is accepted only for the space its realm is bound to, only when it names the bound
 /// service principal, only once, and only with that realm's own key. Nothing here touches the
 /// operating system's Kerberos stack.
 /// </summary>
 public class KerberosAcceptorTests
 {
-    private static readonly Guid TenantA = Guid.NewGuid();
-    private static readonly Guid TenantB = Guid.NewGuid();
+    private static readonly Guid SpaceA = Guid.NewGuid();
+    private static readonly Guid SpaceB = Guid.NewGuid();
     private static readonly Guid EnrollmentUser = Guid.NewGuid();
 
     private sealed class Realms : IKerberosRealmKeyProvider
     {
         private readonly Dictionary<string, KerberosRealmKeys> _map = new(StringComparer.OrdinalIgnoreCase);
 
-        public Realms Bind(InProcessKdc forest, Guid tenantId, bool machines = true, bool users = true, string? spn = null, params KerberosKey[] keys)
+        public Realms Bind(InProcessKdc forest, Guid spaceId, bool machines = true, bool users = true, string? spn = null, params KerberosKey[] keys)
         {
-            _map[forest.Realm] = new KerberosRealmKeys(forest.Realm, tenantId, spn ?? InProcessKdc.ServicePrincipal, forest.DnsDomain, EnrollmentUser, "svc-enroll-user",
+            _map[forest.Realm] = new KerberosRealmKeys(forest.Realm, spaceId, spn ?? InProcessKdc.ServicePrincipal, forest.DnsDomain, EnrollmentUser, "svc-enroll-user",
                 machines, users, keys.Length > 0 ? keys : new[] { forest.ServiceKey });
             return this;
         }
@@ -37,14 +37,14 @@ public class KerberosAcceptorTests
     private static KerberosAcceptor Acceptor(IKerberosRealmKeyProvider realms) => new(realms, new InMemoryReplayValidator());
 
     [Fact]
-    public async Task A_ticket_from_a_bound_forest_is_accepted_for_its_tenant_and_names_the_caller()
+    public async Task A_ticket_from_a_bound_forest_is_accepted_for_its_space_and_names_the_caller()
     {
         var forest = new InProcessKdc("corp.customer-a.local");
         forest.AddAccount("alice", "Alice-P@ss-1");
         forest.AddAccount("WS-042$", "Machine-P@ss-1");
-        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var acceptor = Acceptor(new Realms().Bind(forest, SpaceA));
 
-        var user = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        var user = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), SpaceA);
         Assert.True(user.Accepted, user.Refusal.ToString());
         Assert.Equal("alice", user.Caller!.Principal);
         Assert.Equal("CORP.CUSTOMER-A.LOCAL", user.Caller.Realm);
@@ -53,7 +53,7 @@ public class KerberosAcceptorTests
         Assert.Null(user.Caller.DnsHostName);
         Assert.False(user.Caller.ApRep.IsEmpty);
 
-        var machine = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1"), TenantA);
+        var machine = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1"), SpaceA);
         Assert.True(machine.Accepted, machine.Refusal.ToString());
         Assert.True(machine.Caller!.IsMachine);
         Assert.Equal("ws-042.corp.customer-a.local", machine.Caller.DnsHostName);
@@ -61,16 +61,16 @@ public class KerberosAcceptorTests
     }
 
     [Fact]
-    public async Task A_valid_ticket_is_refused_for_another_tenants_ca_before_any_key_is_used()
+    public async Task A_valid_ticket_is_refused_for_another_spaces_ca_before_any_key_is_used()
     {
         var forest = new InProcessKdc("corp.customer-a.local");
         forest.AddAccount("alice", "Alice-P@ss-1");
-        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var acceptor = Acceptor(new Realms().Bind(forest, SpaceA));
 
-        var result = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantB);
+        var result = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), SpaceB);
 
         Assert.False(result.Accepted);
-        Assert.Equal(KerberosRefusal.WrongTenant, result.Refusal);
+        Assert.Equal(KerberosRefusal.WrongSpace, result.Refusal);
         Assert.Equal("CORP.CUSTOMER-A.LOCAL", result.Realm);
         Assert.Equal(InProcessKdc.ServicePrincipal, result.ServicePrincipal);
     }
@@ -82,10 +82,10 @@ public class KerberosAcceptorTests
         forest.AddAccount("alice", "Alice-P@ss-1");
         var ticket = await forest.ServiceTicketAsync("alice", "Alice-P@ss-1");
 
-        var unbound = await Acceptor(new Realms()).AcceptAsync(ticket, TenantA);
+        var unbound = await Acceptor(new Realms()).AcceptAsync(ticket, SpaceA);
         Assert.Equal(KerberosRefusal.UnknownRealm, unbound.Refusal);
 
-        var otherSpn = await Acceptor(new Realms().Bind(forest, TenantA, spn: "HTTP/other.example")).AcceptAsync(ticket, TenantA);
+        var otherSpn = await Acceptor(new Realms().Bind(forest, SpaceA, spn: "HTTP/other.example")).AcceptAsync(ticket, SpaceA);
         Assert.Equal(KerberosRefusal.WrongServicePrincipal, otherSpn.Refusal);
     }
 
@@ -98,13 +98,13 @@ public class KerberosAcceptorTests
         var ticket = await forestA.ServiceTicketAsync("alice", "Alice-P@ss-1");
 
         // Realm A bound, but with forest B's key: the wrong key must not decrypt.
-        var wrongKey = await Acceptor(new Realms().Bind(forestA, TenantA, keys: forestB.ServiceKey)).AcceptAsync(ticket, TenantA);
+        var wrongKey = await Acceptor(new Realms().Bind(forestA, SpaceA, keys: forestB.ServiceKey)).AcceptAsync(ticket, SpaceA);
         Assert.Equal(KerberosRefusal.Invalid, wrongKey.Refusal);
 
         // Right key, twice: the second presentation of the same authenticator is a replay.
-        var acceptor = Acceptor(new Realms().Bind(forestA, TenantA));
-        Assert.True((await acceptor.AcceptAsync(ticket, TenantA)).Accepted);
-        Assert.Equal(KerberosRefusal.Invalid, (await acceptor.AcceptAsync(ticket, TenantA)).Refusal);
+        var acceptor = Acceptor(new Realms().Bind(forestA, SpaceA));
+        Assert.True((await acceptor.AcceptAsync(ticket, SpaceA)).Accepted);
+        Assert.Equal(KerberosRefusal.Invalid, (await acceptor.AcceptAsync(ticket, SpaceA)).Refusal);
     }
 
     [Fact]
@@ -116,10 +116,10 @@ public class KerberosAcceptorTests
         var unrelated = new InProcessKdc("corp.customer-a.local", servicePassword: "Next-P@ss-3").ServiceKey;
 
         // Newest first, old key still present: the ticket sealed under the old key is accepted.
-        var rotated = await Acceptor(new Realms().Bind(forest, TenantA, keys: new[] { unrelated, forest.ServiceKey })).AcceptAsync(ticket, TenantA);
+        var rotated = await Acceptor(new Realms().Bind(forest, SpaceA, keys: new[] { unrelated, forest.ServiceKey })).AcceptAsync(ticket, SpaceA);
         Assert.True(rotated.Accepted, rotated.Refusal.ToString());
 
-        var noMachines = await Acceptor(new Realms().Bind(forest, TenantA, machines: false)).AcceptAsync(await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1"), TenantA);
+        var noMachines = await Acceptor(new Realms().Bind(forest, SpaceA, machines: false)).AcceptAsync(await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1"), SpaceA);
         Assert.Equal(KerberosRefusal.PrincipalKindNotAllowed, noMachines.Refusal);
     }
 
@@ -134,7 +134,7 @@ public class KerberosAcceptorTests
         var wrongAes256 = new KerberosKey("Other-P@ss-9", name, etype: EncryptionType.AES256_CTS_HMAC_SHA1_96, saltType: SaltType.ActiveDirectoryUser);
 
         // A wrong AES256 key is attempted and reported; the AES128 key is counted, not attempted.
-        var mixed = await Acceptor(new Realms().Bind(forest, TenantA, keys: new[] { aes128, wrongAes256 })).AcceptAsync(ticket, TenantA);
+        var mixed = await Acceptor(new Realms().Bind(forest, SpaceA, keys: new[] { aes128, wrongAes256 })).AcceptAsync(ticket, SpaceA);
         Assert.Equal(KerberosRefusal.Invalid, mixed.Refusal);
         Assert.Contains("ticket kvno", mixed.Detail);
         Assert.Contains("AES256_CTS_HMAC_SHA1_96: SecurityException", mixed.Detail);
@@ -142,19 +142,19 @@ public class KerberosAcceptorTests
         Assert.DoesNotContain("must match the encrypted data", mixed.Detail);
 
         // Only keys of the wrong type: nothing is attempted and the detail names the gap.
-        var none = await Acceptor(new Realms().Bind(forest, TenantA, keys: aes128)).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        var none = await Acceptor(new Realms().Bind(forest, SpaceA, keys: aes128)).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), SpaceA);
         Assert.Equal(KerberosRefusal.Invalid, none.Refusal);
         Assert.Contains("none of the 1 live keys is AES256_CTS_HMAC_SHA1_96", none.Detail);
 
         // The right key among wrong-typed ones still wins.
-        var right = await Acceptor(new Realms().Bind(forest, TenantA, keys: new[] { aes128, forest.ServiceKey })).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        var right = await Acceptor(new Realms().Bind(forest, SpaceA, keys: new[] { aes128, forest.ServiceKey })).AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), SpaceA);
         Assert.True(right.Accepted, right.Detail);
     }
 
     [Fact]
     public async Task Garbage_is_malformed_not_an_exception()
     {
-        var result = await Acceptor(new Realms()).AcceptAsync(new byte[] { 1, 2, 3, 4 }, TenantA);
+        var result = await Acceptor(new Realms()).AcceptAsync(new byte[] { 1, 2, 3, 4 }, SpaceA);
         Assert.Equal(KerberosRefusal.Malformed, result.Refusal);
     }
 
@@ -163,10 +163,10 @@ public class KerberosAcceptorTests
     {
         var forest = new InProcessKdc("corp.customer-a.local");
         forest.AddAccount("WS-042$", "Machine-P@ss-1");
-        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var acceptor = Acceptor(new Realms().Bind(forest, SpaceA));
         var (token, clientContext) = await forest.ServiceTicketContextAsync("WS-042$", "Machine-P@ss-1");
 
-        var result = await acceptor.AcceptAsync(token, TenantA);
+        var result = await acceptor.AcceptAsync(token, SpaceA);
         Assert.True(result.Accepted, result.Refusal.ToString());
         var mutual = result.Caller!.MutualAuthToken;
         Assert.False(mutual.IsEmpty);
@@ -192,19 +192,19 @@ public class KerberosAcceptorTests
     {
         var forest = new InProcessKdc("corp.customer-a.local");
         forest.AddAccount("WS-042$", "Machine-P@ss-1");
-        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var acceptor = Acceptor(new Realms().Bind(forest, SpaceA));
 
         // What a #Kerberosv5_AP_REQ token carries: the AP-REQ without GSS-API framing.
         var gss = await forest.ServiceTicketAsync("WS-042$", "Machine-P@ss-1");
         var raw = MessageParser.ParseNegotiate(gss).Token.InitialToken!.MechToken!.Value;
         var bare = MessageParser.ParseKerberos(raw).KrbApReq.EncodeApplication();
 
-        var framed = await acceptor.AcceptAsync(KerberosAcceptor.FrameApReq(bare), TenantA);
+        var framed = await acceptor.AcceptAsync(KerberosAcceptor.FrameApReq(bare), SpaceA);
         Assert.True(framed.Accepted, framed.Refusal.ToString());
         Assert.Equal("WS-042$", framed.Caller!.Principal);
 
         // The parser also takes the bare AP-REQ as it is; a fresh acceptor, since the authenticator was just used.
-        var unframed = await Acceptor(new Realms().Bind(forest, TenantA)).AcceptAsync(bare, TenantA);
+        var unframed = await Acceptor(new Realms().Bind(forest, SpaceA)).AcceptAsync(bare, SpaceA);
         Assert.True(unframed.Accepted, unframed.Refusal.ToString());
     }
 
@@ -212,7 +212,7 @@ public class KerberosAcceptorTests
     public async Task An_ntlm_fallback_is_named_as_such_and_every_unusable_token_is_described()
     {
         var forest = new InProcessKdc("corp.customer-a.local");
-        var acceptor = Acceptor(new Realms().Bind(forest, TenantA));
+        var acceptor = Acceptor(new Realms().Bind(forest, SpaceA));
 
         // What a client sends when its SSPI could not get a service ticket: SPNEGO whose
         // mechanism token is an NTLMSSP negotiate message rather than a Kerberos AP-REQ.
@@ -225,19 +225,19 @@ public class KerberosAcceptorTests
             },
         });
 
-        var result = await acceptor.AcceptAsync(ntlm, TenantA);
+        var result = await acceptor.AcceptAsync(ntlm, SpaceA);
         Assert.Equal(KerberosRefusal.NtlmOffered, result.Refusal);
         Assert.Contains("NTLMSSP", result.Detail);
         Assert.Contains("1.3.6.1.4.1.311.2.2.10", result.Detail);
 
         // Garbage is still malformed, but now says so with its leading bytes.
-        var garbage = await acceptor.AcceptAsync(new byte[] { 1, 2, 3, 4 }, TenantA);
+        var garbage = await acceptor.AcceptAsync(new byte[] { 1, 2, 3, 4 }, SpaceA);
         Assert.Equal(KerberosRefusal.Malformed, garbage.Refusal);
         Assert.Contains("01020304", garbage.Detail);
 
         // A real ticket is unaffected by any of this.
         forest.AddAccount("alice", "Alice-P@ss-1");
-        var good = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), TenantA);
+        var good = await acceptor.AcceptAsync(await forest.ServiceTicketAsync("alice", "Alice-P@ss-1"), SpaceA);
         Assert.True(good.Accepted, good.Refusal.ToString());
     }
 }

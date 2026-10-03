@@ -322,8 +322,8 @@ public class CsrService : ICsrService
             SubmittedAt = DateTime.UtcNow,
             Status = "Approved",
             // The infrastructure flag is a POLICY EXEMPTION, not a bookkeeping label: at
-            // issuance it skips the tenant/CA quota, the minimum-validity check, and the
-            // tenant validity ceiling. Auto-renewal used this method for ordinary
+            // issuance it skips the space/CA quota, the minimum-validity check, and the
+            // space validity ceiling. Auto-renewal used this method for ordinary
             // subscriber certificates and therefore renewed them straight past limits their
             // original issuance had been held to — a profile capped at 398 days renewing to its
             // P3Y profile maximum — while also detaching the certificate from its owner, who
@@ -444,10 +444,10 @@ public class CsrService : ICsrService
             return;
         var ca = await _dbContext.CertificateAuthorities.AsNoTracking()
             .Where(c => c.CertificateId == issuerId)
-            .Select(c => new { c.Id, c.TenantId })
+            .Select(c => new { c.Id, c.SpaceId })
             .FirstOrDefaultAsync();
         if (ca != null)
-            Authorization.CertProfileScope.Ensure(certProfile.TenantId, certProfile.CertificateAuthorityId, ca.Id, ca.TenantId);
+            Authorization.CertProfileScope.Ensure(certProfile.SpaceId, certProfile.CertificateAuthorityId, ca.Id, ca.SpaceId);
     }
 
     /// <summary>

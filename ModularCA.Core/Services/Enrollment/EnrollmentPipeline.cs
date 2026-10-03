@@ -221,7 +221,7 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             await AuditAsync(submission, new EnrollmentAuditRecord(
                 protocol, EnrollmentAuditEvent.Pending, null, null,
                 subject, null, request.KeyAlgorithm, request.KeySize,
-                ca.Label, ca.Id, ca.TenantId, submission.SourceIp, csrEntity.Id, submission.Correlation));
+                ca.Label, ca.Id, ca.SpaceId, submission.SourceIp, csrEntity.Id, submission.Correlation));
             _ = _notifications.NotifyCsrPendingApprovalAsync(subject, protocol);
             return new EnrollmentOutcome.Pending(csrEntity.Id);
         }
@@ -267,7 +267,7 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         await AuditAsync(submission, new EnrollmentAuditRecord(
             protocol, EnrollmentAuditEvent.Issued, null, null,
             subject, serial, request.KeyAlgorithm, request.KeySize,
-            ca.Label, ca.Id, ca.TenantId, submission.SourceIp, csrEntity.Id, submission.Correlation));
+            ca.Label, ca.Id, ca.SpaceId, submission.SourceIp, csrEntity.Id, submission.Correlation));
 
         return new EnrollmentOutcome.Issued(
             csrEntity.Id, issuanceResult.Pem, await ChainAsync(signingProfile, cancellationToken), serial);
@@ -295,7 +295,7 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         await AuditAsync(submission, new EnrollmentAuditRecord(
             submission.Protocol.ToUpperInvariant(), EnrollmentAuditEvent.Refused, reason, message,
             request.Subject, null, request.KeyAlgorithm, request.KeySize,
-            ca?.Label ?? submission.CaLabel, ca?.Id, ca?.TenantId, submission.SourceIp, null, submission.Correlation));
+            ca?.Label ?? submission.CaLabel, ca?.Id, ca?.SpaceId, submission.SourceIp, null, submission.Correlation));
         return new EnrollmentOutcome.Refused(reason, message);
     }
 

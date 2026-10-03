@@ -82,12 +82,6 @@ namespace ModularCA.Shared.Models.Config
         public AuditConfig Audit { get; set; } = new();
 
         /// <summary>
-        /// Product-shape switches read from <c>config.yaml</c> at startup. Distinct from the
-        /// database feature flags an administrator toggles in the console.
-        /// </summary>
-        public FeaturesConfig Features { get; set; } = new();
-
-        /// <summary>
         /// How long the startup schema check waits and how long the control role's migrations may
         /// run. Read before the host starts.
         /// </summary>
@@ -119,20 +113,6 @@ namespace ModularCA.Shared.Models.Config
         /// blocks every reader of that table while it waits.
         /// </summary>
         public int MigrationLockTimeoutSeconds { get; set; } = 30;
-    }
-
-    /// <summary>
-    /// Product-shape switches that change what an instance may contain, not how it behaves.
-    /// </summary>
-    public class FeaturesConfig
-    {
-        /// <summary>
-        /// Whether this instance may hold more than one organisation tenant. Off by default: an
-        /// instance is one organisation, and a further organisation is a further instance.
-        /// Bootstrap always creates the first organisation regardless. The 0.4.0 upgrade refuses
-        /// an instance with more than one, whatever this says.
-        /// </summary>
-        public bool AllowMultipleOrganizations { get; set; } = false;
     }
 
     /// <summary>
@@ -615,6 +595,7 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// JSON dict mapping LDAP group DNs to CaGroup names.
         /// Example: {"CN=CA-Admins,DC=example,DC=com": "my-ca-admin", "CN=Auditors,DC=example,DC=com": "system-auditor"}
+        /// A pre-0.4.0 <c>org-&lt;slug&gt;-*</c> target resolves, with a warning, to its renamed <c>space-&lt;slug&gt;-*</c> group.
         /// </summary>
         public string? GroupToRoleMappings { get; set; }
 
@@ -825,7 +806,7 @@ namespace ModularCA.Shared.Models.Config
         public string OAuth2ClientSecret { get; set; } = string.Empty;
 
         /// <summary>
-        /// OAuth2 token endpoint URL. For Microsoft 365: https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+        /// OAuth2 token endpoint URL. For Microsoft 365: https://login.microsoftonline.com/{space}/oauth2/v2.0/token
         /// For Google: https://oauth2.googleapis.com/token
         /// </summary>
         public string OAuth2TokenUrl { get; set; } = string.Empty;
@@ -1354,9 +1335,9 @@ namespace ModularCA.Shared.Models.Config
         /// over-long certificates in its report. This is a <b>warning threshold only</b> —
         /// the scanner emits a finding when a certificate's total validity exceeds this
         /// value, but the certificate remains valid and in use. The enforced ceiling lives on
-        /// <see cref="ModularCA.Shared.Entities.TenantEntity.MaxValidityDays"/>; this knob
+        /// <see cref="ModularCA.Shared.Entities.SpaceEntity.MaxValidityDays"/>; this knob
         /// intentionally does not block anything, and the two are independent on purpose — a
-        /// tenant may legitimately issue past a compliance baseline it is not claiming to meet.
+        /// space may legitimately issue past a compliance baseline it is not claiming to meet.
         /// Default tracks the CA/Browser Forum baseline at 825 days.
         /// </summary>
         public int WarnOverValidityDays { get; set; } = 825;
@@ -1382,7 +1363,7 @@ namespace ModularCA.Shared.Models.Config
         public int MinRsaKeySize { get; set; } = 2048;
 
         // MaxValidityDays used to live here, defaulting to 825 and blocking every leaf in the
-        // installation that exceeded it. It moved to TenantEntity.MaxValidityDays, where the
+        // installation that exceeded it. It moved to SpaceEntity.MaxValidityDays, where the
         // remarks explain why; see also ComplianceConfig.WarnOverValidityDays for the reporting
         // half, which never blocked and did not move. Removing the property outright is safe for
         // existing config files because YamlAppConfigLoader is built with
@@ -1470,12 +1451,12 @@ namespace ModularCA.Shared.Models.Config
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
-        /// AUTH-06: optional tenant scope for the API key. When set, the integration API
-        /// restricts operations to CAs belonging to this tenant. Requests targeting CAs
-        /// in a different tenant are rejected with 403. When null (default), the API key
+        /// AUTH-06: optional space scope for the API key. When set, the integration API
+        /// restricts operations to CAs belonging to this space. Requests targeting CAs
+        /// in a different space are rejected with 403. When null (default), the API key
         /// grants access to all CAs (backward compatible).
         /// </summary>
-        public Guid? TenantId { get; set; }
+        public Guid? SpaceId { get; set; }
     }
 
     /// <summary>
@@ -1521,13 +1502,13 @@ namespace ModularCA.Shared.Models.Config
         public Guid? DefaultSigningProfileId { get; set; }
 
         /// <summary>
-        /// AUTH-06: optional tenant scope for the cert-manager API key. When set, the
-        /// cert-manager integration restricts signing to CAs belonging to this tenant.
-        /// Requests whose signing profile resolves to a CA in a different tenant are
+        /// AUTH-06: optional space scope for the cert-manager API key. When set, the
+        /// cert-manager integration restricts signing to CAs belonging to this space.
+        /// Requests whose signing profile resolves to a CA in a different space are
         /// rejected with 403. When null (default), the API key grants access to all
         /// CAs (backward compatible).
         /// </summary>
-        public Guid? TenantId { get; set; }
+        public Guid? SpaceId { get; set; }
     }
 
     /// <summary>

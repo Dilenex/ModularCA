@@ -15,6 +15,7 @@ import { InlineNotice } from './InlineNotice';
 import type { NoticeInput } from '../notifications/notice';
 import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../context/TablePrefsContext';
+import { renameColumnKeys } from '../tablePrefsKeys';
 import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
 import { sortRows } from '../tableSort';
@@ -65,6 +66,8 @@ export interface DataTableBulkAction<Row> {
 export interface DataTableProps<Row> {
     /** Stable id used for persistence, e.g. "whitelists". */
     tableId: string;
+    /** Column keys renamed since a layout was stored, old to new, so stored widths and hidden flags carry over. */
+    renamedColumns?: Record<string, string>;
     columns: DataTableColumn<Row>[];
     rows: Row[];
     rowKey: (row: Row) => string;
@@ -140,7 +143,7 @@ const EMPTY_SET: Set<string> = new Set();
 
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
-    tableId, columns, rows, rowKey, loading, error, empty, title, onRowClick: onRowOpen,
+    tableId, renamedColumns, columns, rows, rowKey, loading, error, empty, title, onRowClick: onRowOpen,
     selectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
@@ -165,7 +168,8 @@ export function DataTable<Row>({
     // A leading "open" column appears when a row can be expanded, peeked (drawer), or navigated.
     const hasRowOpen = expandable || !!renderDrawer || !!detailPath || !!onRowOpen;
     const [drawerRow, setDrawerRow] = useState<Row | null>(null);
-    const [prefs, setPrefs] = useTablePrefs<Prefs>(`table:${tableId}`, { widths: {}, hidden: [] });
+    const [storedPrefs, setPrefs] = useTablePrefs<Prefs>(`table:${tableId}`, { widths: {}, hidden: [] });
+    const prefs = useMemo(() => renameColumnKeys(storedPrefs, renamedColumns), [storedPrefs, renamedColumns]);
     const prefsRef = useRef(prefs); prefsRef.current = prefs;
 
     const visibleCols = useMemo(() => columns.filter((c) => !prefs.hidden.includes(c.key)), [columns, prefs.hidden]);

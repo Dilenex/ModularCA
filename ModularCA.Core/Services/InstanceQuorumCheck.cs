@@ -41,10 +41,10 @@ public static class InstanceQuorumCheck
                 && ra.Role.Capabilities.Any(rc => rc.ResourceType == null && caps.Contains(rc.Capability)))
             .SelectMany(ra => ra.Group!.Members.Select(m => m.UserId));
         var viaUserGrants = db.UserCapabilityGrants
-            .Where(ug => ug.TenantId == null && ug.CertificateAuthorityId == null && ug.ResourceType == null && caps.Contains(ug.Capability))
+            .Where(ug => ug.SpaceId == null && ug.CertificateAuthorityId == null && ug.ResourceType == null && caps.Contains(ug.Capability))
             .Select(ug => ug.UserId);
         var viaUserRoles = db.RoleAssignments
-            .Where(ra => ra.UserId != null && ra.GroupId == null && ra.TenantId == null && ra.CertificateAuthorityId == null
+            .Where(ra => ra.UserId != null && ra.GroupId == null && ra.SpaceId == null && ra.CertificateAuthorityId == null
                 && ra.Role.Capabilities.Any(rc => rc.ResourceType == null && caps.Contains(rc.Capability)))
             .Select(ra => ra.UserId!.Value);
 

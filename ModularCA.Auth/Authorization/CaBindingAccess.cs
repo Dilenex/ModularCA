@@ -25,26 +25,26 @@ public static class CaBindingAccess
     }
 
     /// <summary>
-    /// Checks binding a row of <paramref name="ownerTenantId"/> (null for the instance) to
+    /// Checks binding a row of <paramref name="ownerSpaceId"/> (null for the instance) to
     /// <paramref name="caId"/>: the CA must exist inside <paramref name="fence"/>, the user must
     /// hold <paramref name="capability"/> on it, and it must belong to the row's own scope. With
     /// no CA, the row is unbound, which needs <paramref name="capability"/> across its scope.
     /// </summary>
-    public static async Task<Verdict> CheckAsync(ICaGroupAuthorizationService auth, ModularCADbContext db, TenantFence fence,
-        Guid userId, Guid? caId, Guid? ownerTenantId, string capability)
+    public static async Task<Verdict> CheckAsync(ICaGroupAuthorizationService auth, ModularCADbContext db, SpaceFence fence,
+        Guid userId, Guid? caId, Guid? ownerSpaceId, string capability)
     {
         if (caId is not Guid id)
-            return await auth.HasScopeCapabilityAsync(userId, ownerTenantId, capability) ? Verdict.Allowed : Verdict.Forbidden;
+            return await auth.HasScopeCapabilityAsync(userId, ownerSpaceId, capability) ? Verdict.Allowed : Verdict.Forbidden;
 
         var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == id)
-            .Select(c => new { c.TenantId })
+            .Select(c => new { c.SpaceId })
             .FirstOrDefaultAsync();
-        if (ca == null || !fence.Allows(ca.TenantId))
+        if (ca == null || !fence.Allows(ca.SpaceId))
             return Verdict.NotFound;
         if (!await auth.HasCaCapabilityAsync(userId, id, capability))
             return Verdict.Forbidden;
-        return ca.TenantId == ownerTenantId ? Verdict.Allowed : Verdict.ScopeMismatch;
+        return ca.SpaceId == ownerSpaceId ? Verdict.Allowed : Verdict.ScopeMismatch;
     }
 
     /// <summary>

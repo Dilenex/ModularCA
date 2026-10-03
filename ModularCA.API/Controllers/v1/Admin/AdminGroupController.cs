@@ -38,7 +38,7 @@ public class AdminGroupController(
 
     /// <summary>
     /// Lists all groups the current user has access to view.
-    /// The caller sees the groups inside their <see cref="TenantFence"/>; an instance-wide caller sees all.
+    /// The caller sees the groups inside their <see cref="SpaceFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
@@ -55,8 +55,8 @@ public class AdminGroupController(
             .AsNoTracking()
             .AsQueryable();
 
-        var fence = TenantFence.From(HttpContext, Capabilities.CertView);
-        query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.TenantId));
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+        query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.SpaceId));
 
         var groups = await query.OrderBy(g => g.Name).ToListAsync();
 
@@ -65,8 +65,8 @@ public class AdminGroupController(
             g.Id,
             g.Name,
             g.DisplayName,
-            g.TenantId,
-            IsInstance = g.TenantId == null,
+            g.SpaceId,
+            IsInstance = g.SpaceId == null,
             g.CertificateAuthorityId,
             g.TemplateName,
             g.IsSystemGroup,
@@ -81,7 +81,7 @@ public class AdminGroupController(
 
     /// <summary>
     /// Returns detailed information about a group including its members.
-    /// Verifies the requesting user has access to the group's tenant before returning data.
+    /// Verifies the requesting user has access to the group's space before returning data.
     /// </summary>
     [HttpGet("{id:guid}")]
     [Authorize(Policy = "CaAuditor")]
@@ -96,7 +96,7 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        if (!TenantFence.From(HttpContext, Capabilities.CertView).Allows(group.TenantId))
+        if (!SpaceFence.From(HttpContext, Capabilities.CertView).Allows(group.SpaceId))
             return NotFound(new { error = $"Group with ID {id} not found" });
 
         return Ok(new
@@ -129,9 +129,9 @@ public class AdminGroupController(
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetByCa(Guid caId)
     {
-        // Verify tenant access to the target CA before enumerating
+        // Verify space access to the target CA before enumerating
         // its groups. 404 on mismatch to avoid existence oracles.
-        var fence = await EnsureCaInAccessibleTenantAsync(caId);
+        var fence = await EnsureCaInAccessibleSpaceAsync(caId);
         if (fence != null) return fence;
 
         var groups = await _db.CaGroups
@@ -155,31 +155,31 @@ public class AdminGroupController(
     }
 
     /// <summary>
-    /// Resolves the CA's tenant and checks it is inside the caller's <see cref="TenantFence"/>.
+    /// Resolves the CA's space and checks it is inside the caller's <see cref="SpaceFence"/>.
     /// Returns null on allow, NotFound on deny or for a missing or deleted CA.
     /// </summary>
-    private async Task<IActionResult?> EnsureCaInAccessibleTenantAsync(Guid caId)
+    private async Task<IActionResult?> EnsureCaInAccessibleSpaceAsync(Guid caId)
     {
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
             .Where(c => c.Id == caId)
-            .Select(c => new { c.TenantId })
+            .Select(c => new { c.SpaceId })
             .FirstOrDefaultAsync();
-        return ca != null && TenantFence.From(HttpContext, Capabilities.CertView).Allows(ca.TenantId) ? null : NotFound();
+        return ca != null && SpaceFence.From(HttpContext, Capabilities.CertView).Allows(ca.SpaceId) ? null : NotFound();
     }
 
     /// <summary>
-    /// Checks the group's <c>TenantId</c> (auto-populated from the CA at creation time) is inside
-    /// the caller's <see cref="TenantFence"/>; an instance group (no tenant) needs instance scope.
+    /// Checks the group's <c>SpaceId</c> (auto-populated from the CA at creation time) is inside
+    /// the caller's <see cref="SpaceFence"/>; an instance group (no space) needs instance scope.
     /// </summary>
-    private IActionResult? EnsureGroupInAccessibleTenant(Shared.Entities.CaGroupEntity group)
-        => TenantFence.From(HttpContext, Capabilities.CertView).Allows(group.TenantId) ? null : NotFound();
+    private IActionResult? EnsureGroupInAccessibleSpace(Shared.Entities.CaGroupEntity group)
+        => SpaceFence.From(HttpContext, Capabilities.CertView).Allows(group.SpaceId) ? null : NotFound();
 
     /// <summary>
     /// Creates a custom (non-auto-generated) group. Auto-generated groups are created during CA creation.
     /// If a <c>CertificateAuthorityId</c> is supplied, verify that the
-    /// caller has access to the CA's tenant before writing. With neither a CA nor a tenant the
-    /// group is an instance group (<c>IsSystemGroup</c>, no tenant).
+    /// caller has access to the CA's space before writing. With neither a CA nor a space the
+    /// group is an instance group (<c>IsSystemGroup</c>, no space).
     /// </summary>
     [HttpPost]
     [Authorize(Policy = "SystemAdmin")]
@@ -205,34 +205,34 @@ public class AdminGroupController(
                 return BadRequest(new { error = $"Template role '{request.TemplateName}' not found. Available templates: Administrator, Operator, Auditor, Requester." });
         }
 
-        // Resolve TenantId: from CA when CA-scoped, from request when tenant-wide. With neither,
+        // Resolve SpaceId: from CA when CA-scoped, from request when space-wide. With neither,
         // the group is an instance group, which is a system group: a non-system group with no
-        // tenant and no CA would confer nothing (and must never be read as system scope).
-        Guid? tenantId;
+        // space and no CA would confer nothing (and must never be read as system scope).
+        Guid? spaceId;
         bool isSystemGroup = false;
 
         if (request.CertificateAuthorityId != null)
         {
-            // CA-scoped group: derive tenant from the CA (ignore request.TenantId to prevent mismatch)
-            var fence = await EnsureCaInAccessibleTenantAsync(request.CertificateAuthorityId.Value);
+            // CA-scoped group: derive space from the CA (ignore request.SpaceId to prevent mismatch)
+            var fence = await EnsureCaInAccessibleSpaceAsync(request.CertificateAuthorityId.Value);
             if (fence != null) return fence;
-            tenantId = await _db.CertificateAuthorities
+            spaceId = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.Id == request.CertificateAuthorityId.Value)
-                .Select(c => c.TenantId)
+                .Select(c => c.SpaceId)
                 .FirstOrDefaultAsync();
         }
-        else if (request.TenantId.HasValue)
+        else if (request.SpaceId.HasValue)
         {
-            // Tenant-wide group: validate tenant exists
-            var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == request.TenantId.Value);
-            if (tenant == null)
-                return BadRequest(new { error = $"Tenant with ID {request.TenantId.Value} not found." });
-            tenantId = tenant.Id;
+            // Space-wide group: validate space exists
+            var space = await _db.Spaces.AsNoTracking().FirstOrDefaultAsync(t => t.Id == request.SpaceId.Value);
+            if (space == null)
+                return BadRequest(new { error = $"Space with ID {request.SpaceId.Value} not found." });
+            spaceId = space.Id;
         }
         else
         {
-            tenantId = null;
+            spaceId = null;
             isSystemGroup = true;
         }
 
@@ -245,7 +245,7 @@ public class AdminGroupController(
             IsSystemGroup = isSystemGroup,
             IsAutoGenerated = false,
             RequiredQuorum = request.RequiredQuorum ?? 1,
-            TenantId = tenantId
+            SpaceId = spaceId
         };
 
         _db.CaGroups.Add(group);
@@ -290,8 +290,8 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Tenant fence before mutation.
-        var fence = EnsureGroupInAccessibleTenant(group);
+        // Space fence before mutation.
+        var fence = EnsureGroupInAccessibleSpace(group);
         if (fence != null) return fence;
 
         if (request.DisplayName != null)
@@ -301,13 +301,13 @@ public class AdminGroupController(
 
         // mTLS signing CA: enforce three constraints uniformly at the API layer so the
         // admin UI doesn't have to re-derive them on its own.
-        // 1. System-tenant groups never use mTLS — users authenticate via org-tenant membership.
+        // 1. System groups never use mTLS — users authenticate via space membership.
         // 2. The reserved system-signing-ca label cannot sign mTLS client certs.
         // 3. Root CAs don't sign end-entity certs directly — require an Intermediate/Issuing CA.
         if (request.MtlsSigningCaId.HasValue)
         {
             if (group.IsSystemGroup)
-                return BadRequest(new { error = "mTLS signing is not available on system-tenant groups. Assign it to an org-tenant group instead." });
+                return BadRequest(new { error = "mTLS signing is not available on system groups. Assign it to a space group instead." });
 
             var targetCa = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == request.MtlsSigningCaId.Value);
             if (targetCa == null)
@@ -349,8 +349,8 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Tenant fence.
-        var fenceDelete = EnsureGroupInAccessibleTenant(group);
+        // Space fence.
+        var fenceDelete = EnsureGroupInAccessibleSpace(group);
         if (fenceDelete != null) return fenceDelete;
 
         if (group.IsAutoGenerated)
@@ -386,8 +386,8 @@ public class AdminGroupController(
     /// <list type="number">
     /// <item>Self-assignment refused unconditionally.</item>
     /// <item><c>system-super</c> members: may modify any group.</item>
-    /// <item><c>system-admin</c> members: may modify any org-tenant CA-scoped group.
-    /// Cannot touch system-tenant groups.</item>
+    /// <item><c>system-admin</c> members: may modify any space CA-scoped group.
+    /// Cannot touch system groups.</item>
     /// <item>CA-scoped admins: may only modify groups on the same CA they administer
     /// (within-CA delegation). Cross-CA promotion is refused.</item>
     /// </list>
@@ -412,10 +412,10 @@ public class AdminGroupController(
         if (callerGroups.Any(g => g.IsSystemTierSuper)) return null; // global override
 
         if (group.IsSystemGroup)
-            return StatusCode(403, new { error = "Modifying system-tenant group memberships requires system-super. system-admin cannot grant system-tier access." });
+            return StatusCode(403, new { error = "Modifying system group memberships requires system-super. system-admin cannot grant system-tier access." });
 
         // system-admin tier = any system group that is NOT the super tier.
-        if (callerGroups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper)) return null; // org-wide CA management
+        if (callerGroups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper)) return null; // instance-wide CA management
 
         var targetCaId = group.CertificateAuthorityId;
         if (targetCaId == null)
@@ -447,8 +447,8 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Tenant fence — prevent cross-tenant membership writes.
-        var fenceMember = EnsureGroupInAccessibleTenant(group);
+        // Space fence — prevent cross-space membership writes.
+        var fenceMember = EnsureGroupInAccessibleSpace(group);
         if (fenceMember != null) return fenceMember;
 
         // Tiered promotion + self-assign guards.
@@ -523,7 +523,7 @@ public class AdminGroupController(
     /// <summary>
     /// Adds several users to a group in one step-up-gated request. The single <c>add-group-member</c>
     /// token authorizes the whole batch (so a multi-user add prompts for MFA once), but each user is
-    /// evaluated independently with the SAME per-user logic as <see cref="AddMember"/> — tenant fence,
+    /// evaluated independently with the SAME per-user logic as <see cref="AddMember"/> — space fence,
     /// tier guard, duplicate check, and the controlled-user gate. Crucially, promoting a controlled
     /// user starts its OWN ceremony, so a batch can spawn one ceremony PER controlled user while adding
     /// uncontrolled users directly. Returns a per-user result summary; never aborts the batch on a
@@ -540,8 +540,8 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        // Tenant fence — same as the single add.
-        var fence = EnsureGroupInAccessibleTenant(group);
+        // Space fence — same as the single add.
+        var fence = EnsureGroupInAccessibleSpace(group);
         if (fence != null) return fence;
 
         if (request.UserIds == null || request.UserIds.Count == 0)
@@ -621,12 +621,12 @@ public class AdminGroupController(
     {
         await _currentUser.EnsureLoadedAsync();
 
-        // Tenant fence — resolve the group first so we can verify
+        // Space fence — resolve the group first so we can verify
         // the caller has access to it before removing the membership.
         var group = await _db.CaGroups.FindAsync(id);
         if (group == null)
             return NotFound(new { error = "Group not found" });
-        var fenceRemove = EnsureGroupInAccessibleTenant(group);
+        var fenceRemove = EnsureGroupInAccessibleSpace(group);
         if (fenceRemove != null) return fenceRemove;
 
         // Same tier + self-assign guards as AddMember.
@@ -683,7 +683,7 @@ public class AdminGroupController(
     /// <summary>
     /// Removes several users from a group in one step-up-gated request. The single
     /// <c>remove-group-member</c> token authorizes the whole batch (one MFA prompt), but each user is
-    /// evaluated independently with the SAME per-user logic as <see cref="RemoveMember"/> — tenant
+    /// evaluated independently with the SAME per-user logic as <see cref="RemoveMember"/> — space
     /// fence, tier guard, membership check, the controlled-user demote gate, and the last-controlled-user
     /// guard. Demoting a controlled user starts its OWN ceremony, so a batch can spawn one ceremony PER
     /// controlled user while removing uncontrolled users directly. A user that would be the last
@@ -700,7 +700,7 @@ public class AdminGroupController(
         var group = await _db.CaGroups.FindAsync(id);
         if (group == null)
             return NotFound(new { error = "Group not found" });
-        var fence = EnsureGroupInAccessibleTenant(group);
+        var fence = EnsureGroupInAccessibleSpace(group);
         if (fence != null) return fence;
 
         if (request.UserIds == null || request.UserIds.Count == 0)
@@ -762,8 +762,10 @@ public class AdminGroupController(
 }
 
 /// <summary>
-/// Request body for creating a new group.
+/// Request body for creating a new group. An unknown member (a pre-0.4.0 <c>tenantId</c>) is
+/// refused with 400, never read as no space.
 /// </summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class CreateGroupRequest
 {
     /// <summary>Lowercase dashed group name.</summary>
@@ -772,14 +774,14 @@ public class CreateGroupRequest
     /// <summary>Human-friendly display name.</summary>
     public string? DisplayName { get; set; }
 
-    /// <summary>CA this group is scoped to. Null for tenant-wide or system groups.</summary>
+    /// <summary>CA this group is scoped to. Null for space-wide or system groups.</summary>
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
-    /// Tenant this group belongs to. Required when CertificateAuthorityId is null.
-    /// Ignored when CertificateAuthorityId is provided (resolved from the CA's tenant).
+    /// Space this group belongs to. Required when CertificateAuthorityId is null.
+    /// Ignored when CertificateAuthorityId is provided (resolved from the CA's space).
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     /// <summary>Template name used to seed initial capability grants (e.g. "Administrator", "Operator", "Auditor", "Requester").</summary>
     public string? TemplateName { get; set; }

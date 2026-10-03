@@ -17,7 +17,7 @@ export default function CertIssuanceFlow() {
                     <pre className="text-gray-700 dark:text-gray-300">{`
   CSR Submission     Approval        Profile + Policy     Quota      Signing         Storage + CT
   +-----------+   +----------+   +----------------+   +--------+   +---------+   +-------------+
-  |  Upload   |   | Manual / |   | Profile merge  |   | Tenant |   | CA Key  |   | DB Store +  |
+  |  Upload   |   | Manual / |   | Profile merge  |   | Space  |   | CA Key  |   | DB Store +  |
   |  CSR or   |-->| Auto-    |-->| Name constrs.  |-->| + CA   |-->| Signs   |-->| CT Submit + |
   |  Generate |   | Approve  |   | Cert Policy    |   | Quota  |   | Cert    |   | Audit Log   |
   |  Key+CSR  |   |          |   | DN/SAN valid.  |   |        |   |         |   |             |
@@ -86,9 +86,9 @@ export default function CertIssuanceFlow() {
                         via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ICertPolicyService</code></li>
                     <li>Per-CA certificate limits checked
                         via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">IQuotaService</code> (skipped for infrastructure certs)</li>
-                    <li>The certificate profile must be in the issuing CA's scope (unbound, the CA's tenant's, or bound to the CA)
+                    <li>The certificate profile must be in the issuing CA's scope (unbound, the CA's space's, or bound to the CA)
                         via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CertProfileScope</code></li>
-                    <li>Tenant enabled status verified -- disabled tenants cannot issue certificates</li>
+                    <li>Space enabled status verified -- disabled spaces cannot issue certificates</li>
                 </ul>
 
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">4. CA Signing</h3>

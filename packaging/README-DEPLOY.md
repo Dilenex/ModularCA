@@ -84,6 +84,187 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
 
 ### Upgrading to 0.4.0
 
+0.4.0 renames tenants to spaces in the schema, and every role reads those tables. A node, ingress
+or signer still running an older build queries the old names: it fails as soon as the control role
+has migrated, and while it runs it can hold the locks a migration waits for. **Stop every node and
+the signer, on every host, before the control role upgrades**, and start the others only once it
+has.
+
+#### Checklist
+
+Follow it in order, on staging first and then on production. Every check runs with the build you
+run now and changes nothing. An install already on a 0.4.0 pre-release has passed the checks of the
+stages it has; each migration refuses anyway, changing nothing, if a check was missed.
+
+1. **Back up.** Take the usual backup (the keystores and `config/` are what you cannot recreate),
+   then dump both databases. The dumps are the only way back: no 0.4.0 migration has a downgrade.
+
+       sudo -u postgres pg_dump -Fc -d '<app database>' -f ~postgres/modularca-app-pre-0.4.0.dump
+       sudo -u postgres pg_dump -Fc -d '<audit database>' -f ~postgres/modularca-audit-pre-0.4.0.dump
+
+2. **Run the read-only pre-checks** in `sudo -u postgres psql -X -d '<app database>'`. Each one
+   mirrors a migration precondition, named in its label, and passes when it returns no rows; check
+   n passes when it prints no notice. The first line makes the session read-only. What each one
+   guards is under "What changes" below. On an install already on a 0.4.0 pre-release, a check
+   that names `Tenants`, `TenantHostnames` or `IsSystemTenant` fails with "does not exist" once its
+   migration has run, and can be skipped.
+
+   ```sql
+   SET default_transaction_read_only = on;
+   -- a. RetireTenantHostnames: tenant hostnames
+   SELECT "Hostname" FROM "TenantHostnames";
+   -- b. FoldSystemTenant P1: exactly one system tenant, soft-deleted ones counted, unless there are no tenants
+   SELECT (SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") AS system_tenants
+    WHERE (SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") > 1 OR ((SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") = 0 AND EXISTS (SELECT 1 FROM "Tenants"));
+   -- c. FoldSystemTenant P2: at most one organisation tenant that is not soft-deleted
+   SELECT "Name" FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted"
+      AND (SELECT count(*) FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted") > 1;
+   -- d. FoldSystemTenant P3: at most one security policy row
+   SELECT "Id", "UpdatedAt" FROM "SecurityPolicy" WHERE (SELECT count(*) FROM "SecurityPolicy") > 1;
+   -- e. FoldSystemTenant P4: open ceremonies naming the system tenant
+   SELECT "Id", "OperationType", "Status" FROM "KeyCeremonies"
+    WHERE "Status" IN ('Pending', 'Approved') AND ("TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant")
+       OR strpos(lower("ParametersJson"), (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant")::text) > 0);
+   -- f. FoldSystemTenant P5: capability grants and role assignments held directly across the whole system tenant
+   SELECT 'grant' AS kind, "Id" FROM "UserCapabilityGrants"
+    WHERE "TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND "CertificateAuthorityId" IS NULL
+   UNION ALL SELECT 'role assignment', "Id" FROM "RoleAssignments"
+    WHERE "GroupId" IS NULL AND "TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND "CertificateAuthorityId" IS NULL;
+   -- g. FoldSystemTenant P6: service identities scoped to the whole system tenant
+   SELECT "Username" FROM "Users"
+    WHERE "ServiceScopeTenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND "ServiceScopeCaId" IS NULL;
+   -- h. FoldSystemTenant P7: members and badge sources of the system tenant's tenant-wide groups
+   SELECT g."Name", count(DISTINCT m."UserId") AS members, count(DISTINCT s."Id") AS badge_sources
+     FROM "CaGroups" g LEFT JOIN "CaGroupMembers" m ON m."GroupId" = g."Id"
+     LEFT JOIN "AccessBadgeSources" s ON s."SourceId" = g."Id"
+    WHERE g."TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND NOT g."IsSystemGroup" AND g."CertificateAuthorityId" IS NULL
+    GROUP BY g."Id", g."Name" HAVING count(m."Id") + count(s."Id") > 0;
+   -- i. FoldSystemTenant P8: groups whose tenant does not exist, or whose tenant differs from their CA's, next to the system tenant
+   SELECT g."Name" FROM "CaGroups" g LEFT JOIN "CertificateAuthorities" ca ON ca."Id" = g."CertificateAuthorityId"
+    WHERE NOT EXISTS (SELECT 1 FROM "Tenants" t WHERE t."Id" = g."TenantId")
+       OR (g."TenantId" <> ca."TenantId" AND (g."TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") OR ca."TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant")));
+   -- j. FoldSystemTenant P9: certificate profiles on the system tenant bound to no CA
+   SELECT "Name" FROM "CertProfiles"
+    WHERE "TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND "CertificateAuthorityId" IS NULL AND NOT "IsCaProfile";
+   -- k. InstanceUniqueCaNames P1, P2, P3: CA labels (ignoring case) or names shared, deleted CAs included
+   SELECT 'label' AS clash, lower(ca."Label") AS value, string_agg(ca."Name"::text, ', ') AS cas
+     FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY lower(ca."Label") HAVING count(*) > 1
+   UNION ALL SELECT 'name', min(ca."Name"::text), string_agg(coalesce(ca."Label"::text, '-'), ', ')
+     FROM "CertificateAuthorities" ca WHERE ca."Name" IS NOT NULL GROUP BY ca."Name" HAVING count(*) > 1;
+   -- l. InstanceUniqueCaNames P4: protocol configurations signing with another CA's profile
+   SELECT ca."Label", pc."Protocol", sp."Name" FROM "CaProtocolConfigs" pc
+     JOIN "CertificateAuthorities" ca ON ca."Id" = pc."CaId" JOIN "SigningProfiles" sp ON sp."Id" = pc."SigningProfileId"
+    WHERE pc."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa"
+      AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");
+   -- m. InstanceUniqueCaNames P5: certificate templates signing with another CA's profile
+   SELECT ct."Name", ca."Label", sp."Name" FROM "CertificateTemplates" ct
+     JOIN "CertificateAuthorities" ca ON ca."Id" = ct."CaId" JOIN "SigningProfiles" sp ON sp."Id" = ct."SigningProfileId"
+    WHERE ct."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa"
+      AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");
+   -- n. RenameTenantToSpace P1: ceremonies whose stored parameters name a tenant but are not a JSON object
+   --    with one tenant key each; a NOTICE lists them, and nothing prints when there are none
+   DO $$
+   DECLARE
+       r record;
+       t text;
+       n text;
+       j jsonb;
+       bad text := '';
+   BEGIN
+       FOR r IN SELECT k."Id", k."Status", k."ParametersJson" FROM "KeyCeremonies" k
+                WHERE strpos(lower(k."ParametersJson"), 'tenantid') > 0 ORDER BY k."Id"
+       LOOP
+           t := r."ParametersJson";
+           LOOP
+               n := regexp_replace(t, '(^|[^\\])((\\\\)*)\\u0000', '\1\2\\ufffd', 'g');
+               EXIT WHEN n = t;
+               t := n;
+           END LOOP;
+           BEGIN
+               j := t::jsonb;
+           EXCEPTION WHEN data_exception THEN
+               j := NULL;
+           END;
+           IF j IS NULL OR jsonb_typeof(j) <> 'object'
+              OR (SELECT count(*) FROM jsonb_object_keys(j) jk WHERE lower(jk) IN ('tenantid', 'spaceid')) > 1
+              OR (SELECT count(*) FROM jsonb_object_keys(j) jk WHERE lower(jk) IN ('mintedtiertenantid', 'mintedtierspaceid')) > 1 THEN
+               bad := bad || CASE WHEN bad = '' THEN '' ELSE ', ' END || r."Id"::text || ' (' || r."Status" || ')';
+           END IF;
+       END LOOP;
+       IF bad <> '' THEN
+           RAISE NOTICE 'Ceremonies whose parameters 0.4.0 cannot rename: %', bad;
+       END IF;
+   END $$;
+   -- o. RenameTenantToSpace P2: org-<slug>-* groups whose space-<slug>-* name is taken or too long; the
+   --    system tenant is left out, and so are its tenant-wide groups, which FoldSystemTenant deletes first
+   SELECT r."Name", r.new_name FROM (
+     SELECT g."Id", g."Name", 'space-' || s."Slug"::text || '-' || x.suffix AS new_name,
+            regexp_replace(g."DisplayName", '^(Org|Organisation|Organization) ', 'Space ') AS new_display
+       FROM "CaGroups" g
+       JOIN "Tenants" s ON s."Id" = g."TenantId" AND NOT s."IsSystemTenant"
+       CROSS JOIN (VALUES ('admin'), ('operator'), ('auditor'), ('user')) AS x(suffix)
+      WHERE g."CertificateAuthorityId" IS NULL
+        AND lower(g."Name"::text) = lower('org-' || s."Slug"::text || '-' || x.suffix)) r
+    WHERE length(r.new_name) > 200 OR length(r.new_display) > 300
+       OR EXISTS (SELECT 1 FROM "CaGroups" o WHERE lower(o."Name"::text) = lower(r.new_name)
+          AND o."Id" NOT IN (SELECT g."Id" FROM "CaGroups" g WHERE g."TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND NOT g."IsSystemGroup" AND g."CertificateAuthorityId" IS NULL));
+   ```
+
+   Then, on every host, look for the configuration keys 0.4.0 renames or retires:
+
+       sudo grep -nE '^\s*(TenantId|AllowMultipleOrganizations)\s*:' /opt/modularca/config/config.yaml
+       sudo grep -n 'org-' /opt/modularca/config/config.yaml
+
+   Leave a `TenantId` under `IntegrationApi` or `CertManager` as it is until after the upgrade:
+   the build you run now ignores `SpaceId`, so renaming it first would leave that API key
+   unscoped. 0.4.0 reads it as `SpaceId`. Note the `org-<slug>-*` names in
+   `LdapAuth.GroupToRoleMappings` for step 7.
+
+3. **Stop every unit, on every host**: control, enrollment and validation, ingress, and the signer.
+
+       sudo systemctl stop modularca modularca-signer
+       systemctl is-active modularca modularca-signer     # both inactive
+
+4. **Install on the control host and start the control role alone.** `install.sh` starts nothing
+   when nothing was running; the `.deb` upgrade from 0.3.x starts `modularca` itself (see below),
+   which on the control host is this step.
+
+       sudo systemctl start modularca
+       journalctl -u modularca -n 200 --no-pager
+
+   The journal names each migration applied: `RetireTenantHostnames`, `FoldSystemTenant`,
+   `InstanceUniqueCaNames` and `RenameTenantToSpace` on a 0.3.x database. A refusal stops the
+   service with status 3 and names the precondition and what it found, with nothing of that
+   migration applied: fix it and start again, or restore the dumps and run the previous release.
+   An install made by the wizard or `--bootstrap` before 0.4.0 is refused for ownership first;
+   repair it as below. Expect warnings for a legacy `TenantId` key, a retired
+   `AllowMultipleOrganizations` and each LDAP mapping to an `org-*` group.
+
+5. **Start the other units** once the control role is up: the signer, then each enrollment,
+   validation and ingress host, upgraded the same way.
+
+       sudo systemctl start modularca-signer
+
+6. **Verify.** `/health/ready` on every process reports ready. As a system admin, check the audit
+   chains:
+
+       curl -s -H "Authorization: Bearer <access token>" https://<host>/api/v1/admin/audit/verify/chains
+
+   The instance chain reports `Integrity` `Valid` (or `PartiallyVerifiable` for records written
+   before the hash was versioned) and `BreakCount` 0. Each retired chain reports `Sealed` true and
+   `TailState` `Sealed` (or `Pruned`). Under Spaces, each space is listed, and its groups are named
+   `space-<slug>-*`.
+
+7. **Tidy the configuration**, on every host, then restart that host's units. Rename
+   `IntegrationApi.TenantId` and `CertManager.TenantId` to `SpaceId`, delete
+   `Features.AllowMultipleOrganizations` and `Ingress.RouteRefreshSeconds`, and change each
+   `org-<slug>-*` group mapping to its `space-<slug>-*` name. On the control host, saving the
+   settings in the console writes `SpaceId` and drops the retired key, and a super's save of the
+   LDAP settings rewrites the group mappings. The warnings stop once nothing is left. Then delete
+   `config/tenant-tls/`.
+
+#### What changes
+
 - **Installs built by `modularca-migrate`**, which is every install that came from MariaDB 0.3.0,
   and production and staging: nothing to do. The runtime roles already own their schemas, and the
   service confirms it on every start.
@@ -110,8 +291,8 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
   on, `prerm` records which units were running and the upgrade starts exactly those.
 - **Tenant hostnames are gone.** 0.4.0 serves only the instance's own names, under its web TLS
   certificate. Its first migration, `RetireTenantHostnames`, drops the `TenantHostnames` table and
-  refuses (status 3, nothing applied) while the table has any row; the journal says how many.
-  Before upgrading, delete every name under Tenants, Hostnames with the build you run now, or
+  refuses (status 3, nothing applied) while the table has any row (check a); the journal says how
+  many. Before upgrading, delete every name under Tenants, Hostnames with the build you run now, or
   serve those names through the instance's public domain or a reverse proxy in front of it. The
   `Ingress.Routes` in `config.yaml` are unaffected; `Ingress.RouteRefreshSeconds` is no longer
   read and can be removed.
@@ -124,11 +305,10 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
       sudo rm -r /opt/modularca/config/tenant-tls
 
 - **The system tenant is folded into the instance.** The `FoldSystemTenant` migration moves the
-  system signing CA, SSH CAs, the system groups and those CAs' groups to the instance (no tenant),
+  system signing CA, SSH CAs, the system groups and those CAs' groups to the instance (no space),
   copies the system tenant's CA policy to the security policy as it is, and deletes the tenant and
   its four tenant-wide `org-system-*` groups. It changes nothing and stops the service (status 3,
-  the journal names the precondition and what it found) unless all of these hold. Check them with
-  the build you run now, before upgrading:
+  the journal names the precondition and what it found) unless all of these hold (checks b to j):
   - **No open ceremony names the system tenant.** Execute or cancel every Pending or Approved
     ceremony on a system CA (the system signing CA, an SSH CA) or on the System tenant's policy,
     and every controlled-user ceremony on those. The migration never rewrites a ceremony.
@@ -144,9 +324,11 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
     whatever `Features.AllowMultipleOrganizations` says. A soft-deleted tenant does not count; a
     disabled one does.
   - **One security policy row.**
+  - **Every group is in an existing tenant, and a CA's group is in its CA's tenant**, wherever the
+    system tenant is involved. Correct each group listed.
 
   After the upgrade, the instance's policy (Settings, Security Policy, Instance CA policy) governs
-  the instance CAs only and each organisation keeps its own; nothing is merged. At its first start
+  the instance CAs only and the space keeps its own; nothing is merged. At its first start
   the control role seals each per-tenant audit chain and anchors its final hash in the instance
   chain, where every new record now goes; `GET /api/v1/admin/audit/verify/chains` reports them.
   Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the
@@ -154,10 +336,8 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
 - **CA labels and names are unique across the instance.** A label is the path of a CA's CRL,
   OCSP, AIA and enrolment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
   applied) while two CAs, counting soft-deleted ones, share a label, have labels that differ only in
-  case, or share a name; the journal lists each, with its organisation or "instance" and whether
-  it is deleted. Before upgrading, find them with the build you run now:
-
-      sudo -u postgres psql -X -d '<app database>' -c 'SELECT "Label", "Name", "TenantId", "IsDeleted" FROM "CertificateAuthorities" ORDER BY lower("Label"), "Name";'
+  case, or share a name (check k); the journal lists each, with its space or "instance" and
+  whether it is deleted.
 
   Rename all but one of each under Certificate Authorities (edit the CA's label or name), or with
   `PUT /api/v1/admin/authorities/{id}`. Prefer the SSH CA, or a CA that has issued nothing:
@@ -166,26 +346,44 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
   certificate. A soft-deleted CA still holds its label and name; rename it with SQL
   (`UPDATE "CertificateAuthorities" SET "Label" = '<label>-old', "Name" = '<name> (old)' WHERE "Id" = '<id>';`,
   with the service stopped and a dump taken) only when nothing it issued is still in use.
-  The same migration drops the tenant quota columns (maximum CAs, certificates and users) whatever
-  they hold; per-CA quotas are unchanged.
+  The same migration drops the space-level quota columns (maximum CAs, certificates and users)
+  whatever they hold; per-CA quotas are unchanged.
 - **A protocol must sign with its own CA's signing profile.** 0.3.x let a CA's EST, CMP, SCEP,
   ACME, XCEP or MSAE configuration name any signing profile. From 0.4.0 a configuration whose
   signing profile issues from no CA, from another CA, or from a superseded certificate of the
   same CA makes every request to that CA's endpoints fail, so `InstanceUniqueCaNames` refuses
-  (status 3, nothing applied) while any enabled configuration of a live X.509 CA is like that;
-  the journal lists each CA label, protocol and profile. Before upgrading, find them with the
-  build you run now (read-only):
+  (status 3, nothing applied) while any enabled configuration of a live X.509 CA is like that
+  (check l); the journal lists each CA label, protocol and profile. For each, open Protocol Config
+  for that CA in the 0.3.x console and choose that CA's own signing profile, or disable the
+  protocol, then upgrade. The same holds for the certificate templates MSAE enrols against
+  (check m): fix each under Certificate Templates (`/admin/templates`), or disable the template.
+- **Tenants are now spaces, and each space's groups are renamed.** The `RenameTenantToSpace`
+  migration renames the `Tenants` table to `Spaces` and every `TenantId` column to `SpaceId` in
+  place; no data is copied. In the same step it renames each space's space-wide groups
+  `org-<slug>-admin`, `-operator`, `-auditor` and `-user` to `space-<slug>-*`, the names new
+  spaces get, and a display name starting `Org` or `Organisation` to start `Space`. Members,
+  grants, roles and badges follow, because they refer to groups by id. It refuses (status 3,
+  nothing applied) when a `space-<slug>-*` name is already taken by another group, or would be too
+  long (check o); rename that group first. Scripts that call the API or query the database by an `org-*` group
+  name must use the new name, and scripts that call the admin API must use the space paths and
+  members (see the changelog). The same migration renames the scope keys in stored ceremony
+  parameters, so open ceremonies carry over, and refuses parameters it cannot read as one JSON
+  object (check n). Every process reads the new names, which is why every unit is stopped before control
+  upgrades.
 
-      sudo -u postgres psql -X -d '<app database>' -c 'SELECT ca."Label", pc."Protocol", sp."Name" FROM "CaProtocolConfigs" pc JOIN "CertificateAuthorities" ca ON ca."Id" = pc."CaId" JOIN "SigningProfiles" sp ON sp."Id" = pc."SigningProfileId" WHERE pc."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa" AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");'
-
-  For each row, open Protocol Config for that CA in the 0.3.x console and choose that CA's own
-  signing profile, or disable the protocol, then upgrade. The same holds for the certificate
-  templates MSAE enrols against; the migration refuses an enabled one likewise, and this query
-  finds them:
-
-      sudo -u postgres psql -X -d '<app database>' -c 'SELECT ct."Name", ca."Label", sp."Name" FROM "CertificateTemplates" ct JOIN "CertificateAuthorities" ca ON ca."Id" = ct."CaId" JOIN "SigningProfiles" sp ON sp."Id" = ct."SigningProfileId" WHERE ct."IsEnabled" AND NOT ca."IsDeleted" AND NOT ca."IsSshCa" AND (sp."IssuerId" IS NULL OR sp."IssuerId" <> ca."CertificateId");'
-
-  Fix each under Certificate Templates (`/admin/templates`), or disable the template.
+  `LdapAuth.GroupToRoleMappings` in config.yaml names groups, and the migration cannot edit it.
+  Until it is updated, a mapping to an `org-<slug>-*` group that no longer exists, whose
+  `space-<slug>-*` group does, is read as the new name, at every sync and when the mappings are
+  validated, with a warning in the journal naming both. Change the mapping to the new name, in
+  config.yaml or in the console's LDAP settings, to silence it. Only that pattern is translated;
+  no other group name is guessed.
+- **Configuration keys say space.** `IntegrationApi.TenantId` and `CertManager.TenantId` are
+  `IntegrationApi.SpaceId` and `CertManager.SpaceId`. The old key is read as the new one, with a
+  warning naming the file, so an integration API key keeps its scope. When both are set and
+  differ, the process refuses to start (status 3) and names the file and both keys; keep the one
+  with the intended value. `Features.AllowMultipleOrganizations` is retired and ignored, with a
+  warning while it is present: creating a space always succeeds, and past four spaces the console
+  recommends a licence.
 
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in

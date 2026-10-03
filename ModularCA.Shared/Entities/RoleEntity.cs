@@ -5,7 +5,7 @@ namespace ModularCA.Shared.Entities;
 
 /// <summary>
 /// A named, reusable bundle of capabilities. Roles can be assigned to users or groups
-/// with scope (global, tenant, or CA). Built-in roles (Administrator, Operator, Auditor,
+/// with scope (global, space, or CA). Built-in roles (Administrator, Operator, Auditor,
 /// Requester) are seeded at bootstrap and cannot be deleted.
 /// </summary>
 public class RoleEntity
@@ -26,9 +26,9 @@ public class RoleEntity
     public bool IsBuiltIn { get; set; }
 
     /// <summary>
-    /// Tenant that owns this role. Null for system-wide roles visible across all tenants.
+    /// Space that owns this role. Null for system-wide roles visible across all spaces.
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -37,8 +37,8 @@ public class RoleEntity
 
     // Navigation
 
-    [ForeignKey("TenantId")]
-    public virtual TenantEntity? Tenant { get; set; }
+    [ForeignKey(nameof(SpaceId))]
+    public virtual SpaceEntity? Space { get; set; }
 
     [ForeignKey("CreatedByUserId")]
     public virtual UserEntity? CreatedByUser { get; set; }

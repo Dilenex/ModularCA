@@ -19,14 +19,14 @@ public static class MigrationPreconditions
     /// <param name="migrationBuilder">The migration's builder.</param>
     /// <param name="failureCondition">
     /// A SQL boolean expression that is true when the migration must NOT proceed, for example
-    /// <c>(SELECT count(*) FROM "Tenants" WHERE NOT "IsDeleted") &gt; 1</c>.
+    /// <c>(SELECT count(*) FROM "Spaces" WHERE NOT "IsDeleted") &gt; 1</c>.
     /// </param>
     /// <param name="message">
     /// What the operator reads. Quotes are escaped; <c>%</c> is taken literally. <c>{0}</c>,
     /// <c>{1}</c> and so on stand for the values of <paramref name="messageValues"/>.
     /// </param>
     /// <param name="messageValues">
-    /// SQL expressions evaluated when the check fails, such as <c>(SELECT count(*) FROM "Tenants")</c>,
+    /// SQL expressions evaluated when the check fails, such as <c>(SELECT count(*) FROM "Spaces")</c>,
     /// whose values replace the numbered placeholders in <paramref name="message"/>.
     /// </param>
     public static OperationBuilder<SqlOperation> FailIf(

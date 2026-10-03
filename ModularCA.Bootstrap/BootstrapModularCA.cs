@@ -408,10 +408,10 @@ public class BootstrapModularCA
 
         using var dbContext = CreateDbContext(PostgresConnection.Build(databases.App));
 
-        // === Tenants (must precede CA and group creation) ===
-        var orgTenant = EnsureBootstrapTenants(
+        // === Spaces (must precede CA and group creation) ===
+        var orgSpace = EnsureBootstrapSpaces(
             dbContext, bootstrapConfig.CA.Subject.O ?? "Default", null);
-        Console.WriteLine($"✓ Organization tenant '{orgTenant.Name}' ready.");
+        Console.WriteLine($"✓ Space '{orgSpace.Name}' ready.");
 
         // === Built-in Roles & System Groups (must precede user creation) ===
         BootstrapProfileSeeder.SeedBuiltInRoles(dbContext);
@@ -651,21 +651,21 @@ public class BootstrapModularCA
             Console.WriteLine("✓ Backup encryption key generated");
         }
 
-        BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, tenantId: orgTenant.Id);
-        // The system signing CA is an instance CA: no tenant.
-        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: null);
+        BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, spaceId: orgSpace.Id);
+        // The system signing CA is an instance CA: no space.
+        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", spaceId: null);
 
         var caCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, caCertEntity.CertificateId);
         var sysCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, sysCertEntity.CertificateId);
 
         // === CA-Scoped Groups (must follow CA creation, precede admin user creation) ===
-        BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgTenant.Id);
+        BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgSpace.Id);
         BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, null);
 
         // mTLS signing is a configured item — instance (system) groups never use mTLS, and
         // mTLS signing CAs must be non-Root issuing/intermediate CAs (Root CAs don't
         // sign end-entity certs directly). Clear legacy mTLS assignments on system groups;
-        // admins attach an mTLS signing CA to an org group after they've created one.
+        // admins attach an mTLS signing CA to a space group after they've created one.
         foreach (var systemGroup in dbContext.CaGroups.Where(g => g.IsSystemGroup && g.MtlsSigningCaId != null))
             systemGroup.MtlsSigningCaId = null;
         dbContext.SaveChanges();
@@ -884,63 +884,62 @@ public class BootstrapModularCA
     }
 
     /// <summary>
-    /// Ensures the first organisation tenant exists, with its tenant-level groups, for both
-    /// bootstrap paths, and returns it. There is no system tenant: instance CAs and the system
-    /// groups have no tenant. Idempotent: a second run finds it and creates nothing.
-    /// It never creates a second organisation. Bootstrap seeds a database it has just reset, so a
-    /// different organisation tenant (enabled or disabled, not soft-deleted) means the reset did
-    /// not happen: it throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/>
-    /// with MCA-CFG-018, whose remediation is about the reset, not the organisation flag.
+    /// Ensures the first space, named after the organisation, exists with its space-level groups,
+    /// for both bootstrap paths, and returns it. There is no system space: instance CAs and the
+    /// system groups have no space. Idempotent: a second run finds it and creates nothing.
+    /// It never creates a second space. Bootstrap seeds a database it has just reset, so a
+    /// different space (enabled or disabled, not soft-deleted) means the reset did not happen: it
+    /// throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> with MCA-CFG-018.
     /// </summary>
     /// <param name="dbContext">The bootstrap context.</param>
     /// <param name="orgName">The organisation's name; its slug is derived from it.</param>
     /// <param name="orgDescription">A description, or null for the default.</param>
-    public static TenantEntity EnsureBootstrapTenants(
+    public static SpaceEntity EnsureBootstrapSpaces(
         ModularCADbContext dbContext, string orgName, string? orgDescription)
     {
         var orgSlug = orgName.ToLowerInvariant().Replace(" ", "-").Replace(".", "-");
-        var orgTenant = dbContext.Tenants.FirstOrDefault(t => t.Slug == orgSlug);
-        if (orgTenant == null)
+        var orgSpace = dbContext.Spaces.FirstOrDefault(t => t.Slug == orgSlug);
+        if (orgSpace == null)
         {
-            var existing = dbContext.Tenants
+            var existing = dbContext.Spaces
                 .Where(t => !t.IsDeleted)
                 .OrderBy(t => t.Name)
                 .FirstOrDefault();
             if (existing is not null)
                 throw new ModularCA.Shared.Errors.ConfigurationValidationException(
-                    $"Bootstrap found organisation tenant '{existing.Name}'{(existing.IsEnabled ? "" : " (disabled)")} "
+                    $"Bootstrap found space '{existing.Name}'{(existing.IsEnabled ? "" : " (disabled)")} "
                     + $"already in the database while creating '{orgName}'. Bootstrap only seeds a database it has "
                     + "just reset, so the reset did not happen.",
                     ModularCA.Shared.Errors.ErrorCodes.BootstrapDatabaseNotEmpty,
-                    "The database was not reset. Fix the reset failure reported above and run bootstrap again. "
-                    + "The multiple-organisations setting in config.yaml does not apply to bootstrap.");
+                    "The database was not reset. Fix the reset failure reported above and run bootstrap again.");
 
-            orgTenant = new TenantEntity
+            orgSpace = new SpaceEntity
             {
                 Name = orgName,
                 Slug = orgSlug,
                 Description = !string.IsNullOrWhiteSpace(orgDescription)
                     ? orgDescription
-                    : $"Primary tenant for {orgName} certificate authorities",
+                    : $"Primary space for {orgName} certificate authorities",
                 CanBeDeleted = false,
                 IsEnabled = true,
             };
-            dbContext.Tenants.Add(orgTenant);
+            dbContext.Spaces.Add(orgSpace);
             dbContext.SaveChanges();
         }
-        CreateTenantGroups(dbContext, orgTenant);
+        CreateSpaceGroups(dbContext, orgSpace);
 
-        return orgTenant;
+        return orgSpace;
     }
 
     /// <summary>
-    /// Auto-generates the four tenant-level permission groups (admin, operator, auditor, user)
-    /// for the given tenant. These groups have <c>CertificateAuthorityId = null</c> (not CA-scoped)
-    /// and grant access to ALL CAs within the tenant.
+    /// Auto-generates the four space-level permission groups, <c>space-&lt;slug&gt;-admin</c>,
+    /// <c>-operator</c>, <c>-auditor</c> and <c>-user</c> (display names <c>Space &lt;name&gt; Admin</c>
+    /// and so on), for the given space. These groups have <c>CertificateAuthorityId = null</c> (not CA-scoped)
+    /// and grant access to ALL CAs within the space.
     /// </summary>
-    public static void CreateTenantGroups(ModularCADbContext dbContext, TenantEntity tenant)
+    public static void CreateSpaceGroups(ModularCADbContext dbContext, SpaceEntity space)
     {
-        var tenantRoles = new[]
+        var spaceRoles = new[]
         {
             ("Administrator", "admin", "Admin"),
             ("Operator", "operator", "Operator"),
@@ -948,20 +947,20 @@ public class BootstrapModularCA
             ("Requester", "user", "User")
         };
 
-        foreach (var (templateName, suffix, displaySuffix) in tenantRoles)
+        foreach (var (templateName, suffix, displaySuffix) in spaceRoles)
         {
-            var groupName = $"org-{tenant.Slug}-{suffix}";
+            var groupName = $"space-{space.Slug}-{suffix}";
             if (!dbContext.CaGroups.Any(g => g.Name == groupName))
             {
                 var group = new CaGroupEntity
                 {
                     Name = groupName,
-                    DisplayName = $"Org {tenant.Name} {displaySuffix}",
-                    CertificateAuthorityId = null, // Tenant-wide, not CA-specific
+                    DisplayName = $"Space {space.Name} {displaySuffix}",
+                    CertificateAuthorityId = null, // Space-wide, not CA-specific
                     TemplateName = templateName,
                     IsSystemGroup = false,
                     IsAutoGenerated = true,
-                    TenantId = tenant.Id,
+                    SpaceId = space.Id,
                     RequiredQuorum = 1,
                 };
                 dbContext.CaGroups.Add(group);
@@ -981,7 +980,7 @@ public class BootstrapModularCA
                 dbContext.SaveChanges();
             }
         }
-        Console.WriteLine($"✓ Tenant-level groups created for '{tenant.Name}'.");
+        Console.WriteLine($"✓ Space-level groups created for '{space.Name}'.");
     }
 
     /// <summary>

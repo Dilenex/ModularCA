@@ -52,7 +52,7 @@ public sealed class AdminCertificateChainEndpointTests
             : req.Create(issuer, from, to, serial).CopyWithPrivateKey(key);
     }
 
-    private static Pki SeedPki(ModularCADbContext db, string name = "Chain", Guid? tenantId = null)
+    private static Pki SeedPki(ModularCADbContext db, string name = "Chain", Guid? spaceId = null)
     {
         var from = DateTimeOffset.UtcNow.AddDays(-1);
         var to = DateTimeOffset.UtcNow.AddYears(1);
@@ -69,9 +69,9 @@ public sealed class AdminCertificateChainEndpointTests
         var profile = new SigningProfileEntity { Name = name, IssuerId = intEntity.CertificateId };
         var leafEntity = Entity(leaf, isCa: false, profile.Id);
         leafEntity.IssuerCertificateId = intEntity.CertificateId;
-        var tenant = tenantId ?? Guid.NewGuid();
-        var rootCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{name} Root", Label = $"{name.ToLowerInvariant()}-root", TenantId = tenant, CertificateId = rootEntity.CertificateId };
-        var intCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{name} Int", Label = $"{name.ToLowerInvariant()}-int", TenantId = tenant, CertificateId = intEntity.CertificateId, ParentCaId = rootCa.Id };
+        var space = spaceId ?? Guid.NewGuid();
+        var rootCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{name} Root", Label = $"{name.ToLowerInvariant()}-root", SpaceId = space, CertificateId = rootEntity.CertificateId };
+        var intCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{name} Int", Label = $"{name.ToLowerInvariant()}-int", SpaceId = space, CertificateId = intEntity.CertificateId, ParentCaId = rootCa.Id };
 
         db.Certificates.AddRange(rootEntity, intEntity, leafEntity);
         db.SigningProfiles.Add(profile);
@@ -203,7 +203,7 @@ public sealed class AdminCertificateChainEndpointTests
         Assert.Equal(new[] { mine.Leaf.CertificateId }, health.Scored);
 
         health.Scored.Clear();
-        Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "GetHealthSummary", null, theirs.IntCa.TenantId));
+        Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "GetHealthSummary", null, theirs.IntCa.SpaceId));
         Assert.Empty(health.Scored);
 
         Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "GetHealthSummary", theirs.IntCa.Id, null));
@@ -222,10 +222,10 @@ public sealed class AdminCertificateChainEndpointTests
         return entity;
     }
 
-    private static async Task<List<Guid>> ListAsync(object controller, Guid? caId = null, Guid? tenantId = null)
+    private static async Task<List<Guid>> ListAsync(object controller, Guid? caId = null, Guid? spaceId = null)
     {
         var ok = Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "ListCertificates",
-            null, null, null, null, caId, tenantId, null, null, null, null, null, null, null, null, 1, 100));
+            null, null, null, null, caId, spaceId, null, null, null, null, null, null, null, null, 1, 100));
         var items = (IEnumerable<ModularCA.Shared.Models.CertificateInfoModel>)ok.Value!.GetType().GetProperty("items")!.GetValue(ok.Value)!;
         return items.Select(i => i.CertificateId).ToList();
     }
@@ -240,7 +240,7 @@ public sealed class AdminCertificateChainEndpointTests
         var controller = NewController(db, new AccessStub(_ => true), health, new GroupAuthStub([mine.IntCa.Id]));
 
         Assert.Contains(mtls.CertificateId, await ListAsync(controller, caId: mine.IntCa.Id));
-        Assert.Contains(mtls.CertificateId, await ListAsync(controller, tenantId: mine.IntCa.TenantId));
+        Assert.Contains(mtls.CertificateId, await ListAsync(controller, spaceId: mine.IntCa.SpaceId));
 
         Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "GetHealthSummary", mine.IntCa.Id, null));
         Assert.Contains(mtls.CertificateId, health.Scored);
@@ -290,7 +290,7 @@ public sealed class AdminCertificateChainEndpointTests
             Assert.Equal(evaluator.CanViewCertificate(Operator, c.CertificateId), listed.Contains(c.CertificateId));
 
         Assert.Empty(await ListAsync(controller, caId: theirs.IntCa.Id));
-        Assert.Empty(await ListAsync(controller, tenantId: theirs.IntCa.TenantId));
+        Assert.Empty(await ListAsync(controller, spaceId: theirs.IntCa.SpaceId));
     }
 
     [Fact]
@@ -322,7 +322,7 @@ public sealed class AdminCertificateChainEndpointTests
         var expected = new[] { mine.Leaf.CertificateId, afterRenewal.CertificateId }.OrderBy(g => g);
         Assert.Equal(expected, (await ListAsync(controller)).OrderBy(g => g));
         Assert.Equal(expected, (await ListAsync(controller, caId: mine.IntCa.Id)).OrderBy(g => g));
-        Assert.Equal(expected, (await ListAsync(controller, tenantId: mine.IntCa.TenantId)).OrderBy(g => g));
+        Assert.Equal(expected, (await ListAsync(controller, spaceId: mine.IntCa.SpaceId)).OrderBy(g => g));
         Assert.False(evaluator.CanViewCertificate(Operator, theirs.Leaf.CertificateId));
 
         var system = NewController(db, new AccessStub(_ => true), null, new GroupAuthStub([], system: true));
@@ -358,13 +358,13 @@ public sealed class AdminCertificateChainEndpointTests
     {
         public Task<bool> HasSystemCapabilityAsync(Guid userId, string capability) => Task.FromResult(system);
         public Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability) => Task.FromResult(caIds);
-        public Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? tenantId) => Task.FromResult(caIds);
+        public Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? spaceId) => Task.FromResult(caIds);
         public Task<bool> HasCaCapabilityAsync(Guid userId, Guid caId, string capability) => throw new NotSupportedException();
-        public Task<bool> HasTenantCapabilityAsync(Guid userId, Guid tenantId, string capability) => throw new NotSupportedException();
-        public Task<List<Guid>> GetTenantIdsWithCapabilityAsync(Guid userId, string capability) => throw new NotSupportedException();
+        public Task<bool> HasSpaceCapabilityAsync(Guid userId, Guid spaceId, string capability) => throw new NotSupportedException();
+        public Task<List<Guid>> GetSpaceIdsWithCapabilityAsync(Guid userId, string capability) => throw new NotSupportedException();
         public Task<bool> IsSystemAdminAsync(Guid userId) => throw new NotSupportedException();
         public Task<List<CaGroupEntity>> GetUserGroupsAsync(Guid userId) => throw new NotSupportedException();
-        public Task<TenantFence> GetFenceAsync(Guid userId) => throw new NotSupportedException();
+        public Task<SpaceFence> GetFenceAsync(Guid userId) => throw new NotSupportedException();
         public Task<EffectiveCapabilities> GetEffectiveCapabilitiesAsync(Guid userId) => throw new NotSupportedException();
         public Task<bool> HasResourceCapabilityAsync(Guid userId, string capability, string resourceType, Guid resourceId) => throw new NotSupportedException();
         public Task<(List<Guid> ResourceIds, bool HasWildcard)> GetGrantedResourceIdsAsync(Guid userId, string capabilityPrefix, string resourceType) => throw new NotSupportedException();

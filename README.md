@@ -13,7 +13,7 @@ ModularCA supports creating ACME endpoints for each CA endpoint.
 Each CA generated has a URL endpoint from which to retrieve the CA itself and its CRLs. An HTTP frontend webpage serves details on the hosted CAs and their CRLs.
 
 #### Functionality-Focused
-Designed around the functionality the average administrator will appreciate — from quotas to tenancy, ModularCA focuses on providing the core feature set.
+Designed around the functionality the average administrator will appreciate — from quotas to delegated administration in spaces, ModularCA focuses on providing the core feature set.
 
 ## Current Features
 - Simple certificate request and signing via the development API.
@@ -69,7 +69,7 @@ dotnet run --project ModularCA.API -c Development   # or Staging / Production
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `--bootstrap` | — | Provisions a fresh install: database, tenants, groups, roles, profiles/OIDs, the system + default CA certs, and the double-signed keystore. The CLI equivalent of the web setup wizard. |
+| `--bootstrap` | — | Provisions a fresh install: database, the first space, groups, roles, profiles/OIDs, the system + default CA certs, and the double-signed keystore. The CLI equivalent of the web setup wizard. |
 | `--reset --force` | — | **Destructive.** Factory reset — drops databases, keystores, and config so the install can be bootstrapped again. `--force` is mandatory. The audit database is *not* dropped (retained by design), and `config/backup.key` is renamed to `backup.key.pre-reset-<ts>`. |
 | `--confirm-db-name <name>` | DB name | Required with `--reset --force` — the operator must type the target database name to prove they know what is being destroyed. |
 | `--expected-db <name>` | DB name | Backwards-compatible alias for `--confirm-db-name`. |

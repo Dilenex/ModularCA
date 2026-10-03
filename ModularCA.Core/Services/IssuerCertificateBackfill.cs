@@ -18,7 +18,7 @@ namespace ModularCA.Core.Services;
 /// The issuer is the CA certificate whose subject key identifier equals the row's authority key
 /// identifier, or, when that does not decide it, whose subject is the row's issuer DN; either way
 /// the row's signature must verify under the candidate's key. Several survivors are narrowed to
-/// the CA certificate valid when the row was issued, then to the tenant of the row's signing
+/// the CA certificate valid when the row was issued, then to the space of the row's signing
 /// profile. Anything still ambiguous stays null: a wrong issuer would put the certificate in
 /// another CA's scope, which is worse than leaving it out. Idempotent; runs at every startup.
 /// </remarks>
@@ -31,7 +31,7 @@ public static class IssuerCertificateBackfill
     /// <param name="Unmatched">Rows left null because no stored CA certificate issued them.</param>
     public sealed record Result(int Scanned, int Linked, int Ambiguous, int Unmatched);
 
-    private sealed record Candidate(Guid CertificateId, X509Certificate Cert, byte[]? Ski, Guid? TenantId);
+    private sealed record Candidate(Guid CertificateId, X509Certificate Cert, byte[]? Ski, Guid? SpaceId);
 
     /// <summary>
     /// Links every certificate row with a null issuer that can be attributed unambiguously, in
@@ -50,7 +50,7 @@ public static class IssuerCertificateBackfill
             .ToListAsync(ct);
         var candidates = caRows
             .Select(r => Parse(r.RawCertificate, r.Pem) is { } x
-                ? new Candidate(r.CertificateId, x, SubjectKeyId(x), owners.TryGetValue(r.CertificateId, out var o) ? o.TenantId : null)
+                ? new Candidate(r.CertificateId, x, SubjectKeyId(x), owners.TryGetValue(r.CertificateId, out var o) ? o.SpaceId : null)
                 : null)
             .OfType<Candidate>()
             .ToList();
@@ -77,11 +77,11 @@ public static class IssuerCertificateBackfill
             foreach (var row in batch)
             {
                 scanned++;
-                Guid? tenantHint = row.SigningProfileId is Guid spId
+                Guid? spaceHint = row.SigningProfileId is Guid spId
                     && profileIssuers.TryGetValue(spId, out var issuerId)
-                    && owners.TryGetValue(issuerId, out var owner) ? owner.TenantId : null;
+                    && owners.TryGetValue(issuerId, out var owner) ? owner.SpaceId : null;
 
-                switch (FindIssuer(row, candidates, tenantHint, out var issuer))
+                switch (FindIssuer(row, candidates, spaceHint, out var issuer))
                 {
                     case Match.Unique:
                         if (!links.TryGetValue(issuer, out var rows))
@@ -136,7 +136,7 @@ public static class IssuerCertificateBackfill
     /// <summary>
     /// Finds the one CA certificate that issued <paramref name="row"/>, or reports none or ambiguity.
     /// </summary>
-    private static Match FindIssuer(PendingRow row, List<Candidate> candidates, Guid? tenantHint, out Guid issuer)
+    private static Match FindIssuer(PendingRow row, List<Candidate> candidates, Guid? spaceHint, out Guid issuer)
     {
         issuer = Guid.Empty;
         var cert = Parse(row.RawCertificate, row.Pem);
@@ -168,11 +168,11 @@ public static class IssuerCertificateBackfill
             if (validAtIssue.Count > 0)
                 matches = validAtIssue;
         }
-        if (matches.Count > 1 && tenantHint != null)
+        if (matches.Count > 1 && spaceHint != null)
         {
-            var sameTenant = matches.Where(c => c.TenantId == tenantHint).ToList();
-            if (sameTenant.Count > 0)
-                matches = sameTenant;
+            var sameSpace = matches.Where(c => c.SpaceId == spaceHint).ToList();
+            if (sameSpace.Count > 0)
+                matches = sameSpace;
         }
         if (matches.Count > 1)
             return Match.Ambiguous;

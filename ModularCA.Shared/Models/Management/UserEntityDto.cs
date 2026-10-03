@@ -14,7 +14,7 @@ namespace ModularCA.Shared.Models.Management
         public bool IsActive { get; set; } = true;
         /// <summary>True for a permission-only account that can never sign in.</summary>
         public bool IsServiceIdentity { get; set; }
-        public Guid? ServiceScopeTenantId { get; set; }
+        public Guid? ServiceScopeSpaceId { get; set; }
         public Guid? ServiceScopeCaId { get; set; }
         public string? Description { get; set; }
         public bool IsLocked { get; set; } = false;

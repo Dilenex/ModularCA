@@ -235,7 +235,7 @@ public sealed class HeldKeyService : IHeldKeyService
             "CertificateRequest", request.Id.ToString(),
             new { CertificateSerial = cert.SerialNumber, Algorithm = request.HeldPrivateKeyAlgorithm, ChainLength = issuers.Chain.Count },
             requester.SourceIp,
-            certificateAuthorityId: issuers.CaId, tenantId: issuers.TenantId);
+            certificateAuthorityId: issuers.CaId, spaceId: issuers.SpaceId);
 
         var fileName = CertificateUtil.ParseCnFromPem(cert.Pem);
         return new HeldKeyDelivery(HeldKeyDeliveryOutcome.Delivered, pkcs12,

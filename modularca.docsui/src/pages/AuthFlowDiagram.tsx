@@ -191,7 +191,6 @@ export default function AuthFlowDiagram() {
   "jti": "unique-token-id",        // JWT ID (used for revocation + step-up binding)
   "username": "admin",             // Username
   "email": "admin@example.com",    // Email address
-  "tenant": "tenant-uuid",         // Current tenant context
   "groups": [                      // Group memberships (CA-scoped + system)
     { "id": "group-uuid", "role": "Admin" },
     { "id": "group-uuid", "role": "Operator" }

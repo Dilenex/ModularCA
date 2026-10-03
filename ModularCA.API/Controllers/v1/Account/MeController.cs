@@ -13,7 +13,7 @@ namespace ModularCA.API.Controllers.v1.Account
     /// <summary>
     /// Lightweight whoami endpoint. Returns the authenticated
     /// user's id, username, email, group memberships (with role levels and CA scope), MFA
-    /// enrollment status, and tenant id. The frontends use this to populate an AuthContext
+    /// enrollment status, and space id. The frontends use this to populate an AuthContext
     /// instead of decoding the JWT body client-side. The endpoint is read-only and does
     /// not require any new schema.
     /// </summary>
@@ -35,8 +35,8 @@ namespace ModularCA.API.Controllers.v1.Account
         private readonly AccessBadgeService _badges = badges;
 
         /// <summary>
-        /// Returns identity, group memberships, effective capabilities (system-scoped and per
-        /// CA), MFA enrollment, and primary tenant for the caller. The console derives its
+        /// Returns identity, group memberships, effective capabilities (system-scoped, per CA and
+        /// space-wide), MFA enrollment, and primary space for the caller. The console derives its
         /// navigation, page gates and CA scope switcher from <c>capabilities</c>; the group
         /// list is informational.
         /// </summary>
@@ -68,7 +68,7 @@ namespace ModularCA.API.Controllers.v1.Account
                     isSystemTierSuper = gm.Group.IsSystemTierSuper,
                     certificateAuthorityId = gm.Group.CertificateAuthorityId,
                     caLabel = gm.Group.CertificateAuthority != null ? gm.Group.CertificateAuthority.Label : null,
-                    tenantId = gm.Group.TenantId,
+                    spaceId = gm.Group.SpaceId,
                 })
                 .ToListAsync();
 
@@ -110,20 +110,27 @@ namespace ModularCA.API.Controllers.v1.Account
                     label = c.Label,
                     name = c.Name,
                     isSshCa = c.IsSshCa,
-                    tenantId = c.TenantId,
-                    tenantName = c.TenantName,
-                    tenantSlug = c.TenantSlug,
+                    spaceId = c.SpaceId,
+                    spaceName = c.SpaceName,
+                    spaceSlug = c.SpaceSlug,
                     capabilities = c.Capabilities,
+                }),
+                spaces = effective.Spaces.Select(s => new
+                {
+                    id = s.Id,
+                    name = s.Name,
+                    slug = s.Slug,
+                    capabilities = s.Capabilities,
                 }),
             };
 
-            // Pick a primary tenant from the user's group memberships. Instance groups (the
-            // system groups and instance CAs' groups) have no tenant; null when only those.
-            var primaryTenantId = groups
+            // Pick a primary space from the user's group memberships. Instance groups (the
+            // system groups and instance CAs' groups) have no space; null when only those.
+            var primarySpaceId = groups
                 .Where(g => !g.isSystemGroup)
-                .Select(g => (Guid?)g.tenantId)
+                .Select(g => (Guid?)g.spaceId)
                 .FirstOrDefault(t => t != null)
-                ?? groups.Select(g => (Guid?)g.tenantId).FirstOrDefault(t => t != null);
+                ?? groups.Select(g => (Guid?)g.spaceId).FirstOrDefault(t => t != null);
 
             return Ok(new
             {
@@ -147,7 +154,7 @@ namespace ModularCA.API.Controllers.v1.Account
                     webauthn = hasWebAuthn,
                     mtls = hasMtls,
                 },
-                tenantId = primaryTenantId,
+                spaceId = primarySpaceId,
             });
         }
 
@@ -172,7 +179,7 @@ namespace ModularCA.API.Controllers.v1.Account
                 .Select(g => new
                 {
                     g.Capability,
-                    g.TenantId,
+                    g.SpaceId,
                     g.CertificateAuthorityId,
                     g.ResourceType,
                     g.ResourceId
@@ -192,7 +199,7 @@ namespace ModularCA.API.Controllers.v1.Account
                 RoleName = ra.Role.Name,
                 Scope = new
                 {
-                    ra.TenantId,
+                    ra.SpaceId,
                     ra.CertificateAuthorityId
                 },
                 Capabilities = ra.Role.Capabilities.Select(c => c.Capability).ToList()

@@ -5,19 +5,19 @@ using Xunit;
 namespace ModularCA.Tests.Core.Services;
 
 /// <summary>
-/// The tenant validity ceiling's Shorten / Refuse behaviour and its three exemptions, covered
+/// The space validity ceiling's Shorten / Refuse behaviour and its three exemptions, covered
 /// through <see cref="CertificateValidityUtil.DecideValidityCeiling"/> — the real decision
-/// <c>CertificateIssuanceService.ApplyTenantValidityCeiling</c> calls, not a restatement of it.
+/// <c>CertificateIssuanceService.ApplySpaceValidityCeiling</c> calls, not a restatement of it.
 /// <para>
 /// Two properties here are load-bearing well beyond their size.
 /// </para>
 /// <para>
 /// <b>Refusal must never reach an enrollment protocol.</b> ACME, EST, SCEP, CMP and both renewal
 /// jobs derive their requested expiry from the certificate profile with no knowledge of the
-/// tenant, so a refusal on those paths would fail every enrollment and every renewal whose profile
-/// out-reaches its tenant — silently, at renewal time, over a condition the client can neither see
-/// nor fix. Flipping one tenant setting would take a working fleet offline. That is why refusal
-/// needs BOTH the tenant's behaviour and the caller's enforcement mode, and why the enforcement
+/// space, so a refusal on those paths would fail every enrollment and every renewal whose profile
+/// out-reaches its space — silently, at renewal time, over a condition the client can neither see
+/// nor fix. Flipping one space setting would take a working fleet offline. That is why refusal
+/// needs BOTH the space's behaviour and the caller's enforcement mode, and why the enforcement
 /// default is the shortening one.
 /// </para>
 /// <para>
@@ -47,19 +47,19 @@ public class ValidityCeilingBehaviorTests
             behavior, enforcement, isInfrastructureCert, isCaCertificate);
 
     [Fact]
-    public void An_admin_request_over_the_ceiling_is_refused_when_the_tenant_refuses()
+    public void An_admin_request_over_the_ceiling_is_refused_when_the_space_refuses()
     {
-        var decision = Decide(ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy);
+        var decision = Decide(ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy);
 
         Assert.Equal(ValidityCeilingOutcome.Refused, decision.Outcome);
     }
 
     [Fact]
-    public void A_protocol_enrollment_over_the_ceiling_is_shortened_even_when_the_tenant_refuses()
+    public void A_protocol_enrollment_over_the_ceiling_is_shortened_even_when_the_space_refuses()
     {
         // The asymmetry this whole feature turns on. An ACME client asks for what the certificate
-        // profile allows, cannot discover the tenant's ceiling, and could do nothing about a
-        // refusal if it did — so the tenant setting must not reach it.
+        // profile allows, cannot discover the space's ceiling, and could do nothing about a
+        // refusal if it did — so the space setting must not reach it.
         var decision = Decide(ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.AlwaysShorten);
 
         Assert.Equal(ValidityCeilingOutcome.Shortened, decision.Outcome);
@@ -67,11 +67,11 @@ public class ValidityCeilingBehaviorTests
     }
 
     [Fact]
-    public void An_admin_request_over_the_ceiling_is_shortened_when_the_tenant_shortens()
+    public void An_admin_request_over_the_ceiling_is_shortened_when_the_space_shortens()
     {
-        // Shorten is the default and the behaviour every tenant had before this setting existed, so
-        // an interactive caller against an unchanged tenant must still get a certificate.
-        var decision = Decide(ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.HonourTenantPolicy);
+        // Shorten is the default and the behaviour every space had before this setting existed, so
+        // an interactive caller against an unchanged space must still get a certificate.
+        var decision = Decide(ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.HonourSpacePolicy);
 
         Assert.Equal(ValidityCeilingOutcome.Shortened, decision.Outcome);
         Assert.Equal(NotBefore.AddDays(TwoYearCeiling), decision.NotAfter);
@@ -79,26 +79,26 @@ public class ValidityCeilingBehaviorTests
 
     [Theory]
     [InlineData(ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.AlwaysShorten)]
-    [InlineData(ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.HonourTenantPolicy)]
+    [InlineData(ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.HonourSpacePolicy)]
     [InlineData(ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.AlwaysShorten)]
-    public void Refusal_requires_both_the_tenant_behaviour_and_the_callers_enforcement(
+    public void Refusal_requires_both_the_space_behaviour_and_the_callers_enforcement(
         ValidityCeilingBehavior behavior, ValidityCeilingEnforcement enforcement)
     {
-        // Every combination except (Refuse, HonourTenantPolicy) issues something. An "or" here
+        // Every combination except (Refuse, HonourSpacePolicy) issues something. An "or" here
         // instead of an "and" would make either half sufficient, and the half that reaches ACME is
-        // the tenant's.
+        // the space's.
         Assert.NotEqual(ValidityCeilingOutcome.Refused, Decide(behavior, enforcement).Outcome);
     }
 
     [Fact]
-    public void A_request_within_the_ceiling_is_untouched_even_on_a_refusing_tenant()
+    public void A_request_within_the_ceiling_is_untouched_even_on_a_refusing_space()
     {
-        // Refuse is not a floor and not a trap: asking for less than the tenant permits is always
+        // Refuse is not a floor and not a trap: asking for less than the space permits is always
         // fine, and must not be reported as an adjustment.
         var withinCeiling = NotBefore.AddDays(365);
 
         var decision = Decide(
-            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy,
+            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy,
             notAfter: withinCeiling);
 
         Assert.Equal(ValidityCeilingOutcome.Unchanged, decision.Outcome);
@@ -106,13 +106,13 @@ public class ValidityCeilingBehaviorTests
     }
 
     [Fact]
-    public void A_tenant_with_no_ceiling_never_refuses_however_it_is_configured()
+    public void A_space_with_no_ceiling_never_refuses_however_it_is_configured()
     {
-        // 0 means unlimited, and it is the value the migration gives every existing tenant. A
-        // tenant that was switched to Refuse before any ceiling was typed in must not refuse
+        // 0 means unlimited, and it is the value the migration gives every existing space. A
+        // space that was switched to Refuse before any ceiling was typed in must not refuse
         // everything.
         var decision = Decide(
-            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy,
+            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy,
             maxValidityDays: 0);
 
         Assert.Equal(ValidityCeilingOutcome.Unchanged, decision.Outcome);
@@ -125,7 +125,7 @@ public class ValidityCeilingBehaviorTests
         // The worst outcome this feature can produce. A ten-year intermediate reissued as a
         // two-year one takes down everything under it, years later.
         var decision = Decide(
-            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy,
+            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy,
             isCaCertificate: true);
 
         Assert.Equal(ValidityCeilingOutcome.Unchanged, decision.Outcome);
@@ -133,9 +133,9 @@ public class ValidityCeilingBehaviorTests
     }
 
     [Fact]
-    public void A_ca_certificate_is_exempt_even_when_the_tenant_merely_shortens()
+    public void A_ca_certificate_is_exempt_even_when_the_space_merely_shortens()
     {
-        // The exemption is about what the certificate IS, not about how the tenant is configured.
+        // The exemption is about what the certificate IS, not about how the space is configured.
         // Shorten is the common case, so this is the path a real CA creation would take.
         var decision = Decide(
             ValidityCeilingBehavior.Shorten, ValidityCeilingEnforcement.AlwaysShorten,
@@ -151,7 +151,7 @@ public class ValidityCeilingBehaviorTests
         // TSA, OCSP and Web TLS certificates are artifacts of the CA's own lifecycle rather than
         // subscriber certificates, consistent with the quota and policy checks they already skip.
         var decision = Decide(
-            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy,
+            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy,
             isInfrastructureCert: true);
 
         Assert.Equal(ValidityCeilingOutcome.Unchanged, decision.Outcome);
@@ -165,7 +165,7 @@ public class ValidityCeilingBehaviorTests
         // refusal is what the clamp decides to do. Exempt inputs must produce the requested expiry
         // verbatim, not the ceiling.
         var exempt = Decide(
-            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourTenantPolicy,
+            ValidityCeilingBehavior.Refuse, ValidityCeilingEnforcement.HonourSpacePolicy,
             isCaCertificate: true, maxValidityDays: 1);
 
         Assert.Equal(ValidityCeilingOutcome.Unchanged, exempt.Outcome);

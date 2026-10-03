@@ -26,7 +26,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// by hand.
 /// </para>
 /// <para>
-/// Writes stay <c>SystemOperator</c> — the catalog is global, shared across every tenant, and a
+/// Writes stay <c>SystemOperator</c> — the catalog is global, shared across every space, and a
 /// row added here widens what every CA in the deployment may issue. Reads are opened to
 /// <c>CaAuditor</c> because the certificate-profile editor needs the list to render its usage
 /// pickers, and the contents are public identifiers, not secrets.

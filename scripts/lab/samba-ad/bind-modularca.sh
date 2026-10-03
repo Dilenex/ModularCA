@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bind the lab domain controller to a ModularCA realm binding. Run as root on the DC after
-# provision-dc.sh, once the realm exists on the ModularCA tenant page.
+# provision-dc.sh, once the realm exists on the ModularCA space page.
 #
 # Two ways to hand ModularCA the service key; both are worth exercising once.
 #

@@ -41,7 +41,7 @@ public abstract class RequestValidationException(string message) : Exception(mes
     /// SCEP, CMP — catch this family alongside <see cref="InvalidOperationException"/> at their
     /// controller boundary and answer with their own sanitized, protocol-shaped error instead.
     /// That is deliberate, not an oversight: those endpoints are unauthenticated, and these
-    /// messages name profiles, CAs, tenants and policy internals. The detail reaches the
+    /// messages name profiles, CAs, spaces and policy internals. The detail reaches the
     /// authenticated admin and user paths, which have no such catch and fall through to
     /// <c>RequestValidationMiddleware</c>.
     /// <para>
@@ -102,7 +102,7 @@ public sealed class InvalidRequestException(
 }
 
 /// <summary>
-/// Raised when the request names a resource — a tenant, a profile, a CA — that does not exist,
+/// Raised when the request names a resource — a space, a profile, a CA — that does not exist,
 /// is disabled, or is not of the kind the operation requires.
 /// </summary>
 /// <remarks>
@@ -125,7 +125,7 @@ public sealed class ResourceNotFoundException : RequestValidationException
     public string? Identifier { get; }
 
     /// <summary>Creates a not-found failure with a message already written for the operator.</summary>
-    /// <param name="resourceKind">The kind of resource, e.g. "Tenant".</param>
+    /// <param name="resourceKind">The kind of resource, e.g. "Space".</param>
     /// <param name="message">The full sentence to show, including any remedy.</param>
     /// <param name="identifier">The identifier the caller supplied, if any.</param>
     public ResourceNotFoundException(

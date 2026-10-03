@@ -34,9 +34,9 @@ function preflight(over: Omit<Partial<ValidityCeilingPreflight>, 'resolution'> &
             notBefore: '2026-01-01T00:00:00Z',
             effectiveNotAfter: '2028-01-01T00:00:00Z',
             effectiveMaxDays: 730,
-            boundBy: 'Tenant',
+            boundBy: 'Space',
             certProfileNotAfter: '2029-01-01T00:00:00Z',
-            tenantNotAfter: '2028-01-01T00:00:00Z',
+            spaceNotAfter: '2028-01-01T00:00:00Z',
             issuingCaNotAfter: '2036-01-01T00:00:00Z',
             ...resolution,
         },
@@ -45,10 +45,10 @@ function preflight(over: Omit<Partial<ValidityCeilingPreflight>, 'resolution'> &
         certProfileValidityPeriodMax: 'P3Y',
         issuingCaName: 'Acme Issuing CA',
         issuingCaNotAfter: '2036-01-01T00:00:00Z',
-        tenantName: 'Acme Corp',
-        tenantMaxValidityDays: 730,
-        tenantBehavior: 'Shorten',
-        tenantCeilingApplies: true,
+        spaceName: 'Acme Corp',
+        spaceMaxValidityDays: 730,
+        spaceBehavior: 'Shorten',
+        spaceCeilingApplies: true,
         ...rest,
     };
 }
@@ -99,11 +99,11 @@ describe('formatIso8601Duration', () => {
 });
 
 describe('describeCeiling', () => {
-    it('names the tenant, and what the profile would have allowed, when the tenant binds', () => {
+    it('names the space, and what the profile would have allowed, when the space binds', () => {
         const notice = describeCeiling(preflight());
 
         expect(notice.text).toContain('Max 730 days');
-        expect(notice.text).toContain("capped by tenant 'Acme Corp'");
+        expect(notice.text).toContain("capped by space 'Acme Corp'");
         expect(notice.text).toContain('profile allows 3y');
         expect(notice.tone).toBe('info');
     });
@@ -116,45 +116,45 @@ describe('describeCeiling', () => {
         }));
 
         expect(notice.text).toContain("capped by issuing CA 'Acme Issuing CA'");
-        expect(notice.text).not.toContain('capped by tenant');
+        expect(notice.text).not.toContain('capped by space');
     });
 
     it('names the certificate profile when nothing narrower applies', () => {
         const notice = describeCeiling(preflight({
             resolution: { boundBy: 'CertProfile', effectiveMaxDays: 1095 },
-            tenantMaxValidityDays: 0,
+            spaceMaxValidityDays: 0,
         }));
 
         expect(notice.text).toContain("certificate profile 'TLS Server'");
         expect(notice.text).toContain('1095');
     });
 
-    it('says a refusing tenant refuses, and warns rather than informs', () => {
+    it('says a refusing space refuses, and warns rather than informs', () => {
         // Rendering Refuse and Shorten identically is wrong in one of the two cases: on Shorten the
         // operator gets a shorter certificate, on Refuse they get nothing.
-        const notice = describeCeiling(preflight({ tenantBehavior: 'Refuse' }));
+        const notice = describeCeiling(preflight({ spaceBehavior: 'Refuse' }));
 
         expect(notice.text).toContain('refuses requests beyond 730 days');
         expect(notice.tone).toBe('warn');
     });
 
-    it('mentions a refusing tenant even while the issuing CA is the narrower limit today', () => {
+    it('mentions a refusing space even while the issuing CA is the narrower limit today', () => {
         // The CA stops being the constraint the moment it is renewed, and an operator who was never
         // told about the refusal meets it then.
         const notice = describeCeiling(preflight({
-            tenantBehavior: 'Refuse',
+            spaceBehavior: 'Refuse',
             resolution: { boundBy: 'IssuingCa', effectiveMaxDays: 100 },
         }));
 
         expect(notice.text).toContain('refuses requests beyond');
     });
 
-    it('does not threaten a refusal when the tenant has no ceiling to refuse against', () => {
-        // 0 is unlimited and is what every tenant carries after the migration, so a tenant switched
+    it('does not threaten a refusal when the space has no ceiling to refuse against', () => {
+        // 0 is unlimited and is what every space carries after the migration, so a space switched
         // to Refuse before a ceiling was ever typed in refuses nothing.
         const notice = describeCeiling(preflight({
-            tenantBehavior: 'Refuse',
-            tenantMaxValidityDays: 0,
+            spaceBehavior: 'Refuse',
+            spaceMaxValidityDays: 0,
             resolution: { boundBy: 'CertProfile' },
         }));
 

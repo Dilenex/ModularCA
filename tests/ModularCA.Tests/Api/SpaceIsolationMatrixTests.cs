@@ -45,7 +45,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
     /// <summary>The seeded rows of one space.</summary>
     internal sealed class Space
     {
-        public Guid TenantId { get; init; }
+        public Guid SpaceId { get; init; }
         public Guid CaId { get; init; }
         public Guid CaCertId { get; init; }
         public Guid SpaceProfile { get; init; }
@@ -65,7 +65,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
         public Guid CaProfile { get; init; }
         public Guid Member { get; init; }
 
-        public IEnumerable<Guid> Ids() => [TenantId, CaId, CaCertId, SpaceProfile, BoundProfile, SigningProfile, RequestProfile, Csr, Cert,
+        public IEnumerable<Guid> Ids() => [SpaceId, CaId, CaCertId, SpaceProfile, BoundProfile, SigningProfile, RequestProfile, Csr, Cert,
             Token, CrlSchedule, Ldap, Group, Ceremony, Whitelist, ServiceUrl, CaProfile, Member];
     }
 
@@ -121,10 +121,10 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
             Instance = SeedInstance();
             Db.CertProfiles.Add(new CertProfileEntity { Id = UnboundProfile, Name = "unbound", KeyUsages = "[]", ExtendedKeyUsages = "[]" });
 
-            var spaceAdmin = Group("space-a-admin", A.TenantId, null, Capabilities.AdministratorTemplate);
-            var spaceOperator = Group("space-a-operator", A.TenantId, null, Capabilities.OperatorTemplate);
-            var caAdmin = Group("ca-a-admin", A.TenantId, A.CaId, Capabilities.AdministratorTemplate);
-            var caAuditor = Group("ca-a-auditor", A.TenantId, A.CaId, Capabilities.AuditorTemplate);
+            var spaceAdmin = Group("space-a-admin", A.SpaceId, null, Capabilities.AdministratorTemplate);
+            var spaceOperator = Group("space-a-operator", A.SpaceId, null, Capabilities.OperatorTemplate);
+            var caAdmin = Group("ca-a-admin", A.SpaceId, A.CaId, Capabilities.AdministratorTemplate);
+            var caAuditor = Group("ca-a-auditor", A.SpaceId, A.CaId, Capabilities.AuditorTemplate);
             Users["space admin"] = User("space-admin", spaceAdmin);
             Users["space operator"] = User("space-operator", spaceOperator);
             Users["CA-X admin"] = User("ca-admin", caAdmin);
@@ -136,9 +136,9 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
             Db.SaveChanges();
         }
 
-        public Guid Group(string name, Guid? tenantId, Guid? caId, IEnumerable<string> caps, bool system = false)
+        public Guid Group(string name, Guid? spaceId, Guid? caId, IEnumerable<string> caps, bool system = false)
         {
-            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = name, DisplayName = name, TenantId = tenantId, CertificateAuthorityId = caId, IsSystemGroup = system };
+            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = name, DisplayName = name, SpaceId = spaceId, CertificateAuthorityId = caId, IsSystemGroup = system };
             Db.CaGroups.Add(g);
             foreach (var c in caps)
                 Db.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = g.Id, Capability = c });
@@ -178,16 +178,16 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
 
         private Space SeedSpace(string s)
         {
-            var tenant = new TenantEntity { Id = Guid.NewGuid(), Name = $"Space {s}", Slug = $"space-{s}" };
-            Db.Tenants.Add(tenant);
+            var space = new SpaceEntity { Id = Guid.NewGuid(), Name = $"Space {s}", Slug = $"space-{s}" };
+            Db.Spaces.Add(space);
             var caCert = Cert(true, null, null, $"{s} root");
-            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{s} root", Label = $"{s}-root", TenantId = tenant.Id, CertificateId = caCert.CertificateId, Type = "Root", IsEnabled = true };
+            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"{s} root", Label = $"{s}-root", SpaceId = space.Id, CertificateId = caCert.CertificateId, Type = "Root", IsEnabled = true };
             Db.CertificateAuthorities.Add(ca);
             var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-signing", IssuerId = caCert.CertificateId };
             Db.SigningProfiles.Add(signing);
             Db.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "EST", SigningProfileId = signing.Id });
-            var spaceProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-space", TenantId = tenant.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
-            var boundProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-bound", TenantId = tenant.Id, CertificateAuthorityId = ca.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+            var spaceProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-space", SpaceId = space.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+            var boundProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-bound", SpaceId = space.Id, CertificateAuthorityId = ca.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
             Db.CertProfiles.AddRange(spaceProfile, boundProfile);
             var request = new RequestProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-request", CertificateAuthorityId = ca.Id };
             Db.RequestProfiles.Add(request);
@@ -198,31 +198,31 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
                 SignatureAlgorithm = "SHA256withECDSA", CertProfileId = spaceProfile.Id, SigningProfileId = signing.Id,
             };
             Db.CertificateRequests.Add(csr);
-            var token = new EnrollmentTokenEntity { Id = Guid.NewGuid(), Token = $"hash-{s}", ExpiresAt = DateTime.UtcNow.AddDays(1), MaxUses = 1, UsesRemaining = 1, TenantId = tenant.Id, CertificateAuthorityId = ca.Id };
+            var token = new EnrollmentTokenEntity { Id = Guid.NewGuid(), Token = $"hash-{s}", ExpiresAt = DateTime.UtcNow.AddDays(1), MaxUses = 1, UsesRemaining = 1, SpaceId = space.Id, CertificateAuthorityId = ca.Id };
             Db.EnrollmentTokens.Add(token);
             var crl = new CrlConfigurationEntity { TaskId = Guid.NewGuid(), Name = $"{s}-crl", CaCertificateId = caCert.CertificateId, Description = "", UpdateInterval = "0 * * * *", DeltaInterval = "" };
             Db.CrlConfigurations.Add(crl);
             var ldap = new LdapConfigurationEntity { Id = Guid.NewGuid(), Name = $"{s}-ldap", Host = "ldap", Username = "u", Password = "p", BaseDn = "dc=x", CertificateAuthorityId = ca.Id, UpdateInterval = "0 * * * *" };
             Db.LdapConfigurations.Add(ldap);
-            var group = Group($"{s}-root-auditor-seed", tenant.Id, ca.Id, []);
+            var group = Group($"{s}-root-auditor-seed", space.Id, ca.Id, []);
             var ceremony = new KeyCeremonyEntity
             {
                 Id = Guid.NewGuid(), OperationType = "CreateRootCA", Description = s, TargetEntityId = "", InitiatedByUserId = Guid.NewGuid(),
                 InitiatedByUsername = "someone", RequiredApprovals = 1, Status = "Pending", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1),
-                ParametersJson = "{}", ApprovalsJson = "[]", TenantId = tenant.Id,
+                ParametersJson = "{}", ApprovalsJson = "[]", SpaceId = space.Id,
             };
             Db.KeyCeremonies.Add(ceremony);
             var whitelist = new WhitelistEntity { Id = Guid.NewGuid(), Name = $"{s}-wl", Scope = WhitelistScope.Protocol, CertificateAuthorityId = ca.Id, Protocol = "EST", Cidrs = "[\"10.0.0.0/8\"]" };
             Db.Whitelists.Add(whitelist);
             var serviceUrl = new CaServiceUrlEntity { Id = Guid.NewGuid(), CaCertificateId = caCert.CertificateId, PublicBaseUrl = $"https://{s}.example" };
             Db.CaServiceUrls.Add(serviceUrl);
-            var caProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-ca", TenantId = tenant.Id, IsCaProfile = true, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+            var caProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = $"{s}-ca", SpaceId = space.Id, IsCaProfile = true, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
             Db.CertProfiles.Add(caProfile);
             Db.SaveChanges();
             var member = User($"{s}-member", group);
             return new Space
             {
-                TenantId = tenant.Id, CaId = ca.Id, CaCertId = caCert.CertificateId, SpaceProfile = spaceProfile.Id, BoundProfile = boundProfile.Id,
+                SpaceId = space.Id, CaId = ca.Id, CaCertId = caCert.CertificateId, SpaceProfile = spaceProfile.Id, BoundProfile = boundProfile.Id,
                 SigningProfile = signing.Id, RequestProfile = request.Id, Csr = csr.Id, Cert = leaf.CertificateId, CertSerial = leaf.SerialNumber,
                 Token = token.Id, CrlSchedule = crl.TaskId, Ldap = ldap.Id, Group = group, Ceremony = ceremony.Id, Whitelist = whitelist.Id,
                 ServiceUrl = serviceUrl.Id, CaProfile = caProfile.Id, Member = member,
@@ -231,7 +231,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
 
         private InstanceRows SeedInstance()
         {
-            var ssh = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", TenantId = null, IsSshCa = true, Type = "SSH", IsEnabled = true };
+            var ssh = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Ops SSH", Label = "ops-ssh", SpaceId = null, IsSshCa = true, Type = "SSH", IsEnabled = true };
             Db.CertificateAuthorities.Add(ssh);
             var key = new SshCaKeyEntity { Id = Guid.NewGuid(), Name = "Ops SSH", KeyType = "ed25519", PublicKey = "ssh-ed25519 AAAA", PrivateKeyPath = "x", CertificateAuthorityId = ssh.Id, IsUserCa = true, MaxValidityHours = 24, IsEnabled = true };
             Db.SshCaKeys.Add(key);
@@ -243,7 +243,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
             Db.SshRequestProfiles.Add(request);
             var template = new SshCertificateTemplateEntity { Id = Guid.NewGuid(), Name = "ssh-template", SshCaKeyId = key.Id, SshSigningProfileId = signing.Id, SshCertProfileId = certProfile.Id };
             Db.SshCertificateTemplates.Add(template);
-            var bound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "instance-bound", TenantId = null, CertificateAuthorityId = ssh.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+            var bound = new CertProfileEntity { Id = Guid.NewGuid(), Name = "instance-bound", SpaceId = null, CertificateAuthorityId = ssh.Id, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
             Db.CertProfiles.Add(bound);
             var global = new WhitelistEntity { Id = Guid.NewGuid(), Name = "admin", Scope = WhitelistScope.Admin, Cidrs = "[\"10.0.0.0/8\"]" };
             Db.Whitelists.Add(global);
@@ -251,7 +251,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
             Db.AcmeEabKeys.Add(eab);
             var sshGroup = Group("ops-ssh-admin", null, ssh.Id, Capabilities.AdministratorTemplate);
             var rootCert = Cert(true, null, null, "ops root");
-            var root = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "ops root", Label = "ops-root", TenantId = null, CertificateId = rootCert.CertificateId, Type = "Root", IsEnabled = true };
+            var root = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "ops root", Label = "ops-root", SpaceId = null, CertificateId = rootCert.CertificateId, Type = "Root", IsEnabled = true };
             Db.CertificateAuthorities.Add(root);
             Db.SaveChanges();
             var sshMember = User("ssh-admin", sshGroup);
@@ -425,6 +425,73 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
         }
     }
 
+    /// <summary>The calls that name a space: the space routes and the <c>?spaceId=</c> filters.</summary>
+    private static IEnumerable<Call> SpaceAddressed(Space s) =>
+    [
+        Get("Admin.AdminKerberosRealmController", "List", $"/api/v1/admin/spaces/{s.SpaceId}/kerberos-realms", ("spaceId", s.SpaceId)),
+        Get("Admin.AdminCertProfileController", "GetAll", "/api/v1/admin/cert-profiles", ("spaceId", s.SpaceId)),
+        Get("Admin.AdminCertSignRequestController", "RetrievePendingRequests", "/api/v1/admin/requests", ("spaceId", s.SpaceId)),
+        Get("Admin.AdminCertificateController", "ListCertificates", "/api/v1/admin/certificates", ("page", 1), ("pageSize", 100), ("spaceId", s.SpaceId)),
+    ];
+
+    /// <summary>Naming space B in a space route or a <c>spaceId</c> filter gets a user of A nothing of B or of the instance.</summary>
+    [Theory]
+    [MemberData(nameof(UserKinds))]
+    public async Task Naming_another_space_in_the_route_or_the_filter_gets_nothing_of_it(string kind)
+    {
+        var w = new World();
+        var forbidden = w.B.Ids().Concat(w.Instance.Ids()).Select(i => i.ToString()).ToList();
+        foreach (var call in SpaceAddressed(w.B))
+        {
+            var (status, body) = await SendAsync(w, w.Users[kind], call);
+            Assert.True(status is 200 or 403 or 404, $"{kind}: {call.Controller}.{call.Action} {call.Path} answered {status}: {body}");
+            var leaked = forbidden.Where(id => body.Contains(id, StringComparison.OrdinalIgnoreCase)).ToList();
+            Assert.True(leaked.Count == 0, $"{kind}: {call.Controller}.{call.Action} {call.Path} leaked {string.Join(", ", leaked)}");
+        }
+        var (realms, _) = await SendAsync(w, w.Users[kind], SpaceAddressed(w.B).First());
+        Assert.Equal(403, realms);
+    }
+
+    /// <summary>The control: the same calls naming A succeed for A's administrator and show A's rows.</summary>
+    [Fact]
+    public async Task Naming_the_own_space_in_the_route_or_the_filter_shows_its_rows()
+    {
+        var w = new World();
+        var admin = w.Users["space admin"];
+        foreach (var call in SpaceAddressed(w.A))
+        {
+            var (status, body) = await SendAsync(w, admin, call);
+            Assert.True(status == 200, $"{call.Controller}.{call.Action} {call.Path} answered {status}: {body}");
+        }
+        var (_, certificates) = await SendAsync(w, admin, SpaceAddressed(w.A).ElementAt(3));
+        Assert.Contains(w.A.Cert.ToString(), certificates, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// /me names the caller's space as <c>spaceId</c>, each CA's as <c>spaceId</c>,
+    /// <c>spaceName</c> and <c>spaceSlug</c>, and lists the spaces held space-wide under
+    /// <c>capabilities.spaces</c>; nothing in it says tenant.
+    /// </summary>
+    [Fact]
+    public async Task Me_names_the_space_and_says_nothing_of_a_tenant()
+    {
+        var w = new World();
+        var (status, body) = await SendAsync(w, w.Users["space admin"], Get("Account.MeController", "GetMe", "/api/v1/me"));
+        Assert.True(status == 200, body);
+        Assert.DoesNotContain("tenant", body, StringComparison.OrdinalIgnoreCase);
+
+        using var me = JsonDocument.Parse(body);
+        Assert.Equal(w.A.SpaceId, me.RootElement.GetProperty("spaceId").GetGuid());
+        Assert.Equal(w.A.SpaceId, me.RootElement.GetProperty("groups")[0].GetProperty("spaceId").GetGuid());
+        var ca = me.RootElement.GetProperty("capabilities").GetProperty("cas").EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == w.A.CaId);
+        Assert.Equal(w.A.SpaceId, ca.GetProperty("spaceId").GetGuid());
+        Assert.Equal("Space a", ca.GetProperty("spaceName").GetString());
+        Assert.Equal("space-a", ca.GetProperty("spaceSlug").GetString());
+        var space = Assert.Single(me.RootElement.GetProperty("capabilities").GetProperty("spaces").EnumerateArray());
+        Assert.Equal(w.A.SpaceId, space.GetProperty("id").GetGuid());
+        Assert.Equal("space-a", space.GetProperty("slug").GetString());
+    }
+
     /// <summary>A system auditor's fence is instance-wide (owner decision Q1): both spaces' CAs are listed.</summary>
     [Fact]
     public async Task A_system_auditor_sees_both_spaces()
@@ -469,33 +536,33 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
 
     /// <summary>
     /// The space part of the fence is per capability too: a holder of cert.revoke in A who holds
-    /// only cert.request in B (through a requester-only group, a tenant grant or a CA grant) and on
+    /// only cert.request in B (through a requester-only group, a space grant or a CA grant) and on
     /// an instance CA sees none of B's or the instance's operator configuration, which cert.revoke
     /// lists fence, yet the user portal still lists B's and that instance CA, which cert.request opens.
     /// </summary>
     [Theory]
     [InlineData("group")]
-    [InlineData("tenant grant")]
+    [InlineData("space grant")]
     [InlineData("ca grant")]
     public async Task Cert_request_in_another_space_opens_none_of_its_operator_configuration(string source)
     {
         var w = new World();
-        var bSsh = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "b ssh", Label = "b-ssh", TenantId = w.B.TenantId, IsSshCa = true, Type = "SSH", IsEnabled = true };
+        var bSsh = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "b ssh", Label = "b-ssh", SpaceId = w.B.SpaceId, IsSshCa = true, Type = "SSH", IsEnabled = true };
         var bKey = new SshCaKeyEntity { Id = Guid.NewGuid(), Name = "b ssh", KeyType = "ed25519", PublicKey = "ssh-ed25519 AAAA", PrivateKeyPath = "x", CertificateAuthorityId = bSsh.Id, IsUserCa = true, MaxValidityHours = 24, IsEnabled = true };
         var bSigning = new SshSigningProfileEntity { Id = Guid.NewGuid(), Name = "b-ssh-signing", SshCaKeyId = bKey.Id, SourceAddressRestrictions = "[]", DefaultExtensions = "[]" };
         var bCertProfile = new SshCertProfileEntity { Id = Guid.NewGuid(), Name = "b-ssh-cert", AllowedPrincipalPatterns = "[]", AllowedExtensions = "[]", RequiredExtensions = "[]" };
         var bTemplate = new SshCertificateTemplateEntity { Id = Guid.NewGuid(), Name = "b-ssh-template", SshCaKeyId = bKey.Id, SshSigningProfileId = bSigning.Id, SshCertProfileId = bCertProfile.Id };
         w.Db.AddRange(bSsh, bKey, bSigning, bCertProfile, bTemplate);
 
-        var aOperator = w.Group("a-revoker", w.A.TenantId, null, [Capabilities.CertRevoke]);
+        var aOperator = w.Group("a-revoker", w.A.SpaceId, null, [Capabilities.CertRevoke]);
         Guid user;
         if (source == "group")
-            user = w.User("revoker", aOperator, w.Group("b-requester", w.B.TenantId, null, [Capabilities.CertRequest]));
+            user = w.User("revoker", aOperator, w.Group("b-requester", w.B.SpaceId, null, [Capabilities.CertRequest]));
         else
         {
             user = w.User("revoker", aOperator);
-            w.Db.UserCapabilityGrants.Add(source == "tenant grant"
-                ? new UserCapabilityGrantEntity { UserId = user, Capability = Capabilities.CertRequest, TenantId = w.B.TenantId }
+            w.Db.UserCapabilityGrants.Add(source == "space grant"
+                ? new UserCapabilityGrantEntity { UserId = user, Capability = Capabilities.CertRequest, SpaceId = w.B.SpaceId }
                 : new UserCapabilityGrantEntity { UserId = user, Capability = Capabilities.CertRequest, CertificateAuthorityId = w.B.CaId });
         }
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { UserId = user, Capability = Capabilities.CertRequest, CertificateAuthorityId = w.Instance.Root });
@@ -552,7 +619,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
         var accessor = new HttpContextAccessor { HttpContext = http };
         var badges = new AccessBadgeContext(w.Db, accessor);
         var groupAuth = new CaGroupAuthorizationService(w.Db, NullLogger<CaGroupAuthorizationService>.Instance, null, accessor, badges);
-        TenantFence.Store(http, await groupAuth.GetFenceAsync(userId));
+        SpaceFence.Store(http, await groupAuth.GetFenceAsync(userId));
 
         var services = new Resolver(w.Db, w.Cache);
         foreach (var (serviceType, instance) in w.Services)

@@ -18,7 +18,7 @@ public enum SigningRefusalReason
     /// <summary>The key belongs to a different CA than the operation is for.</summary>
     CaMismatch,
 
-    /// <summary>The key belongs to a different tenant than the operation is for.</summary>
+    /// <summary>The key belongs to a different space than the operation is for.</summary>
     TenantMismatch,
 
     /// <summary>The context is missing something the policy needs, such as the CA an operation is for.</summary>
@@ -66,15 +66,15 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// The context named a ceremony the signer could not verify: no such ceremony, one that is
-    /// not approved, or one that names a different tenant or CA than the operation.
+    /// not approved, or one that names a different space or CA than the operation.
     /// </summary>
     CeremonyNotApproved,
 
     /// <summary>
-    /// The context named no ceremony, and the tenant the operation is for requires one: the
-    /// tenant's <c>RequireKeyCeremony</c> is set, or the tenant is not known to the signer at
+    /// The context named no ceremony, and the space the operation is for requires one: the
+    /// space's <c>RequireKeyCeremony</c> is set, or the space is not known to the signer at
     /// all, so no waiver of the requirement can be verified. Key generation, commit and import
-    /// for such a tenant happen only under an approved ceremony the signer can verify.
+    /// for such a space happen only under an approved ceremony the signer can verify.
     /// </summary>
     CeremonyRequired,
 }

@@ -120,8 +120,8 @@ namespace ModularCA.Core.Services
             ArgumentNullException.ThrowIfNull(caKey);
             ArgumentNullException.ThrowIfNull(caSigningContext);
             // No enforcement parameter: this overload exists for infrastructure certificates issued
-            // before the CA is registered, and those are exempt from the tenant ceiling
-            // altogether, so there is nothing for a tenant policy to refuse.
+            // before the CA is registered, and those are exempt from the space ceiling
+            // altogether, so there is nothing for a space policy to refuse.
             return IssueCertificateInternalAsync(csrId, notBefore, notAfter, new PreResolvedCa(caCert, caKey, caSigningContext),
                 allowCaProfile: false, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
         }
@@ -145,14 +145,14 @@ namespace ModularCA.Core.Services
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
         /// entry point; only <see cref="IssueCaCertificateAsync"/> passes true. See
         /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why. It doubles as
-        /// one of the three tenant-ceiling exemptions — see <see cref="ApplyTenantValidityCeiling"/>.
+        /// one of the three space-ceiling exemptions — see <see cref="ApplySpaceValidityCeiling"/>.
         /// </param>
         /// <param name="preResolvedCa">
         /// The CA creation seam, or null. The issuing CA is refused by <see cref="IssuingCaGuard"/>
         /// either way; only this seam may proceed without a committed authority row.
         /// </param>
         /// <param name="ceilingEnforcement">
-        /// Whether the caller is one that may be refused by a tenant configured to refuse
+        /// Whether the caller is one that may be refused by a space configured to refuse
         /// over-reaching validity. Every path through this method passes it explicitly rather than
         /// relying on a default, so that adding an entry point forces the question to be answered.
         /// </param>
@@ -281,12 +281,12 @@ namespace ModularCA.Core.Services
             var issuingCaEntity = await IssuingCaGuard.EnsureUsableAsync(
                 _db, refCACert, caMatch, requireAuthority: preResolvedCa == null, DateTime.UtcNow, cancellationToken);
             // Hoisted out of the block below because the validity ceiling further down needs it too.
-            // An instance CA (no tenant) gets the instance's policy, never none.
-            EffectivePolicy? caTenant = null;
+            // An instance CA (no space) gets the instance's policy, never none.
+            EffectivePolicy? caSpace = null;
             if (issuingCaEntity != null)
             {
-                caTenant = await _policies.ResolveAsync(issuingCaEntity.TenantId, cancellationToken);
-                EnsureScopeIssues(caTenant);
+                caSpace = await _policies.ResolveAsync(issuingCaEntity.SpaceId, cancellationToken);
+                EnsureScopeIssues(caSpace);
 
                 // The System Signing CA signs keystore entries only — never end-entity
                 // certs or sub-CAs. A signing profile pointing at it would exfiltrate
@@ -299,17 +299,17 @@ namespace ModularCA.Core.Services
 
             // The profile must be in the issuing CA's scope, on every path that reaches here.
             var issuingScope = issuingCaEntity != null
-                ? (CaId: (Guid?)issuingCaEntity.Id, issuingCaEntity.TenantId)
-                : (CaId: preResolvedCa?.Context.CaId, preResolvedCa?.Context.TenantId);
+                ? (CaId: (Guid?)issuingCaEntity.Id, SpaceId: issuingCaEntity.SpaceId)
+                : (CaId: preResolvedCa?.Context.CaId, preResolvedCa?.Context.SpaceId);
             if (!allowCaProfile && issuingScope.CaId is Guid scopeCaId)
             {
                 var profileScope = await _db.CertProfiles.AsNoTracking()
                     .Where(p => p.Id == csrEntity.CertProfileId.Value)
-                    .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                    .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
                     .FirstOrDefaultAsync(cancellationToken)
                     ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
                 ModularCA.Core.Authorization.CertProfileScope.Ensure(
-                    profileScope.TenantId, profileScope.CertificateAuthorityId, scopeCaId, issuingScope.TenantId);
+                    profileScope.SpaceId, profileScope.CertificateAuthorityId, scopeCaId, issuingScope.SpaceId);
             }
 
             var now = DateTime.UtcNow;
@@ -323,10 +323,10 @@ namespace ModularCA.Core.Services
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
-            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // The space ceiling is applied before the issuing CA's own expiry so that a
             // certificate limited by both reports both reasons rather than only the tighter one.
-            validTo = ApplyTenantValidityCeiling(
-                validTo, validFrom, caTenant,
+            validTo = ApplySpaceValidityCeiling(
+                validTo, validFrom, caSpace,
                 csrEntity.IsInfrastructureCert,
                 isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile,
                 ceilingEnforcement,
@@ -500,7 +500,7 @@ namespace ModularCA.Core.Services
                         RequestorUserId = csrEntity.RequestorUserId,
                     },
                     certificateAuthorityId: issuingCaEntity?.Id,
-                    tenantId: issuingCaEntity?.TenantId);
+                    spaceId: issuingCaEntity?.SpaceId);
             }
             catch (Exception auditEx)
             {
@@ -531,7 +531,7 @@ namespace ModularCA.Core.Services
         /// <param name="newSans">Optional new SAN list (entries formatted as "DNS:host" / "IP:1.2.3.4") that
         /// overrides whatever SAN overrides were stored on the original CSR. The list is JSON-serialized into the
         /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile.</param>
-        /// <param name="ceilingEnforcement">Whether the tenant's validity-ceiling behaviour may refuse
+        /// <param name="ceilingEnforcement">Whether the space's validity-ceiling behaviour may refuse
         /// this caller rather than shorten it; see <see cref="ValidityCeilingEnforcement"/>. Defaults to
         /// shortening, so an automated reissue path added later cannot start refusing by omission.</param>
         /// <returns>The PEM-encoded reissued certificate with intermediate chain and any warnings.</returns>
@@ -640,8 +640,8 @@ namespace ModularCA.Core.Services
             var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
             var reissueCaEntity = (await IssuingCaGuard.EnsureUsableAsync(
                 _db, refCACert, caMatch, requireAuthority: true, DateTime.UtcNow))!;
-            var caTenant = await _policies.ResolveAsync(reissueCaEntity.TenantId);
-            EnsureScopeIssues(caTenant);
+            var caSpace = await _policies.ResolveAsync(reissueCaEntity.SpaceId);
+            EnsureScopeIssues(caSpace);
             if (string.Equals(reissueCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
                 throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
 
@@ -650,11 +650,11 @@ namespace ModularCA.Core.Services
             {
                 var reissueScope = await _db.CertProfiles.AsNoTracking()
                     .Where(p => p.Id == reissueProfileId)
-                    .Select(p => new { p.TenantId, p.CertificateAuthorityId })
+                    .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
                     .FirstOrDefaultAsync()
                     ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
                 ModularCA.Core.Authorization.CertProfileScope.Ensure(
-                    reissueScope.TenantId, reissueScope.CertificateAuthorityId, reissueCaEntity.Id, reissueCaEntity.TenantId);
+                    reissueScope.SpaceId, reissueScope.CertificateAuthorityId, reissueCaEntity.Id, reissueCaEntity.SpaceId);
             }
 
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
@@ -756,14 +756,14 @@ namespace ModularCA.Core.Services
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
-            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // The space ceiling is applied before the issuing CA's own expiry so that a
             // certificate limited by both reports both reasons rather than only the tighter one.
             // isCaCertificate is the resolved profile flag alone: reissue has no CA-creation caller
             // and refuses a CA-flagged profile outright further up, so this can only ever be false
             // here — it is passed for the same reason the guard above exists, so that a future
             // change which admits a CA profile to this path does not silently shorten it.
-            validTo = ApplyTenantValidityCeiling(
-                validTo, validFrom, caTenant,
+            validTo = ApplySpaceValidityCeiling(
+                validTo, validFrom, caSpace,
                 csrEntity.IsInfrastructureCert,
                 isCaCertificate: effectiveCertProfile.IsCaProfile,
                 ceilingEnforcement,
@@ -899,7 +899,7 @@ namespace ModularCA.Core.Services
             // Always emit CertificateIssued to the general audit log
             // after a successful reissue too, so the cross-channel query surface has a
             // single table with every issuance event. Reissue path already resolved the
-            // CA entity earlier in the method (reissueCaEntity) for the tenant-enabled
+            // CA entity earlier in the method (reissueCaEntity) for the space-enabled
             // check — reuse it here.
             await EmitCertificateIssuedAuditAsync(csrEntity, certModel, reissueCaEntity);
 
@@ -1277,8 +1277,8 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Refuses issuance under a CA whose scope does not issue: a disabled tenant
-        /// (<c>TenantDisabled</c>), or a tenant that no longer exists or is soft-deleted
+        /// Refuses issuance under a CA whose scope does not issue: a disabled space
+        /// (<c>SpaceDisabled</c>), or a space that no longer exists or is soft-deleted
         /// (<c>IssuingCaDisabled</c>), which has no policy to issue under and never means "no
         /// ceiling". An instance CA resolves to the instance, which always issues.
         /// </summary>
@@ -1286,14 +1286,14 @@ namespace ModularCA.Core.Services
         {
             if (!scope.Found)
                 throw new ConfigurationValidationException(
-                    $"Certificate issuance is blocked — the issuing CA's tenant {scope.TenantId} no longer exists.", ErrorCodes.IssuingCaDisabled);
+                    $"Certificate issuance is blocked — the issuing CA's space {scope.SpaceId} no longer exists.", ErrorCodes.IssuingCaDisabled);
             if (!scope.IsEnabled)
-                throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+                throw new ConfigurationValidationException("Certificate issuance is blocked — the space is disabled.", ErrorCodes.SpaceDisabled);
         }
 
         /// <summary>
-        /// Applies the owning tenant's validity ceiling to a certificate's expiry: shortens it and
-        /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a tenant configured to
+        /// Applies the owning space's validity ceiling to a certificate's expiry: shortens it and
+        /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a space configured to
         /// refuse — throws <c>MCA-ISS-005</c> instead of issuing something shorter than was asked
         /// for.
         /// </summary>
@@ -1302,7 +1302,7 @@ namespace ModularCA.Core.Services
         /// Shortening is the default and the only behaviour the ceiling originally had. Every
         /// enrollment protocol — ACME, EST, SCEP, CMP — and both renewal jobs derive their requested
         /// expiry from the certificate profile's <c>ValidityPeriodMax</c> without any knowledge of
-        /// the tenant, so a profile that out-reaches its tenant would refuse every enrollment and
+        /// the space, so a profile that out-reaches its space would refuse every enrollment and
         /// every renewal against it, for a condition the enrolling client can neither see nor fix.
         /// Those callers pass <see cref="ValidityCeilingEnforcement.AlwaysShorten"/>, which is also
         /// the default, so a call site added later cannot start refusing by omission. The
@@ -1314,7 +1314,7 @@ namespace ModularCA.Core.Services
         /// client: they can see the ceiling, they can shorten the request, and a certificate that
         /// comes back quietly shorter than asked for is a defect that surfaces years later as an
         /// unexpected expiry. It fires only when the caller passes
-        /// <see cref="ValidityCeilingEnforcement.HonourTenantPolicy"/> <em>and</em> the tenant is set
+        /// <see cref="ValidityCeilingEnforcement.HonourSpacePolicy"/> <em>and</em> the space is set
         /// to <see cref="ValidityCeilingBehavior.Refuse"/> — both conditions, never either.
         /// </para>
         /// <para>
@@ -1337,23 +1337,23 @@ namespace ModularCA.Core.Services
         /// </remarks>
         /// <param name="validTo">The expiry resolved so far.</param>
         /// <param name="validFrom">The certificate's start, which the ceiling is measured from.</param>
-        /// <param name="tenant">
+        /// <param name="space">
         /// The issuing CA's scope policy (the instance's for an instance CA), or null when there is
         /// no issuing CA row.
         /// </param>
         /// <param name="isInfrastructureCert">True for a TSA/OCSP/Web TLS certificate; exempt.</param>
         /// <param name="isCaCertificate">True when this issuance produces a CA certificate; exempt.</param>
-        /// <param name="enforcement">Whether this caller may be refused by the tenant's behaviour.</param>
+        /// <param name="enforcement">Whether this caller may be refused by the space's behaviour.</param>
         /// <param name="diagnostics">Collects the advisory when the expiry is shortened.</param>
         /// <returns>The expiry to use, never later than the one passed in.</returns>
         /// <exception cref="ConfigurationValidationException">
         /// The request exceeds the ceiling, the scope refuses rather than shortens, and the caller
         /// is one that can act on a refusal.
         /// </exception>
-        private DateTime ApplyTenantValidityCeiling(
+        private DateTime ApplySpaceValidityCeiling(
             DateTime validTo,
             DateTime validFrom,
-            EffectivePolicy? tenant,
+            EffectivePolicy? space,
             bool isInfrastructureCert,
             bool isCaCertificate,
             ValidityCeilingEnforcement enforcement,
@@ -1361,43 +1361,43 @@ namespace ModularCA.Core.Services
         {
             // No issuing CA row means no ceiling to apply — a system-wide signing profile with no
             // CA behind it, which the decision function has no way to represent.
-            if (tenant is null)
+            if (space is null)
                 return validTo;
 
-            // The decision — exemptions, enforcement mode, tenant behaviour, clamp — is a pure
+            // The decision — exemptions, enforcement mode, space behaviour, clamp — is a pure
             // function so that the tests cover the real rule rather than a restatement of it. What
             // is left here is the reporting.
             var decision = CertificateValidityUtil.DecideValidityCeiling(
-                validTo, validFrom, tenant.MaxValidityDays,
-                tenant.ValidityCeilingBehavior, enforcement,
+                validTo, validFrom, space.MaxValidityDays,
+                space.ValidityCeilingBehavior, enforcement,
                 isInfrastructureCert, isCaCertificate);
 
             if (decision.Outcome == ValidityCeilingOutcome.Unchanged)
                 return validTo;
 
             var requestedDays = (int)Math.Round((validTo - validFrom).TotalDays);
-            var scope = tenant.TenantId == null ? "the instance" : $"tenant '{tenant.Scope}'";
+            var scope = space.SpaceId == null ? "the instance" : $"space '{space.Scope}'";
 
             if (decision.Outcome == ValidityCeilingOutcome.Refused)
             {
                 var refusal =
-                    $"Requested validity of {requestedDays} days exceeds the {tenant.MaxValidityDays}-day ceiling on " +
+                    $"Requested validity of {requestedDays} days exceeds the {space.MaxValidityDays}-day ceiling on " +
                     $"{scope}, which is configured to refuse over-long requests rather than shorten them.";
                 _logger.LogWarning(
                     "Refused issuance: requested {RequestedDays} days exceeds {Scope} ceiling of {CeilingDays} days.",
-                    requestedDays, scope, tenant.MaxValidityDays);
+                    requestedDays, scope, space.MaxValidityDays);
                 throw new ConfigurationValidationException(
                     refusal,
-                    ErrorCodes.ValidityExceedsTenantCeiling,
-                    remediation: $"Request at most {tenant.MaxValidityDays} days, raise the ceiling on " +
+                    ErrorCodes.ValidityExceedsSpaceCeiling,
+                    remediation: $"Request at most {space.MaxValidityDays} days, raise the ceiling on " +
                                  $"{scope}, or set it to shorten instead of refuse.");
             }
 
-            var msg = $"Certificate validity shortened from {requestedDays} days to {tenant.MaxValidityDays} days " +
-                      $"because {scope} caps certificate validity at {tenant.MaxValidityDays} days.";
+            var msg = $"Certificate validity shortened from {requestedDays} days to {space.MaxValidityDays} days " +
+                      $"because {scope} caps certificate validity at {space.MaxValidityDays} days.";
             _logger.LogWarning(msg);
             diagnostics.Add(Diagnostic.Warning(
-                ErrorCodes.ValidityClampedToTenant,
+                ErrorCodes.ValidityClampedToSpace,
                 "Validity shortened",
                 msg,
                 remediation: $"Raise the validity ceiling on {scope}, or request a shorter validity period.",
@@ -1662,7 +1662,7 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Signs the certificate through the builder. The ordinary path hands the builder a
-        /// <see cref="KeyRef"/> to the CA row and a context naming the CA and its tenant, and the
+        /// <see cref="KeyRef"/> to the CA row and a context naming the CA and its space, and the
         /// signer holds the key to that; the CA creation seam hands it the reference and context
         /// the caller supplied, because the CA's row is not committed yet. A signer that has no
         /// key for the CA, or is locked, is reported as the same configuration error the keystore
@@ -1690,7 +1690,7 @@ namespace ModularCA.Core.Services
                         $"No certificate authority record names CA certificate {refCACert.CertificateId}; the signer cannot attribute its key.",
                         ErrorCodes.IssuingCaKeyUnavailable);
                 caKey = new KeyRef(refCACert.CertificateId);
-                context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
+                context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
             }
 
             try

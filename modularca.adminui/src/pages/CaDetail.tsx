@@ -134,7 +134,7 @@ const CaDetail: React.FC = () => {
                 <DetailSection title="CA Information">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Label" value={ca.label} mono />
-                        {ca.tenantName && <DetailField label="Tenant" value={ca.tenantName} />}
+                        {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
                         <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
                         {ca.parentCaId && <DetailField label="Parent CA" value={ca.parentCaId} mono />}
                     </div>

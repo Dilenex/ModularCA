@@ -425,9 +425,3 @@ Https:
 #   MigrationCommandTimeoutSeconds: 3600
 #   MigrationLockTimeoutSeconds: 30
 
-# Single-organisation mode. An instance holds the system tenant and one organisation tenant, both
-# created by bootstrap. Creating a further organisation is refused (MCA-CFG-017) unless this is
-# true. A further organisation is meant to be a further instance. A disabled organisation still
-# counts; only a deleted one does not. Stop the service before editing this file, then start it.
-Features:
-  AllowMultipleOrganizations: false

@@ -13,15 +13,15 @@ import { StepUpOps } from '@shared/generated';
 import AuditTable from './AuditTable';
 
 /**
- * A tenant's Kerberos realm bindings for Windows autoenrollment: which Active Directory forests
+ * A space's Kerberos realm bindings for Windows autoenrollment: which Active Directory forests
  * may present tickets, whose capabilities their principals act with, and the service keys that
  * seal the tickets. Keys go in three ways and never come back out; the only export is the setup
- * script for the forest. With a null `tenantId` the panel manages the instance's realms, which
- * serve instance CAs (no tenant).
+ * script for the forest. With a null `spaceId` the panel manages the instance's realms, which
+ * serve instance CAs (no space).
  */
 interface RealmKey { kvno: number; encryptionType: string; source: string; createdAt: string; retireAfter?: string | null }
 interface Realm {
-    id: string; tenantId: string | null; realm: string; dnsDomain: string; servicePrincipal: string;
+    id: string; spaceId: string | null; realm: string; dnsDomain: string; servicePrincipal: string;
     enrollmentUserId: string; enrollmentUsername?: string | null; allowMachines: boolean; allowUsers: boolean;
     isEnabled: boolean; notes?: string | null; createdAt: string; lastUsedAt?: string | null; keys: RealmKey[];
 }
@@ -33,14 +33,14 @@ const blankKey = { source: 'Password', accountName: 'svc-modularca-enroll', acco
 const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '-');
 const isLive = (k: RealmKey) => !k.retireAfter || new Date(k.retireAfter) > new Date();
 
-const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: string; caLabels: string[] }> = ({ tenantId, tenantName, caLabels }) => {
+const KerberosRealmsPanel: React.FC<{ spaceId: string | null; spaceName: string; caLabels: string[] }> = ({ spaceId, spaceName, caLabels }) => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
-    const base = tenantId == null ? '/api/v1/admin/instance/kerberos-realms' : `/api/v1/admin/tenants/${tenantId}/kerberos-realms`;
+    const base = spaceId == null ? '/api/v1/admin/instance/kerberos-realms' : `/api/v1/admin/spaces/${spaceId}/kerberos-realms`;
 
     const [realms, setRealms] = useState<Realm[]>([]);
     const [users, setUsers] = useState<UserOption[]>([]);
-    const [tenantCaLabels, setTenantCaLabels] = useState<string[]>(caLabels);
+    const [spaceCaLabels, setSpaceCaLabels] = useState<string[]>(caLabels);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [adding, setAdding] = useState(false);
@@ -57,20 +57,20 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
 
     useEffect(() => {
         load();
-        // The tenant's own CAs, for the policy URL in the setup script.
+        // The space's own CAs, for the policy URL in the setup script.
         apiGet<any>('/api/v1/admin/authorities/hierarchy').then((data) => {
             const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
             const labels: string[] = [];
-            const walk = (list: any[]) => { for (const ca of list) { if ((ca.tenantId ?? null) === tenantId && ca.label) labels.push(ca.label); if (ca.children?.length) walk(ca.children); } };
+            const walk = (list: any[]) => { for (const ca of list) { if ((ca.spaceId ?? null) === spaceId && ca.label) labels.push(ca.label); if (ca.children?.length) walk(ca.children); } };
             walk(all);
-            if (labels.length > 0) setTenantCaLabels(labels);
+            if (labels.length > 0) setSpaceCaLabels(labels);
         }).catch(() => {});
-        // Only service identities of this tenant (any, for the instance): the server refuses a person
-        // or another tenant's identity, since every forest ticket acts with the identity's rights.
+        // Only service identities of this space (any, for the instance): the server refuses a person
+        // or another space's identity, since every forest ticket acts with the identity's rights.
         apiGet<any>('/api/v1/admin/service-identities').catch(() => []).then((svc) => {
             setUsers((Array.isArray(svc) ? svc : svc.items || [])
-                .filter((u: any) => u.isActive !== false && (tenantId == null || u.tenantId === tenantId))
-                .map((u: any) => ({ id: u.id, username: u.username, service: true, scope: u.scope === 'ca' ? `CA ${u.caLabel}` : u.scope === 'tenant' ? `tenant ${u.tenantName}` : 'system' })));
+                .filter((u: any) => u.isActive !== false && (spaceId == null || u.spaceId === spaceId))
+                .map((u: any) => ({ id: u.id, username: u.username, service: true, scope: u.scope === 'ca' ? `CA ${u.caLabel}` : u.scope === 'space' ? `space ${u.spaceName}` : 'system' })));
         });
     }, [load]);
 
@@ -116,7 +116,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
                 <div>
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Kerberos realms <span className="text-gray-500 font-normal">({realms.length})</span></h3>
                     <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                        Active Directory forests whose machines and users may enroll from this tenant's CAs by Windows integrated authentication. Each forest holds a service account with the enrollment SPN; its key is imported here and never shown again.
+                        Active Directory forests whose machines and users may enroll from this space's CAs by Windows integrated authentication. Each forest holds a service account with the enrollment SPN; its key is imported here and never shown again.
                     </p>
                 </div>
                 <button onClick={() => setAdding((v) => !v)} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors">
@@ -143,7 +143,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
                             </FieldHint>
                         </div>
                         <div>
-                            <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(a service identity of {tenantId == null ? 'the instance' : 'this tenant'}; create one under Users, Service identities)</span></label>
+                            <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(a service identity of {spaceId == null ? 'the instance' : 'this space'}; create one under Users, Service identities)</span></label>
                             <select className={inputClass} value={form.enrollmentUserId} onChange={(e) => setForm({ ...form, enrollmentUserId: e.target.value })}>
                                 <option value="">-- identity the forest's principals act as --</option>
                                 {users.some((u) => u.service) && (
@@ -163,22 +163,22 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
             )}
 
             <DataTable<Realm>
-                tableId={`kerberos-realms-${tenantId ?? 'instance'}`}
+                tableId={`kerberos-realms-${spaceId ?? 'instance'}`}
                 rows={realms}
                 rowKey={(r) => r.id}
                 loading={loading}
                 error={error}
-                empty="No forests bound. Bind one to enable Windows integrated authentication for this tenant's CAs."
+                empty="No forests bound. Bind one to enable Windows integrated authentication for this space's CAs."
                 columns={columns}
                 disableExport
-                renderDrawer={(r) => <RealmDrawer realm={r} base={base} tenantName={tenantName} caLabels={tenantCaLabels} users={users} onChanged={load} />}
+                renderDrawer={(r) => <RealmDrawer realm={r} base={base} spaceName={spaceName} caLabels={spaceCaLabels} users={users} onChanged={load} />}
                 drawerTitle={(r) => r.realm}
             />
         </div>
     );
 };
 
-const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; caLabels: string[]; users: UserOption[]; onChanged: () => void }> = ({ realm, base, tenantName, caLabels, users, onChanged }) => {
+const RealmDrawer: React.FC<{ realm: Realm; base: string; spaceName: string; caLabels: string[]; users: UserOption[]; onChanged: () => void }> = ({ realm, base, spaceName, caLabels, users, onChanged }) => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
     const [tab, setTab] = useState<'overview' | 'keys' | 'setup' | 'audit'>('overview');

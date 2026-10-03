@@ -74,7 +74,7 @@ public class XcepPolicyServiceTests
         var ca = new CertificateAuthorityEntity
         {
             Id = Guid.NewGuid(), Name = "Lab CA", Label = "lab", IsDefault = true, IsEnabled = true,
-            CertificateId = caCertEntity.CertificateId, TenantId = Guid.NewGuid(),
+            CertificateId = caCertEntity.CertificateId, SpaceId = Guid.NewGuid(),
         };
         var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = caCertEntity.CertificateId };
         var device = new CertProfileEntity
@@ -125,7 +125,7 @@ public class XcepPolicyServiceTests
         h.AddTemplate("Alpha", h.DeviceProfile, "2.25.10");
         h.AddTemplate("NotOffered", h.DeviceProfile, oid: null);
         h.AddTemplate("Disabled", h.DeviceProfile, "2.25.40", enabled: false);
-        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId };
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, SpaceId = h.Ca.SpaceId };
         h.Db.CertificateAuthorities.Add(otherCa);
         h.Db.SaveChanges();
         h.AddTemplate("Elsewhere", h.DeviceProfile, "2.25.50", caId: otherCa.Id);
@@ -247,7 +247,7 @@ public class XcepPolicyServiceTests
         async Task<string> Ces(string? host) => Assert.Single((await h.Service.GetPoliciesAsync(null, caller, host)).Cas).CesUri;
 
         Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("CA.Example.Test"));               // the public domain
-        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("ca.customer-a.example"));         // a former tenant hostname
+        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("ca.customer-a.example"));         // a former space hostname
         Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("attacker.example"));              // an arbitrary Host header
         Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces(null));                            // no host known
     }
@@ -280,7 +280,7 @@ public class XcepPolicyServiceTests
         Assert.Equal(expected, XcepPolicyService.MinimalRsaKeyLength(sizes));
     }
 
-    /// <summary>A caller from an accepted ticket of a forest bound to the lab tenant, with no keys (none are needed past acceptance).</summary>
+    /// <summary>A caller from an accepted ticket of a forest bound to the lab space, with no keys (none are needed past acceptance).</summary>
     private static KerberosCaller KerberosCallerFor(string principal) => new(
         principal, "CORP.LAB.TEST", principal.EndsWith('$'),
         new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),

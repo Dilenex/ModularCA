@@ -34,7 +34,7 @@ public enum EnrollmentAuditEvent
 /// <param name="KeySize">Key size or curve of the request.</param>
 /// <param name="CaLabel">The CA the request addressed, as resolved when resolution got that far.</param>
 /// <param name="CaId">The resolved CA's id, when one resolved.</param>
-/// <param name="TenantId">That CA's tenant.</param>
+/// <param name="SpaceId">That CA's space.</param>
 /// <param name="SourceIp">Caller address.</param>
 /// <param name="RequestId">The request row, once one exists.</param>
 /// <param name="Correlation">The protocol's own opaque correlation value; see <see cref="EnrollmentSubmission.Correlation"/>.</param>
@@ -49,7 +49,7 @@ public sealed record EnrollmentAuditRecord(
     string? KeySize,
     string? CaLabel,
     Guid? CaId,
-    Guid? TenantId,
+    Guid? SpaceId,
     string? SourceIp,
     Guid? RequestId,
     string? Correlation);

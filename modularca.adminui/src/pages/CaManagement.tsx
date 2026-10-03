@@ -7,7 +7,7 @@ import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { useAuth } from '../context/AuthContext';
-import { can, canAtTenant, tenantsOf } from '../authz';
+import { can, canAtSpace, spacesOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -17,8 +17,11 @@ import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
-/** The tenant selector's value for an instance CA (no tenant); sent as scope "instance". */
+/** The space selector's value for an instance CA (no space); sent as scope "instance". */
 const INSTANCE_SCOPE = '__instance__';
+
+/** The CA list's space column was keyed 'tenant' before 0.4.0; a stored layout carries over. Remove in 0.5. */
+const RENAMED_CA_COLUMNS = { tenant: 'space' };
 
 /** ML-DSA and SLH-DSA: the FIPS 204 / FIPS 205 post-quantum signature schemes. */
 const isPostQuantum = (alg: string) => alg.startsWith('ML-DSA') || alg.startsWith('SLH-DSA');
@@ -44,7 +47,7 @@ const CaDrawer: React.FC<{ ca: any }> = ({ ca }) => {
             <DetailField label="Label" value={ca.label} mono />
             <DetailField label="Type" value={caTypeBadge(ca).label} />
             <DetailField label="Status" value={ca.isEnabled ? 'Enabled' : 'Disabled'} />
-            {ca.tenantName && <DetailField label="Tenant" value={ca.tenantName} />}
+            {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
             <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
             {cert && <DetailField label="Serial" value={cert.serialNumber} mono />}
             {cert && <DetailField label="Not After" value={formatDate(cert.notAfter)} />}
@@ -62,9 +65,9 @@ const CaManagement: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
-    // Tenant state
-    const [tenants, setTenants] = useState<any[]>([]);
-    const [formTenant, setFormTenant] = useState('');
+    // Space state
+    const [spaces, setSpaces] = useState<any[]>([]);
+    const [formSpace, setFormSpace] = useState('');
 
     // Create CA form state
     const [createExpanded, setCreateExpanded] = useState(false);
@@ -139,19 +142,19 @@ const CaManagement: React.FC = () => {
         return result;
     };
 
-    const { caId: scopeCaId, tenantId: scopeTenantId, inScope, scope } = useScope();
+    const { caId: scopeCaId, spaceId: scopeSpaceId, inScope, scope } = useScope();
     const { capabilities } = useAuth();
     const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
-    /** System-scoped ca.manage may create in any tenant and under any parent, as the server allows. */
-    const managesAllTenants = isSystemAdmin || can(capabilities, Capabilities.CaManage);
+    /** System-scoped ca.manage may create in any space and under any parent, as the server allows. */
+    const managesAllSpaces = isSystemAdmin || can(capabilities, Capabilities.CaManage);
     /**
-     * The tenants the caller may create a CA in. The tenant list endpoint is system-only, so a
-     * tenant administrator's choices come from their own capabilities instead.
+     * The spaces the caller may create a CA in. The space list endpoint is system-only, so a
+     * space administrator's choices come from their own capabilities instead.
      */
-    const creatableTenants: Array<{ id: string; name: string }> = managesAllTenants
-        ? tenants.filter(t => t.isEnabled)
-        : tenantsOf(capabilities).filter(t => canAtTenant(capabilities, Capabilities.CaManage, t.id));
-    const canCreateCa = isSystemAdmin || creatableTenants.length > 0;
+    const creatableSpaces: Array<{ id: string; name: string }> = managesAllSpaces
+        ? spaces.filter(t => t.isEnabled)
+        : spacesOf(capabilities).filter(t => canAtSpace(capabilities, Capabilities.CaManage, t.id));
+    const canCreateCa = isSystemAdmin || creatableSpaces.length > 0;
 
     /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
     const subtreeOf = (list: any[], id: string): any | null => {
@@ -172,7 +175,7 @@ const CaManagement: React.FC = () => {
                 const scoped = scopeCaId ? subtreeOf(all, scopeCaId) : null;
                 const items = scopeCaId
                     ? (scoped ? [scoped] : [])
-                    : scopeTenantId ? all.filter((root: any) => inScope(root.id || root.caId)) : all;
+                    : scopeSpaceId ? all.filter((root: any) => inScope(root.id || root.caId)) : all;
                 setAuthorities(items);
                 const flat = flattenCas(items);
                 if (flat.length > 0 && !formParentCa) {
@@ -187,16 +190,16 @@ const CaManagement: React.FC = () => {
     };
 
     useEffect(() => {
-        if (!managesAllTenants) return;
-        apiGet<any>('/api/v1/admin/tenants')
-            .then(data => setTenants(Array.isArray(data) ? data : data.items || []))
+        if (!managesAllSpaces) return;
+        apiGet<any>('/api/v1/admin/spaces')
+            .then(data => setSpaces(Array.isArray(data) ? data : data.items || []))
             .catch(() => {});
-    }, [managesAllTenants]);
+    }, [managesAllSpaces]);
 
-    // A tenant administrator of one tenant has nothing to choose; a system administrator picks.
+    // A space administrator of one space has nothing to choose; a system administrator picks.
     useEffect(() => {
-        if (!formTenant && creatableTenants.length === 1) setFormTenant(creatableTenants[0].id);
-    }, [formTenant, creatableTenants.length]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (!formSpace && creatableSpaces.length === 1) setFormSpace(creatableSpaces[0].id);
+    }, [formSpace, creatableSpaces.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         loadAuthorities();
@@ -207,22 +210,22 @@ const CaManagement: React.FC = () => {
                 if (items.length > 0 && !formCertProfile) setFormCertProfile(items[0].id);
             })
             .catch(() => {});
-    }, [scopeCaId, scopeTenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const allCasFlat = flattenCas(authorities);
     /**
      * Parents the caller may sign under: any CA for a system-scoped holder, otherwise the chosen
-     * tenant's own CAs and any CA they hold ca.manage on. Mirrors CaCreationAccess on the server.
+     * space's own CAs and any CA they hold ca.manage on. Mirrors CaCreationAccess on the server.
      */
     const parentKey = (ca: any) => ca.id || ca.certificateId || ca.name;
     const parentCandidates = allCasFlat.filter((ca) =>
-        managesAllTenants || (!!formTenant && ca.tenantId === formTenant) || can(capabilities, Capabilities.CaManage, ca.id));
+        managesAllSpaces || (!!formSpace && ca.spaceId === formSpace) || can(capabilities, Capabilities.CaManage, ca.id));
 
     useEffect(() => {
         if (!parentCandidates.some((ca) => parentKey(ca) === formParentCa)) {
             setFormParentCa(parentCandidates[0] ? parentKey(parentCandidates[0]) : '');
         }
-    }, [formTenant, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [formSpace, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /**
      * The chosen parent's remaining life in years, so the validity field can warn before the
@@ -238,8 +241,8 @@ const CaManagement: React.FC = () => {
     const outlivesParent = parentYearsLeft !== null && !Number.isNaN(requestedYears) && requestedYears > parentYearsLeft;
 
     const handleCreateCa = async () => {
-        if (!formTenant) {
-            setCreateError('Please select a tenant.');
+        if (!formSpace) {
+            setCreateError('Please select a space.');
             return;
         }
         if (!formCN.trim()) {
@@ -259,9 +262,9 @@ const CaManagement: React.FC = () => {
                 ? '/api/v1/admin/authorities/create-root'
                 : '/api/v1/admin/authorities/create-intermediate';
 
-            // The server refuses a create that names no scope: a tenant, or the instance explicitly.
+            // The server refuses a create that names no scope: a space, or the instance explicitly.
             const body: any = {
-                ...(formTenant === INSTANCE_SCOPE ? { scope: 'instance' } : { tenantId: formTenant }),
+                ...(formSpace === INSTANCE_SCOPE ? { scope: 'instance' } : { spaceId: formSpace }),
                 subjectCN: formCN,
                 subjectO: formOrg || undefined,
                 subjectOU: formOU || undefined,
@@ -313,7 +316,7 @@ const CaManagement: React.FC = () => {
     const caColumns: DataTableColumn<any>[] = [
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <StatusBadge status={b.status} label={b.label} />; } },
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (ca) => ca.name || ca.subjectDN, render: (ca) => <span className="text-gray-900 dark:text-white truncate">{ca.name || ca.subjectDN}</span> },
-        { key: 'tenant', header: 'Tenant', defaultWidth: 140, exportValue: (ca) => ca.tenantName || '', render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{ca.tenantName || '-'}</span> },
+        { key: 'space', header: 'Space', defaultWidth: 140, exportValue: (ca) => ca.spaceName || '', render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{ca.spaceName || '-'}</span> },
         // Wire name is `isEnabled` (AdminCaController projects ca.IsEnabled). Reading `ca.enabled`
         // meant `undefined !== false` — every CA, including disabled ones, rendered as Enabled.
         { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (ca) => (ca.isEnabled ? 'Enabled' : 'Disabled'), render: (ca) => <StatusBadge status={ca.isEnabled ? 'enabled' : 'disabled'} label={ca.isEnabled ? 'Enabled' : 'Disabled'} /> },
@@ -328,12 +331,13 @@ const CaManagement: React.FC = () => {
             {/* Section 1: CA List */}
             <DataTable<any>
                 tableId="ca-list"
+                renamedColumns={RENAMED_CA_COLUMNS}
                 title="Certificate Authorities"
                 rows={allCasFlat}
                 rowKey={caKey}
                 loading={loading}
                 error={error}
-                empty={scopeCaId || scopeTenantId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
+                empty={scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
                 columns={caColumns}
                 selectable
                 exportFileName="certificate-authorities"
@@ -354,13 +358,13 @@ const CaManagement: React.FC = () => {
                 </button>
                 {createExpanded && (
                     <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                        {/* Tenant Selector */}
+                        {/* Space Selector */}
                         <div>
-                            <label className={labelClass}>Tenant *</label>
-                            <select value={formTenant} onChange={(e) => setFormTenant(e.target.value)} className={inputClass}>
-                                <option value="">-- Select Tenant --</option>
-                                {managesAllTenants && <option value={INSTANCE_SCOPE}>Instance (no tenant)</option>}
-                                {creatableTenants.map(t => (
+                            <label className={labelClass}>Space *</label>
+                            <select value={formSpace} onChange={(e) => setFormSpace(e.target.value)} className={inputClass}>
+                                <option value="">-- Select Space --</option>
+                                {managesAllSpaces && <option value={INSTANCE_SCOPE}>Instance (no space)</option>}
+                                {creatableSpaces.map(t => (
                                     <option key={t.id} value={t.id}>{t.name}</option>
                                 ))}
                             </select>
@@ -473,7 +477,7 @@ const CaManagement: React.FC = () => {
                                 <div>
                                     <label className={labelClass}>Parent CA *</label>
                                     <select value={formParentCa} onChange={(e) => setFormParentCa(e.target.value)} className={inputClass}>
-                                        {parentCandidates.length === 0 && <option value="">{formTenant ? 'No CA you may sign under in this tenant' : 'Select a tenant first'}</option>}
+                                        {parentCandidates.length === 0 && <option value="">{formSpace ? 'No CA you may sign under in this space' : 'Select a space first'}</option>}
                                         {parentCandidates.map((ca) => {
                                             const id = parentKey(ca);
                                             return (
@@ -560,12 +564,12 @@ const CaManagement: React.FC = () => {
                         <div className="flex items-center gap-4">
                             <button
                                 onClick={handleCreateCa}
-                                disabled={createLoading || !formCN.trim() || !formTenant}
+                                disabled={createLoading || !formCN.trim() || !formSpace}
                                 className="px-6 py-2 text-sm font-semibold bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {createLoading
-                                    ? (tenants.find(t => t.id === formTenant)?.requireKeyCeremony ? 'Starting Ceremony...' : 'Creating...')
-                                    : tenants.find(t => t.id === formTenant)?.requireKeyCeremony
+                                    ? (spaces.find(t => t.id === formSpace)?.requireKeyCeremony ? 'Starting Ceremony...' : 'Creating...')
+                                    : spaces.find(t => t.id === formSpace)?.requireKeyCeremony
                                         ? `Start ${formCaType === 'root' ? 'Root' : 'Intermediate'} CA Ceremony`
                                         : `Create ${formCaType === 'root' ? 'Root' : 'Intermediate'} CA`}
                             </button>

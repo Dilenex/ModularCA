@@ -8,7 +8,7 @@ namespace ModularCA.Shared.Licensing;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Extracted from <see cref="TenantCreationGate"/>, which was the only gate in the product and
+/// Extracted from the space creation gate, which was the only gate in the product and
 /// therefore also the only place that knew how a licensing refusal should read. Two things make
 /// that worth generalising before the second gate exists rather than after.
 /// </para>
@@ -59,7 +59,7 @@ public static class FeatureGate
     /// <param name="featureKey">A key from <see cref="FeatureKeys"/>.</param>
     /// <param name="whatIsGated">
     /// The operation, as a sentence opener in the operator's words rather than the code's —
-    /// "Creating additional tenants", "Scheduling off-host backups".
+    /// "Creating additional spaces", "Scheduling off-host backups".
     /// </param>
     /// <param name="whatIsUnaffected">
     /// What keeps working regardless, stated plainly. See the remarks.
@@ -107,7 +107,7 @@ public static class FeatureGate
     /// <param name="entitlements">This installation's entitlements.</param>
     /// <param name="limitName">A key from <see cref="LicenseLimits"/>.</param>
     /// <param name="currentCount">How many already exist.</param>
-    /// <param name="noun">What is being counted, singular — "tenant", "connected directory".</param>
+    /// <param name="noun">What is being counted, singular — "space", "connected directory".</param>
     /// <param name="whatIsUnaffected">What keeps working regardless.</param>
     public static LicensingException? RequireHeadroom(
         IEntitlementService entitlements,

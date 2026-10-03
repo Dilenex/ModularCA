@@ -16,7 +16,7 @@ namespace ModularCA.Tests.Signer;
 /// </summary>
 public sealed class InProcessSigningServiceTests : SigningServiceContractTests
 {
-    internal override ISigningService CreateSigner(SignerTestWorld world) => Create(world, unlocked: true);
+    internal override Task<ISigningService> CreateSignerAsync(SignerTestWorld world) => Task.FromResult<ISigningService>(Create(world, unlocked: true));
 
     protected override string ExpectedBackend => SignerHealth.SoftwareBackend;
 
@@ -39,7 +39,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
 
         var ex = await Assert.ThrowsAsync<SigningRefusedException>(
             () => signer.SignAsync(world["ca-rsa"].Ref, SignatureAlgorithm.FromName("SHA256withRSA"), new byte[] { 1, 2, 3 },
-                new SigningContext("contract-test", SigningPurpose.Certificate, world.TenantA, world.CaRsaId)));
+                new SigningContext("contract-test", SigningPurpose.Certificate, world.SpaceA, world.CaRsaId)));
         Assert.Equal(SigningRefusalReason.SignerLocked, ex.Reason);
 
         var health = await signer.HealthAsync();
@@ -55,7 +55,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     {
         var world = SignerTestWorld.Create();
         var signer = Create(world, unlocked: false);
-        var ceremony = new SigningContext("contract-test", SigningPurpose.Ceremony, world.TenantA, null);
+        var ceremony = new SigningContext("contract-test", SigningPurpose.Ceremony, world.SpaceA, null);
 
         async Task Locked(Func<Task> operation)
         {
@@ -66,7 +66,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
         await Locked(() => signer.ImportKeyAsync(new KeyMaterial((byte[])world["keyless"].PrivateKeyPkcs8.Clone(), KeyMaterial.Pkcs8, world["keyless"].Ref.CertificateId), ceremony));
         await Locked(() => signer.CommitKeyAsync(new KeyRef(Guid.NewGuid()), world["leaf"].Ref.CertificateId, ceremony));
         await Locked(() => signer.RetireKeyAsync(new KeyRef(Guid.NewGuid()), ceremony));
-        await Locked(() => signer.DecryptAsync(world["ca-rsa"].Ref, new byte[] { 1 }, new SigningContext("contract-test", SigningPurpose.Scep, world.TenantA, world.CaRsaId)));
+        await Locked(() => signer.DecryptAsync(world["ca-rsa"].Ref, new byte[] { 1 }, new SigningContext("contract-test", SigningPurpose.Scep, world.SpaceA, world.CaRsaId)));
         Assert.Empty(world.Persistence.Appended);
     }
 
@@ -119,8 +119,8 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     public async Task A_commit_that_cannot_persist_propagates_and_leaves_the_key_pending()
     {
         var world = SignerTestWorld.Create();
-        var signer = CreateSigner(world);
-        var ceremony = new SigningContext("contract-test", SigningPurpose.Ceremony, world.TenantA, null);
+        var signer = Create(world, unlocked: true);
+        var ceremony = new SigningContext("contract-test", SigningPurpose.Ceremony, world.SpaceA, null);
         var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), ceremony);
         var certificateId = Guid.NewGuid();
         using (var db = world.OpenDb())
@@ -161,7 +161,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     public async Task The_signature_factory_lets_a_generator_sign_a_certificate_the_ca_key_verifies()
     {
         var world = SignerTestWorld.Create();
-        var signer = CreateSigner(world);
+        var signer = Create(world, unlocked: true);
         var ca = world["ca-ec"];
         var subject = world["leaf"];
 
@@ -173,7 +173,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
         gen.SetNotAfter(DateTime.UtcNow.AddDays(1));
         gen.SetPublicKey(subject.PublicKey);
         var factory = new SigningServiceSignatureFactory(signer, ca.Ref, SignatureAlgorithm.ForPublicKey(ca.PublicKey),
-            new SigningContext("contract-test", SigningPurpose.Certificate, world.TenantB, world.CaEcId));
+            new SigningContext("contract-test", SigningPurpose.Certificate, world.SpaceB, world.CaEcId));
 
         var cert = gen.Generate(factory);
 
@@ -188,7 +188,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     public void The_signature_factory_refuses_through_the_generator_when_policy_does()
     {
         var world = SignerTestWorld.Create();
-        var signer = CreateSigner(world);
+        var signer = Create(world, unlocked: true);
         var ca = world["ca-rsa"];
 
         var gen = new X509V3CertificateGenerator();
@@ -199,7 +199,7 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
         gen.SetNotAfter(DateTime.UtcNow.AddDays(1));
         gen.SetPublicKey(world["leaf"].PublicKey);
         var factory = new SigningServiceSignatureFactory(signer, ca.Ref, SignatureAlgorithm.ForPublicKey(ca.PublicKey),
-            new SigningContext("contract-test", SigningPurpose.Certificate, world.TenantB, world.CaEcId));
+            new SigningContext("contract-test", SigningPurpose.Certificate, world.SpaceB, world.CaEcId));
 
         var ex = Assert.Throws<SigningRefusedException>(() => gen.Generate(factory));
         Assert.Equal(SigningRefusalReason.CaMismatch, ex.Reason);

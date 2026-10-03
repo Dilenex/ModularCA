@@ -43,13 +43,13 @@ export const account: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/me',
-        summary: 'Lightweight whoami endpoint. Returns the caller\'s id, username, email, group memberships (with role levels and CA scope), flat scope list, MFA enrollment flags, and primary tenant. SPAs use this to populate an AuthContext instead of decoding the JWT body client-side.',
+        summary: 'Lightweight whoami endpoint. Returns the caller\'s id, username, email, group memberships (with role levels and CA scope), flat scope list, MFA enrollment flags, and primary space. SPAs use this to populate an AuthContext instead of decoding the JWT body client-side.',
         auth: 'Authorize',
         category: 'Account',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Identity payload: { id, username, email, displayName, firstName, lastName, isActive, groups, scopes, mfa: { configured, totp, webauthn, mtls }, tenantId }.',
+        responseDescription: 'Identity payload: { id, username, email, displayName, firstName, lastName, isActive, groups (each with spaceId), scopes, capabilities: { system, cas (each with spaceId, spaceName, spaceSlug), spaces }, badge, badges, mfa: { configured, totp, webauthn, mtls }, spaceId }.',
     },
     {
         method: 'GET',
@@ -60,6 +60,6 @@ export const account: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Permissions payload: { UserId, DirectGrants[], RoleAssignments[], GroupMemberships[] } where each entry enumerates the underlying capabilities and scope (tenant, CA, resource).',
+        responseDescription: 'Permissions payload: { UserId, DirectGrants[], RoleAssignments[], GroupMemberships[] } where each entry enumerates the underlying capabilities and scope (space, CA, resource).',
     },
 ];

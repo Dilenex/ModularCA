@@ -24,7 +24,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for managing certificate signing requests including approval, rejection,
 /// multi-person approval workflows, CSR parsing, and profile validation.
 /// Approve/reject/cancel resolve the target CA and enforce the caller's
-/// <see cref="TenantFence"/>. The <c>system-super</c> self-approval bypass is gated on
+/// <see cref="SpaceFence"/>. The <c>system-super</c> self-approval bypass is gated on
 /// <c>SecurityPolicyEntity.AllowSystemSuperSelfApproval</c> (DB-backed, see <c>/admin/security-policy</c>).
 /// </summary>
 [ApiController]
@@ -62,10 +62,11 @@ public class AdminCertSignRequestController(
     /// callers only receive CSRs belonging to CAs they can access. System admins receive all.
     /// </summary>
     /// <param name="caId">Optional: only requests routed to this CA (the console's scope).</param>
-    /// <param name="tenantId">Optional: only requests routed to CAs of this tenant.</param>
+    /// <param name="spaceId">Optional: only requests routed to CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
-    public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> RetrievePendingRequests([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -79,11 +80,11 @@ public class AdminCertSignRequestController(
         }
 
         var scoped = ModularCA.Core.Authorization.CaScope.Narrow(accessibleCaIds, caId);
-        if (tenantId.HasValue)
+        if (spaceId.HasValue)
         {
-            var tenantCaIds = await HttpContext.RequestServices.GetRequiredService<ModularCA.Database.ModularCADbContext>()
-                .CertificateAuthorities.AsNoTracking().Where(ca => ca.TenantId == tenantId.Value).Select(ca => ca.Id).ToListAsync();
-            scoped = ModularCA.Core.Authorization.CaScope.NarrowToTenant(scoped, tenantCaIds);
+            var spaceCaIds = await HttpContext.RequestServices.GetRequiredService<ModularCA.Database.ModularCADbContext>()
+                .CertificateAuthorities.AsNoTracking().Where(ca => ca.SpaceId == spaceId.Value).Select(ca => ca.Id).ToListAsync();
+            scoped = ModularCA.Core.Authorization.CaScope.NarrowToSpace(scoped, spaceCaIds);
         }
         var requests = await _csrService.GetPendingRequests(scoped);
         if (requests == null)
@@ -134,7 +135,7 @@ public class AdminCertSignRequestController(
         if (csr == null)
             return NotFound(new { error = "Certificate request not found" });
 
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
+        var fence = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fence != null) return fence;
 
         // Step-up re-authenticates the caller; it does not authorize the object. The same
@@ -191,7 +192,7 @@ public class AdminCertSignRequestController(
         // The rules issuance applies are the effective profile's, after inheritance; validating
         // against the profile's own rows let the form and the CA disagree for every profile
         // that inherits from a system profile.
-        if (!await TenantFence.From(HttpContext, Capabilities.CertView).AllowsRequestProfileAsync(_db, request.RequestProfileId))
+        if (!await SpaceFence.From(HttpContext, Capabilities.CertView).AllowsRequestProfileAsync(_db, request.RequestProfileId))
             return NotFound(new { error = "Request profile not found." });
         Core.Models.EffectiveRequestProfile profile;
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
@@ -482,8 +483,8 @@ public class AdminCertSignRequestController(
 
         if (csr == null) return NotFound();
 
-        // Tenant fence.
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
+        // Space fence.
+        var fence = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fence != null) return fence;
 
         // Enforce profile.use capability on both profiles referenced by the CSR
@@ -564,7 +565,7 @@ public class AdminCertSignRequestController(
             "CertificateRequest", id.ToString(),
             new { csr.ApprovalCount, RequiredCount = requiredCount, request.Comment },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoApprove?.CaId, tenantId: caInfoApprove?.TenantId);
+            certificateAuthorityId: caInfoApprove?.CaId, spaceId: caInfoApprove?.SpaceId);
 
         return Ok(new
         {
@@ -577,7 +578,7 @@ public class AdminCertSignRequestController(
 
     /// <summary>
     /// Returns all approval records for a given certificate signing request.
-    /// Requires CaAuditor policy and enforces tenant isolation via the CSR's signing profile.
+    /// Requires CaAuditor policy and enforces space isolation via the CSR's signing profile.
     /// </summary>
     [HttpGet("{id:guid}/approvals")]
     [Authorize(Policy = "CaAuditor")]
@@ -587,8 +588,8 @@ public class AdminCertSignRequestController(
         if (csr == null)
             return NotFound(new { error = "Certificate request not found" });
 
-        // Enforce tenant isolation on the CSR's CA
-        var fence = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertView);
+        // Enforce space isolation on the CSR's CA
+        var fence = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertView);
         if (fence != null) return fence;
 
         var approvals = await _db.CsrApprovals
@@ -623,8 +624,8 @@ public class AdminCertSignRequestController(
         if (csr == null)
             return NotFound(new { error = "Certificate request not found" });
 
-        // Tenant fence.
-        var fenceReject = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
+        // Space fence.
+        var fenceReject = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fenceReject != null) return fenceReject;
 
         // A request an approver owns (PendingApproval, or PartiallyApproved under a quorum) is
@@ -643,7 +644,7 @@ public class AdminCertSignRequestController(
             "CertificateRequest", id.ToString(),
             new { request.Reason, csr.Subject, HeldKeyDiscarded = heldKeyDiscarded },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoReject?.CaId, tenantId: caInfoReject?.TenantId);
+            certificateAuthorityId: caInfoReject?.CaId, spaceId: caInfoReject?.SpaceId);
 
         return Ok(new { message = "Request rejected", id, reason = request.Reason });
     }
@@ -664,8 +665,8 @@ public class AdminCertSignRequestController(
         if (csr == null)
             return NotFound(new { error = "Certificate request not found" });
 
-        // Tenant fence.
-        var fenceCancel = await EnforceTenantFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
+        // Space fence.
+        var fenceCancel = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertRevoke);
         if (fenceCancel != null) return fenceCancel;
 
         if (csr.Status != "Approved" && csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
@@ -684,16 +685,16 @@ public class AdminCertSignRequestController(
             "CertificateRequest", id.ToString(),
             new { request.Reason, csr.Subject, Action = "Cancelled", HeldKeyDiscarded = heldKeyDiscarded },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfoCancel?.CaId, tenantId: caInfoCancel?.TenantId);
+            certificateAuthorityId: caInfoCancel?.CaId, spaceId: caInfoCancel?.SpaceId);
 
         return Ok(new { message = "Request cancelled", id, reason = request.Reason });
     }
 
     /// <summary>
-    /// Resolves the CA ID and tenant ID from a signing profile via the CaProtocolConfig linkage.
+    /// Resolves the CA ID and space ID from a signing profile via the CaProtocolConfig linkage.
     /// Returns null if the signing profile is not linked to a CA.
     /// </summary>
-    private async Task<(Guid CaId, Guid? TenantId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
+    private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromSigningProfileAsync(Guid? signingProfileId)
     {
         if (signingProfileId == null) return null;
         var config = await _db.CaProtocolConfigs
@@ -701,22 +702,22 @@ public class AdminCertSignRequestController(
             .AsNoTracking()
             .FirstOrDefaultAsync(pc => pc.SigningProfileId == signingProfileId);
         if (config?.Ca == null) return null;
-        return (config.Ca.Id, config.Ca.TenantId);
+        return (config.Ca.Id, config.Ca.SpaceId);
     }
 
     /// <summary>
     /// Returns null when the caller may act on the CSR, or an <see cref="IActionResult"/>
-    /// (NotFound) when the CSR's CA is outside the caller's <see cref="TenantFence"/> for
+    /// (NotFound) when the CSR's CA is outside the caller's <see cref="SpaceFence"/> for
     /// <paramref name="capability"/>. An instance-wide caller always passes; anyone else is
     /// refused a CSR whose CA cannot be resolved.
     /// </summary>
-    private async Task<IActionResult?> EnforceTenantFenceAsync(Guid? signingProfileId, string capability)
+    private async Task<IActionResult?> EnforceSpaceFenceAsync(Guid? signingProfileId, string capability)
     {
-        var fence = TenantFence.From(HttpContext, capability);
+        var fence = SpaceFence.From(HttpContext, capability);
         if (fence.InstanceWide)
             return null;
         var caInfo = await ResolveCaFromSigningProfileAsync(signingProfileId);
-        return caInfo != null && fence.Allows(caInfo.Value.TenantId) ? null : NotFound();
+        return caInfo != null && fence.Allows(caInfo.Value.SpaceId) ? null : NotFound();
     }
 }
 

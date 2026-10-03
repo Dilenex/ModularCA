@@ -111,9 +111,9 @@ export const StepUpOps = {
     WebAuthnDelete: 'webauthn-delete',
     MtlsEnroll: 'mtls-enroll',
     MtlsDelete: 'mtls-delete',
-    EnableTenant: 'enable-tenant',
-    DisableTenant: 'disable-tenant',
-    UpdateTenantSettings: 'update-tenant-settings',
+    EnableSpace: 'enable-space',
+    DisableSpace: 'disable-space',
+    UpdateSpaceSettings: 'update-space-settings',
 } as const;
 
 /** Union of every valid step-up operation string. */

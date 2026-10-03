@@ -152,16 +152,16 @@ public class SecurityPolicyEntity
     /// <summary>
     /// System-level "user quorum": the number of approvals required for controlled-user
     /// ceremonies (promote/demote/delete of an admin/operator/CA-admin) when the change is
-    /// system-scoped. CA- and tenant-scoped changes use their own scope's quorum instead.
+    /// system-scoped. CA- and space-scoped changes use their own scope's quorum instead.
     /// Distinct from the CA/key quorum. Default 1 (one other dominating approver; the
     /// initiator is always excluded). Clamped to a minimum of 1 on write.
     /// </summary>
     public int UserQuorum { get; set; } = 1;
 
-    // ── Instance CA policy (the instance's own scope; spaces keep theirs on TenantEntity) ──
+    // ── Instance CA policy (the instance's own scope; spaces keep theirs on SpaceEntity) ──
     /// <summary>
-    /// When true, creating, revoking or deleting an instance CA (one with no tenant) requires a
-    /// key ceremony. The instance counterpart of <see cref="TenantEntity.RequireKeyCeremony"/>.
+    /// When true, creating, revoking or deleting an instance CA (one with no space) requires a
+    /// key ceremony. The instance counterpart of <see cref="SpaceEntity.RequireKeyCeremony"/>.
     /// </summary>
     public bool RequireKeyCeremony { get; set; } = true;
 
@@ -177,7 +177,7 @@ public class SecurityPolicyEntity
     /// <summary>
     /// User quorum for controlled-user changes scoped to an instance CA, and the ceiling for
     /// such a CA's own override. Null means 1. The instance counterpart of
-    /// <see cref="TenantEntity.UserCeremonyRequiredApprovals"/>; distinct from
+    /// <see cref="SpaceEntity.UserCeremonyRequiredApprovals"/>; distinct from
     /// <see cref="UserQuorum"/>, which governs instance-tier changes.
     /// </summary>
     public int? UserCeremonyRequiredApprovals { get; set; }

@@ -27,7 +27,7 @@ public class UserSigningProfileController(
 
     /// <summary>
     /// Returns signing profiles the caller has profile.* grants for, whose issuing CA is inside
-    /// the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/> (a profile with no
+    /// the caller's <see cref="ModularCA.Auth.Authorization.SpaceFence"/> (a profile with no
     /// issuer is unbound). System admins see all profiles; other users see only those with an
     /// explicit capability grant.
     /// </summary>
@@ -38,9 +38,9 @@ public class UserSigningProfileController(
         if (!currentUser.IsAuthenticated || currentUser.User == null)
             return Unauthorized();
 
-        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+        var fence = ModularCA.Auth.Authorization.SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
         var visibleIssuers = db.CertificateAuthorities.AsNoTracking()
-            .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+            .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
             .Where(ca => ca.CertificateId != null)
             .Select(ca => ca.CertificateId!.Value);
         var profiles = await db.SigningProfiles

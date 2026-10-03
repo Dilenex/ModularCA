@@ -11,28 +11,28 @@ namespace ModularCA.Tests.Core.Services.Msae;
 /// <summary>
 /// The setup kit carries exactly what a customer's domain administrator needs and nothing secret:
 /// the values Windows records for the policy server come from the CA, and the forest binding and
-/// CA must belong to the same tenant.
+/// CA must belong to the same space.
 /// </summary>
 public class MsaeSetupKitServiceTests
 {
-    private static (MsaeSetupKitService Service, CertificateAuthorityEntity Ca, KerberosRealmEntity Realm, Guid OtherTenantRealm) Build(bool withRoot = true, string spn = "HTTP/ca.msp.example")
+    private static (MsaeSetupKitService Service, CertificateAuthorityEntity Ca, KerberosRealmEntity Realm, Guid OtherSpaceRealm) Build(bool withRoot = true, string spn = "HTTP/ca.msp.example")
     {
         var db = InMemoryDbContextFactory.Create();
-        var tenant = new TenantEntity { Id = Guid.NewGuid(), Name = "Customer A", Slug = "customer-a" };
-        db.Tenants.Add(tenant);
+        var space = new SpaceEntity { Id = Guid.NewGuid(), Name = "Customer A", Slug = "customer-a" };
+        db.Spaces.Add(space);
         CertificateEntity? root = null;
         if (withRoot)
         {
             root = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "01", Pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----", SubjectDN = "CN=Customer A Root", Issuer = "CN=Customer A Root", NotBefore = DateTime.UtcNow, NotAfter = DateTime.UtcNow.AddYears(10) };
             db.Certificates.Add(root);
         }
-        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Customer A Issuing", Label = "customer-a-issuing", TenantId = tenant.Id, CertificateId = root?.CertificateId, IsEnabled = true };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Customer A Issuing", Label = "customer-a-issuing", SpaceId = space.Id, CertificateId = root?.CertificateId, IsEnabled = true };
         db.CertificateAuthorities.Add(ca);
         var user = new UserEntity { Id = Guid.NewGuid(), Username = "svc-enroll", Email = "x@y", PasswordHash = "x" };
         db.Users.Add(user);
-        var realm = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = tenant.Id, Realm = "CORP.CUSTOMER-A.LOCAL", DnsDomain = "corp.customer-a.local", ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
+        var realm = new KerberosRealmEntity { Id = Guid.NewGuid(), SpaceId = space.Id, Realm = "CORP.CUSTOMER-A.LOCAL", DnsDomain = "corp.customer-a.local", ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
         db.KerberosRealms.Add(realm);
-        var other = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = Guid.NewGuid(), Realm = "CORP.CUSTOMER-B.LOCAL", DnsDomain = "corp.customer-b.local", ServicePrincipal = "HTTP/ca.msp.example", EnrollmentUserId = user.Id, IsEnabled = true };
+        var other = new KerberosRealmEntity { Id = Guid.NewGuid(), SpaceId = Guid.NewGuid(), Realm = "CORP.CUSTOMER-B.LOCAL", DnsDomain = "corp.customer-b.local", ServicePrincipal = "HTTP/ca.msp.example", EnrollmentUserId = user.Id, IsEnabled = true };
         db.KerberosRealms.Add(other);
         db.SaveChanges();
         var config = new SystemConfig { Https = { PublicDomain = "ca.msp.example", PublicPort = 443 } };
@@ -106,7 +106,7 @@ public class MsaeSetupKitServiceTests
     }
 
     [Fact]
-    public async Task A_forest_bound_to_another_tenant_gets_no_kit_for_this_ca()
+    public async Task A_forest_bound_to_another_space_gets_no_kit_for_this_ca()
     {
         var (service, ca, realm, otherRealm) = Build();
         Assert.Null(await service.BuildAsync(ca.Id, otherRealm));

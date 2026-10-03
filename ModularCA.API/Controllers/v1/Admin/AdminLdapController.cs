@@ -97,7 +97,8 @@ public class AdminLdapController(
     /// <see cref="StepUpOps.UpdateConfig"/> token as the LDAP config save). Mappings that target a
     /// system or privilege-controlled group are rejected with 400 unless already stored unchanged.
     /// Changing the group search base, filter or mappings is super-only (403 otherwise), as on the
-    /// LDAP config save; others may toggle GroupSyncEnabled and AutoProvisionUsers.
+    /// LDAP config save; others may toggle GroupSyncEnabled and AutoProvisionUsers. A save by a super
+    /// rewrites mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
     /// </summary>
     [HttpPut("group-mappings")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
@@ -142,6 +143,8 @@ public class AdminLdapController(
             catch (JsonException) { return BadRequest(new { error = "GroupToRoleMappings must be valid JSON (Dictionary<string, string>)." }); }
             config.LdapAuth.GroupToRoleMappings = request.GroupToRoleMappings;
         }
+        if (currentUser.User != null && await controlledUsers.IsSuperAsync(currentUser.User.Id))
+            config.LdapAuth.GroupToRoleMappings = await syncService.RewriteRenamedSpaceGroupsAsync(config.LdapAuth.GroupToRoleMappings);
 
         PersistConfig();
 

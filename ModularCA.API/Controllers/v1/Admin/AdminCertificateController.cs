@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
+using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
@@ -61,6 +62,7 @@ public class AdminCertificateController(
     /// <param name="serial">Partial match filter on the certificate serial number.</param>
     /// <param name="issuer">Partial match filter on the certificate issuer.</param>
     /// <param name="caId">Filter to certificates issued by this certificate authority.</param>
+    /// <param name="spaceId">Filter to certificates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400), here and on the histogram and health summary.</param>
     /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", or "expired".</param>
     /// <param name="keyAlgorithm">Filter on key algorithm by searching the KeyUsagesJson column (e.g. "RSA", "ECDSA", "Ed25519").</param>
     /// <param name="san">Partial match filter on subject alternative names JSON.</param>
@@ -74,13 +76,14 @@ public class AdminCertificateController(
     [HttpGet]
     [ProducesResponseType(200)]
     [ProducesResponseType(401)]
+    [RefuseQueryKey("tenantId", "spaceId")]
     public async Task<IActionResult> ListCertificates(
         [FromQuery] string? search,
         [FromQuery] string? subject,
         [FromQuery] string? serial,
         [FromQuery] string? issuer,
         [FromQuery] Guid? caId,
-        [FromQuery] Guid? tenantId,
+        [FromQuery] Guid? spaceId,
         [FromQuery] string? sort,
         [FromQuery] string? status,
         [FromQuery] string? keyAlgorithm,
@@ -124,7 +127,7 @@ public class AdminCertificateController(
                 || c.Issuer.Contains(s));
         }
 
-        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
+        query = await ApplyScopeFiltersAsync(query, caId, spaceId);
 
         // Subject filter
         if (!string.IsNullOrWhiteSpace(subject))
@@ -333,20 +336,20 @@ public class AdminCertificateController(
         => _caCertificateOwners ??= await IssuerChainResolver.ResolveCaCertificateOwnersAsync(_dbContext);
 
     /// <summary>
-    /// Applies the console's tenant and issuing-CA scope. A certificate is a CA's when its
+    /// Applies the console's space and issuing-CA scope. A certificate is a CA's when its
     /// <c>IssuerCertificateId</c> is any certificate that CA owns, current or superseded, as
     /// <c>CertificateAccessEvaluator.ResolveCertScope</c> resolves it. Only legacy rows with no
     /// <c>IssuerCertificateId</c> fall back to the signing profile; this filter only narrows the
     /// already access-controlled query. Shared by the list, expiry-histogram and health-summary endpoints.
     /// </summary>
-    private async Task<IQueryable<CertificateEntity>> ApplyScopeFiltersAsync(IQueryable<CertificateEntity> query, Guid? caId, Guid? tenantId)
+    private async Task<IQueryable<CertificateEntity>> ApplyScopeFiltersAsync(IQueryable<CertificateEntity> query, Guid? caId, Guid? spaceId)
     {
-        if (!tenantId.HasValue && !caId.HasValue)
+        if (!spaceId.HasValue && !caId.HasValue)
             return query;
 
         var owners = await CaCertificateOwnersAsync();
-        if (tenantId.HasValue)
-            query = WhereIssuedBy(query, owners.Where(o => o.Value.TenantId == tenantId.Value).Select(o => o.Key).ToList());
+        if (spaceId.HasValue)
+            query = WhereIssuedBy(query, owners.Where(o => o.Value.SpaceId == spaceId.Value).Select(o => o.Key).ToList());
         if (caId.HasValue)
             query = WhereIssuedBy(query, owners.Where(o => o.Value.CaId == caId.Value).Select(o => o.Key).ToList());
         return query;
@@ -393,8 +396,10 @@ public class AdminCertificateController(
     /// <param name="from">Optional minimum NotAfter (expiry) date to include.</param>
     /// <param name="to">Optional maximum NotAfter (expiry) date to include.</param>
     /// <param name="granularity">Bucket size: "month" (default) or "day".</param>
+    /// <param name="spaceId">Optional space filter (same semantics as the certificate list).</param>
     /// <returns>Sparse buckets with per-status counts plus grand totals.</returns>
     [HttpGet("expiry-histogram")]
+    [RefuseQueryKey("tenantId", "spaceId")]
     [ProducesResponseType(200)]
     [ProducesResponseType(401)]
     public async Task<IActionResult> ExpiryHistogram(
@@ -402,7 +407,7 @@ public class AdminCertificateController(
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
         [FromQuery] string? granularity,
-        [FromQuery] Guid? tenantId = null)
+        [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -410,7 +415,7 @@ public class AdminCertificateController(
 
         var userId = _currentUser.User.Id;
         var query = await BuildAccessibleCertificatesQueryAsync(userId);
-        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
+        query = await ApplyScopeFiltersAsync(query, caId, spaceId);
 
         if (from.HasValue) query = query.Where(c => c.NotAfter >= from.Value);
         if (to.HasValue) query = query.Where(c => c.NotAfter <= to.Value);
@@ -1069,21 +1074,22 @@ public class AdminCertificateController(
 
     /// <summary>
     /// Returns an aggregate health summary across the non-CA certificates the caller may view,
-    /// with the same access control and caId/tenantId scope as the certificate list.
+    /// with the same access control and caId/space scope as the certificate list.
     /// Includes the grade distribution (count of A/B/C/D/F) and the average score.
     /// </summary>
     /// <param name="caId">Optional issuing-CA filter (same semantics as the certificate list).</param>
-    /// <param name="tenantId">Optional tenant filter (same semantics as the certificate list).</param>
+    /// <param name="spaceId">Optional space filter (same semantics as the certificate list).</param>
     /// <returns>An object with grade distribution counts and the average health score.</returns>
     [HttpGet("health/summary")]
-    public async Task<IActionResult> GetHealthSummary([FromQuery] Guid? caId = null, [FromQuery] Guid? tenantId = null)
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetHealthSummary([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
         var query = await BuildAccessibleCertificatesQueryAsync(_currentUser.User.Id);
-        query = await ApplyScopeFiltersAsync(query, caId, tenantId);
+        query = await ApplyScopeFiltersAsync(query, caId, spaceId);
         var certIds = await query
             .Select(c => c.CertificateId)
             .ToListAsync();

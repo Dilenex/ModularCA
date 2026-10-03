@@ -82,7 +82,7 @@ public class OcspResponderService : IOcspService
 
     /// <summary>The context every OCSP signature for <paramref name="caEntity"/> is asked under.</summary>
     private static SigningContext ContextFor(CertificateAuthorityEntity caEntity)
-        => SigningContext.ForCa(SignerCaller, SigningPurpose.Ocsp, caEntity.Id, caEntity.TenantId);
+        => SigningContext.ForCa(SignerCaller, SigningPurpose.Ocsp, caEntity.Id, caEntity.SpaceId);
 
     /// <summary>
     /// Whether the signer holds the key <paramref name="key"/> among the keys of

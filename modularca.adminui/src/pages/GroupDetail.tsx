@@ -132,7 +132,7 @@ const GroupDetail: React.FC = () => {
         const more = n - names.length;
         setConfirm({
             title: 'Add to an Administrator group',
-            message: `Add ${n} user${n === 1 ? '' : 's'} (${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}) to "${group.displayName || group.name}"? Members of an Administrator group hold every capability${group.certificateAuthorityId ? ' on this CA' : group.isSystemGroup ? ' across the whole system' : ' in this tenant'}. Privileged users will each require a controlled-user ceremony.`,
+            message: `Add ${n} user${n === 1 ? '' : 's'} (${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}) to "${group.displayName || group.name}"? Members of an Administrator group hold every capability${group.certificateAuthorityId ? ' on this CA' : group.isSystemGroup ? ' across the whole system' : ' in this space'}. Privileged users will each require a controlled-user ceremony.`,
             action: performAddMembers,
         });
     };
@@ -227,7 +227,7 @@ const GroupDetail: React.FC = () => {
                                 <div className="md:col-span-2">
                                     <label className={labelCls}>mTLS Signing CA</label>
                                     {group.isSystemGroup ? (
-                                        <p className="text-xs text-gray-500">System-tenant groups never sign mTLS client certs. Assign this to an org-tenant group instead.</p>
+                                        <p className="text-xs text-gray-500">Instance groups never sign mTLS client certs. Assign this to a space's group instead.</p>
                                     ) : (
                                         <>
                                             <select value={form.mtlsSigningCaId} onChange={(e) => setForm({ ...form, mtlsSigningCaId: e.target.value })} className={inputCls}>

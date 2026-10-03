@@ -12,8 +12,8 @@ namespace ModularCA.Core.Helpers;
 /// </summary>
 /// <param name="Chain">DER-encoded issuer certificates, nearest issuer first.</param>
 /// <param name="CaId">The issuing CA, when one can be resolved.</param>
-/// <param name="TenantId">The issuing CA's tenant.</param>
-public sealed record IssuerChain(List<byte[]> Chain, Guid? CaId, Guid? TenantId);
+/// <param name="SpaceId">The issuing CA's space.</param>
+public sealed record IssuerChain(List<byte[]> Chain, Guid? CaId, Guid? SpaceId);
 
 /// <summary>
 /// The single implementation of "walk up the issuers" for a stored certificate. Each hop follows
@@ -22,15 +22,15 @@ public sealed record IssuerChain(List<byte[]> Chain, Guid? CaId, Guid? TenantId)
 /// </summary>
 public static class IssuerChainResolver
 {
-    private sealed record CaRef(Guid Id, Guid? TenantId, Guid? ParentCertificateId);
+    private sealed record CaRef(Guid Id, Guid? SpaceId, Guid? ParentCertificateId);
 
     private sealed record Hop(CertificateEntity Cert, Guid? ProfileIssuerId, CaRef? Ca);
 
     /// <summary>
     /// Resolves the chain for <paramref name="certEntity"/> as DER, plus the issuing CA and its
-    /// tenant. The direct issuer is always included, and the root only when it is the direct
+    /// space. The direct issuer is always included, and the root only when it is the direct
     /// issuer, so a PKCS#12 carries what a client needs to present and not the trust anchor it
-    /// should already hold. With <paramref name="includeChain"/> false only the CA and tenant are resolved.
+    /// should already hold. With <paramref name="includeChain"/> false only the CA and space are resolved.
     /// </summary>
     public static async Task<IssuerChain> ResolveAsync(ModularCADbContext db, CertificateEntity certEntity, bool includeChain)
     {
@@ -65,15 +65,15 @@ public static class IssuerChainResolver
             if (fallbackId != null && fallbackId != firstId)
                 owner = await db.CertificateAuthorities.AsNoTracking()
                     .Where(ca => ca.CertificateId == fallbackId)
-                    .Select(ca => new CaRef(ca.Id, ca.TenantId, null))
+                    .Select(ca => new CaRef(ca.Id, ca.SpaceId, null))
                     .FirstOrDefaultAsync();
         }
         if (!includeChain || issuerHop == null)
-            return new IssuerChain(chain, owner?.Id, owner?.TenantId);
+            return new IssuerChain(chain, owner?.Id, owner?.SpaceId);
 
         foreach (var issuer in await WalkAsync(db, certEntity, issuerHop))
             chain.Add(CertificateUtil.ParseFromPem(issuer.Pem).GetEncoded());
-        return new IssuerChain(chain, owner?.Id, owner?.TenantId);
+        return new IssuerChain(chain, owner?.Id, owner?.SpaceId);
     }
 
     /// <summary>
@@ -153,7 +153,7 @@ public static class IssuerChainResolver
 
     /// <summary>
     /// Loads a certificate with its signing profile's issuer and the CA row it is the certificate
-    /// of, in one query that projects each CA row whole, so the CA id, tenant and parent can never
+    /// of, in one query that projects each CA row whole, so the CA id, space and parent can never
     /// come from different rows. More than one CA row naming the certificate is ambiguous and
     /// yields no CA rather than a guess.
     /// </summary>
@@ -167,7 +167,7 @@ public static class IssuerChainResolver
                 ProfileIssuerId = db.SigningProfiles.Where(sp => sp.Id == c.SigningProfileId).Select(sp => sp.IssuerId).FirstOrDefault(),
                 Cas = db.CertificateAuthorities
                     .Where(ca => ca.CertificateId == c.CertificateId)
-                    .Select(ca => new CaRef(ca.Id, ca.TenantId, ca.ParentCa == null ? null : ca.ParentCa.CertificateId))
+                    .Select(ca => new CaRef(ca.Id, ca.SpaceId, ca.ParentCa == null ? null : ca.ParentCa.CertificateId))
                     .Take(2)
                     .ToList(),
             })
@@ -177,12 +177,12 @@ public static class IssuerChainResolver
         return new Hop(row.Cert, row.ProfileIssuerId, row.Cas.Count == 1 ? row.Cas[0] : null);
     }
 
-    /// <summary>A CA certificate's owning CA and that CA's tenant.</summary>
+    /// <summary>A CA certificate's owning CA and that CA's space.</summary>
     /// <param name="CaId">The owning CA.</param>
-    /// <param name="TenantId">The owning CA's tenant; null for an instance CA.</param>
-    public sealed record CaOwner(Guid CaId, Guid? TenantId);
+    /// <param name="SpaceId">The owning CA's space; null for an instance CA.</param>
+    public sealed record CaOwner(Guid CaId, Guid? SpaceId);
 
-    private sealed record OwnerCandidate(Guid Id, Guid? TenantId, string SubjectDn, string? Issuer, string Pem);
+    private sealed record OwnerCandidate(Guid Id, Guid? SpaceId, string SubjectDn, string? Issuer, string Pem);
 
     /// <summary>
     /// The CA that owns <paramref name="certificateId"/> as a CA certificate: the CA whose current
@@ -204,7 +204,7 @@ public static class IssuerChainResolver
     {
         var current = db.CertificateAuthorities.AsNoTracking()
             .Where(ca => ca.CertificateId == certificateId)
-            .Select(ca => new CaOwner(ca.Id, ca.TenantId))
+            .Select(ca => new CaOwner(ca.Id, ca.SpaceId))
             .Take(2).ToList();
         if (current.Count > 0)
             return current.Count == 1 ? current[0] : null;
@@ -215,19 +215,19 @@ public static class IssuerChainResolver
 
         var candidates = db.CertificateAuthorities.AsNoTracking()
             .Where(ca => ca.Certificate != null && ca.Certificate.SubjectDN == cert.SubjectDN)
-            .Select(ca => new OwnerCandidate(ca.Id, ca.TenantId, ca.Certificate!.SubjectDN, ca.Certificate.Issuer, ca.Certificate.Pem))
+            .Select(ca => new OwnerCandidate(ca.Id, ca.SpaceId, ca.Certificate!.SubjectDN, ca.Certificate.Issuer, ca.Certificate.Pem))
             .ToList();
         if (candidates.Count == 0)
             return null;
 
         var profileIssuer = cert.SigningProfileId == null ? null
             : db.SigningProfiles.AsNoTracking().Where(sp => sp.Id == cert.SigningProfileId).Select(sp => sp.IssuerId).FirstOrDefault();
-        var hintIds = TenantHintCertificateIds(cert, profileIssuer);
+        var hintIds = SpaceHintCertificateIds(cert, profileIssuer);
         var hintRow = hintIds.Count == 0 ? null
             : db.CertificateAuthorities.AsNoTracking()
                 .Where(ca => ca.CertificateId != null && hintIds.Contains(ca.CertificateId.Value))
-                .Select(ca => new { ca.TenantId }).FirstOrDefault();
-        return PickSupersededOwner(cert, candidates, hintRow != null, hintRow?.TenantId);
+                .Select(ca => new { ca.SpaceId }).FirstOrDefault();
+        return PickSupersededOwner(cert, candidates, hintRow != null, hintRow?.SpaceId);
     }
 
     /// <summary>
@@ -271,11 +271,11 @@ public static class IssuerChainResolver
     {
         var current = await db.CertificateAuthorities.AsNoTracking()
             .Where(ca => ca.Certificate != null)
-            .Select(ca => new OwnerCandidate(ca.Id, ca.TenantId, ca.Certificate!.SubjectDN, ca.Certificate.Issuer, ca.Certificate.Pem))
+            .Select(ca => new OwnerCandidate(ca.Id, ca.SpaceId, ca.Certificate!.SubjectDN, ca.Certificate.Issuer, ca.Certificate.Pem))
             .ToListAsync();
         var currentIds = await db.CertificateAuthorities.AsNoTracking()
             .Where(ca => ca.CertificateId != null)
-            .Select(ca => new { CertificateId = ca.CertificateId!.Value, ca.Id, ca.TenantId })
+            .Select(ca => new { CertificateId = ca.CertificateId!.Value, ca.Id, ca.SpaceId })
             .ToListAsync();
 
         var owners = new Dictionary<Guid, CaOwner>();
@@ -283,7 +283,7 @@ public static class IssuerChainResolver
         {
             var distinct = group.DistinctBy(r => r.Id).ToList();
             if (distinct.Count == 1)
-                owners[group.Key] = new CaOwner(distinct[0].Id, distinct[0].TenantId);
+                owners[group.Key] = new CaOwner(distinct[0].Id, distinct[0].SpaceId);
         }
         var currentCertIds = currentIds.Select(r => r.CertificateId).Distinct().ToList();
 
@@ -308,8 +308,8 @@ public static class IssuerChainResolver
             var profileIssuer = orphan.SigningProfileId is Guid spId ? profileIssuers.GetValueOrDefault(spId) : null;
             Guid? hint = null;
             var hintKnown = false;
-            foreach (var id in TenantHintCertificateIds(orphan, profileIssuer))
-                if (owners.TryGetValue(id, out var o)) { hint = o.TenantId; hintKnown = true; break; }
+            foreach (var id in SpaceHintCertificateIds(orphan, profileIssuer))
+                if (owners.TryGetValue(id, out var o)) { hint = o.SpaceId; hintKnown = true; break; }
             if (PickSupersededOwner(orphan, candidates, hintKnown, hint) is { } owner)
                 owners[orphan.CertificateId] = owner;
         }
@@ -367,14 +367,14 @@ public static class IssuerChainResolver
         if (!superseded.IsCA || string.IsNullOrEmpty(superseded.SubjectDN))
             return null;
         var owner = OwnerOf(db, superseded);
-        return owner == null ? null : new CaRef(owner.CaId, owner.TenantId, null);
+        return owner == null ? null : new CaRef(owner.CaId, owner.SpaceId, null);
     }
 
     /// <summary>
-    /// The certificates whose CA's tenant is taken as the superseded certificate's own: its issuer
+    /// The certificates whose CA's space is taken as the superseded certificate's own: its issuer
     /// and its signing profile's issuer, excluding itself.
     /// </summary>
-    private static List<Guid> TenantHintCertificateIds(CertificateEntity cert, Guid? profileIssuerId)
+    private static List<Guid> SpaceHintCertificateIds(CertificateEntity cert, Guid? profileIssuerId)
     {
         var ids = new List<Guid>(2);
         if (cert.IssuerCertificateId is Guid issuer && issuer != cert.CertificateId)
@@ -387,14 +387,14 @@ public static class IssuerChainResolver
     /// <summary>
     /// Picks the owner of a superseded CA certificate among CAs whose current certificate has the
     /// same subject. A public key or subject key identifier match ranks first; failing that, the
-    /// same issuer DN, which is only trusted within the certificate's own tenant because a
-    /// same-named CA in another tenant is exactly what it cannot tell apart. Either tier is
-    /// restricted to <paramref name="tenantHint"/> when <paramref name="hintKnown"/> (a null hint
+    /// same issuer DN, which is only trusted within the certificate's own space because a
+    /// same-named CA in another space is exactly what it cannot tell apart. Either tier is
+    /// restricted to <paramref name="spaceHint"/> when <paramref name="hintKnown"/> (a null hint
     /// then means the instance), and more than one match in a tier is refused rather than guessed.
     /// </summary>
-    private static CaOwner? PickSupersededOwner(CertificateEntity superseded, IReadOnlyList<OwnerCandidate> candidates, bool hintKnown, Guid? tenantHint)
+    private static CaOwner? PickSupersededOwner(CertificateEntity superseded, IReadOnlyList<OwnerCandidate> candidates, bool hintKnown, Guid? spaceHint)
     {
-        var scoped = hintKnown ? candidates.Where(c => c.TenantId == tenantHint).ToList() : candidates.ToList();
+        var scoped = hintKnown ? candidates.Where(c => c.SpaceId == spaceHint).ToList() : candidates.ToList();
 
         var key = PublicKey(superseded.Pem);
         var ski = SubjectKeyIdentifier(superseded.Pem);
@@ -404,7 +404,7 @@ public static class IssuerChainResolver
             .DistinctBy(c => c.Id)
             .ToList();
         if (keyMatches.Count == 1)
-            return new CaOwner(keyMatches[0].Id, keyMatches[0].TenantId);
+            return new CaOwner(keyMatches[0].Id, keyMatches[0].SpaceId);
         if (keyMatches.Count > 1 || !hintKnown)
             return null;
 
@@ -412,7 +412,7 @@ public static class IssuerChainResolver
             .Where(c => string.Equals(c.Issuer, superseded.Issuer, StringComparison.OrdinalIgnoreCase))
             .DistinctBy(c => c.Id)
             .ToList();
-        return dnMatches.Count == 1 ? new CaOwner(dnMatches[0].Id, dnMatches[0].TenantId) : null;
+        return dnMatches.Count == 1 ? new CaOwner(dnMatches[0].Id, dnMatches[0].SpaceId) : null;
     }
 
     private static byte[]? PublicKey(string pem)

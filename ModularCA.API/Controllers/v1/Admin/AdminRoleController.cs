@@ -52,7 +52,7 @@ public class AdminRoleController(
             r.Name,
             r.Description,
             r.IsBuiltIn,
-            r.TenantId,
+            r.SpaceId,
             CapabilityCount = r.Capabilities.Count,
             r.CreatedAt
         }));
@@ -78,7 +78,7 @@ public class AdminRoleController(
             role.Name,
             role.Description,
             role.IsBuiltIn,
-            role.TenantId,
+            role.SpaceId,
             role.CreatedAt,
             Capabilities = role.Capabilities.Select(c => new
             {
@@ -112,7 +112,7 @@ public class AdminRoleController(
             Name = request.Name.Trim(),
             Description = request.Description,
             IsBuiltIn = false,
-            TenantId = request.TenantId,
+            SpaceId = request.SpaceId,
             CreatedByUserId = _currentUser.User?.Id
         };
 
@@ -121,7 +121,7 @@ public class AdminRoleController(
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "Role", role.Id.ToString(),
-            new { Action = "Created", role.Name, role.Description, role.TenantId },
+            new { Action = "Created", role.Name, role.Description, role.SpaceId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return CreatedAtAction(nameof(GetById), new { id = role.Id }, new
@@ -130,7 +130,7 @@ public class AdminRoleController(
             role.Name,
             role.Description,
             role.IsBuiltIn,
-            role.TenantId,
+            role.SpaceId,
             role.CreatedAt
         });
     }
@@ -436,8 +436,10 @@ public class AdminRoleController(
 }
 
 /// <summary>
-/// Request body for creating a new role.
+/// Request body for creating a new role. An unknown member (a pre-0.4.0 <c>tenantId</c>) is
+/// refused with 400, never read as no space.
 /// </summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class CreateRoleRequest
 {
     /// <summary>Unique name for the role.</summary>
@@ -446,8 +448,8 @@ public class CreateRoleRequest
     /// <summary>Optional description of what the role grants.</summary>
     public string? Description { get; set; }
 
-    /// <summary>Optional tenant scope. Null for system-wide roles.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Optional space scope. Null for system-wide roles.</summary>
+    public Guid? SpaceId { get; set; }
 }
 
 /// <summary>

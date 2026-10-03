@@ -867,17 +867,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Controlled-User Ceremonies</h4>
                                         <p className="text-[11px] text-gray-500 dark:text-gray-500">
                                             <strong>User quorum</strong> = approvals required to promote / demote / delete a controlled user (admin / operator / CA-admin)
-                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per tenant in Tenants and for the instance below).
+                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per space in Spaces and for the instance below).
                                             The initiator is always excluded, so the effective minimum is 1 other approver.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1}
-                                                hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Tenants and CAs may set a lower figure, never a higher one." />
+                                                hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Spaces and CAs may set a lower figure, never a higher one." />
                                         </div>
                                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Instance CA Policy</h4>
                                         <p className="text-[11px] text-gray-500 dark:text-gray-500">
-                                            Governs the instance's own CAs only (no tenant: the system signing CA, SSH CAs). Each tenant keeps its own
-                                            policy, set in Tenants; the two are independent and nothing merges. System administrators only; a change to the
+                                            Governs the instance's own CAs only (no space: the system signing CA, SSH CAs). Each space keeps its own
+                                            policy, set in Spaces; the two are independent and nothing merges. System administrators only; a change to the
                                             ceremony requirement or its approvals by anyone but a system super-administrator opens a ceremony.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1250,7 +1250,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     </div>
                                     <div>
                                         <ConfigNumber label="Warn Over Validity Days" value={config.complianceScan?.warnOverValidityDays} onChange={(v) => update('complianceScan', 'warnOverValidityDays', v)} fallback={0} />
-                                        <p className="text-[10px] text-gray-600 mt-1">Reports only — it never blocks issuance. The enforced ceiling is per tenant, under Tenants &amp; Quotas.</p>
+                                        <p className="text-[10px] text-gray-600 mt-1">Reports only — it never blocks issuance. The enforced ceiling is per space, under Spaces &amp; Quotas.</p>
                                     </div>
                                     <div className="md:col-span-2">
                                         <ConfigInput label="Deprecated Algorithms (comma-separated)" value={listToStr(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', strToList(v))} placeholder="MD5, SHA1, RSA-1024"

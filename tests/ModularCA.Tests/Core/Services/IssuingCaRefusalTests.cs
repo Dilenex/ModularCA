@@ -49,14 +49,14 @@ public class IssuingCaRefusalTests
 
     public enum CaState { Healthy, Revoked, OnHold, Expired, NotYetValid, Disabled, Deleted, Unregistered }
 
-    private static Seeded Seed(ModularCADbContext db, CaState state, bool forReissue = false, bool instanceLeaf = false, bool tenantDeleted = false)
+    private static Seeded Seed(ModularCADbContext db, CaState state, bool forReissue = false, bool instanceLeaf = false, bool spaceDeleted = false)
     {
-        Guid? tenantId = null;
+        Guid? spaceId = null;
         if (!instanceLeaf)
         {
-            var tenant = new TenantEntity { Id = Guid.NewGuid(), Name = "Refusal Space", Slug = $"refusal-{Guid.NewGuid():N}", IsDeleted = tenantDeleted };
-            db.Tenants.Add(tenant);
-            tenantId = tenant.Id;
+            var space = new SpaceEntity { Id = Guid.NewGuid(), Name = "Refusal Space", Slug = $"refusal-{Guid.NewGuid():N}", IsDeleted = spaceDeleted };
+            db.Spaces.Add(space);
+            spaceId = space.Id;
         }
         var caCert = state switch
         {
@@ -89,7 +89,7 @@ public class IssuingCaRefusalTests
                 Id = Guid.NewGuid(),
                 Name = "Refusal CA",
                 Label = "refusal",
-                TenantId = tenantId,
+                SpaceId = spaceId,
                 CertificateId = caRow.CertificateId,
                 IsEnabled = state != CaState.Disabled,
                 IsDeleted = state == CaState.Deleted,
@@ -234,21 +234,21 @@ public class IssuingCaRefusalTests
     }
 
     /// <summary>
-    /// A CA whose tenant no longer exists (soft-deleted, or never there) has no policy to issue
+    /// A CA whose space no longer exists (soft-deleted, or never there) has no policy to issue
     /// under, so issuance and reissue refuse it rather than issuing with no ceiling.
     /// </summary>
     [Fact]
-    public async Task A_ca_whose_tenant_is_gone_refuses_to_issue()
+    public async Task A_ca_whose_space_is_gone_refuses_to_issue()
     {
         using var db = InMemoryDbContextFactory.Create();
-        var deleted = Seed(db, CaState.Healthy, tenantDeleted: true);
+        var deleted = Seed(db, CaState.Healthy, spaceDeleted: true);
         var issue = await Assert.ThrowsAsync<ConfigurationValidationException>(() => Service(db, deleted.CaCert).IssueCertificateAsync(deleted.CsrId, null, null));
         Assert.Equal(ErrorCodes.IssuingCaDisabled, issue.Code);
         Assert.Contains("no longer exists", issue.Message);
 
         using var db2 = InMemoryDbContextFactory.Create();
         var missing = Seed(db2, CaState.Healthy, forReissue: true);
-        missing.Ca!.TenantId = Guid.NewGuid();
+        missing.Ca!.SpaceId = Guid.NewGuid();
         await db2.SaveChangesAsync();
         var reissue = await Assert.ThrowsAsync<ConfigurationValidationException>(
             () => Service(db2, missing.CaCert).ReissueCertificateAsync(null, null, missing.CsrId, null, null));
@@ -281,9 +281,9 @@ public class IssuingCaRefusalTests
     }
 
     /// <summary>
-    /// A leaf from an instance CA (no tenant, as the system signing CA's would be) is held to the
+    /// A leaf from an instance CA (no space, as the system signing CA's would be) is held to the
     /// instance's own validity ceiling: Refuse refuses an interactive caller and names the
-    /// instance, and a protocol caller is shortened instead. A null tenant is never "no ceiling".
+    /// instance, and a protocol caller is shortened instead. A null space is never "no ceiling".
     /// </summary>
     [Fact]
     public async Task An_instance_ca_leaf_is_held_to_the_instance_validity_ceiling()
@@ -293,18 +293,18 @@ public class IssuingCaRefusalTests
         var s = Seed(db, CaState.Healthy, instanceLeaf: true);
 
         var refused = await Assert.ThrowsAsync<ConfigurationValidationException>(() => Service(db, s.CaCert)
-            .IssueCertificateAsync(s.CsrId, null, null, ModularCA.Shared.Enums.ValidityCeilingEnforcement.HonourTenantPolicy));
-        Assert.Equal(ErrorCodes.ValidityExceedsTenantCeiling, refused.Code);
+            .IssueCertificateAsync(s.CsrId, null, null, ModularCA.Shared.Enums.ValidityCeilingEnforcement.HonourSpacePolicy));
+        Assert.Equal(ErrorCodes.ValidityExceedsSpaceCeiling, refused.Code);
         Assert.Contains("30-day ceiling on the instance", refused.Message);
 
         var shortened = await Record.ExceptionAsync(() => Service(db, s.CaCert)
             .IssueCertificateAsync(s.CsrId, null, null, ModularCA.Shared.Enums.ValidityCeilingEnforcement.AlwaysShorten));
-        Assert.False(shortened is ConfigurationValidationException { Code: ErrorCodes.ValidityExceedsTenantCeiling }, shortened?.Message);
+        Assert.False(shortened is ConfigurationValidationException { Code: ErrorCodes.ValidityExceedsSpaceCeiling }, shortened?.Message);
 
         var preflight = await new ValidityCeilingService(db, new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance))
             .ResolveAsync(db.SigningProfiles.Single().Id, db.CertProfiles.Single().Id);
-        Assert.Equal(30, preflight!.TenantMaxValidityDays);
-        Assert.Equal("instance", preflight.TenantName);
+        Assert.Equal(30, preflight!.SpaceMaxValidityDays);
+        Assert.Equal("instance", preflight.SpaceName);
     }
 
     [Theory]
@@ -316,7 +316,7 @@ public class IssuingCaRefusalTests
         using var db = InMemoryDbContextFactory.Create();
         var ca = new CertificateAuthorityEntity
         {
-            Id = Guid.NewGuid(), Name = "ssh", Label = "ssh", TenantId = Guid.NewGuid(), IsSshCa = true,
+            Id = Guid.NewGuid(), Name = "ssh", Label = "ssh", SpaceId = Guid.NewGuid(), IsSshCa = true,
             IsEnabled = caEnabled, IsDeleted = caDeleted,
         };
         var key = new SshCaKeyEntity
@@ -353,11 +353,11 @@ public class IssuingCaRefusalTests
         using var db = InMemoryDbContextFactory.Create();
         var s = Seed(db, CaState.Healthy);
         var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
-        (profile.TenantId, profile.CertificateAuthorityId) = scope switch
+        (profile.SpaceId, profile.CertificateAuthorityId) = scope switch
         {
             "instance-ca-bound" => ((Guid?)null, (Guid?)Guid.NewGuid()),
             "other-space" => (Guid.NewGuid(), null),
-            _ => (s.Ca!.TenantId, Guid.NewGuid()),
+            _ => (s.Ca!.SpaceId, Guid.NewGuid()),
         };
         db.SaveChanges();
 
@@ -377,7 +377,7 @@ public class IssuingCaRefusalTests
         using var db = InMemoryDbContextFactory.Create();
         var s = Seed(db, CaState.Healthy, forReissue: true);
         var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
-        (profile.TenantId, profile.CertificateAuthorityId) = scope == "other-space"
+        (profile.SpaceId, profile.CertificateAuthorityId) = scope == "other-space"
             ? ((Guid?)Guid.NewGuid(), (Guid?)null)
             : (null, Guid.NewGuid());
         db.SaveChanges();
@@ -399,11 +399,11 @@ public class IssuingCaRefusalTests
         using var db = InMemoryDbContextFactory.Create();
         var s = Seed(db, CaState.Healthy);
         var profile = db.CertProfiles.Single(p => p.Name == "TLS Server");
-        (profile.TenantId, profile.CertificateAuthorityId) = scope switch
+        (profile.SpaceId, profile.CertificateAuthorityId) = scope switch
         {
             "unbound" => ((Guid?)null, (Guid?)null),
-            "space" => (s.Ca!.TenantId, null),
-            _ => (s.Ca!.TenantId, s.Ca.Id),
+            "space" => (s.Ca!.SpaceId, null),
+            _ => (s.Ca!.SpaceId, s.Ca.Id),
         };
         db.SaveChanges();
 
@@ -420,7 +420,7 @@ public class IssuingCaRefusalTests
     {
         using var db = InMemoryDbContextFactory.Create();
         var s = Seed(db, CaState.Healthy);
-        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Other Space", TenantId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+        var other = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Other Space", SpaceId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" };
         db.CertProfiles.Add(other);
         db.SaveChanges();
         var signingProfile = db.SigningProfiles.Single().Id;

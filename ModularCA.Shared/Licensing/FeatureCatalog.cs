@@ -30,9 +30,9 @@ namespace ModularCA.Shared.Licensing;
 ///     <see cref="FeatureKeys.BackupOrchestration"/> and
 ///     <see cref="FeatureKeys.ComplianceReporting"/> are implemented in this repository, under
 ///     AGPL-3.0, and can be read and forked by anyone. What the licence grants is the right to
-///     use them past the free threshold, enforced the way
-///     <see cref="TenantCreationGate"/> enforces it: a clear refusal and an audit record, not a
-///     technical impossibility. Honour system, with evidence.
+///     use them past the free threshold, enforced by a clear refusal and an audit record
+///     (<see cref="FeatureGate"/>), not a technical impossibility; for spaces, by a recommendation
+///     only (<see cref="SpaceCreationGate"/>). Honour system, with evidence.
 ///     </description>
 ///   </item>
 ///   <item>
@@ -60,17 +60,16 @@ namespace ModularCA.Shared.Licensing;
 /// One rule constrains what may be added here at all: <b>never gate on how many certificates or
 /// CAs exist.</b> This is a security product, and a ceiling on those numbers pays operators to do
 /// the wrong thing — reuse certificates, skip rotations, let an expiry slide. Gate on
-/// organisational boundaries (tenants, identity federation, clustering), never on the activity
+/// organisational boundaries (spaces, identity federation, clustering), never on the activity
 /// the product exists to encourage.
 /// </para>
 /// </remarks>
 public static class FeatureKeys
 {
     /// <summary>
-    /// Creating tenants beyond the two the bootstrap creates. Licence-gated open code: the
-    /// multi-tenancy implementation is in this repository and a single-tenant install needs none
-    /// of it. What is sold is running more than one organisation's PKI from one deployment, which
-    /// is the managed-service case rather than the internal-CA case.
+    /// More than four spaces. A soft cap: creating a fifth space succeeds and a licence is
+    /// recommended (<see cref="SpaceCreationGate"/>); a licence carrying this key suppresses the
+    /// recommendation. The key string is signed into issued licences and never changes.
     /// </summary>
     public const string MultiTenancy = "tenancy.multi";
 

@@ -254,9 +254,9 @@ public sealed class IngressProxyHostTests : IAsyncLifetime
     [Fact]
     public async Task A_plain_http_arrival_goes_to_the_plain_listener_of_the_node_when_the_route_names_one()
     {
-        var plain = await JsonOf(await _client.SendAsync(Request(_ingress.PlainPort, "both.test", "/crl/tenant.crl")));
-        var secure = await JsonOf(await _client.SendAsync(Request(_ingress.SecurePort, "both.test", "/crl/tenant.crl")));
-        var noPlain = await JsonOf(await _client.SendAsync(Request(_ingress.PlainPort, "one.test", "/crl/tenant.crl")));
+        var plain = await JsonOf(await _client.SendAsync(Request(_ingress.PlainPort, "both.test", "/crl/space.crl")));
+        var secure = await JsonOf(await _client.SendAsync(Request(_ingress.SecurePort, "both.test", "/crl/space.crl")));
+        var noPlain = await JsonOf(await _client.SendAsync(Request(_ingress.PlainPort, "one.test", "/crl/space.crl")));
 
         Assert.Equal("plain", plain.GetProperty("node").GetString());
         Assert.Equal("secure", secure.GetProperty("node").GetString());

@@ -1,8 +1,8 @@
 namespace ModularCA.Shared.Enums;
 
 /// <summary>
-/// What a tenant does when a certificate request asks for longer validity than
-/// <c>TenantEntity.MaxValidityDays</c> permits.
+/// What a space does when a certificate request asks for longer validity than
+/// <c>SpaceEntity.MaxValidityDays</c> permits.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,18 +16,18 @@ namespace ModularCA.Shared.Enums;
 /// <para>
 /// <b>Refuse is deliberately asymmetric.</b> It governs interactive and admin issuance only.
 /// ACME, EST, SCEP, CMP and the auto-renewal scheduler derive their requested expiry from the
-/// certificate profile with no knowledge of the tenant, so refusing there would fail every
-/// enrollment and every renewal whose profile out-reaches its tenant, over a condition the
+/// certificate profile with no knowledge of the space, so refusing there would fail every
+/// enrollment and every renewal whose profile out-reaches its space, over a condition the
 /// enrolling client can neither see nor fix — and would take a working fleet offline the moment
-/// an operator flipped a tenant setting. Those paths always shorten. The asymmetry is enforced at
+/// an operator flipped a space setting. Those paths always shorten. The asymmetry is enforced at
 /// the issuance seam by <see cref="ValidityCeilingEnforcement"/>, not by this value.
 /// </para>
 /// </remarks>
 public enum ValidityCeilingBehavior
 {
     /// <summary>
-    /// Issue the certificate with its validity shortened to the tenant ceiling and attach the
-    /// <c>MCA-ISS-004</c> advisory. The behaviour every tenant has by default, and the only
+    /// Issue the certificate with its validity shortened to the space ceiling and attach the
+    /// <c>MCA-ISS-004</c> advisory. The behaviour every space has by default, and the only
     /// behaviour the protocol and renewal paths ever use.
     /// </summary>
     Shorten = 0,

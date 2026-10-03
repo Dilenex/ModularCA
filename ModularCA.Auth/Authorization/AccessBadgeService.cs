@@ -144,7 +144,7 @@ public sealed class AccessBadgeService
                 Kind = AccessBadgeSourceKind.Group,
                 SourceId = g.Id,
                 Label = string.IsNullOrEmpty(g.DisplayName) ? g.Name : g.DisplayName,
-                Scope = g.IsSystemGroup ? "System" : g.CertificateAuthority?.Label ?? $"tenant {g.TenantId}",
+                Scope = g.IsSystemGroup ? "System" : g.CertificateAuthority?.Label ?? $"space {g.SpaceId}",
                 Capabilities = caps,
             });
         }
@@ -162,7 +162,7 @@ public sealed class AccessBadgeService
                 Kind = AccessBadgeSourceKind.RoleAssignment,
                 SourceId = ra.Id,
                 Label = $"Role: {ra.Role.Name}",
-                Scope = ScopeOf(ra.TenantId, ra.CertificateAuthorityId, ra.CertificateAuthority?.Label),
+                Scope = ScopeOf(ra.SpaceId, ra.CertificateAuthorityId, ra.CertificateAuthority?.Label),
                 Capabilities = ra.Role.Capabilities.Where(rc => rc.ResourceType == null).Select(rc => rc.Capability)
                     .Distinct().OrderBy(c => c, StringComparer.Ordinal).ToList(),
             });
@@ -180,7 +180,7 @@ public sealed class AccessBadgeService
                 Kind = AccessBadgeSourceKind.CapabilityGrant,
                 SourceId = ug.Id,
                 Label = ug.ResourceType == null ? ug.Capability : $"{ug.Capability} on {ug.ResourceType}",
-                Scope = ScopeOf(ug.TenantId, ug.CertificateAuthorityId, ug.CertificateAuthority?.Label),
+                Scope = ScopeOf(ug.SpaceId, ug.CertificateAuthorityId, ug.CertificateAuthority?.Label),
                 Capabilities = ug.ResourceType == null ? [ug.Capability] : [],
             });
         }
@@ -188,10 +188,10 @@ public sealed class AccessBadgeService
         return options;
     }
 
-    private static string ScopeOf(Guid? tenantId, Guid? caId, string? caLabel)
+    private static string ScopeOf(Guid? spaceId, Guid? caId, string? caLabel)
     {
         if (caId != null) return caLabel ?? caId.Value.ToString();
-        if (tenantId != null) return $"tenant {tenantId}";
+        if (spaceId != null) return $"space {spaceId}";
         return "System";
     }
 

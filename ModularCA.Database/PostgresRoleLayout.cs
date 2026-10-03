@@ -105,6 +105,9 @@ public static class PostgresRoleLayout
     /// <summary>PostgreSQL 14, the oldest server this release supports.</summary>
     public const int MinimumServerVersionNum = 140000;
 
+    /// <summary>The application context's frozen baseline, the first migration of its history.</summary>
+    public const string AppBaselineMigration = "20260919181506_InitialCreate";
+
     /// <summary>The audit context's frozen baseline, which a preserved audit database must record.</summary>
     public const string AuditBaselineMigration = "20260919181510_InitialAuditSchema";
 

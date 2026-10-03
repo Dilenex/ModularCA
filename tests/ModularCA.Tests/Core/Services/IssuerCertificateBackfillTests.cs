@@ -56,9 +56,9 @@ public sealed class IssuerCertificateBackfillTests
         SigningProfileId = signingProfileId,
     };
 
-    private static CertificateAuthorityEntity Authority(CertificateEntity caRow, Guid tenantId, string label) => new()
+    private static CertificateAuthorityEntity Authority(CertificateEntity caRow, Guid spaceId, string label) => new()
     {
-        Id = Guid.NewGuid(), Name = label, Label = label, TenantId = tenantId, CertificateId = caRow.CertificateId,
+        Id = Guid.NewGuid(), Name = label, Label = label, SpaceId = spaceId, CertificateId = caRow.CertificateId,
     };
 
     private static async Task<Guid?> IssuerOf(ModularCADbContext db, Guid certificateId)
@@ -152,7 +152,7 @@ public sealed class IssuerCertificateBackfillTests
     }
 
     [Fact]
-    public async Task The_signing_profiles_tenant_settles_a_match_that_is_otherwise_ambiguous()
+    public async Task The_signing_profiles_space_settles_a_match_that_is_otherwise_ambiguous()
     {
         using var db = InMemoryDbContextFactory.Create();
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -160,12 +160,12 @@ public sealed class IssuerCertificateBackfillTests
         using var second = Ca("CN=Twin CA", key);
         var firstRow = Row(first, isCa: true);
         var secondRow = Row(second, isCa: true);
-        var tenantB = Guid.NewGuid();
+        var spaceB = Guid.NewGuid();
         var profile = new SigningProfileEntity { Name = "b", IssuerId = secondRow.CertificateId };
         var leafRow = Row(Leaf(first), isCa: false, profile.Id);
         db.Certificates.AddRange(firstRow, secondRow, leafRow);
         db.SigningProfiles.Add(profile);
-        db.CertificateAuthorities.AddRange(Authority(firstRow, Guid.NewGuid(), "twin-a"), Authority(secondRow, tenantB, "twin-b"));
+        db.CertificateAuthorities.AddRange(Authority(firstRow, Guid.NewGuid(), "twin-a"), Authority(secondRow, spaceB, "twin-b"));
         db.SaveChanges();
 
         await IssuerCertificateBackfill.RunAsync(db);
@@ -174,7 +174,7 @@ public sealed class IssuerCertificateBackfillTests
     }
 
     [Fact]
-    public async Task A_same_named_ca_in_another_tenant_is_not_matched()
+    public async Task A_same_named_ca_in_another_space_is_not_matched()
     {
         using var db = InMemoryDbContextFactory.Create();
         using var mineKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);

@@ -10,14 +10,14 @@ namespace ModularCA.Tests.Auth;
 
 /// <summary>
 /// Pins how the four grant sources fold into the capabilities payload the console reads from
-/// <c>GET /api/v1/me</c>: what counts as system scope, how tenant-wide and CA-scoped grants
+/// <c>GET /api/v1/me</c>: what counts as system scope, how space-wide and CA-scoped grants
 /// land on each CA, that a CA with nothing granted is left out, and that <c>system.manage</c>
 /// at system scope reports as everything, the way the per-request checks treat it.
 /// </summary>
 public class EffectiveCapabilitiesTests
 {
-    private static readonly Guid TenantA = Guid.NewGuid();
-    private static readonly Guid TenantB = Guid.NewGuid();
+    private static readonly Guid SpaceA = Guid.NewGuid();
+    private static readonly Guid SpaceB = Guid.NewGuid();
 
     private sealed class World
     {
@@ -25,16 +25,16 @@ public class EffectiveCapabilitiesTests
         public CaGroupAuthorizationService Service => new(Db, NullLogger<CaGroupAuthorizationService>.Instance);
         public Guid UserId { get; } = Guid.NewGuid();
 
-        public CertificateAuthorityEntity Ca(string label, Guid tenantId, bool ssh = false)
+        public CertificateAuthorityEntity Ca(string label, Guid spaceId, bool ssh = false)
         {
-            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label.ToUpperInvariant(), Label = label, TenantId = tenantId, IsSshCa = ssh };
+            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label.ToUpperInvariant(), Label = label, SpaceId = spaceId, IsSshCa = ssh };
             Db.CertificateAuthorities.Add(ca);
             return ca;
         }
 
-        public CaGroupEntity Group(Guid tenantId, Guid? caId = null, bool system = false)
+        public CaGroupEntity Group(Guid spaceId, Guid? caId = null, bool system = false)
         {
-            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", TenantId = tenantId, CertificateAuthorityId = caId, IsSystemGroup = system };
+            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", SpaceId = spaceId, CertificateAuthorityId = caId, IsSystemGroup = system };
             Db.CaGroups.Add(g);
             Db.CaGroupMembers.Add(new CaGroupMemberEntity { Id = Guid.NewGuid(), GroupId = g.Id, UserId = UserId });
             return g;
@@ -56,24 +56,24 @@ public class EffectiveCapabilitiesTests
     public async Task Grants_land_on_the_scope_they_were_made_at()
     {
         var w = new World();
-        w.Db.Tenants.Add(new TenantEntity { Id = TenantA, Name = "Tenant A", Slug = "tenant-a" });
-        var a = w.Ca("ca-a", TenantA);
-        var b = w.Ca("ca-b", TenantA);
-        var c = w.Ca("ca-c", TenantB);
-        w.Ca("ca-d", Guid.NewGuid()); // a third tenant: nothing granted anywhere near it
+        w.Db.Spaces.Add(new SpaceEntity { Id = SpaceA, Name = "Space A", Slug = "space-a" });
+        var a = w.Ca("ca-a", SpaceA);
+        var b = w.Ca("ca-b", SpaceA);
+        var c = w.Ca("ca-c", SpaceB);
+        w.Ca("ca-d", Guid.NewGuid()); // a third space: nothing granted anywhere near it
 
         // Source 1: a direct grant on a CA-scoped group.
-        var caGroup = w.Group(TenantA, caId: a.Id);
+        var caGroup = w.Group(SpaceA, caId: a.Id);
         w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = caGroup.Id, Capability = Capabilities.CertApprove });
         // Source 2: a role on that same group.
         w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), GroupId = caGroup.Id, RoleId = w.Role(Capabilities.CertRevoke).Id });
-        // Source 1 again, tenant-wide: a non-system group with no CA.
-        var tenantGroup = w.Group(TenantA);
-        w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = tenantGroup.Id, Capability = Capabilities.ProfileView });
-        // Source 3: a grant on the user, on one CA in the other tenant.
+        // Source 1 again, space-wide: a non-system group with no CA.
+        var spaceGroup = w.Group(SpaceA);
+        w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = spaceGroup.Id, Capability = Capabilities.ProfileView });
+        // Source 3: a grant on the user, on one CA in the other space.
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { Id = Guid.NewGuid(), UserId = w.UserId, Capability = Capabilities.AuditView, CertificateAuthorityId = c.Id });
-        // Source 4: a role on the user, tenant-wide in the other tenant.
-        w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), UserId = w.UserId, RoleId = w.Role(Capabilities.CertView).Id, TenantId = TenantB });
+        // Source 4: a role on the user, space-wide in the other space.
+        w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), UserId = w.UserId, RoleId = w.Role(Capabilities.CertView).Id, SpaceId = SpaceB });
         await w.Db.SaveChangesAsync();
 
         var result = await w.Service.GetEffectiveCapabilitiesAsync(w.UserId);
@@ -84,19 +84,19 @@ public class EffectiveCapabilitiesTests
         Assert.Equal(new[] { Capabilities.ProfileView }, result.Cas[1].Capabilities);
         Assert.Equal(Sorted(Capabilities.AuditView, Capabilities.CertView), result.Cas[2].Capabilities);
         Assert.Equal(b.Id, result.Cas[1].Id);
-        Assert.Equal(TenantA, result.Cas[1].TenantId);
-        Assert.Equal("Tenant A", result.Cas[1].TenantName);
-        Assert.Equal("tenant-a", result.Cas[1].TenantSlug);
-        Assert.Equal(TenantB.ToString(), result.Cas[2].TenantSlug); // no tenant row: the id stands in
+        Assert.Equal(SpaceA, result.Cas[1].SpaceId);
+        Assert.Equal("Space A", result.Cas[1].SpaceName);
+        Assert.Equal("space-a", result.Cas[1].SpaceSlug);
+        Assert.Equal(SpaceB.ToString(), result.Cas[2].SpaceSlug); // no space row: the id stands in
     }
 
     [Fact]
     public async Task System_scope_comes_from_system_groups_and_global_user_grants_and_applies_to_every_ca()
     {
         var w = new World();
-        w.Ca("one", TenantA);
-        w.Ca("two", TenantB, ssh: true);
-        var systemGroup = w.Group(TenantA, system: true);
+        w.Ca("one", SpaceA);
+        w.Ca("two", SpaceB, ssh: true);
+        var systemGroup = w.Group(SpaceA, system: true);
         w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), GroupId = systemGroup.Id, RoleId = w.Role(Capabilities.AuditView).Id });
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { Id = Guid.NewGuid(), UserId = w.UserId, Capability = Capabilities.CertView });
         await w.Db.SaveChangesAsync();
@@ -115,8 +115,8 @@ public class EffectiveCapabilitiesTests
         // HasCaCapabilityAsync passes any check for such a user, so the literal grant list
         // would understate what the API lets them do.
         var w = new World();
-        w.Ca("one", TenantA);
-        var systemGroup = w.Group(TenantA, system: true);
+        w.Ca("one", SpaceA);
+        var systemGroup = w.Group(SpaceA, system: true);
         w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = systemGroup.Id, Capability = Capabilities.SystemManage });
         await w.Db.SaveChangesAsync();
 
@@ -130,8 +130,8 @@ public class EffectiveCapabilitiesTests
     public async Task System_manage_on_one_ca_does_not_widen_anything()
     {
         var w = new World();
-        var a = w.Ca("one", TenantA);
-        w.Ca("other", TenantA);
+        var a = w.Ca("one", SpaceA);
+        w.Ca("other", SpaceA);
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { Id = Guid.NewGuid(), UserId = w.UserId, Capability = Capabilities.SystemManage, CertificateAuthorityId = a.Id });
         await w.Db.SaveChangesAsync();
 
@@ -145,8 +145,8 @@ public class EffectiveCapabilitiesTests
     public async Task Resource_scoped_grants_and_other_users_grants_are_ignored()
     {
         var w = new World();
-        var a = w.Ca("one", TenantA);
-        var g = w.Group(TenantA, caId: a.Id);
+        var a = w.Ca("one", SpaceA);
+        var g = w.Group(SpaceA, caId: a.Id);
         w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = g.Id, Capability = Capabilities.ProfileUse, ResourceType = "CertProfile", ResourceId = Guid.NewGuid() });
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity { Id = Guid.NewGuid(), UserId = Guid.NewGuid(), Capability = Capabilities.CaManage });
         w.Db.RoleAssignments.Add(new RoleAssignmentEntity { Id = Guid.NewGuid(), UserId = w.UserId, RoleId = w.Role().Id });

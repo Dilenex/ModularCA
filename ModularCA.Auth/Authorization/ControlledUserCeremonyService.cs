@@ -14,7 +14,7 @@ namespace ModularCA.Auth.Authorization;
 
 /// <summary>
 /// Default <see cref="IControlledUserCeremonyService"/>. Mirrors
-/// <c>TenantPolicyChangeService</c>: opens a <see cref="CeremonyType.ControlledUserChange"/>
+/// <c>SpacePolicyChangeService</c>: opens a <see cref="CeremonyType.ControlledUserChange"/>
 /// ceremony via <see cref="IKeyCeremonyService"/> with the deferred change in
 /// <c>ParametersJson</c>, and applies it on execute. Tiers come from effective capability across
 /// every grant source (<see cref="ControlledTierResolver"/>), not from group structure alone.
@@ -44,16 +44,16 @@ public class ControlledUserCeremonyService(
     public const string PredatesCredentialCheck = "This ceremony predates the credential check; open it again.";
 
     /// <inheritdoc />
-    public ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? tenantId = null)
+    public ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? spaceId = null)
     {
         if (string.IsNullOrWhiteSpace(capability)) return null;
-        // A CA-scoped grant is minted without the CA's tenant, so only system-tier or same-CA
+        // A CA-scoped grant is minted without the CA's space, so only system-tier or same-CA
         // holders dominate it (stricter than the tier the grant eventually confers).
-        return ControlledTierResolver.TierFor(capability, tenantId, certificateAuthorityId, null);
+        return ControlledTierResolver.TierFor(capability, spaceId, certificateAuthorityId, null);
     }
 
     /// <inheritdoc />
-    public async Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? tenantId = null, Guid? groupId = null)
+    public async Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? spaceId = null, Guid? groupId = null)
     {
         var caps = ControlledTierResolver.ControlledCapabilities;
         var roleCaps = await db.RoleCapabilities.AsNoTracking()
@@ -68,10 +68,10 @@ public class ControlledUserCeremonyService(
             var group = await db.CaGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId);
             if (group != null)
                 return ControlledTier.Covering(roleCaps.Select(c =>
-                    ControlledTierResolver.TierForGroupCapability(c, group.IsSystemGroup, group.TenantId, group.CertificateAuthorityId)));
+                    ControlledTierResolver.TierForGroupCapability(c, group.IsSystemGroup, group.SpaceId, group.CertificateAuthorityId)));
         }
         return ControlledTier.Covering(roleCaps.Select(c =>
-            ControlledTierResolver.TierFor(c, tenantId, certificateAuthorityId, null)));
+            ControlledTierResolver.TierFor(c, spaceId, certificateAuthorityId, null)));
     }
 
     /// <summary>
@@ -86,7 +86,7 @@ public class ControlledUserCeremonyService(
 
         var assignments = await db.RoleAssignments.AsNoTracking()
             .Where(ra => ra.RoleId == roleId)
-            .Select(ra => new ScopedAssignment(ra.TenantId, ra.CertificateAuthorityId, ra.GroupId))
+            .Select(ra => new ScopedAssignment(ra.SpaceId, ra.CertificateAuthorityId, ra.GroupId))
             .ToListAsync();
 
         var roleIdText = roleId.ToString();
@@ -99,7 +99,7 @@ public class ControlledUserCeremonyService(
         {
             var p = Deserialize(c);
             if (p is { ChangeType: "AssignRole" } && p.RoleId == roleId)
-                assignments.Add(new ScopedAssignment(p.TenantId, p.CertificateAuthorityId, p.GroupId));
+                assignments.Add(new ScopedAssignment(p.SpaceId, p.CertificateAuthorityId, p.GroupId));
         }
 
         var groupIds = assignments.Where(a => a.GroupId != null).Select(a => a.GroupId!.Value).Distinct().ToList();
@@ -115,16 +115,16 @@ public class ControlledUserCeremonyService(
                 if (a.GroupId is Guid gid)
                 {
                     if (!groups.TryGetValue(gid, out var g)) continue;
-                    t = ControlledTierResolver.TierForGroupCapability(c, g.IsSystemGroup, g.TenantId, g.CertificateAuthorityId);
+                    t = ControlledTierResolver.TierForGroupCapability(c, g.IsSystemGroup, g.SpaceId, g.CertificateAuthorityId);
                 }
                 else
-                    t = ControlledTierResolver.TierFor(c, a.TenantId, a.CertificateAuthorityId, null);
+                    t = ControlledTierResolver.TierFor(c, a.SpaceId, a.CertificateAuthorityId, null);
                 if (t != null) tiers.Add(t.Value);
             }
         return tiers.ToList();
     }
 
-    private sealed record ScopedAssignment(Guid? TenantId, Guid? CertificateAuthorityId, Guid? GroupId);
+    private sealed record ScopedAssignment(Guid? SpaceId, Guid? CertificateAuthorityId, Guid? GroupId);
 
     /// <inheritdoc />
     public Task<ControlledTier?> ClassifyGroupAsync(CaGroupEntity group) => ControlledTierResolver.ClassifyGroupAsync(db, group);
@@ -168,9 +168,9 @@ public class ControlledUserCeremonyService(
     /// <summary>
     /// The tier an approver must dominate to delete <paramref name="userId"/> or change their account
     /// (password reset, MFA reset, identity update): the covering tier
-    /// (<see cref="ControlledTier.Covering"/>) of every tier the user holds, e.g. org-admin(T) over
-    /// ca-admin(X in T), or system-admin when the holdings span scopes (two tenants, two CAs, or a
-    /// CA and a tenant-wide operator tier) that no single scoped approver covers. Null when the user
+    /// (<see cref="ControlledTier.Covering"/>) of every tier the user holds, e.g. space-admin(T) over
+    /// ca-admin(X in T), or system-admin when the holdings span scopes (two spaces, two CAs, or a
+    /// CA and a space-wide operator tier) that no single scoped approver covers. Null when the user
     /// holds no controlled tier, so the change is uncontrolled.
     /// </summary>
     public async Task<ControlledTier?> GetDeletionTierAsync(Guid userId)
@@ -189,7 +189,7 @@ public class ControlledUserCeremonyService(
     /// dominating user is that actor could no longer approve anything. A super actor is counted,
     /// because supers act directly and dominate every scope; a super may therefore remove the last
     /// non-super admin of a scope. Only accounts that can act count: active, not hard-locked, not
-    /// service identities, and holding the tier through a CA/tenant that is not soft-deleted.
+    /// service identities, and holding the tier through a CA/space that is not soft-deleted.
     /// </summary>
     /// <remarks>
     /// <paramref name="actorIsRequestUser"/> is false when the actor is not the caller (the initiator
@@ -216,9 +216,9 @@ public class ControlledUserCeremonyService(
                 .Select(c => c.Id)
                 .ToListAsync())
             .ToHashSet();
-        var tenantIds = candidates.Where(h => h.Tier.TenantId != null).Select(h => h.Tier.TenantId!.Value).Distinct().ToList();
-        var liveTenants = (await db.Tenants.AsNoTracking()
-                .Where(t => tenantIds.Contains(t.Id) && !t.IsDeleted)
+        var spaceIds = candidates.Where(h => h.Tier.SpaceId != null).Select(h => h.Tier.SpaceId!.Value).Distinct().ToList();
+        var liveSpaces = (await db.Spaces.AsNoTracking()
+                .Where(t => spaceIds.Contains(t.Id) && !t.IsDeleted)
                 .Select(t => t.Id)
                 .ToListAsync())
             .ToHashSet();
@@ -226,7 +226,7 @@ public class ControlledUserCeremonyService(
         return candidates
             .Where(h => usable.Contains(h.UserId)
                 && (h.Tier.CaId is not Guid ca || liveCas.Contains(ca))
-                && (h.Tier.TenantId is not Guid t || liveTenants.Contains(t)))
+                && (h.Tier.SpaceId is not Guid t || liveSpaces.Contains(t)))
             .Select(h => h.UserId)
             .Distinct()
             .Count();
@@ -242,7 +242,7 @@ public class ControlledUserCeremonyService(
         var actorTiers = await GetActorTiersAsync(actorUserId);
 
         // System-group members (system operators and auditors) hold system-wide rights, including
-        // key-ceremony approval for every tenant; only system-admin administers them.
+        // key-ceremony approval for every space; only system-admin administers them.
         if (await db.CaGroupMembers.AnyAsync(m => m.UserId == targetUserId && m.Group.IsSystemGroup)
             && !actorTiers.Any(a => a.Level == ControlledTierLevel.SystemAdmin))
             return false;
@@ -272,7 +272,7 @@ public class ControlledUserCeremonyService(
     {
         var p = Deserialize(ceremony);
         if (p == null || userId == p.TargetUserId) return false;
-        var minted = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
+        var minted = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { SpaceId = p.MintedTierSpaceId };
         return (await GetActorTiersAsync(userId)).Any(t => t.Dominates(minted));
     }
 
@@ -316,7 +316,7 @@ public class ControlledUserCeremonyService(
         var p = Deserialize(ceremony);
         if (p == null) return (null, null);
         return (p.TargetUserId == Guid.Empty ? null : p.TargetUserId,
-            new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId });
+            new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { SpaceId = p.MintedTierSpaceId });
     }
 
     /// <inheritdoc />
@@ -324,7 +324,7 @@ public class ControlledUserCeremonyService(
         Guid targetUserId,
         string? targetUsername,
         string capability,
-        Guid? tenantId,
+        Guid? spaceId,
         Guid? certificateAuthorityId,
         string? resourceType,
         Guid? resourceId,
@@ -338,7 +338,7 @@ public class ControlledUserCeremonyService(
             TargetUserId = targetUserId,
             TargetUsername = targetUsername,
             Capability = capability,
-            TenantId = tenantId,
+            SpaceId = spaceId,
             CertificateAuthorityId = certificateAuthorityId,
             ResourceType = resourceType,
             ResourceId = resourceId,
@@ -348,9 +348,9 @@ public class ControlledUserCeremonyService(
 
     /// <summary>
     /// Opens a <c>ControlledUserChange</c> ceremony for <paramref name="parameters"/>, recording the
-    /// minted tier in the parameters and stamping the ceremony's tenant from the tier's scope (the
-    /// tier's tenant, or its CA's tenant) so scoped approvers can reach it. System tiers leave the
-    /// tenant null, which keeps the ceremony system-only. A promotion also records the credential
+    /// minted tier in the parameters and stamping the ceremony's space from the tier's scope (the
+    /// tier's space, or its CA's space) so scoped approvers can reach it. System tiers leave the
+    /// space null, which keeps the ceremony system-only. A promotion also records the credential
     /// state of every account it promotes, and an identity change the account's state, for the
     /// compare-and-set at execute. A promotion records and discloses recent credential resets of
     /// those accounts (<see cref="RecordRecentResetsAsync"/>), which may refuse it, and discloses
@@ -367,7 +367,7 @@ public class ControlledUserCeremonyService(
         // The minted tier is authoritative for later approver-dominance checks.
         parameters.MintedTierLevel = (int)minted.Level;
         parameters.MintedTierCaId = minted.CaId;
-        parameters.MintedTierTenantId = minted.TenantId;
+        parameters.MintedTierSpaceId = minted.SpaceId;
         List<string> adminSetPasswords = [];
         if (IsPromotion(parameters.ChangeType))
         {
@@ -399,7 +399,7 @@ public class ControlledUserCeremonyService(
         var tracked = await db.KeyCeremonies.FindAsync(ceremony.Id)
             ?? throw new InvalidOperationException($"Newly-created ceremony {ceremony.Id} could not be re-loaded.");
         tracked.CeremonyType = CeremonyType.ControlledUserChange;
-        tracked.TenantId = await ScopeTenantAsync(minted);
+        tracked.SpaceId = await ScopeSpaceAsync(minted);
         await db.SaveChangesAsync();
 
         logger.LogInformation(
@@ -507,7 +507,7 @@ public class ControlledUserCeremonyService(
 
     /// <summary>
     /// The ceremony description for <paramref name="p"/>, naming the minted tier's scope: on a CA
-    /// (by label), in a tenant (by name), or the instance. Any <see cref="ResetWarnings"/> lead it,
+    /// (by label), in a space (by name), or the instance. Any <see cref="ResetWarnings"/> lead it,
     /// one per line, each starting with <see cref="WarningPrefix"/>. At most 500 characters.
     /// </summary>
     private async Task<string> DescribeChangeAsync(ControlledUserChangeParameters p, ControlledTier minted, IReadOnlyList<string> adminSetPasswords)
@@ -523,7 +523,7 @@ public class ControlledUserCeremonyService(
     {
         var who = p.TargetUsername
                   ?? (p.TargetUserId != Guid.Empty ? p.TargetUserId.ToString() : (p.GroupId?.ToString() ?? "?"));
-        var scope = minted.CaId != null || minted.TenantId != null ? " " + await DescribeScopeAsync(minted) : " (instance)";
+        var scope = minted.CaId != null || minted.SpaceId != null ? " " + await DescribeScopeAsync(minted) : " (instance)";
         return p.ChangeType switch
         {
             "GrantCapability" => $"Promote controlled user {who}: grant '{p.Capability}'{scope}",
@@ -564,11 +564,11 @@ public class ControlledUserCeremonyService(
                 .Where(c => c.Id == caId).Select(c => c.Label).FirstOrDefaultAsync();
             return $"on CA {(string.IsNullOrEmpty(label) ? caId.ToString() : label)}";
         }
-        if (tier.TenantId is Guid tenantId)
+        if (tier.SpaceId is Guid spaceId)
         {
-            var name = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
-                .Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync();
-            return $"in tenant {(string.IsNullOrEmpty(name) ? tenantId.ToString() : name)}";
+            var name = await db.Spaces.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == spaceId).Select(t => t.Name).FirstOrDefaultAsync();
+            return $"in space {(string.IsNullOrEmpty(name) ? spaceId.ToString() : name)}";
         }
         return "instance";
     }
@@ -605,7 +605,7 @@ public class ControlledUserCeremonyService(
         var p = Deserialize(ceremony)
             ?? throw new InvalidOperationException($"Ceremony {ceremonyId} parameters could not be deserialized.");
 
-        var approved = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
+        var approved = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { SpaceId = p.MintedTierSpaceId };
         var predates = PredatesCredentialState(p);
         var (current, stale) = predates ? ((ControlledTier?)null, "it predates the credential check") : await RecomputeTierAsync(p);
         if (stale == null && p.CredentialSnapshots is { } snapshots && await ControlledCredentials.AnyChangedAsync(db, snapshots))
@@ -652,13 +652,13 @@ public class ControlledUserCeremonyService(
                     if (string.IsNullOrWhiteSpace(p.Capability))
                         throw new InvalidOperationException($"Ceremony {ceremonyId} has no capability to grant.");
 
-                    // A CA-scoped grant is effective on its CA whatever tenant it records.
+                    // A CA-scoped grant is effective on its CA whatever space it records.
                     var exists = await db.UserCapabilityGrants.AnyAsync(g =>
                         g.UserId == p.TargetUserId
                         && g.Capability == p.Capability
                         && (p.CertificateAuthorityId != null
                             ? g.CertificateAuthorityId == p.CertificateAuthorityId
-                            : g.CertificateAuthorityId == null && g.TenantId == p.TenantId)
+                            : g.CertificateAuthorityId == null && g.SpaceId == p.SpaceId)
                         && g.ResourceType == p.ResourceType
                         && g.ResourceId == p.ResourceId);
 
@@ -668,7 +668,7 @@ public class ControlledUserCeremonyService(
                         {
                             UserId = p.TargetUserId,
                             Capability = p.Capability,
-                            TenantId = p.TenantId,
+                            SpaceId = p.SpaceId,
                             CertificateAuthorityId = p.CertificateAuthorityId,
                             ResourceType = p.ResourceType,
                             ResourceId = p.ResourceId,
@@ -688,7 +688,7 @@ public class ControlledUserCeremonyService(
                         ra.RoleId == p.RoleId
                         && ra.UserId == userId
                         && ra.GroupId == p.GroupId
-                        && ra.TenantId == p.TenantId
+                        && ra.SpaceId == p.SpaceId
                         && ra.CertificateAuthorityId == p.CertificateAuthorityId);
 
                     if (!exists)
@@ -698,7 +698,7 @@ public class ControlledUserCeremonyService(
                             RoleId = p.RoleId.Value,
                             UserId = userId,
                             GroupId = p.GroupId,
-                            TenantId = p.TenantId,
+                            SpaceId = p.SpaceId,
                             CertificateAuthorityId = p.CertificateAuthorityId,
                             AssignedByUserId = ceremony.InitiatedByUserId,
                         });
@@ -807,7 +807,7 @@ public class ControlledUserCeremonyService(
             "Applied ControlledUserChange ceremony {CeremonyId}: {ChangeType} for user {TargetUserId}.",
             ceremonyId, p.ChangeType, p.TargetUserId);
 
-        return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.TenantId, p.CertificateAuthorityId)
+        return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.SpaceId, p.CertificateAuthorityId)
         {
             TemporaryPassword = temporaryPassword,
         };
@@ -827,7 +827,7 @@ public class ControlledUserCeremonyService(
             case "GrantCapability":
                 return (string.IsNullOrWhiteSpace(p.Capability)
                     ? null
-                    : ClassifyCapabilityGrant(p.Capability, p.CertificateAuthorityId, p.TenantId), null);
+                    : ClassifyCapabilityGrant(p.Capability, p.CertificateAuthorityId, p.SpaceId), null);
 
             case "AssignRole":
                 {
@@ -839,7 +839,7 @@ public class ControlledUserCeremonyService(
                         return (null, "the role no longer exists");
                     if (p.GroupId is Guid gid && !await db.CaGroups.AnyAsync(g => g.Id == gid))
                         return (null, "the group no longer exists");
-                    return (await ClassifyRoleAssignmentAsync(roleId, p.CertificateAuthorityId, p.TenantId, p.GroupId), null);
+                    return (await ClassifyRoleAssignmentAsync(roleId, p.CertificateAuthorityId, p.SpaceId, p.GroupId), null);
                 }
 
             case "AddGroupMember":
@@ -857,7 +857,7 @@ public class ControlledUserCeremonyService(
                     var grant = p.RecordId is Guid rid
                         ? await db.UserCapabilityGrants.AsNoTracking().FirstOrDefaultAsync(g => g.Id == rid)
                         : null;
-                    return (grant == null ? null : ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.TenantId), null);
+                    return (grant == null ? null : ClassifyCapabilityGrant(grant.Capability, grant.CertificateAuthorityId, grant.SpaceId), null);
                 }
 
             case "UnassignRole":
@@ -867,7 +867,7 @@ public class ControlledUserCeremonyService(
                         : null;
                     if (assignment == null) return (null, null);
                     await ControlledTierResolver.LockRoleAsync(db, assignment.RoleId);
-                    return (await ClassifyRoleAssignmentAsync(assignment.RoleId, assignment.CertificateAuthorityId, assignment.TenantId, assignment.GroupId), null);
+                    return (await ClassifyRoleAssignmentAsync(assignment.RoleId, assignment.CertificateAuthorityId, assignment.SpaceId, assignment.GroupId), null);
                 }
 
             case "RemoveGroupMember":
@@ -956,27 +956,27 @@ public class ControlledUserCeremonyService(
         return valid >= Math.Max(1, ceremony.RequiredApprovals);
     }
 
-    /// <summary>The tenant a tier is scoped to: its own tenant, else its CA's tenant; null for system tiers.</summary>
-    private async Task<Guid?> ScopeTenantAsync(ControlledTier tier)
+    /// <summary>The space a tier is scoped to: its own space, else its CA's space; null for system tiers.</summary>
+    private async Task<Guid?> ScopeSpaceAsync(ControlledTier tier)
     {
-        if (tier.TenantId != null) return tier.TenantId;
+        if (tier.SpaceId != null) return tier.SpaceId;
         if (tier.CaId is not Guid caId) return null;
         return await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
             .Where(c => c.Id == caId)
-            .Select(c => (Guid?)c.TenantId)
+            .Select(c => (Guid?)c.SpaceId)
             .FirstOrDefaultAsync();
     }
 
     /// <summary>
     /// Resolves the user quorum for a change at <paramref name="minted"/>. Scopes are independent —
-    /// System does NOT cascade to tenants, and parents are <i>ceilings</i>, not floors:
+    /// System does NOT cascade to spaces, and parents are <i>ceilings</i>, not floors:
     /// <list type="bullet">
     /// <item>System-tier change (system admin/operator/super) → <c>SecurityPolicy.UserQuorum</c> (standalone).</item>
     /// <item>CA-scoped change → the CA's override if set, capped at its scope's CA-level quorum (a
-    /// CA may require fewer approvals than its tenant, never more); otherwise that quorum. The
+    /// CA may require fewer approvals than its space, never more); otherwise that quorum. The
     /// scope of an instance CA is the instance, whose CA-level quorum is
-    /// <c>SecurityPolicy.UserCeremonyRequiredApprovals</c>, the value the System tenant held.</item>
-    /// <item>Org-scoped change (org admin/operator) → the affected tenant's quorum.</item>
+    /// <c>SecurityPolicy.UserCeremonyRequiredApprovals</c>, the value the system tenant held before 0.4.0.</item>
+    /// <item>Space-scoped change (space admin/operator) → the affected space's quorum.</item>
     /// </list>
     /// Clamped to a minimum of 1; a null scope quorum means 1.
     /// </summary>
@@ -987,30 +987,30 @@ public class ControlledUserCeremonyService(
         {
             var ca = await db.CertificateAuthorities.AsNoTracking()
                 .Where(c => c.Id == minted.CaId)
-                .Select(c => new { c.UserCeremonyRequiredApprovals, c.TenantId })
+                .Select(c => new { c.UserCeremonyRequiredApprovals, c.SpaceId })
                 .FirstOrDefaultAsync();
 
-            var tenantQuorum = 1;
+            var spaceQuorum = 1;
             if (ca != null)
             {
-                var policy = await new EffectivePolicyResolver(db).ResolveAsync(ca.TenantId);
-                tenantQuorum = Math.Max(1, (policy.Found ? policy.UserCeremonyRequiredApprovals : null) ?? 1);
+                var policy = await new EffectivePolicyResolver(db).ResolveAsync(ca.SpaceId);
+                spaceQuorum = Math.Max(1, (policy.Found ? policy.UserCeremonyRequiredApprovals : null) ?? 1);
 
                 if (ca.UserCeremonyRequiredApprovals.HasValue)
-                    // Tenant is the ceiling: the CA can require fewer approvals, never more.
-                    return Math.Max(1, Math.Min(ca.UserCeremonyRequiredApprovals.Value, tenantQuorum));
+                    // Space is the ceiling: the CA can require fewer approvals, never more.
+                    return Math.Max(1, Math.Min(ca.UserCeremonyRequiredApprovals.Value, spaceQuorum));
             }
-            return tenantQuorum;
+            return spaceQuorum;
         }
 
-        // Org-scoped change (org admin/operator): the affected tenant's quorum.
-        if (minted.TenantId is Guid orgTenantId)
+        // Space-scoped change (space admin/operator): the affected space's quorum.
+        if (minted.SpaceId is Guid orgSpaceId)
         {
-            var policy = await new EffectivePolicyResolver(db).ResolveAsync(orgTenantId);
+            var policy = await new EffectivePolicyResolver(db).ResolveAsync(orgSpaceId);
             return Math.Max(1, (policy.Found ? policy.UserCeremonyRequiredApprovals : null) ?? 1);
         }
 
-        // System-tier change: standalone, independent of any tenant.
+        // System-tier change: standalone, independent of any space.
         var systemQuorum = (await db.Set<SecurityPolicyEntity>().AsNoTracking().FirstOrDefaultAsync())?.UserQuorum ?? 1;
         return Math.Max(1, systemQuorum);
     }
@@ -1019,7 +1019,7 @@ public class ControlledUserCeremonyService(
     {
         try
         {
-            return JsonSerializer.Deserialize<ControlledUserChangeParameters>(ceremony.ParametersJson, JsonOpts);
+            return CeremonyParametersJson.Read<ControlledUserChangeParameters>(ceremony.ParametersJson);
         }
         catch (JsonException)
         {

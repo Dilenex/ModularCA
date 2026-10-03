@@ -6,6 +6,8 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
+using ModularCA.Shared.Enums;
+using ModularCA.API.Filters;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -20,6 +22,9 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [NodeRole(ProcessRole.Control)]
 public class AdminAuditController : ControllerBase
 {
+    private const string SpaceTarget = "Space";
+    private const string RetiredSpaceTarget = "Tenant";
+
     private readonly AuditDbContext? _auditDb;
     private readonly ModularCADbContext _mainDb;
     private readonly ICaGroupAuthorizationService _authService;
@@ -45,10 +50,12 @@ public class AdminAuditController : ControllerBase
 
     /// <summary>
     /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA,
-    /// target, and tenant (its CAs, the tenant itself and its groups, or records stamped with it before 0.4.0).
+    /// target, and space (its CAs, the space itself and its groups, or records stamped with it before 0.4.0).
     /// System admins/auditors see all logs. CA-scoped auditors only see logs for their assigned CAs.
+    /// The pre-0.4.0 <c>tenantId</c> query key is refused (400) rather than ignored.
     /// </summary>
     [HttpGet]
+    [RefuseQueryKey("tenantId", "spaceId")]
     public async Task<IActionResult> GetAuditLogs(
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
@@ -57,7 +64,7 @@ public class AdminAuditController : ControllerBase
         [FromQuery] Guid? caId,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
-        [FromQuery] Guid? tenantId = null,
+        [FromQuery] Guid? spaceId = null,
         [FromQuery] string? sort = null,
         [FromQuery] string? targetEntityType = null,
         [FromQuery] string? targetEntityId = null)
@@ -69,29 +76,32 @@ public class AdminAuditController : ControllerBase
 
         // One entity's activity: the record drawers' Audit tab asks by target.
         if (!string.IsNullOrWhiteSpace(targetEntityType))
-            query = query.Where(a => a.TargetEntityType == targetEntityType);
+        {
+            var targetTypes = TargetTypeSynonyms(targetEntityType);
+            query = query.Where(a => targetTypes.Contains(a.TargetEntityType));
+        }
         if (!string.IsNullOrWhiteSpace(targetEntityId))
             query = query.Where(a => a.TargetEntityId == targetEntityId);
 
-        // The console's tenant scope: rows stamped with that tenant (records before 0.4.0), or
-        // (new records carry no tenant) about one of its CAs, the tenant itself, or one of its
-        // groups. A group deleted outright is no longer known to be the tenant's.
-        if (tenantId.HasValue)
+        // The console's space scope: rows stamped with that space (records before 0.4.0), or
+        // (new records carry no space) about one of its CAs, the space itself, or one of its
+        // groups. A group deleted outright is no longer known to be the space's.
+        if (spaceId.HasValue)
         {
-            var tenantCaIds = await _mainDb.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
-                .Where(ca => ca.TenantId == tenantId.Value)
+            var spaceCaIds = await _mainDb.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(ca => ca.SpaceId == spaceId.Value)
                 .Select(ca => ca.Id)
                 .ToListAsync();
-            var tenantGroupIds = (await _mainDb.CaGroups.AsNoTracking()
-                    .Where(g => g.TenantId == tenantId.Value)
+            var spaceGroupIds = (await _mainDb.CaGroups.AsNoTracking()
+                    .Where(g => g.SpaceId == spaceId.Value)
                     .Select(g => g.Id)
                     .ToListAsync())
                 .Select(id => id.ToString()).ToList();
-            var tenantKey = tenantId.Value.ToString();
-            query = query.Where(a => a.TenantId == tenantId.Value
-                || (a.CertificateAuthorityId != null && tenantCaIds.Contains(a.CertificateAuthorityId.Value))
-                || (a.TargetEntityType == "Tenant" && a.TargetEntityId == tenantKey)
-                || (a.TargetEntityType == "CaGroup" && a.TargetEntityId != null && tenantGroupIds.Contains(a.TargetEntityId)));
+            var spaceKey = spaceId.Value.ToString();
+            query = query.Where(a => a.TenantId == spaceId.Value
+                || (a.CertificateAuthorityId != null && spaceCaIds.Contains(a.CertificateAuthorityId.Value))
+                || ((a.TargetEntityType == SpaceTarget || a.TargetEntityType == RetiredSpaceTarget) && a.TargetEntityId == spaceKey)
+                || (a.TargetEntityType == "CaGroup" && a.TargetEntityId != null && spaceGroupIds.Contains(a.TargetEntityId)));
         }
 
         if (from.HasValue)
@@ -99,7 +109,10 @@ public class AdminAuditController : ControllerBase
         if (to.HasValue)
             query = query.Where(a => a.Timestamp <= to.Value);
         if (!string.IsNullOrWhiteSpace(actionType))
-            query = query.Where(a => a.ActionType == actionType);
+        {
+            var actionTypes = AuditActionType.Synonyms(actionType);
+            query = query.Where(a => actionTypes.Contains(a.ActionType));
+        }
         if (!string.IsNullOrWhiteSpace(actorUsername))
             query = query.Where(a => a.ActorUsername == actorUsername);
 
@@ -193,7 +206,23 @@ public class AdminAuditController : ControllerBase
             }
         }
 
-        return Ok(entry);
+        return Ok(Present(entry, "chainId"));
+    }
+
+    /// <summary>
+    /// An audit row as the API names it. The audit database keeps its pre-0.4.0 <c>TenantId</c>
+    /// column: on a protocol or network row it is the CA's space (<c>spaceId</c>, the default
+    /// <paramref name="name"/>), on an <c>AuditLogs</c> row the retired chain the record belongs to
+    /// (<c>chainId</c>). Serialized with the API's own JSON options.
+    /// </summary>
+    private System.Text.Json.Nodes.JsonObject Present<T>(T row, string name = "spaceId")
+    {
+        var mvc = HttpContext?.RequestServices?.GetService(typeof(Microsoft.Extensions.Options.IOptions<JsonOptions>)) as Microsoft.Extensions.Options.IOptions<JsonOptions>;
+        var options = mvc?.Value?.JsonSerializerOptions ?? System.Text.Json.JsonSerializerOptions.Web;
+        var node = System.Text.Json.JsonSerializer.SerializeToNode(row, options)!.AsObject();
+        if (node.Remove("tenantId", out var value))
+            node[name] = value;
+        return node;
     }
 
     /// <summary>
@@ -221,7 +250,7 @@ public class AdminAuditController : ControllerBase
             {
                 var accessibleCaIds = await _authService.GetAccessibleCaIdsAsync(userId.Value, Capabilities.AuditView);
                 if (caIdOf(entry) is Guid entryCaId)
-                    return accessibleCaIds.Contains(entryCaId) ? Ok(entry) : NotFound();
+                    return accessibleCaIds.Contains(entryCaId) ? Ok(Present(entry)) : NotFound();
 
                 var label = caLabel(entry);
                 if (label == null)
@@ -236,7 +265,7 @@ public class AdminAuditController : ControllerBase
             }
         }
 
-        return Ok(entry);
+        return Ok(Present(entry));
     }
 
     /// <summary>Returns a single EST audit entry by ID, CA-scope filtered like the list endpoint.</summary>
@@ -292,8 +321,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -321,8 +350,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -350,8 +379,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -379,8 +408,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -408,8 +437,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -439,8 +468,8 @@ public class AdminAuditController : ControllerBase
         query = await ApplyCaAccessFilterAsync(query, a => a.CertificateAuthorityId, a => a.CaLabel);
 
         var total = await query.CountAsync();
-        var items = await query.OrderByDescending(a => a.Timestamp)
-            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        var items = (await query.OrderByDescending(a => a.Timestamp)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync()).Select(a => Present(a));
         var totalPages = (int)Math.Ceiling((double)total / pageSize);
         return Ok(new { total, totalPages, page, pageSize, items });
     }
@@ -513,16 +542,18 @@ public class AdminAuditController : ControllerBase
 
     /// <summary>
     /// Verifies the integrity of one audit hash chain: the instance chain with no
-    /// <paramref name="tenantId"/>, else that tenant's retired chain, whose sealed tail is also
-    /// checked against the instance chain's succession record.
+    /// <paramref name="chainId"/>, else that retired chain (keyed by the id its space had), whose
+    /// sealed tail is also checked against the instance chain's succession record.
     /// Walks records sequentially, recomputes hashes, and reports any broken links. A run that
     /// stopped at <paramref name="limit"/> before the end of the chain reports
     /// <c>PartiallyChecked</c> and the count it did not examine, never <c>Valid</c>.
+    /// The pre-0.4.0 <c>tenantId</c> query key is refused (400) rather than read as the instance chain.
     /// </summary>
     [HttpGet("verify")]
     [Authorize(Policy = "SystemAdmin")]
+    [RefuseQueryKey("tenantId", "chainId")]
     public async Task<IActionResult> VerifyHashChain(
-        [FromQuery] Guid? tenantId,
+        [FromQuery] Guid? chainId,
         [FromQuery] int limit = 10000)
     {
         if (_auditDb == null)
@@ -530,12 +561,12 @@ public class AdminAuditController : ControllerBase
         if (_hashChain == null)
             return BadRequest(new { error = "Hash chain service is not available." });
 
-        return Ok(await VerifyChainAsync(tenantId, Math.Min(limit, 100000)));
+        return Ok(await VerifyChainAsync(chainId, Math.Min(limit, 100000)));
     }
 
     /// <summary>
     /// Lists every audit chain with its verification: the live instance chain, then each retired
-    /// per-tenant chain (sealed in 0.4.0) with the state of its tail. The retired chains are those
+    /// per-space chain (sealed in 0.4.0) with the state of its tail. The retired chains are those
     /// with records and those a succession record names, so one deleted outright still reports.
     /// </summary>
     [HttpGet("verify/chains")]
@@ -548,7 +579,7 @@ public class AdminAuditController : ControllerBase
             return BadRequest(new { error = "Hash chain service is not available." });
 
         var retired = await _hashChain.ListRetiredChainsAsync(_auditDb);
-        var names = await _mainDb.Tenants.IgnoreQueryFilters().AsNoTracking()
+        var names = await _mainDb.Spaces.IgnoreQueryFilters().AsNoTracking()
             .Where(t => retired.Contains(t.Id))
             .ToDictionaryAsync(t => t.Id, t => t.Name);
 
@@ -559,14 +590,22 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// The verification report for one chain, with <c>Chain</c> ("instance" or "retired") and,
-    /// for a retired chain, the state of its sealed tail. A chain <paramref name="listedAsRetired"/>
-    /// with no records left is broken: retention always leaves its prune marker behind.
+    /// The target types a search for <paramref name="targetEntityType"/> matches: a space's
+    /// records were written with the target type <c>Tenant</c> before 0.4.0 and <c>Space</c> since.
     /// </summary>
-    private async Task<object> VerifyChainAsync(Guid? tenantId, int limit, string? tenantName = null, bool listedAsRetired = false)
+    private static string[] TargetTypeSynonyms(string targetEntityType) =>
+        targetEntityType is SpaceTarget or RetiredSpaceTarget ? [SpaceTarget, RetiredSpaceTarget] : [targetEntityType];
+
+    /// <summary>
+    /// The verification report for one chain, with <c>Chain</c> ("instance" or "retired"), its
+    /// <c>chainId</c> and the name of the space that had that id, and for a retired chain the state
+    /// of its sealed tail. A chain <paramref name="listedAsRetired"/> with no records left is broken:
+    /// retention always leaves its prune marker behind.
+    /// </summary>
+    private async Task<object> VerifyChainAsync(Guid? chainId, int limit, string? spaceName = null, bool listedAsRetired = false)
     {
-        var result = await _hashChain!.VerifyAsync(_auditDb!, tenantId, limit);
-        var tail = tenantId is Guid t ? await _hashChain.CheckRetiredChainAsync(_auditDb!, t) : null;
+        var result = await _hashChain!.VerifyAsync(_auditDb!, chainId, limit);
+        var tail = chainId is Guid t ? await _hashChain.CheckRetiredChainAsync(_auditDb!, t) : null;
         if (listedAsRetired && tail != null && result.TotalRecords == 0 && tail.State is not (RetiredChainState.TailMissing or RetiredChainState.TailAltered))
             tail = tail with { State = RetiredChainState.TailMissing, Issue = "The instance chain names this chain as retired, but none of its records remain." };
         var tailBroken = tail is { State: RetiredChainState.TailMissing or RetiredChainState.TailAltered };
@@ -583,12 +622,12 @@ public class AdminAuditController : ControllerBase
 
         return new
         {
-            Chain = tenantId == null ? "instance" : "retired",
-            TenantName = tenantName,
+            Chain = chainId == null ? "instance" : "retired",
+            SpaceName = spaceName,
             result.Sealed,
             TailState = tail?.State.ToString(),
             TailIssue = tail?.Issue,
-            result.TenantId,
+            result.ChainId,
             result.RecordsVerified,
             result.UnverifiableRecords,
             result.TotalRecords,
@@ -611,8 +650,10 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Begins a new epoch of the instance audit chain. A tenant's chain is retired and sealed from
-    /// 0.4.0 on, so restarting one is refused (409): a record after its seal is a break.
+    /// Begins a new epoch of the instance audit chain. A space's chain is retired and sealed from
+    /// 0.4.0 on, so restarting one is refused (409): a record after its seal is a break. The
+    /// pre-0.4.0 <c>tenantId</c> query key is refused (400), so a stale call naming a retired chain
+    /// never restarts the instance chain.
     /// <para>
     /// Every record after the marker verifies fully and the report says so from one moment. The
     /// marker is itself an audited record naming the caller and the reason, hashed and chained
@@ -622,16 +663,17 @@ public class AdminAuditController : ControllerBase
     /// </summary>
     [HttpPost("verify/restart")]
     [Authorize(Policy = "SystemAdmin")]
+    [RefuseQueryKey("tenantId", "chainId")]
     public async Task<IActionResult> RestartHashChain(
-        [FromQuery] Guid? tenantId,
+        [FromQuery] Guid? chainId,
         [FromBody] RestartChainRequest? request)
     {
         if (_auditDb == null)
             return BadRequest(new { error = "Audit database is not configured." });
         if (_hashChain == null)
             return BadRequest(new { error = "Hash chain service is not available." });
-        if (tenantId != null)
-            return Conflict(new { error = "Per-tenant audit chains are retired and sealed; only the instance chain (no tenantId) can be restarted." });
+        if (chainId != null)
+            return Conflict(new { error = "The per-space audit chains are retired and sealed; only the instance chain (no chainId) can be restarted." });
 
         var reason = string.IsNullOrWhiteSpace(request?.Reason) ? "Restarted by an administrator." : request!.Reason.Trim();
         if (reason.Length > 500)
@@ -642,12 +684,12 @@ public class AdminAuditController : ControllerBase
         var actorId = Guid.TryParse(sub, out var parsed) ? parsed : (Guid?)null;
         var actorName = User.Identity?.Name ?? sub ?? "unknown";
 
-        var marker = await _hashChain.RestartChainAsync(_auditDb, tenantId, actorId, actorName, reason);
+        var marker = await _hashChain.RestartChainAsync(_auditDb, chainId, actorId, actorName, reason);
         return Ok(new
         {
             marker.Id,
             marker.Timestamp,
-            marker.TenantId,
+            ChainId = marker.TenantId,
             Message = "A new chain epoch begins at this record. Everything after it verifies fully.",
         });
     }

@@ -22,7 +22,7 @@ const CATEGORY_GROUPS: Record<string, string[]> = {
     'ca management': ['Admin CA', 'Admin CA Service URLs', 'Admin CRL', 'Admin CRL Schedules', 'Admin Trust Anchors', 'Admin Key Ceremonies', 'Admin CT Logs'],
     'ssh ca': ['Admin SSH', 'Admin SSH Profiles', 'Admin SSH Templates', 'User SSH', 'Public SSH'],
     'profiles': ['Admin Cert Profiles', 'Admin Signing Profiles', 'Admin Templates', 'Admin OID Options', 'User Signing Profiles'],
-    'groups permissions': ['Admin Groups', 'Admin Quotas', 'Admin Tenants', 'User Groups'],
+    'groups permissions': ['Admin Groups', 'Admin Quotas', 'Admin Spaces', 'User Groups'],
     'users accounts': ['Admin Users', 'Admin Password Policy', 'Admin Security Policy'],
     'audit compliance': ['Admin Audit', 'Admin Compliance', 'Admin Policy'],
     'protocols': ['ACME', 'EST', 'SCEP', 'CMP', 'Admin ACME EAB', 'Admin Protocol Configs', 'Admin Enrollment Tokens'],

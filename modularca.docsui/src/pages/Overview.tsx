@@ -23,7 +23,7 @@ const quickLinks = [
     },
     {
         title: 'Architecture',
-        description: 'Deep dives into authentication flows, certificate issuance, CA hierarchy, and the tenant model.',
+        description: 'Deep dives into authentication flows, certificate issuance, CA hierarchy, and the instance and space model.',
         to: '/architecture/auth-flow',
         icon: (
             <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -41,7 +41,8 @@ export default function Overview() {
                     ModularCA Documentation
                 </h1>
                 <p className="text-lg text-gray-600 dark:text-gray-400 leading-relaxed">
-                    ModularCA is a modular, multi-tenant Certificate Authority platform built on .NET.
+                    ModularCA is a modular Certificate Authority platform built on .NET, run as one instance
+                    per organisation, with spaces to delegate administration within it.
                     It supports X.509 and SSH certificate issuance, flexible CA hierarchies,
                     profile-based policy enforcement, and fine-grained group and role authorization.
                     This documentation covers the REST API, web interfaces, setup procedures, and
@@ -68,10 +69,11 @@ export default function Overview() {
                         </p>
                     </div>
                     <div className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Multi-Tenant Authorization</h3>
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Delegated Authorization</h3>
                         <p className="text-sm text-gray-600 dark:text-gray-400">
-                            CA-scoped group authorization with auto-generated groups per CA label and
-                            system groups for global access control.
+                            CA-scoped group authorization with auto-generated groups per CA label,
+                            space-wide groups for delegated administration, and system groups for global
+                            access control.
                         </p>
                     </div>
                     <div className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">

@@ -21,7 +21,7 @@ export interface MsaeAuditRow {
     callerPrincipal?: string | null;
     templateName?: string | null;
     caLabel?: string | null;
-    tenantId?: string | null;
+    spaceId?: string | null;
     certificateAuthorityId?: string | null;
     caId?: string | null;
 }
@@ -37,9 +37,9 @@ export interface MsaeFailureExplanation {
     link?: { label: string; path: string };
 }
 
-/** The realm page of the tenant the CA belongs to, where realm bindings and their keys live. */
+/** The realm page of the space the CA belongs to, where realm bindings and their keys live. */
 function realmLink(row: MsaeAuditRow): MsaeFailureExplanation['link'] | undefined {
-    return row.tenantId ? { label: 'Open realm bindings', path: `/tenants/${row.tenantId}?tab=kerberos` } : undefined;
+    return row.spaceId ? { label: 'Open realm bindings', path: `/spaces/${row.spaceId}?tab=kerberos` } : undefined;
 }
 
 /**
@@ -76,18 +76,19 @@ function parseKvno(detail: string): { ticket: number | null; tried: number[] } {
 function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): MsaeFailureExplanation | null {
     const realm = row.realm ? `realm ${row.realm}` : 'its realm';
     switch (refusal) {
-        case 'WrongTenant':
+        case 'WrongSpace':
+        case 'WrongTenant': // the refusal's name in audit rows written before 0.4.0
             return {
-                title: 'Ticket from another tenant’s forest',
-                explanation: `The ticket is valid, but ${realm} is bound to a different tenant than the one that owns CA ${row.caLabel || 'this CA'}. A binding grants a forest access to one tenant’s CAs only.`,
-                fix: 'Point the client at a CA in the tenant its forest is bound to, or bind the forest’s realm on this tenant as well.',
+                title: 'Ticket from another space’s forest',
+                explanation: `The ticket is valid, but ${realm} is bound to a different space than the one that owns CA ${row.caLabel || 'this CA'}. A binding grants a forest access to one space’s CAs only.`,
+                fix: 'Point the client at a CA in the space its forest is bound to, or bind the forest’s realm on this space as well.',
                 link: realmLink(row),
             };
         case 'UnknownRealm':
             return {
                 title: 'Realm not bound',
-                explanation: `The ticket names ${realm}, and no enabled binding on this tenant carries that realm: either the realm was never bound or its binding is disabled.`,
-                fix: 'Bind the realm on the tenant that owns the CA, or enable the existing binding, and import the service account’s key.',
+                explanation: `The ticket names ${realm}, and no enabled binding on this space carries that realm: either the realm was never bound or its binding is disabled.`,
+                fix: 'Bind the realm on the space that owns the CA, or enable the existing binding, and import the service account’s key.',
                 link: realmLink(row),
             };
         case 'Invalid': {
@@ -139,7 +140,7 @@ function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): Ms
             return {
                 title: 'Cross-realm ticket',
                 explanation: `The client belongs to a realm other than ${realm}, the one that issued the ticket. Cross-realm (trust-referred) tickets are not supported.`,
-                fix: 'Bind the client’s own realm on the tenant and let it authenticate against that binding directly.',
+                fix: 'Bind the client’s own realm on the space and let it authenticate against that binding directly.',
                 link: realmLink(row),
             };
         default:

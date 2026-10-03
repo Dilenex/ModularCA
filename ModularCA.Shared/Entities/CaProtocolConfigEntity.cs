@@ -192,8 +192,8 @@ public class CaProtocolConfigEntity
 
     /// <summary>
     /// MSAE only: accept Kerberos tickets (<c>Authorization: Negotiate</c>) from the forests bound
-    /// to the CA's tenant, and challenge a credential-less client with 401 so it fetches one.
-    /// Requires at least one enabled realm binding on the tenant.
+    /// to the CA's space, and challenge a credential-less client with 401 so it fetches one.
+    /// Requires at least one enabled realm binding on the space.
     /// </summary>
     public bool MsaeAllowKerberos { get; set; } = false;
 

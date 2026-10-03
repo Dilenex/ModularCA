@@ -22,7 +22,7 @@ namespace ModularCA.Tests.Auth;
 /// </summary>
 public class BodyTargetAuthorizationTests
 {
-    private static readonly Guid TenantA = Guid.NewGuid();
+    private static readonly Guid SpaceA = Guid.NewGuid();
 
     private sealed class World
     {
@@ -45,7 +45,7 @@ public class BodyTargetAuthorizationTests
 
         public CertificateAuthorityEntity Ca(string label)
         {
-            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label, Label = label, TenantId = TenantA, CertificateId = Guid.NewGuid() };
+            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = label, Label = label, SpaceId = SpaceA, CertificateId = Guid.NewGuid() };
             Db.CertificateAuthorities.Add(ca);
             return ca;
         }
@@ -67,7 +67,7 @@ public class BodyTargetAuthorizationTests
         /// <summary>Grants <paramref name="capability"/> on <paramref name="ca"/> (or at system scope when null).</summary>
         public void Grant(CertificateAuthorityEntity? ca, string capability)
         {
-            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", TenantId = TenantA, CertificateAuthorityId = ca?.Id, IsSystemGroup = ca == null };
+            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", SpaceId = SpaceA, CertificateAuthorityId = ca?.Id, IsSystemGroup = ca == null };
             Db.CaGroups.Add(g);
             Db.CaGroupMembers.Add(new CaGroupMemberEntity { Id = Guid.NewGuid(), GroupId = g.Id, UserId = UserId });
             Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = g.Id, Capability = capability });

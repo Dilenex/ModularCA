@@ -37,17 +37,17 @@ public sealed class InfrastructureReissueTests
     {
         var world = SignerTestWorld.Create();
         var caId = world.CaEcId;
-        Guid? scope = instanceCa ? null : world.TenantB;
+        Guid? scope = instanceCa ? null : world.SpaceB;
         using (var seed = world.OpenDb())
         {
             if (instanceCa)
             {
                 seed.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = true });
-                seed.CertificateAuthorities.Single(c => c.Id == caId).TenantId = null;
+                seed.CertificateAuthorities.Single(c => c.Id == caId).SpaceId = null;
             }
             else
             {
-                seed.Tenants.Single(t => t.Id == world.TenantB).RequireKeyCeremony = true;
+                seed.Spaces.Single(t => t.Id == world.SpaceB).RequireKeyCeremony = true;
             }
             seed.SigningProfiles.Add(new SigningProfileEntity { Name = "ca-ec signing", AllowedAlgorithms = "[]", IssuerId = world["ca-ec"].Ref.CertificateId });
             seed.CertProfiles.Add(new CertProfileEntity
@@ -88,7 +88,7 @@ public sealed class InfrastructureReissueTests
         Assert.All(keyRows, r => Assert.Equal(SignerAuditEntity.AllowedOutcome, r.Outcome));
         Assert.All(keyRows, r => Assert.Equal(nameof(SigningPurpose.Infrastructure), r.Purpose));
         Assert.All(keyRows, r => Assert.Equal(caId, r.CaId));
-        Assert.All(keyRows, r => Assert.Equal(instanceCa ? SignerAuditEntity.InstanceScope : SignerAuditEntity.TenantScope, r.EffectiveScope));
+        Assert.All(keyRows, r => Assert.Equal(instanceCa ? SignerAuditEntity.InstanceScope : SignerAuditEntity.SpaceScope, r.EffectiveScope));
     }
 
     /// <summary>

@@ -4,7 +4,7 @@ export const adminCa: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/authorities',
-        summary: 'List all certificate authorities (excluding SSH CAs), filtered by the user\'s accessible tenants.',
+        summary: 'List all certificate authorities (excluding SSH CAs), filtered by the user\'s accessible spaces.',
         auth: 'Authorize (CaAuditor)',
         category: 'Admin CA',
         headers: [
@@ -15,13 +15,13 @@ export const adminCa: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/authorities/include-system-ca',
-        summary: 'List all CA certificates including system signing CAs. System admins see all; others see only their tenants.',
+        summary: 'List all CA certificates including system signing CAs. System admins see all; others see only their spaces.',
         auth: 'Authorize (CaAuditor)',
         category: 'Admin CA',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of all CA certificate info models filtered by tenant access.',
+        responseDescription: 'Array of all CA certificate info models filtered by space access.',
     },
     {
         method: 'GET',
@@ -37,7 +37,7 @@ export const adminCa: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/authorities/{serial}',
-        summary: 'Get detailed certificate information for a CA by serial number. Returns 404 if cert not found or caller lacks tenant access.',
+        summary: 'Get detailed certificate information for a CA by serial number. Returns 404 if cert not found or caller lacks space access.',
         auth: 'Authorize (CaAuditor)',
         category: 'Admin CA',
         headers: [
@@ -48,7 +48,7 @@ export const adminCa: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/authorities/{serial}/file',
-        summary: 'Download a CA certificate file in PEM or DER format based on Accept header. Returns 404 if caller lacks tenant access.',
+        summary: 'Download a CA certificate file in PEM or DER format based on Accept header. Returns 404 if caller lacks space access.',
         auth: 'Authorize (CaAuditor)',
         category: 'Admin CA',
         headers: [
@@ -89,7 +89,7 @@ export const adminCa: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/authorities/create-intermediate',
-        summary: 'Create an intermediate CA signed by a parent CA. Requires step-up MFA. If the tenant requires key ceremonies, initiates a ceremony instead of immediate creation.',
+        summary: 'Create an intermediate CA signed by a parent CA. Requires step-up MFA. If the space requires key ceremonies, initiates a ceremony instead of immediate creation.',
         auth: 'Authorize (SystemOperator)',
         category: 'Admin CA',
         requestBody: [
@@ -100,8 +100,8 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'subjectST', type: 'string', required: false, description: 'State/Province' },
             { name: 'subjectC', type: 'string', required: false, description: 'Country' },
             { name: 'parentCaId', type: 'guid', required: true, description: 'Parent CA ID' },
-            { name: 'tenantId', type: 'guid', required: false, description: 'Tenant that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
-            { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no tenant). Omit when tenantId is sent; a body with neither, or both, is refused with 400' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Space that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
+            { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no space). Omit when spaceId is sent; a body with neither, or both, is refused with 400' },
             { name: 'keyAlgorithm', type: 'string', required: true, description: 'Key algorithm (ECDSA, RSA, Ed25519, Ed448, ML-DSA, SLH-DSA). Default: ECDSA' },
             { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 2048/3072/4096/7680/8192. ECDSA: 256/384/521. Default: 384' },
             { name: 'validityYears', type: 'int', required: false, description: 'Validity in years (default: 10)' },
@@ -116,12 +116,12 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created intermediate CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. If the tenant has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
+        notes: 'Key algorithm policy enforced: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
     },
     {
         method: 'POST',
         path: '/api/v1/admin/authorities/create-root',
-        summary: 'Create a new self-signed root CA. Requires step-up MFA. If the tenant requires key ceremonies, initiates a ceremony instead of immediate creation.',
+        summary: 'Create a new self-signed root CA. Requires step-up MFA. If the space requires key ceremonies, initiates a ceremony instead of immediate creation.',
         auth: 'Authorize (SystemAdmin)',
         category: 'Admin CA',
         requestBody: [
@@ -131,8 +131,8 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'subjectL', type: 'string', required: false, description: 'Locality' },
             { name: 'subjectST', type: 'string', required: false, description: 'State/Province' },
             { name: 'subjectC', type: 'string', required: false, description: 'Country' },
-            { name: 'tenantId', type: 'guid', required: false, description: 'Tenant that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
-            { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no tenant). Omit when tenantId is sent; a body with neither, or both, is refused with 400' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Space that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
+            { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no space). Omit when spaceId is sent; a body with neither, or both, is refused with 400' },
             { name: 'keyAlgorithm', type: 'string', required: true, description: 'Key algorithm (ECDSA, RSA, Ed25519, Ed448, ML-DSA, SLH-DSA). Default: ECDSA' },
             { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 2048/3072/4096/7680/8192. ECDSA: 256/384/521. Default: 384' },
             { name: 'validityYears', type: 'int', required: false, description: 'Validity in years (default: 25)' },
@@ -147,6 +147,6 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created root CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced. Triggers a security alert when a root CA is created. If the tenant has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
+        notes: 'Key algorithm policy enforced. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
     },
 ];

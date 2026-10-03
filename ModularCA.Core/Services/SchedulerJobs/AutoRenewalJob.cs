@@ -343,12 +343,12 @@ public class AutoRenewalJob : SingletonCronJob
     {
         try
         {
-            // Named argument: the tenant validity-ceiling enforcement mode now sits ahead of the
+            // Named argument: the space validity-ceiling enforcement mode now sits ahead of the
             // token. The default — always shorten — is mandatory on this path. A renewal derives
-            // its window from the certificate profile with no knowledge of the tenant, so honouring
-            // a Refuse setting here would fail every renewal whose profile out-reaches its tenant,
+            // its window from the certificate profile with no knowledge of the space, so honouring
+            // a Refuse setting here would fail every renewal whose profile out-reaches its space,
             // silently, at 3am, for certificates that were issued perfectly happily before someone
-            // changed a tenant setting.
+            // changed a space setting.
             var issuanceResult = await _issuance.IssueCertificateAsync(renewalRequest.Id, null, null, cancellationToken: cancellationToken);
             var pem = issuanceResult.Pem;
 

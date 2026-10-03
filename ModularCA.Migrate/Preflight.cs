@@ -171,9 +171,9 @@ public sealed class Preflight
     }
 
     /// <summary>
-    /// Refuses while the source still has tenant hostnames. 0.4.0 retired them and its schema has
-    /// no table for them, so the copy would leave them behind without a word; a PostgreSQL install
-    /// refuses the same rows in the <c>RetireTenantHostnames</c> migration.
+    /// Refuses while the source still has tenant hostnames. 0.4.0 retired them: the
+    /// <c>RetireTenantHostnames</c> migration, which this helper applies after the copy, refuses
+    /// the same rows. Refusing here says so before anything is created.
     /// </summary>
     private async Task CheckTenantHostnamesAsync(MySqlConnection conn, CancellationToken ct)
     {
@@ -196,14 +196,15 @@ public sealed class Preflight
         }
 
         _refusals.Add(
-            $"{rows} tenant hostname(s) exist. This release no longer serves tenant hostnames and has no table for "
-            + "them, so they would not be copied. Remove them in the 0.3.0 console, or move those names to the "
-            + "instance's public domain or to a reverse proxy, then re-run.");
+            $"{rows} tenant hostname(s) exist. This release no longer serves tenant hostnames, and its "
+            + "RetireTenantHostnames migration refuses to drop them. Remove them in the 0.3.0 console, or move those "
+            + "names to the instance's public domain or to a reverse proxy, then re-run.");
     }
 
     /// <summary>
     /// Looks for rows that would collide once case stops distinguishing them, keyed on each whole
-    /// uniqueness constraint.
+    /// uniqueness constraint of the baseline schema the copy writes into
+    /// (<see cref="ModelIntrospection.BaselineModel"/>).
     /// <para>
     /// MariaDB's collation should have made this impossible, which is exactly why it is worth
     /// confirming rather than assuming before a one-way copy: a pair of rows that differ only in
@@ -218,7 +219,7 @@ public sealed class Preflight
     /// </summary>
     private async Task CheckCaseCollisionsAsync(MySqlConnection conn, CancellationToken ct)
     {
-        var checks = ModelIntrospection.UniquenessChecks(ModelIntrospection.DestinationModel()).ToList();
+        var checks = ModelIntrospection.UniquenessChecks(ModelIntrospection.BaselineModel()).ToList();
         var sourceSchema = await SourceSchemaAsync(conn, ct);
         var swept = 0;
         var collisions = 0;

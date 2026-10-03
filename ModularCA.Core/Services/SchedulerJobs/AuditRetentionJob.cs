@@ -173,7 +173,7 @@ public class AuditRetentionJob : SingletonCronJob
     /// Optionally streams rows older than <paramref name="cutoff"/> in <paramref name="table"/>
     /// to a gzip jsonl file under <paramref name="archiveDir"/>, then chunked-deletes rows
     /// <paramref name="batchSize"/> at a time until none remain or cancellation fires. When the
-    /// archive was requested and fails, nothing is deleted. AuditLogs is pruned one tenant chain at
+    /// archive was requested and fails, nothing is deleted. AuditLogs is pruned one space chain at
     /// a time, and each chain's prune marker is written as soon as its rows are gone (even when a
     /// later batch failed or the run was cancelled), so no chain is left pruned without a marker.
     /// Catches per-table failures so one broken table can't abort the rest of the run.
@@ -208,18 +208,18 @@ public class AuditRetentionJob : SingletonCronJob
             {
                 var chains = await _auditDb!.AuditLogs.Where(a => a.Timestamp < cutoff)
                     .Select(a => a.TenantId).Distinct().ToListAsync(ct);
-                foreach (var tenantId in chains)
+                foreach (var spaceId in chains)
                 {
                     var deleted = 0;
                     try
                     {
-                        await DeleteInBatchesAsync(table, cutoff, true, tenantId, batchSize, n => deleted += n, ct);
+                        await DeleteInBatchesAsync(table, cutoff, true, spaceId, batchSize, n => deleted += n, ct);
                     }
                     finally
                     {
                         totalDeleted += deleted;
                         if (deleted > 0)
-                            await RecordPruneMarkerAsync(tenantId, cutoff);
+                            await RecordPruneMarkerAsync(spaceId, cutoff);
                     }
                 }
             }
@@ -251,15 +251,15 @@ public class AuditRetentionJob : SingletonCronJob
     /// Deletes rows older than <paramref name="cutoff"/> from <paramref name="table"/> in batches
     /// until a short batch or cancellation, reporting each batch's count to
     /// <paramref name="onDeleted"/> as it commits so a caller still knows what was deleted when a
-    /// later batch throws. With <paramref name="byTenant"/> only <paramref name="tenantId"/>'s rows
+    /// later batch throws. With <paramref name="bySpace"/> only <paramref name="spaceId"/>'s rows
     /// (null meaning the system chain) are deleted.
     /// </summary>
     private async Task DeleteInBatchesAsync(
-        string table, DateTime cutoff, bool byTenant, Guid? tenantId, int batchSize, Action<int> onDeleted, CancellationToken ct)
+        string table, DateTime cutoff, bool bySpace, Guid? spaceId, int batchSize, Action<int> onDeleted, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            var affected = await DeleteBatchAsync(table, cutoff, byTenant, tenantId, batchSize, ct);
+            var affected = await DeleteBatchAsync(table, cutoff, bySpace, spaceId, batchSize, ct);
             if (affected <= 0)
                 break;
             onDeleted(affected);
@@ -279,37 +279,37 @@ public class AuditRetentionJob : SingletonCronJob
     /// run the job's control flow on a provider without ctid.
     /// </summary>
     protected virtual Task<int> DeleteBatchAsync(
-        string table, DateTime cutoff, bool byTenant, Guid? tenantId, int batchSize, CancellationToken ct)
+        string table, DateTime cutoff, bool bySpace, Guid? spaceId, int batchSize, CancellationToken ct)
     {
         var quoted = "\"" + table.Replace("\"", "\"\"") + "\"";
-        var tenantClause = !byTenant ? "" : tenantId == null ? " AND \"TenantId\" IS NULL" : " AND \"TenantId\" = {2}";
+        var spaceClause = !bySpace ? "" : spaceId == null ? " AND \"TenantId\" IS NULL" : " AND \"TenantId\" = {2}";
         var sql =
             $"DELETE FROM {quoted} WHERE ctid IN ("
-            + $"SELECT ctid FROM {quoted} WHERE \"Timestamp\" < {{0}}{tenantClause} LIMIT {{1}})";
-        var parameters = byTenant && tenantId != null
-            ? new object[] { cutoff, batchSize, tenantId.Value }
+            + $"SELECT ctid FROM {quoted} WHERE \"Timestamp\" < {{0}}{spaceClause} LIMIT {{1}})";
+        var parameters = bySpace && spaceId != null
+            ? new object[] { cutoff, batchSize, spaceId.Value }
             : new object[] { cutoff, batchSize };
         return _auditDb!.Database.ExecuteSqlRawAsync(sql, parameters, ct);
     }
 
     /// <summary>
-    /// Writes the prune marker for one tenant chain right after its rows were deleted. Runs
+    /// Writes the prune marker for one space chain right after its rows were deleted. Runs
     /// uncancellable, so a shutdown that arrives after the delete still leaves the chain marked;
     /// a failure is logged, since verification will then report a break at the chain's oldest record.
     /// </summary>
-    private async Task RecordPruneMarkerAsync(Guid? tenantId, DateTime cutoff)
+    private async Task RecordPruneMarkerAsync(Guid? spaceId, DateTime cutoff)
     {
         if (_hashChain == null)
             return;
         try
         {
-            await _hashChain.RecordPruneAsync(_auditDb!, tenantId, cutoff, CancellationToken.None);
+            await _hashChain.RecordPruneAsync(_auditDb!, spaceId, cutoff, CancellationToken.None);
         }
         catch (Exception markerEx)
         {
             _logger.LogError(markerEx,
-                "AuditRetentionJob: could not write the prune marker for audit chain {TenantId}; verification will report a break at its oldest record",
-                tenantId?.ToString() ?? "instance");
+                "AuditRetentionJob: could not write the prune marker for audit chain {SpaceId}; verification will report a break at its oldest record",
+                spaceId?.ToString() ?? "instance");
         }
     }
 

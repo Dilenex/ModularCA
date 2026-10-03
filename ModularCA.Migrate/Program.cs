@@ -146,8 +146,9 @@ internal static class Program
     }
 
     /// <summary>
-    /// Preflight, build, copy, verify and configure, rolling back everything this run created on
-    /// any failure before the configuration is written. After that point nothing rolls back: a
+    /// Preflight, then <see cref="MigrationRun"/>: build at the baselines, copy, verify, apply the
+    /// later migrations and configure, rolling back everything this run created on any failure
+    /// before the configuration is written. After that point nothing rolls back: a
     /// durable administrative account (one not borrowed for the run) then has the memberships it
     /// was given taken back, and a failure to do so is reported with the statement to run.
     /// </summary>
@@ -186,39 +187,60 @@ internal static class Program
             return 0;
         }
 
-        // ── 2. Build the destination ──────────────────────────────────────────
+        // ── 2. Build at the baselines, copy, verify, upgrade, configure ───────
+        // Cleanup runs whatever stage failed, including one that failed partway through creating
+        // things. Every statement in the rollback is IF EXISTS and names only what preflight
+        // proved was free, so running it when there is nothing to remove costs nothing.
         var builder = new DestinationBuilder(options, Say);
-        try
+        var stages = new RunStages(options, builder, Say);
+        var configured = await MigrationRun.ExecuteAsync(
+            stages, options.KeepOnFailure, $"'{options.TargetAppDatabase}' and '{options.TargetAuditDatabase}'",
+            Say, Console.Error.WriteLine, ct);
+        if (!configured)
+            return 1;
+
+        // Past the point of no return: the destination is verified and configured, so nothing
+        // below may roll it back.
+        return borrowedAdmin ? 0 : await RevokeAdministratorMembershipsAsync(options, builder, Say);
+    }
+
+    /// <summary>The stages of a real run, against the MariaDB source and the PostgreSQL destination.</summary>
+    private sealed class RunStages(MigrationOptions options, DestinationBuilder builder, Action<string> say) : MigrationRun.IStages
+    {
+        private IReadOnlyList<TableCopier.TableResult> _app = [];
+        private IReadOnlyList<TableCopier.TableResult> _audit = [];
+
+        /// <inheritdoc />
+        public Task BuildAtBaselineAsync(CancellationToken ct) => builder.BuildAsync(ct);
+
+        /// <summary>Copies both databases into the baseline tables (<see cref="ModelIntrospection.AppCopyTables"/>).</summary>
+        public async Task CopyAsync(CancellationToken ct)
         {
-            Say("Creating the destination");
-            await builder.BuildAsync(ct);
-            Say("");
+            say("Copying the application database");
+            _app = await CopyDatabaseAsync(options, options.SourceAppDatabase,
+                ModelIntrospection.AppCopyTables(), options.AppInstance(builder.AppPassword), say, ct);
+            say("");
 
-            // ── 3. Copy ───────────────────────────────────────────────────────
-            Say("Copying the application database");
-            var appResults = await CopyDatabaseAsync(
-                options, options.SourceAppDatabase, builder.AppPassword,
-                ModelIntrospection.Tables(ModelIntrospection.DestinationModel()),
-                options.AppInstance(builder.AppPassword), Say, ct);
-            Say("");
+            say("Copying the audit database");
+            _audit = await CopyDatabaseAsync(options, options.SourceAuditDatabase,
+                ModelIntrospection.AuditCopyTables(), options.AuditInstance(builder.AuditPassword), say, ct);
+            say("");
+        }
 
-            Say("Copying the audit database");
-            var auditResults = await CopyDatabaseAsync(
-                options, options.SourceAuditDatabase, builder.AuditPassword,
-                ModelIntrospection.Tables(ModelIntrospection.AuditModel()),
-                options.AuditInstance(builder.AuditPassword), Say, ct);
-            Say("");
-
-            // ── 4. Verify ─────────────────────────────────────────────────────
-            Say("Verifying");
-            var verification = new Verification(Say);
+        /// <summary>
+        /// Resets the identity sequences, then compares row counts, re-parses certificates and
+        /// re-verifies the audit chain against the source, all at the baseline stage.
+        /// </summary>
+        public async Task<IReadOnlyList<string>> VerifyCopyAsync(CancellationToken ct)
+        {
+            var verification = new Verification(say);
 
             await using (var appConn = new NpgsqlConnection(
                 Shared.Utils.PostgresConnection.Build(options.AppInstance(builder.AppPassword))))
             {
                 await appConn.OpenAsync(ct);
                 await verification.ResetSequencesAsync(appConn, ct);
-                await verification.CheckRowCountsAsync(appConn, appResults, ct);
+                await verification.CheckRowCountsAsync(appConn, _app, ct);
                 await verification.CheckCertificatesAsync(appConn, sample: 50, ct);
             }
 
@@ -227,7 +249,7 @@ internal static class Program
             {
                 await auditConn.OpenAsync(ct);
                 await verification.ResetSequencesAsync(auditConn, ct);
-                await verification.CheckRowCountsAsync(auditConn, auditResults, ct);
+                await verification.CheckRowCountsAsync(auditConn, _audit, ct);
             }
 
             await using (var auditDb = DestinationBuilder.AuditContext(options.AuditInstance(builder.AuditPassword)))
@@ -238,55 +260,27 @@ internal static class Program
                 await verification.CheckAuditChainAsync(auditDb, auditSource, ct);
             }
 
-            if (verification.Failures.Count > 0)
-            {
-                Console.Error.WriteLine("");
-                Console.Error.WriteLine($"Verification failed. {verification.Failures.Count} problem(s):");
-                foreach (var failure in verification.Failures)
-                    Console.Error.WriteLine($"  - {failure}");
-                throw new MigrationFailedException("verification failed");
-            }
-
-            // Only now, with every check passed. A db.yaml pointing at a database that failed
-            // verification would be worse than one still pointing at MariaDB.
-            var config = ConfigUpdate.Apply(
-                options, builder.AppPassword, builder.AuditPassword, DateTime.Now);
-
-            Say("");
-            Report(options, builder, appResults, auditResults, config, Say);
+            return verification.Failures;
         }
-        catch (Exception ex)
+
+        /// <inheritdoc />
+        public Task ApplyUpgradeMigrationsAsync(CancellationToken ct) => builder.ApplyUpgradeMigrationsAsync(ct);
+
+        /// <summary>
+        /// Writes the configuration, only once every check passed and every migration applied: a
+        /// db.yaml pointing at a database that failed either would be worse than one still pointing
+        /// at MariaDB.
+        /// </summary>
+        public Task ConfigureAsync(CancellationToken ct)
         {
-            Console.Error.WriteLine("");
-            Console.Error.WriteLine($"(!) Migration failed: {ex.Message}");
-
-            // Cleanup runs whatever stage failed, including one that failed partway through
-            // creating things. An earlier version only cleaned up once the whole creation step
-            // had succeeded, so a failure in the middle of it left roles behind while reporting
-            // that nothing had been created — and the next run then refused, correctly, on names
-            // that were only taken because of the first one. Every statement in the rollback is
-            // IF EXISTS and names only what preflight proved was free, so running it when there
-            // is nothing to remove costs nothing.
-            if (options.KeepOnFailure)
-            {
-                Console.Error.WriteLine(
-                    $"    The half-built databases '{options.TargetAppDatabase}' and "
-                    + $"'{options.TargetAuditDatabase}' were left in place for inspection (--keep-on-failure). "
-                    + "Drop them before re-running.");
-                return 1;
-            }
-
-            // Safe only because preflight refused unless none of this existed: everything dropped
-            // here was created by this run, or was never there.
-            Console.Error.WriteLine("    Removing anything this run created:");
-            await DestinationBuilder.RollbackAsync(options, l => Console.Error.WriteLine($"  {l}"), CancellationToken.None);
-            Console.Error.WriteLine("    The source was not touched. Fix the problem above and run again.");
-            return 1;
+            var config = ConfigUpdate.Apply(options, builder.AppPassword, builder.AuditPassword, DateTime.Now);
+            Report(options, builder, _app, _audit, config, say);
+            return Task.CompletedTask;
         }
 
-        // Past the point of no return: the destination is verified and configured, so nothing
-        // below may roll it back.
-        return borrowedAdmin ? 0 : await RevokeAdministratorMembershipsAsync(options, builder, Say);
+        /// <inheritdoc />
+        public Task RollbackAsync(CancellationToken ct) =>
+            DestinationBuilder.RollbackAsync(options, l => Console.Error.WriteLine($"  {l}"), ct);
     }
 
     /// <summary>
@@ -318,7 +312,7 @@ internal static class Program
     }
 
     private static async Task<IReadOnlyList<TableCopier.TableResult>> CopyDatabaseAsync(
-        MigrationOptions options, string sourceDatabase, string destPassword,
+        MigrationOptions options, string sourceDatabase,
         IReadOnlyList<ModelIntrospection.TableInfo> tables,
         Shared.Models.Config.DbInstance destInstance, Action<string> say, CancellationToken ct)
     {
@@ -344,7 +338,8 @@ internal static class Program
             + $"({copied.Count(r => r.Skipped)} tables were empty or new in 0.3.1)");
         say("");
         say("  Checked: foreign keys validated by the server, row counts per table, identity");
-        say("  sequences reset, certificates re-parsed from their stored bytes, audit hash chain.");
+        say("  sequences reset, certificates re-parsed from their stored bytes, audit hash chain,");
+        say("  all at the baseline schema; then every later migration applied to the copy.");
         say("");
         say("  The source database was not modified. It remains a complete rollback.");
         say("");

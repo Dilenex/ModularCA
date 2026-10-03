@@ -14,14 +14,14 @@ namespace ModularCA.Core.Services;
 public interface IEnrollmentTokenService
 {
     /// <summary>
-    /// Generates a new enrollment token. <paramref name="tenantId"/> and
+    /// Generates a new enrollment token. <paramref name="spaceId"/> and
     /// <paramref name="certificateAuthorityId"/> stamp the token with its target scope so the
-    /// admin list endpoint can filter by tenant without relying on stale creator heuristics.
+    /// admin list endpoint can filter by space without relying on stale creator heuristics.
     /// </summary>
     Task<string> GenerateTokenAsync(Guid userId, TimeSpan expiresIn, int maxUses = 1,
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null);
+        Guid? certificateAuthorityId = null, Guid? spaceId = null);
     /// <param name="sans">
     /// SAN entries in <c>CertificateUtil.ParseCsr</c>'s <c>TYPE:value</c> form. Optional so
     /// callers that have not parsed them yet keep compiling; when supplied, the token's
@@ -36,7 +36,7 @@ public interface IEnrollmentTokenService
     Task<List<EnrollmentTokenEntity>> GetActiveTokensAsync();
     Task<bool> RevokeTokenAsync(Guid id);
     /// <summary>
-    /// Retrieves a token by ID for per-call tenant enforcement in the
+    /// Retrieves a token by ID for per-call space enforcement in the
     /// admin revoke path. Returns null when the id does not exist.
     /// </summary>
     Task<EnrollmentTokenEntity?> GetByIdAsync(Guid id);
@@ -50,7 +50,7 @@ public interface IEnrollmentTokenService
     /// </summary>
     Task<(EnrollmentTokenEntity Entity, string PlaintextSecret)> GenerateCmpSharedSecretAsync(
         Guid userId, string referenceValue, TimeSpan expiresIn, int maxUses,
-        Guid? certificateAuthorityId, Guid? tenantId);
+        Guid? certificateAuthorityId, Guid? spaceId);
 
     /// <summary>
     /// Looks up and atomically consumes a CMP PBMAC credential by
@@ -116,7 +116,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
     public async Task<string> GenerateTokenAsync(Guid userId, TimeSpan expiresIn, int maxUses = 1,
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null)
+        Guid? certificateAuthorityId = null, Guid? spaceId = null)
     {
         var tokenValue = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
             .Replace("+", "-").Replace("/", "_").TrimEnd('=');
@@ -135,7 +135,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
             CertProfileId = certProfileId,
             SigningProfileId = signingProfileId,
             CertificateAuthorityId = certificateAuthorityId,
-            TenantId = tenantId
+            SpaceId = spaceId
         };
 
         _db.EnrollmentTokens.Add(entity);
@@ -281,7 +281,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
     /// <inheritdoc />
     public async Task<(EnrollmentTokenEntity Entity, string PlaintextSecret)> GenerateCmpSharedSecretAsync(
         Guid userId, string referenceValue, TimeSpan expiresIn, int maxUses,
-        Guid? certificateAuthorityId, Guid? tenantId)
+        Guid? certificateAuthorityId, Guid? spaceId)
     {
         if (string.IsNullOrWhiteSpace(referenceValue))
             throw new ArgumentException("CMP reference value must be non-empty", nameof(referenceValue));
@@ -312,7 +312,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         var wrapped = await _signer.WrapSecretAsync(
             SecretKind.CmpSharedSecret,
             Encoding.UTF8.GetBytes(plaintext),
-            new SigningContext(SignerCaller, SigningPurpose.Cmp, tenantId, certificateAuthorityId));
+            new SigningContext(SignerCaller, SigningPurpose.Cmp, spaceId, certificateAuthorityId));
 
         var entity = new EnrollmentTokenEntity
         {
@@ -325,7 +325,7 @@ public class EnrollmentTokenService : IEnrollmentTokenService
             UsesRemaining = maxUses,
             Protocol = "CMP",
             CertificateAuthorityId = certificateAuthorityId,
-            TenantId = tenantId,
+            SpaceId = spaceId,
             UsedForCmp = true,
             CmpReferenceValue = referenceValue,
             CmpSecretHashBase64 =

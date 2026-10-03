@@ -5,9 +5,10 @@ namespace ModularCA.Tests.Database;
 
 /// <summary>
 /// The two frozen baselines stay byte-for-byte what production and staging applied on
-/// 2026-09-19. Editing or regenerating one passes every other test, because nothing else compares
-/// a migration's text with what a live database recorded as applied. The hash ignores a leading
-/// UTF-8 byte order mark and every carriage return, so a checkout's line endings do not matter.
+/// 2026-09-19, and the 0.4.0 migrations after them stay as written. Editing or regenerating one
+/// passes every other test, because nothing else compares a migration's text with what a live
+/// database recorded as applied. The hash ignores a leading UTF-8 byte order mark and every
+/// carriage return, so a checkout's line endings do not matter.
 /// </summary>
 public class FrozenBaselineTests
 {
@@ -17,6 +18,12 @@ public class FrozenBaselineTests
         { "ModularCA.Database/Migrations/20260919181506_InitialCreate.Designer.cs", "5d933fa9e10177d29cd28853a8483cf48dceaac395167de1d2522c78e1ab4a3b" },
         { "ModularCA.Database/Migrations/Audit/20260919181510_InitialAuditSchema.cs", "60c09e23660bd4a7c0438e8ccd800ff6caf7fb685b9cc956e0614bb63f209f89" },
         { "ModularCA.Database/Migrations/Audit/20260919181510_InitialAuditSchema.Designer.cs", "65f03a5cd541e9cdadf1fd9ac49c9787a7e492955f2a969badd6985539defd5c" },
+        { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.cs", "e2bbdaf780a0dadea929fc14e4af18bfe42d8958d5f0f3c39034816ca84cda72" },
+        { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.Designer.cs", "ac3faaa65310b11f75e65c4609fb88b959424a8e506faa769959a49d855ffecb" },
+        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.cs", "09de8f2e88a6e0fd44d43999479410c7f2cc6c5cd5ccd2e6cfe48819fc348ca0" },
+        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.Designer.cs", "d551ca553511bb480ed49d6e7f65eb374a32b56557d947e53ad83b5c1d88f446" },
+        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.cs", "682c1be3e0dd9fdc9ef5aaf909fb59a3f55fb0b6e2ea43e065e968fa7380687d" },
+        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.Designer.cs", "2a9c245bd5c2c95195915be692f7936f7cc3e6e0aa0d70cc3d209967712863cd" },
     };
 
     [Theory]
@@ -24,14 +31,14 @@ public class FrozenBaselineTests
     public void A_frozen_baseline_is_unchanged(string relativePath, string pinnedSha256)
     {
         var path = Path.Combine(RepoRoot(), relativePath.Replace('/', Path.DirectorySeparatorChar));
-        Assert.True(File.Exists(path), $"{relativePath} is missing. It is a frozen baseline applied by production and staging; restore it.");
+        Assert.True(File.Exists(path), $"{relativePath} is missing. It is a frozen migration; restore it.");
 
         var actual = NormalisedSha256(File.ReadAllBytes(path));
 
         Assert.True(actual == pinnedSha256,
-            $"{relativePath} has changed (normalised SHA-256 {actual}, pinned {pinnedSha256}). It is a frozen baseline that "
-            + "production and staging applied on 2026-09-19, and a changed baseline is never applied to them again. Restore "
-            + "the file and add a migration instead (dotnet ef migrations add).");
+            $"{relativePath} has changed (normalised SHA-256 {actual}, pinned {pinnedSha256}). It is a frozen migration, and "
+            + "a database that already applied it never applies it again. Restore the file and add a migration instead "
+            + "(dotnet ef migrations add).");
     }
 
     [Fact]

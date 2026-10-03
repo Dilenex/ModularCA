@@ -45,7 +45,7 @@ public class UserRequestProfileController(
             .ToListAsync();
 
         // Audit-finding #49 consolidation: use the canonical super-admin idiom populated by
-        // TenantResolutionMiddleware (which checks all four SystemManage grant sources:
+        // SpaceFenceMiddleware (which checks all four SystemManage grant sources:
         // direct group grant, role via group, direct user grant, role via user) instead of
         // the previous open-coded query that only covered source #1 and could silently
         // deny access to role-based system admins.

@@ -67,17 +67,17 @@ public class EnrollmentTokenEntity
 
     /// <summary>
     /// The CA this token targets. Populated from the signing profile's
-    /// issuer at generation time so the admin list endpoint can filter by tenant without
+    /// issuer at generation time so the admin list endpoint can filter by space without
     /// relying on the stale "creator's group membership" heuristic. Null for system-wide
     /// tokens minted by a SystemOperator.
     /// </summary>
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
-    /// The tenant this token is scoped to. Redundant with
+    /// The space this token is scoped to. Redundant with
     /// <see cref="CertificateAuthorityId"/> but cheaper to filter on at list time.
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     // ─── CMP-specific fields ─────────────────────────
 

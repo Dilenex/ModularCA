@@ -80,8 +80,9 @@ public class KeyCeremonyEntity
     public string ApprovalsJson { get; set; } = "[]";
 
     /// <summary>
-    /// The tenant this ceremony belongs to. Used for scoping visibility to CA admins
-    /// within the same tenant. Populated from ParametersJson at initiation time.
+    /// The space this ceremony belongs to, or null for the instance. Used for scoping
+    /// visibility to CA admins within the same space. Populated from the top-level
+    /// <c>SpaceId</c> of ParametersJson at initiation time.
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 }

@@ -324,7 +324,8 @@ public class AdminConfigController(
     /// may turn LDAP sign-in off and toggle GroupSyncEnabled and AutoProvisionUsers. Changing the
     /// Host, Port or UseSsl while a bind password is stored needs the password re-entered (400), so
     /// the stored secret is never sent to a new server. New or changed group mappings that target a
-    /// system or privilege-controlled group are rejected with 400.
+    /// system or privilege-controlled group are rejected with 400. A save by a super rewrites
+    /// mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
     /// </summary>
     [HttpPut("ldap-auth")]
     // Step-up parity with every other security-relevant section. Omitting it here was
@@ -375,6 +376,8 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.GroupSearchFilter)) _config.LdapAuth.GroupSearchFilter = update.GroupSearchFilter;
         if (!string.IsNullOrEmpty(update.GroupMemberAttribute)) _config.LdapAuth.GroupMemberAttribute = update.GroupMemberAttribute;
         if (update.GroupToRoleMappings != null) _config.LdapAuth.GroupToRoleMappings = update.GroupToRoleMappings;
+        if (await RequireSuperAsync(controlledUsers, LdapIdentitySuperOnly) is null)
+            _config.LdapAuth.GroupToRoleMappings = await ldapSync.RewriteRenamedSpaceGroupsAsync(_config.LdapAuth.GroupToRoleMappings);
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("LdapAuth", new { update.Enabled, update.Host, update.Port });
         return Ok(new { message = "LDAP auth config updated", enabled = _config.LdapAuth.Enabled });

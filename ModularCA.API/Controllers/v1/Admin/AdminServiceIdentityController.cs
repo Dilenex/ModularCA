@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Service identities: accounts that hold permissions for a non-person caller, such as the
 /// enrollment identity a Kerberos realm acts as, and that can never sign in. Each lives at
-/// system, tenant or CA scope; managing one needs <c>ca.manage</c> at that scope, and its
+/// system, space or CA scope; managing one needs <c>ca.manage</c> at that scope, and its
 /// groups must lie within it.
 /// </summary>
 [ApiController]
@@ -60,8 +61,8 @@ public class AdminServiceIdentityController(
         {
             var user = await identities.CreateAsync(currentUser.User.Id,
                 new ServiceIdentitySpec(request.Username, request.DisplayName, request.Description,
-                    new ServiceIdentityScope(request.TenantId, request.CaId), request.GroupIds ?? []));
-            await LogAsync(AuditActionType.ServiceIdentityCreated, user, new { user.Username, user.ServiceScopeTenantId, user.ServiceScopeCaId, request.GroupIds });
+                    new ServiceIdentityScope(request.SpaceId, request.CaId), request.GroupIds ?? []));
+            await LogAsync(AuditActionType.ServiceIdentityCreated, user, new { user.Username, user.ServiceScopeSpaceId, user.ServiceScopeCaId, request.GroupIds });
             return Ok((await ProjectAsync([(await identities.GetAsync(user.Id))!]))[0]);
         }
         catch (UnauthorizedAccessException ex) { return StatusCode(403, new { error = ex.Message }); }
@@ -125,13 +126,13 @@ public class AdminServiceIdentityController(
 
     private Task LogAsync(string action, UserEntity user, object details)
         => audit.LogAsync(action, currentUser.User?.Id, currentUser.User?.Username, "User", user.Id.ToString(), details,
-            HttpContext.Connection.RemoteIpAddress?.ToString(), certificateAuthorityId: user.ServiceScopeCaId, tenantId: user.ServiceScopeTenantId);
+            HttpContext.Connection.RemoteIpAddress?.ToString(), certificateAuthorityId: user.ServiceScopeCaId, spaceId: user.ServiceScopeSpaceId);
 
     private async Task<List<object>> ProjectAsync(IReadOnlyList<UserEntity> users)
     {
-        var tenantIds = users.Select(u => u.ServiceScopeTenantId).Where(t => t != null).Select(t => t!.Value).Distinct().ToList();
+        var spaceIds = users.Select(u => u.ServiceScopeSpaceId).Where(t => t != null).Select(t => t!.Value).Distinct().ToList();
         var caIds = users.Select(u => u.ServiceScopeCaId).Where(c => c != null).Select(c => c!.Value).Distinct().ToList();
-        var tenants = await db.Tenants.AsNoTracking().IgnoreQueryFilters().Where(t => tenantIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, t => t.Name);
+        var spaces = await db.Spaces.AsNoTracking().IgnoreQueryFilters().Where(t => spaceIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, t => t.Name);
         var cas = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters().Where(c => caIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.Label);
         return users.Select(u => (object)new
         {
@@ -141,9 +142,9 @@ public class AdminServiceIdentityController(
             u.Description,
             u.IsActive,
             u.CreatedAt,
-            Scope = u.ServiceScopeCaId != null ? "ca" : u.ServiceScopeTenantId != null ? "tenant" : "system",
-            TenantId = u.ServiceScopeTenantId,
-            TenantName = u.ServiceScopeTenantId is Guid t && tenants.TryGetValue(t, out var tn) ? tn : null,
+            Scope = u.ServiceScopeCaId != null ? "ca" : u.ServiceScopeSpaceId != null ? "space" : "system",
+            SpaceId = u.ServiceScopeSpaceId,
+            SpaceName = u.ServiceScopeSpaceId is Guid t && spaces.TryGetValue(t, out var tn) ? tn : null,
             CaId = u.ServiceScopeCaId,
             CaLabel = u.ServiceScopeCaId is Guid c && cas.TryGetValue(c, out var cl) ? cl : null,
             Groups = (u.GroupMemberships ?? []).Where(m => m.Group != null).Select(m => new
@@ -152,21 +153,25 @@ public class AdminServiceIdentityController(
                 m.Group!.Name,
                 m.Group.DisplayName,
                 m.Group.CertificateAuthorityId,
-                m.Group.TenantId,
+                m.Group.SpaceId,
                 m.Group.TemplateName,
             }),
         }).ToList();
     }
 }
 
-/// <summary>Body for creating a service identity. Exactly one of the scope fields, or neither for a system identity.</summary>
+/// <summary>
+/// Body for creating a service identity. Exactly one of the scope fields, or neither for a system
+/// identity. An unknown member (a pre-0.4.0 <c>tenantId</c>) is refused with 400, never read as no space.
+/// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class ServiceIdentityRequest
 {
     public string Username { get; set; } = string.Empty;
     public string? DisplayName { get; set; }
     public string? Description { get; set; }
-    /// <summary>Tenant scope. Ignored when <see cref="CaId"/> is set, since a CA carries its tenant.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Space scope. Ignored when <see cref="CaId"/> is set, since a CA carries its space.</summary>
+    public Guid? SpaceId { get; set; }
     /// <summary>CA scope.</summary>
     public Guid? CaId { get; set; }
     public List<Guid>? GroupIds { get; set; }

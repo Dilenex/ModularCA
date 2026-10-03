@@ -102,6 +102,6 @@ public sealed record ExportWrap(string Format, string Password, IReadOnlyList<by
 /// <param name="PublicKeyDer">The public half, DER-encoded SubjectPublicKeyInfo.</param>
 /// <param name="Kind">What the database says the key is for.</param>
 /// <param name="CaId">The <c>CertificateAuthorities</c> row that owns the key, when one does.</param>
-/// <param name="TenantId">The tenant the owning CA belongs to, when one does.</param>
+/// <param name="SpaceId">The space the owning CA belongs to, when one does.</param>
 /// <param name="Backend">Where the key lives: <see cref="SignerHealth.SoftwareBackend"/> or <see cref="SignerHealth.Pkcs11Backend"/>.</param>
-public sealed record KeyInfo(KeyRef Key, byte[] PublicKeyDer, KeyKind Kind, Guid? CaId, Guid? TenantId, string Backend);
+public sealed record KeyInfo(KeyRef Key, byte[] PublicKeyDer, KeyKind Kind, Guid? CaId, Guid? SpaceId, string Backend);

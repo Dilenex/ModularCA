@@ -19,8 +19,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing per-CA LDAP publishing configurations.
 /// Mutations require step-up MFA via <c>X-MFA-Token</c> and enforce the
-/// standard tenant fence: the target CA must be inside the caller's
-/// <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
+/// standard space fence: the target CA must be inside the caller's
+/// <see cref="ModularCA.Auth.Authorization.SpaceFence"/>.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/authorities/{caId:guid}/ldap-publishers")]
@@ -35,24 +35,24 @@ public class AdminLdapPublishersController(
 {
     /// <summary>
     /// Resolves <paramref name="caId"/> to its owning scope and verifies the caller
-    /// has access. Returns the scope on success (its tenant is null for an instance CA), or null
-    /// if the CA is missing, deleted or outside the caller's <see cref="ModularCA.Auth.Authorization.TenantFence"/>.
+    /// has access. Returns the scope on success (its space is null for an instance CA), or null
+    /// if the CA is missing, deleted or outside the caller's <see cref="ModularCA.Auth.Authorization.SpaceFence"/>.
     /// </summary>
     private async Task<CaScope?> ResolveAndFenceCaAsync(Guid caId)
     {
         var ca = await dbContext.CertificateAuthorities
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == caId);
-        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CaManage);
-        return ca != null && fence.Allows(ca.TenantId) ? new CaScope(ca.TenantId) : null;
+        var fence = ModularCA.Auth.Authorization.SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CaManage);
+        return ca != null && fence.Allows(ca.SpaceId) ? new CaScope(ca.SpaceId) : null;
     }
 
-    /// <summary>A fenced CA's scope: its tenant, or null for an instance CA.</summary>
-    private sealed record CaScope(Guid? TenantId);
+    /// <summary>A fenced CA's scope: its space, or null for an instance CA.</summary>
+    private sealed record CaScope(Guid? SpaceId);
 
     /// <summary>
-    /// Lists all LDAP publisher configurations for the specified CA. Enforces the tenant fence
-    /// so callers in other tenants cannot enumerate another tenant's LDAP catalog.
+    /// Lists all LDAP publisher configurations for the specified CA. Enforces the space fence
+    /// so callers in other spaces cannot enumerate another space's LDAP catalog.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(Guid caId)
@@ -88,7 +88,7 @@ public class AdminLdapPublishersController(
     }
 
     /// <summary>
-    /// Returns detail for a single LDAP publisher configuration. Enforces the tenant fence
+    /// Returns detail for a single LDAP publisher configuration. Enforces the space fence
     /// on the owning CA before returning any row.
     /// </summary>
     [HttpGet("{id:guid}")]
@@ -128,7 +128,7 @@ public class AdminLdapPublishersController(
 
     /// <summary>
     /// Creates a new LDAP publisher configuration for the specified CA. Requires step-up MFA
-    /// (<see cref="StepUpOps.CreateLdapPublisher"/>) and enforces the tenant fence on the
+    /// (<see cref="StepUpOps.CreateLdapPublisher"/>) and enforces the space fence on the
     /// target CA. Emits an audit event on both success and access-failure paths.
     /// </summary>
     [HttpPost]
@@ -137,18 +137,18 @@ public class AdminLdapPublishersController(
     {
         await currentUser.EnsureLoadedAsync();
 
-        var resolvedTenantId = await ResolveAndFenceCaAsync(caId);
-        if (resolvedTenantId == null)
+        var resolvedSpaceId = await ResolveAndFenceCaAsync(caId);
+        if (resolvedSpaceId == null)
         {
             await audit.LogAsync(
                 AuditActionType.LdapPublisherCreated,
                 currentUser.User?.Id,
                 currentUser.User?.Username,
                 "LdapConfiguration", null,
-                new { CaId = caId, request.Name, request.Host, Reason = "ca-not-found-or-cross-tenant" },
+                new { CaId = caId, request.Name, request.Host, Reason = "ca-not-found-or-cross-space" },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 success: false,
-                errorMessage: "Certificate authority not found or outside accessible tenants.",
+                errorMessage: "Certificate authority not found or outside accessible spaces.",
                 certificateAuthorityId: caId);
             return NotFound(new { error = "Certificate authority not found." });
         }
@@ -186,7 +186,7 @@ public class AdminLdapPublishersController(
             new { entity.Name, entity.Host, entity.Port, CaId = caId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId.TenantId);
+            spaceId: resolvedSpaceId.SpaceId);
 
         return CreatedAtAction(nameof(Get), new { caId, id = entity.Id }, new { entity.Id });
     }
@@ -195,8 +195,8 @@ public class AdminLdapPublishersController(
     /// Updates an existing LDAP publisher configuration. Non-null fields are applied;
     /// password is skipped when sent as "***". Changing Host, Port or UseSsl while a password is
     /// stored needs the password re-entered (400). Requires step-up MFA
-    /// (<see cref="StepUpOps.UpdateLdapPublisher"/>) and enforces the tenant fence.
-    /// Audit emits before/after field snapshots on success and access-failure on cross-tenant
+    /// (<see cref="StepUpOps.UpdateLdapPublisher"/>) and enforces the space fence.
+    /// Audit emits before/after field snapshots on success and access-failure on cross-space
     /// or missing-publisher paths. The password value is never written to the audit payload.
     /// </summary>
     [HttpPut("{id:guid}")]
@@ -205,18 +205,18 @@ public class AdminLdapPublishersController(
     {
         await currentUser.EnsureLoadedAsync();
 
-        var resolvedTenantId = await ResolveAndFenceCaAsync(caId);
-        if (resolvedTenantId == null)
+        var resolvedSpaceId = await ResolveAndFenceCaAsync(caId);
+        if (resolvedSpaceId == null)
         {
             await audit.LogAsync(
                 AuditActionType.LdapPublisherUpdated,
                 currentUser.User?.Id,
                 currentUser.User?.Username,
                 "LdapConfiguration", id.ToString(),
-                new { CaId = caId, Reason = "ca-not-found-or-cross-tenant" },
+                new { CaId = caId, Reason = "ca-not-found-or-cross-space" },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 success: false,
-                errorMessage: "Certificate authority not found or outside accessible tenants.",
+                errorMessage: "Certificate authority not found or outside accessible spaces.",
                 certificateAuthorityId: caId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
@@ -236,7 +236,7 @@ public class AdminLdapPublishersController(
                 success: false,
                 errorMessage: "LDAP publisher not found.",
                 certificateAuthorityId: caId,
-                tenantId: resolvedTenantId.TenantId);
+                spaceId: resolvedSpaceId.SpaceId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
 
@@ -311,16 +311,16 @@ public class AdminLdapPublishersController(
             new { CaId = caId, PasswordRotated = passwordRotated, Before = before, After = after },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId.TenantId);
+            spaceId: resolvedSpaceId.SpaceId);
 
         return Ok(new { message = "LDAP publisher updated." });
     }
 
     /// <summary>
     /// Deletes an LDAP publisher configuration. Requires step-up MFA
-    /// (<see cref="StepUpOps.DeleteLdapPublisher"/>) and enforces the tenant fence.
+    /// (<see cref="StepUpOps.DeleteLdapPublisher"/>) and enforces the space fence.
     /// Audit emits identifying fields of the deleted resource on success, and access-failure
-    /// payloads on cross-tenant or missing-publisher paths.
+    /// payloads on cross-space or missing-publisher paths.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteLdapPublisher, "id")]
@@ -328,18 +328,18 @@ public class AdminLdapPublishersController(
     {
         await currentUser.EnsureLoadedAsync();
 
-        var resolvedTenantId = await ResolveAndFenceCaAsync(caId);
-        if (resolvedTenantId == null)
+        var resolvedSpaceId = await ResolveAndFenceCaAsync(caId);
+        if (resolvedSpaceId == null)
         {
             await audit.LogAsync(
                 AuditActionType.LdapPublisherDeleted,
                 currentUser.User?.Id,
                 currentUser.User?.Username,
                 "LdapConfiguration", id.ToString(),
-                new { CaId = caId, Reason = "ca-not-found-or-cross-tenant" },
+                new { CaId = caId, Reason = "ca-not-found-or-cross-space" },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 success: false,
-                errorMessage: "Certificate authority not found or outside accessible tenants.",
+                errorMessage: "Certificate authority not found or outside accessible spaces.",
                 certificateAuthorityId: caId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
@@ -359,7 +359,7 @@ public class AdminLdapPublishersController(
                 success: false,
                 errorMessage: "LDAP publisher not found.",
                 certificateAuthorityId: caId,
-                tenantId: resolvedTenantId.TenantId);
+                spaceId: resolvedSpaceId.SpaceId);
             return NotFound(new { error = "LDAP publisher not found." });
         }
 
@@ -385,7 +385,7 @@ public class AdminLdapPublishersController(
             deletedSnapshot,
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caId,
-            tenantId: resolvedTenantId.TenantId);
+            spaceId: resolvedSpaceId.SpaceId);
 
         return Ok(new { message = "LDAP publisher deleted." });
     }
@@ -394,7 +394,7 @@ public class AdminLdapPublishersController(
     /// Applies a batch of enable/disable/delete actions across several LDAP publishers belonging to
     /// one CA behind a SINGLE step-up token (<see cref="StepUpOps.BulkLdapPublisher"/>, bound to
     /// <c>caId</c>), so a multi-row selection on the Distribution page prompts for MFA exactly once
-    /// instead of once per row. The tenant fence is enforced on the CA up front; each publisher row
+    /// instead of once per row. The space fence is enforced on the CA up front; each publisher row
     /// is resolved within that CA, and rows that are missing are skipped (not failed). The batch
     /// never aborts on a single error; a per-id summary is returned.
     /// </summary>
@@ -407,17 +407,17 @@ public class AdminLdapPublishersController(
         if (request?.Actions == null || request.Actions.Count == 0)
             return BadRequest(new { error = "At least one action is required." });
 
-        var resolvedTenantId = await ResolveAndFenceCaAsync(caId);
-        if (resolvedTenantId == null)
+        var resolvedSpaceId = await ResolveAndFenceCaAsync(caId);
+        if (resolvedSpaceId == null)
         {
             await audit.LogAsync(
                 AuditActionType.LdapPublisherUpdated,
                 currentUser.User?.Id, currentUser.User?.Username,
                 "LdapConfiguration", null,
-                new { CaId = caId, Reason = "ca-not-found-or-cross-tenant", Bulk = true },
+                new { CaId = caId, Reason = "ca-not-found-or-cross-space", Bulk = true },
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 success: false,
-                errorMessage: "Certificate authority not found or outside accessible tenants.",
+                errorMessage: "Certificate authority not found or outside accessible spaces.",
                 certificateAuthorityId: caId);
             return NotFound(new { error = "Certificate authority not found." });
         }
@@ -461,7 +461,7 @@ public class AdminLdapPublishersController(
                         new { Bulk = true, Deleted = deletedSnapshot },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         certificateAuthorityId: caId,
-                        tenantId: resolvedTenantId.TenantId);
+                        spaceId: resolvedSpaceId.SpaceId);
                 }
                 else
                 {
@@ -476,7 +476,7 @@ public class AdminLdapPublishersController(
                         new { CaId = caId, Bulk = true, Enabled = enabled },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         certificateAuthorityId: caId,
-                        tenantId: resolvedTenantId.TenantId);
+                        spaceId: resolvedSpaceId.SpaceId);
                 }
 
                 results.Add(new { id, status = "ok" });
@@ -494,8 +494,8 @@ public class AdminLdapPublishersController(
 
     /// <summary>
     /// Tests the LDAP connection for the specified publisher configuration. Enforces the
-    /// tenant fence on the owning CA so callers cannot probe directories belonging to
-    /// other tenants.
+    /// space fence on the owning CA so callers cannot probe directories belonging to
+    /// other spaces.
     /// </summary>
     [HttpPost("{id:guid}/test")]
     public async Task<IActionResult> TestConnection(Guid caId, Guid id)

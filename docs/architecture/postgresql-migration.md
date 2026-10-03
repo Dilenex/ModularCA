@@ -69,7 +69,7 @@ was a schema that inherited one answer for every column at once, and what replac
 thing that cannot be inherited by accident again.
 
 Thirty-nine columns fold case. The ones that matter are the identifiers a person or a client types:
-usernames and email addresses, tenant slugs and CA labels as they appear in enrollment URLs,
+usernames and email addresses, space slugs and CA labels as they appear in enrollment URLs,
 hostnames from a `Host` header or an SNI extension, Kerberos realms, role and group names. Then
 distinguished names and hex serials, where RFC 4518 already says case does not distinguish, and
 where the consequence is concrete rather than cosmetic — `(SerialNumber, Issuer)` is what stops one
@@ -215,6 +215,44 @@ set of problems instead of discovering them one run at a time:
 `--dry-run` stops after all of it. Nothing outside the operator's terminal has changed at that
 point, which is what makes the whole preflight readable at a time when acting on it is free.
 
+### The copy lands in the baselines, then upgrades (0.4.0)
+
+The helper copies into the frozen baselines, not into the current model. Until 0.4.0 it built the
+latest schema and copied by the current model's table and column names. Once migrations followed
+the baselines, that broke in two ways. Data a later migration transforms never went through that
+migration: the copied system tenant was never folded by `FoldSystemTenant`. And a column a later
+migration renames would have been left behind without a word.
+
+So the run now goes:
+
+1. `DestinationBuilder.BuildAsync` applies only `20260919181506_InitialCreate` and
+   `20260919181510_InitialAuditSchema` (`PostgresRoleLayout.AppBaselineMigration` and
+   `AuditBaselineMigration`). It runs as the runtime roles, through
+   `SchemaVersionGate.ApplyBaselineForBootstrapAsync`, on the same migration connection the control
+   role and bootstrap use (`MigrationConnection`).
+2. The copier writes into the baseline tables. Its table and column list is
+   `ModelIntrospection.AppCopyTables()` and `AuditCopyTables()`. Both are read from the baseline
+   migrations' own target models, never from the current `DbContext` model. The preflight
+   case-collision sweep reads the baseline's unique keys and `citext` columns the same way.
+   `BaselineCopyTests` pins the whole copy plan by digest.
+3. Verification runs at the baseline stage, while source and destination still have the same
+   shape: row counts, certificates, the audit chain and the sequence reset.
+4. `DestinationBuilder.ApplyUpgradeMigrationsAsync` then applies every later migration, the
+   application database's first. It uses `SchemaVersionGate.ApplyPendingAsync` as the runtime
+   roles, after the same model-drift and unknown-migration checks the control role makes. It then
+   proves ownership again. The copied 0.3.0 rows go through `RetireTenantHostnames`,
+   `FoldSystemTenant`, `InstanceUniqueCaNames`, `RenameTenantToSpace` and every later migration
+   exactly as an upgraded install's rows do, so a copied CA keeps its space under the new names.
+5. Only then is the configuration written.
+
+A precondition that refuses the copied data, such as `FoldSystemTenant` P1 to P9,
+`InstanceUniqueCaNames` P1 to P5 or `RenameTenantToSpace` P1 and P2, fails the run. The message names the migration, quotes its
+`RAISE` text, and lists what was committed before it. The usual rollback then drops both databases
+and the three roles, or `--keep-on-failure` leaves them for inspection. Fix the data on the 0.3.0
+source and run again. The preflight tenant-hostname refusal stays, so that one shape is still
+refused before anything is created. `MigrationRun` holds this order, and `MigrationRunTests` pins it
+with fake stages.
+
 ### Foreign keys, and why there is no topological sort
 
 The constraints are dropped before the copy and added back after it. Ordering the tables so that no
@@ -245,7 +283,8 @@ A copy that reports success and is subtly wrong is worse than one that fails, be
 gets decommissioned on the strength of the report. Four kinds of evidence:
 
 - Foreign keys, validated by the server as they are restored.
-- Row counts per table, source against destination.
+- Row counts per table, source against destination, at the baseline stage before any later
+  migration changes the rows.
 - Certificates re-parsed from the bytes that crossed and checked against the serial stored beside
   them — the proof that the `bytea` round trip was byte-exact, on the data where one flipped byte
   matters most, and the closest available proxy for the key material in the same columns.
@@ -266,7 +305,13 @@ What is pinned there is everything deciding *what* is copied and what it becomes
 never written and identity columns always are, that the case-insensitive column list resolves to
 real table and column names, the type conversions — with the timestamp case called out, since
 stamping UTC rather than converting is the difference between every row surviving and every row
-shifting by the migrating machine's offset — and the enrollment token transform.
+shifting by the migrating machine's offset — and the enrollment token transform. The copy plan is
+pinned to the baselines (`BaselineCopyTests`). The two schema stages are tested on SQLite
+(`SchemaStagesTests`), and the order of the run with fake stages (`MigrationRunTests`). The
+destination side runs against a real server in the opt-in `PostgresOwnershipHarnessTests`. Rows are
+written into the baselines as the copier writes them, then upgraded through every later migration.
+A `FoldSystemTenant` refusal fails the tool with its message, and the rollback removes both
+databases and the roles.
 
 ## Who owns the schema
 
@@ -401,7 +446,8 @@ than dropping and recreating it.
 
 The baselines are frozen: `20260919181506_InitialCreate` for the application context and
 `20260919181510_InitialAuditSchema` for the audit context, with their designer files. Production
-and staging applied them on 2026-09-19. Never regenerate or hand-edit them. The model snapshots
+and staging applied them on 2026-09-19. Never regenerate or hand-edit them, nor any migration after
+them; `FrozenBaselineTests` pins the baselines and the 0.4.0 migrations by normalised hash. The model snapshots
 change only through `dotnet ef migrations add`. Every schema change from 0.4.0 on is a new
 migration, with any data transformation written into it.
 
@@ -436,8 +482,8 @@ A migration that transforms data first states what must hold, with `FailIf` from
 
 ```csharp
 migrationBuilder.FailIf(
-    "(SELECT count(*) FROM \"Tenants\" WHERE NOT \"IsDeleted\") > 1",
-    "This instance has more than one organisation tenant. Split it before upgrading.");
+    "(SELECT count(*) FROM \"SecurityPolicy\") > 1",
+    "This instance has more than one SecurityPolicy row. Delete the extra rows before upgrading.");
 ```
 
 It emits `DO $$ BEGIN IF (<condition>) THEN RAISE EXCEPTION '<message>'; END IF; END $$;`. The
@@ -551,9 +597,20 @@ variables are set.
 
 **Fresh baseline.** `MODULARCA_TEST_PG` is a connection string to a server where the user may
 create and drop databases. The test creates two throwaway databases and applies the baselines
-only. It seeds a 0.3.x shape in SQL written against the baseline schema, then migrates to latest
-through `SchemaVersionGate.ApplyPendingAsync`, the code the control role runs. It then asserts,
-and drops both databases.
+only. It seeds a 0.3.x shape in SQL written against the baseline schema. Then it migrates one stage
+at a time through `SchemaVersionGate.ApplyPendingThroughAsync`, the control role's code stopped at a
+named migration. It asserts each stage in SQL at that stage's migration, then migrates to latest
+and drops both databases. A later migration that renames a table therefore cannot break an earlier
+stage's checks: those checks never run against the renamed schema.
+
+The audit database is seeded at its baseline with hashed records: the instance chain and two
+tenant chains, each hashed by the real `AuditHashChainService.ComputeHash`. After the audit database
+is migrated, the test seals the retired chains as the control role's start does. It then asserts
+that `VerifyAsync` finds no break in any chain and that `CheckRetiredChainAsync` reports every
+retired chain `Sealed`. `AuditHashGoldenVectorTests` pins the canonical input itself with
+hard-coded hashes. It also pins the persisted strings recorded rows carry: the lock key, the chain
+action and target types, the fold migration id, the seal text and its member names, the retired
+`AuditActionType` values, the licence keys and the signer audit scope tokens.
 
 ```bash
 MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgres" \
@@ -582,6 +639,32 @@ second instance CA with the same label. One further test per precondition (P1 to
 shape that precondition refuses and asserts its message and that nothing was applied, and a fresh
 database migrates without a `SecurityPolicy` row, which bootstrap then seeds. This test runs everything as the
 connection's user, so it does not exercise ownership. The rehearsal below does.
+
+For `RenameTenantToSpace` (0.4.0 S6) the seed, added at the stage before it, holds an open ceremony
+in every stored parameter shape, written as the legacy fixtures in `CeremonyParametersFixtures`
+(PascalCase `TenantId` and `MintedTierTenantId`, camelCase `tenantId`): a controlled-user change, a
+CA creation, an SSH CA creation, a CA revocation, and space, instance and per-CA quorum policy
+changes, the space ones with operation type `TenantPolicyChange`. It also holds the space's other
+`org-acme-*` groups, one with a customised display name, a tenant-wide group whose name does not
+follow the slug, and a signer audit row with the old `tenant` scope token. The stage asserts:
+
+- every value in every renamed table is where it was, under the new names;
+- no table, column, constraint, constraint definition, index definition, trigger, view or function
+  in `public` says tenant;
+- each ceremony's parameters equal its 0.4.0 fixture up to key order, and read with the real
+  classes with their space ids, an instance policy change with none;
+- no `TenantPolicyChange` is left;
+- the space's four groups are `space-acme-*`, display names `Space Acme …` unless customised, with
+  their members, while the mismatched group keeps its name;
+- the signer audit row keeps `tenant`.
+
+At latest, the catalog names exactly what the model names: every table, column, primary, unique,
+foreign and check constraint and index, plus the raw `IX_CertificateAuthorities_LabelLower`. An LDAP
+mapping that still targets `org-acme-user` then syncs into `space-acme-user`, with a warning. The
+audit database is not migrated by S6, and its chains still verify sealed. One further test per
+precondition seeds parameters naming a tenant that are not JSON, not an object, or hold both the old
+and the new key (P1), and a group whose new name is taken or longer than 200 characters (P2), and
+asserts the message and that the tables kept their tenant names.
 
 **Rehearsal on a dump of staging.** Restore staging's dumps into disposable databases with the
 ownership staging has, then run the test as the service roles. Restoring as `postgres` with only
@@ -613,10 +696,13 @@ MODULARCA_TEST_PG_REHEARSAL_AUDIT="Host=localhost;Username=rehearsal_audit;Passw
 staging. `pg_hba.conf` must allow password logins for the two roles from localhost. Drop the two
 databases and the three roles afterwards.
 
-It checks that no migration is unknown to the build, and that every pending one applies. It also
-checks that CA, user, membership and certificate counts are unchanged, that there is one tenant
-fewer (the system tenant) and four groups fewer (its `org-system-*` groups), that no group named
-`org-system-*` remains, that the `IsSystemTenant` column and the three tenant quota columns are gone,
-and that the unique `Label` and `Name` indexes exist. A staging copy that two CAs share a label or a
-name on, or whose enabled protocol configuration or template signs with another CA's profile, fails
-here with the `InstanceUniqueCaNames` refusal, which is the point of rehearsing.
+It checks that no migration is unknown to the build, and that every pending one applies. Through
+`InstanceUniqueCaNames`, the stage before the rename, it also checks that CA, user, membership and
+certificate counts are unchanged, that there is one tenant fewer (the system tenant) and four
+groups fewer (its `org-system-*` groups), that no group named `org-system-*` remains, that the
+`IsSystemTenant` column and the three tenant quota columns are gone, and that the unique `Label` and
+`Name` indexes exist. It then migrates to latest, through `RenameTenantToSpace`, and the audit
+database too when its variable is set. A staging copy that two CAs share a label or a name on, or
+whose enabled protocol configuration or template signs with another CA's profile, fails here with
+the `InstanceUniqueCaNames` refusal, and one with a taken `space-<slug>-*` group name fails with the
+`RenameTenantToSpace` refusal, which is the point of rehearsing.

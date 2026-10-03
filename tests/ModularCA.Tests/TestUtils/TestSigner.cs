@@ -48,7 +48,7 @@ internal static class TestSigner
         var databaseName = $"signer-{Guid.NewGuid():N}";
         var certificateId = Guid.NewGuid();
         var caId = Guid.NewGuid();
-        var tenantId = Guid.NewGuid();
+        var spaceId = Guid.NewGuid();
 
         using (var db = InMemoryDbContextFactory.Create(databaseName))
         {
@@ -69,13 +69,13 @@ internal static class TestSigner
                 Id = caId,
                 Name = "test-ca",
                 Label = "test-ca",
-                TenantId = tenantId,
+                SpaceId = spaceId,
                 CertificateId = certificateId,
             });
             db.SaveChanges();
         }
 
         var signer = Over(new TestKeystore(ca.AsSigner()), databaseName);
-        return (signer, new KeyRef(certificateId), SigningContext.ForCa(caller, SigningPurpose.Certificate, caId, tenantId));
+        return (signer, new KeyRef(certificateId), SigningContext.ForCa(caller, SigningPurpose.Certificate, caId, spaceId));
     }
 }

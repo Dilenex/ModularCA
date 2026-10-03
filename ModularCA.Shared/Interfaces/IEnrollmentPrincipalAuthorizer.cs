@@ -8,7 +8,7 @@ namespace ModularCA.Shared.Interfaces;
 /// EST's HTTP authentication (RFC 7030 section 3.2.3) proves that the caller knows a password. It
 /// does not, by itself, say anything about which CAs that account is entitled to use. Before this
 /// existed, <c>EnrollmentAuthorizationService</c> checked only <c>IsAuthenticated</c>, so a user
-/// whose only entitlement was in tenant B could enroll at tenant A's CA with an ordinary session
+/// whose only entitlement was in space B could enroll at space A's CA with an ordinary session
 /// token. The CSR name binding limited <em>what</em> could be obtained, not <em>from whom</em>.
 /// </para>
 /// <para>

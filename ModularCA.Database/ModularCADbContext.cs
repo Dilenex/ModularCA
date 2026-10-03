@@ -9,9 +9,9 @@ namespace ModularCA.Database;
 /// <summary>
 /// Primary EF Core database context for the ModularCA application data (certificates, profiles, ACME, users, etc.).
 /// <para>
-/// The only global query filters are soft-delete ones (tenants, CAs, users). Spaces are an
+/// The only global query filters are soft-delete ones (spaces, CAs, users). Spaces are an
 /// access scope, not a partition of data: every read sees every space, and callers that list
-/// rows for a user apply <c>TenantFence</c> explicitly.
+/// rows for a user apply <c>SpaceFence</c> explicitly.
 /// </para>
 /// </summary>
 public class ModularCADbContext : DbContext
@@ -51,7 +51,7 @@ public class ModularCADbContext : DbContext
     public DbSet<RoleAssignmentEntity> RoleAssignments { get; set; }
     public DbSet<UserCapabilityGrantEntity> UserCapabilityGrants { get; set; }
 
-    public DbSet<TenantEntity> Tenants { get; set; }
+    public DbSet<SpaceEntity> Spaces { get; set; }
     public DbSet<CertificateAuthorityEntity> CertificateAuthorities { get; set; }
 
     public DbSet<RefreshTokenEntity> RefreshTokens { get; set; }
@@ -60,7 +60,7 @@ public class ModularCADbContext : DbContext
     public DbSet<AccessBadgeEntity> AccessBadges { get; set; }
     public DbSet<AccessBadgeSourceEntity> AccessBadgeSources { get; set; }
 
-    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
+    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one space, with its service keys.</summary>
     public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
     public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
 
@@ -209,20 +209,20 @@ public class ModularCADbContext : DbContext
                   .HasForeignKey(e => e.CertificateAuthorityId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
-        // Deliberately GLOBAL, not per-tenant — and knowingly so.
+        // Deliberately GLOBAL, not per-space — and knowingly so.
         //
-        // CertProfiles, CaGroups and Roles all carry a TenantId, so a per-tenant unique name
-        // would be the natural multi-tenant shape (and CertificateAuthorityEntity was moved to
+        // CertProfiles, CaGroups and Roles all carry a SpaceId, so a per-space unique name
+        // would be the natural multi-space shape (and CertificateAuthorityEntity was moved to
         // it). They are left global because the CODE still resolves them by bare name:
         //   CaCreationService: CertProfiles.FirstOrDefault(cp => cp.Name == "Main CA Certificate Profile")
         //   BootstrapProfileSeeder / BootstrapService: CaGroups.First(g => g.Name == "system-super")
         //   RoleAssignmentHelper: Roles.FirstOrDefault(r => r.Name == templateName && r.IsBuiltIn)
         //
         // The unique index is what makes those lookups deterministic. Relaxing it without
-        // rewriting every one of them would turn "two tenants cannot reuse a profile name" —
-        // an inconvenience — into "a CA creation silently picked up another tenant's profile",
-        // which is a cross-tenant correctness bug. The index is not the defect here; the
-        // tenant-blind lookups are, and they have to move first.
+        // rewriting every one of them would turn "two spaces cannot reuse a profile name" —
+        // an inconvenience — into "a CA creation silently picked up another space's profile",
+        // which is a cross-space correctness bug. The index is not the defect here; the
+        // space-blind lookups are, and they have to move first.
         modelBuilder.Entity<CertProfileEntity>().HasIndex(c => c.Name).IsUnique();
         modelBuilder.Entity<CertProfileEntity>(entity =>
         {
@@ -234,8 +234,8 @@ public class ModularCADbContext : DbContext
                   .WithMany()
                   .HasForeignKey(e => e.InheritsFromId)
                   .OnDelete(DeleteBehavior.SetNull);
-            // Tenant-scoped profile index for fast per-tenant lookups.
-            entity.HasIndex(e => e.TenantId);
+            // Space-scoped profile index for fast per-space lookups.
+            entity.HasIndex(e => e.SpaceId);
         });
         modelBuilder.Entity<CertRequestEntity>(entity =>
         {
@@ -384,7 +384,7 @@ public class ModularCADbContext : DbContext
             .HasForeignKey(g => g.CertificateAuthorityId)
             .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<CaGroupEntity>()
-            .HasIndex(g => g.TenantId);
+            .HasIndex(g => g.SpaceId);
         modelBuilder.Entity<CaGroupMemberEntity>()
             .HasIndex(gm => new { gm.GroupId, gm.UserId }).IsUnique();
         modelBuilder.Entity<CaGroupMemberEntity>()
@@ -403,8 +403,8 @@ public class ModularCADbContext : DbContext
             .HasIndex(ur => ur.Id).IsUnique();
         modelBuilder.Entity<UserEntity>()
             .HasIndex(ur => ur.Email).IsUnique();
-        // Tenant Name and Slug are unique over all rows, soft-deleted ones included.
-        modelBuilder.Entity<TenantEntity>(entity =>
+        // Space Name and Slug are unique over all rows, soft-deleted ones included.
+        modelBuilder.Entity<SpaceEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.Slug).IsUnique();
@@ -424,9 +424,9 @@ public class ModularCADbContext : DbContext
                   .WithMany(e => e.ChildCAs)
                   .HasForeignKey(e => e.ParentCaId)
                   .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -673,11 +673,11 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<RoleEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            // Restrict, not SetNull: a null tenant means instance scope.
-            entity.HasOne(e => e.Tenant)
+            entity.HasIndex(e => e.SpaceId);
+            // Restrict, not SetNull: a null space means instance scope.
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CreatedByUser)
                   .WithMany()
@@ -700,7 +700,7 @@ public class ModularCADbContext : DbContext
         {
             entity.HasIndex(e => new { e.UserId, e.RoleId });
             entity.HasIndex(e => new { e.GroupId, e.RoleId });
-            entity.HasIndex(e => new { e.TenantId, e.CertificateAuthorityId });
+            entity.HasIndex(e => new { e.SpaceId, e.CertificateAuthorityId });
             entity.HasOne(e => e.Role)
                   .WithMany(r => r.Assignments)
                   .HasForeignKey(e => e.RoleId)
@@ -713,9 +713,9 @@ public class ModularCADbContext : DbContext
                   .WithMany(g => g.RoleAssignments)
                   .HasForeignKey(e => e.GroupId)
                   .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
@@ -749,17 +749,17 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<UserEntity>(entity =>
         {
             entity.HasIndex(e => e.IsServiceIdentity);
-            entity.HasIndex(e => e.ServiceScopeTenantId);
+            entity.HasIndex(e => e.ServiceScopeSpaceId);
             entity.HasIndex(e => e.ServiceScopeCaId);
         });
 
         modelBuilder.Entity<KerberosRealmEntity>(entity =>
         {
             entity.HasIndex(e => e.Realm).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            entity.HasOne(e => e.Tenant)
+            entity.HasIndex(e => e.SpaceId);
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.EnrollmentUser)
                   .WithMany()
@@ -780,14 +780,14 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.Capability });
-            entity.HasIndex(e => new { e.TenantId, e.CertificateAuthorityId });
+            entity.HasIndex(e => new { e.SpaceId, e.CertificateAuthorityId });
             entity.HasOne(e => e.User)
                   .WithMany(u => u.UserGrants)
                   .HasForeignKey(e => e.UserId)
                   .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
@@ -937,8 +937,8 @@ public class ModularCADbContext : DbContext
             modelBuilder.Entity<KeyCeremonyEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
         }
 
-        // Soft-delete filters only. Spaces are fenced explicitly by the callers (TenantFence).
-        modelBuilder.Entity<TenantEntity>().HasQueryFilter(t => !t.IsDeleted);
+        // Soft-delete filters only. Spaces are fenced explicitly by the callers (SpaceFence).
+        modelBuilder.Entity<SpaceEntity>().HasQueryFilter(t => !t.IsDeleted);
         modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca => !ca.IsDeleted);
         modelBuilder.Entity<UserEntity>().HasQueryFilter(u => !u.IsDeleted);
 

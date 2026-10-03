@@ -97,7 +97,7 @@ public class RequestValidationExceptionTests
     [Fact]
     public void A_collision_answers_409_because_the_same_request_will_work_once_it_is_resolved()
     {
-        var ex = new ResourceConflictException("A CA with label 'issuing-01' already exists in this tenant.");
+        var ex = new ResourceConflictException("A CA with label 'issuing-01' already exists in this space.");
 
         Assert.Equal(409, ex.Status);
         Assert.IsAssignableFrom<RequestValidationException>(ex);

@@ -153,7 +153,7 @@ public class TimestampService : ITimestampService
             if (tsaCertEntity != null)
             {
                 var tsaCert = CertificateUtil.ParseFromPem(tsaCertEntity.Pem);
-                var context = SigningContext.ForCa(SignerCaller, SigningPurpose.Tsa, caEntity.Id, caEntity.TenantId);
+                var context = SigningContext.ForCa(SignerCaller, SigningPurpose.Tsa, caEntity.Id, caEntity.SpaceId);
                 var held = await _signer.ListKeysAsync(context);
                 var tsaKey = held.FirstOrDefault(k => k.Key.CertificateId == tsaCertEntity.CertificateId);
                 if (tsaKey != null)

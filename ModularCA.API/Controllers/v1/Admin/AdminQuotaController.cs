@@ -30,17 +30,17 @@ public class AdminQuotaController(
     /// <summary>
     /// Returns quota usage summaries for all enabled CAs, including issued counts,
     /// remaining capacity, and warning/exceeded status.
-    /// The caller sees the CAs inside their <see cref="TenantFence"/>; an instance-wide caller sees all.
+    /// The caller sees the CAs inside their <see cref="SpaceFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAllQuotas()
     {
         var summary = await quotaService.GetUsageSummaryAsync();
-        var fence = TenantFence.From(HttpContext, Capabilities.CaManage);
+        var fence = SpaceFence.From(HttpContext, Capabilities.CaManage);
         if (!fence.InstanceWide)
         {
             var accessibleCaIds = await db.CertificateAuthorities
-                .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
                 .Select(ca => ca.Id)
                 .ToListAsync();
             var accessibleCaIdSet = new HashSet<Guid>(accessibleCaIds);
@@ -53,46 +53,44 @@ public class AdminQuotaController(
     }
 
     /// <summary>
-    /// Returns all tenants with their certificate authorities and each CA's certificate-issuance
-    /// quota nested underneath, for the combined Tenants &amp; Quotas view, with per-CA issued and
-    /// pending usage. Tenant quotas were removed in 0.4.0; quotas are per CA, on its admin group.
-    /// Gated to SystemAdmin (tenant configuration is admin-only).
-    /// <c>allowMultipleOrganizations</c> carries <c>Features.AllowMultipleOrganizations</c> so the
-    /// view can withhold "Create Tenant" in single-organisation mode. <c>instance</c> carries the
-    /// instance's own CA policy and its CAs (those with no tenant: the system signing CA, SSH CAs).
+    /// Returns all spaces with their certificate authorities and each CA's certificate-issuance
+    /// quota nested underneath, for the combined Spaces &amp; Quotas view, with per-CA issued and
+    /// pending usage. Space quotas were removed in 0.4.0; quotas are per CA, on its admin group.
+    /// Gated to SystemAdmin (space configuration is admin-only).
+    /// <c>instance</c> carries the instance's own CA policy and its CAs (those with no space: the system signing CA, SSH CAs).
     /// </summary>
-    [HttpGet("by-tenant")]
+    [HttpGet("by-space")]
     [Authorize(Policy = "SystemAdmin")]
-    public async Task<IActionResult> GetQuotasByTenant([FromServices] ModularCA.Shared.Models.Config.SystemConfig config)
+    public async Task<IActionResult> GetQuotasBySpace()
     {
         // Per-CA quota usage (issued/pending computed live), keyed by CaId. Only enabled CAs appear
         // in the summary, so disabled CAs nest with a null quota below.
         var summary = await quotaService.GetUsageSummaryAsync();
         var quotaByCa = summary.CaQuotas.ToDictionary(q => q.CaId);
 
-        var tenants = await db.Tenants
+        var spaces = await db.Spaces
             .AsNoTracking()
             .OrderBy(t => t.Name)
             .ToListAsync();
-        var tenantIds = tenants.Select(t => t.Id).ToList();
+        var spaceIds = spaces.Select(t => t.Id).ToList();
 
-        // CAs per tenant and the instance's (exclude soft-deleted), grouped for nesting.
+        // CAs per space and the instance's (exclude soft-deleted), grouped for nesting.
         var cas = await db.CertificateAuthorities
             .AsNoTracking()
-            .Where(ca => (ca.TenantId == null || tenantIds.Contains(ca.TenantId.Value)) && !ca.IsDeleted)
-            .Select(ca => new { ca.Id, ca.TenantId, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa })
+            .Where(ca => (ca.SpaceId == null || spaceIds.Contains(ca.SpaceId.Value)) && !ca.IsDeleted)
+            .Select(ca => new { ca.Id, ca.SpaceId, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa })
             .ToListAsync();
-        var casByTenant = cas.Where(c => c.TenantId != null).GroupBy(c => c.TenantId!.Value).ToDictionary(g => g.Key, g => g.ToList());
-        var instanceCas = cas.Where(c => c.TenantId == null).ToList();
+        var casBySpace = cas.Where(c => c.SpaceId != null).GroupBy(c => c.SpaceId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        var instanceCas = cas.Where(c => c.SpaceId == null).ToList();
 
-        // Distinct user counts per tenant (via group memberships) — same source as the tenant list.
+        // Distinct user counts per space (via group memberships) — same source as the space list.
         var userCounts = await db.CaGroupMembers
-            .Where(gm => gm.Group.TenantId != null && tenantIds.Contains(gm.Group.TenantId.Value))
-            .GroupBy(gm => gm.Group.TenantId!.Value)
-            .Select(g => new { TenantId = g.Key, Count = g.Select(gm => gm.UserId).Distinct().Count() })
-            .ToDictionaryAsync(x => x.TenantId, x => x.Count);
+            .Where(gm => gm.Group.SpaceId != null && spaceIds.Contains(gm.Group.SpaceId.Value))
+            .GroupBy(gm => gm.Group.SpaceId!.Value)
+            .Select(g => new { SpaceId = g.Key, Count = g.Select(gm => gm.UserId).Distinct().Count() })
+            .ToDictionaryAsync(x => x.SpaceId, x => x.Count);
         var instanceUserCount = await db.CaGroupMembers
-            .Where(gm => gm.Group.TenantId == null)
+            .Where(gm => gm.Group.SpaceId == null)
             .Select(gm => gm.UserId).Distinct().CountAsync();
 
         object CaDto(Guid id, string name, string label, string? type, bool isEnabled, bool isSshCa)
@@ -133,13 +131,13 @@ public class AdminQuotaController(
             CertificateAuthorities = instanceCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList(),
         };
 
-        var tenantDtos = tenants.Select(t =>
+        var spaceDtos = spaces.Select(t =>
         {
-            var tenantCas = casByTenant.GetValueOrDefault(t.Id, new());
-            var caDtos = tenantCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList();
+            var spaceCas = casBySpace.GetValueOrDefault(t.Id, new());
+            var caDtos = spaceCas.Select(ca => CaDto(ca.Id, ca.Name, ca.Label, ca.Type, ca.IsEnabled, ca.IsSshCa)).ToList();
 
-            // Active certificates across the tenant's CAs.
-            var tenantIssued = tenantCas.Sum(ca => quotaByCa.GetValueOrDefault(ca.Id)?.IssuedCount ?? 0);
+            // Active certificates across the space's CAs.
+            var spaceIssued = spaceCas.Sum(ca => quotaByCa.GetValueOrDefault(ca.Id)?.IssuedCount ?? 0);
 
             return new
             {
@@ -153,25 +151,24 @@ public class AdminQuotaController(
                 t.ValidityCeilingBehavior,
                 t.RequireKeyCeremony,
                 t.CeremonyRequiredApprovals,
-                CaCount = tenantCas.Count,
+                CaCount = spaceCas.Count,
                 UserCount = userCounts.GetValueOrDefault(t.Id, 0),
-                IssuedCertificates = tenantIssued,
+                IssuedCertificates = spaceIssued,
                 CertificateAuthorities = caDtos
             };
         }).ToList();
 
         return Ok(new
         {
-            tenants = tenantDtos,
+            spaces = spaceDtos,
             instance,
             totals = new
             {
-                totalTenants = tenantDtos.Count,
+                totalSpaces = spaceDtos.Count,
                 totalCAs = summary.CaQuotas.Count,
                 casAtLimit = summary.ExceededCount,
                 casNearLimit = summary.WarningCount
             },
-            allowMultipleOrganizations = config.Features.AllowMultipleOrganizations
         });
     }
 

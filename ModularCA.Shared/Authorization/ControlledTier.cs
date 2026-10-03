@@ -3,8 +3,8 @@ namespace ModularCA.Shared.Authorization;
 /// <summary>
 /// Privilege tiers that a <i>controlled user</i> can hold. Used to gate who may approve (or
 /// initiate) a controlled-user ceremony: an approver must <b>dominate</b> the affected privilege's
-/// tier. System tiers have no scope; Org tiers are scoped to a tenant; CA tiers are scoped to one
-/// CA (and carry their tenant so an org admin can dominate them). New tiers are appended so the
+/// tier. System tiers have no scope; Space tiers are scoped to a space; CA tiers are scoped to one
+/// CA (and carry their space so a space admin can dominate them). New tiers are appended so the
 /// numeric values of persisted <c>MintedTierLevel</c> stay stable — dominance is explicit below,
 /// not derived from the numeric order. A value with no member here fails closed.
 /// </summary>
@@ -21,11 +21,11 @@ public enum ControlledTierLevel
     /// <summary>System-super (the bootstrap super tier). Dominates everything; mints directly.</summary>
     SystemSuper = 4,
 
-    /// <summary>Operator over a whole tenant/org (tenant-scoped, not tied to one CA).</summary>
-    OrgOperator = 5,
+    /// <summary>Operator over a whole space (space-scoped, not tied to one CA).</summary>
+    SpaceOperator = 5,
 
-    /// <summary>Administrator over a whole tenant/org (tenant-scoped).</summary>
-    OrgAdmin = 6,
+    /// <summary>Administrator over a whole space (space-scoped).</summary>
+    SpaceAdmin = 6,
 
     /// <summary>Operator over the whole instance (<c>ca.manage</c> at instance scope): a key-ceremony approver everywhere.</summary>
     SystemOperator = 7,
@@ -34,15 +34,15 @@ public enum ControlledTierLevel
 /// <summary>
 /// A concrete privilege tier: a <see cref="ControlledTierLevel"/> plus its scope.
 /// <list type="bullet">
-/// <item>System tiers: <c>CaId</c> and <c>TenantId</c> both null.</item>
-/// <item>Org tiers: <c>TenantId</c> set, <c>CaId</c> null.</item>
-/// <item>CA tiers: <c>CaId</c> set, and <c>TenantId</c> = the CA's owning tenant (so an org admin can dominate).</item>
+/// <item>System tiers: <c>CaId</c> and <c>SpaceId</c> both null.</item>
+/// <item>Space tiers: <c>SpaceId</c> set, <c>CaId</c> null.</item>
+/// <item>CA tiers: <c>CaId</c> set, and <c>SpaceId</c> = the CA's owning space (so a space admin can dominate).</item>
 /// </list>
 /// </summary>
 public readonly record struct ControlledTier(ControlledTierLevel Level, Guid? CaId)
 {
-    /// <summary>Owning tenant for org- and CA-scoped tiers; null for system tiers.</summary>
-    public Guid? TenantId { get; init; }
+    /// <summary>Owning space for space- and CA-scoped tiers; null for system tiers.</summary>
+    public Guid? SpaceId { get; init; }
 
     /// <summary>
     /// Returns true when this tier dominates <paramref name="target"/> — i.e. a holder of this tier
@@ -53,8 +53,8 @@ public readonly record struct ControlledTier(ControlledTierLevel Level, Guid? Ca
     /// <item>system-super dominates everything.</item>
     /// <item>system-admin dominates everything except system-super.</item>
     /// <item>system-operator dominates only system-operator.</item>
-    /// <item>org-admin(T) dominates org-admin/org-operator/ca-admin within tenant T.</item>
-    /// <item>org-operator(T) dominates only org-operator(T).</item>
+    /// <item>space-admin(T) dominates space-admin/space-operator/ca-admin within space T.</item>
+    /// <item>space-operator(T) dominates only space-operator(T).</item>
     /// <item>ca-admin(X) dominates only ca-admin(X), matched on the CA.</item>
     /// </list>
     /// An undefined level dominates nothing, and is dominated only by system-super and system-admin.
@@ -66,10 +66,10 @@ public readonly record struct ControlledTier(ControlledTierLevel Level, Guid? Ca
             ControlledTierLevel.SystemSuper => true,
             ControlledTierLevel.SystemAdmin => target.Level != ControlledTierLevel.SystemSuper,
             ControlledTierLevel.SystemOperator => target.Level == ControlledTierLevel.SystemOperator,
-            ControlledTierLevel.OrgAdmin => TenantId != null && target.TenantId == TenantId
-                && target.Level is ControlledTierLevel.OrgAdmin or ControlledTierLevel.OrgOperator or ControlledTierLevel.CaAdmin,
-            ControlledTierLevel.OrgOperator => TenantId != null && target.TenantId == TenantId
-                && target.Level == ControlledTierLevel.OrgOperator,
+            ControlledTierLevel.SpaceAdmin => SpaceId != null && target.SpaceId == SpaceId
+                && target.Level is ControlledTierLevel.SpaceAdmin or ControlledTierLevel.SpaceOperator or ControlledTierLevel.CaAdmin,
+            ControlledTierLevel.SpaceOperator => SpaceId != null && target.SpaceId == SpaceId
+                && target.Level == ControlledTierLevel.SpaceOperator,
             ControlledTierLevel.CaAdmin => CaId != null && target.CaId == CaId
                 && target.Level == ControlledTierLevel.CaAdmin,
             _ => false,

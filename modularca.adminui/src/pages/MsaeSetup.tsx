@@ -104,8 +104,8 @@ const MsaeSetup: React.FC = () => {
     const selectedId = useMemo(() => {
         if (id) return id;
         if (scope.kind === 'ca' && scope.caId) return scope.caId;
-        const inTenant = scope.kind === 'tenant' ? authorities.find((c) => c.tenantId === scope.tenantId) : null;
-        return (inTenant ?? authorities[0])?.id ?? '';
+        const inSpace = scope.kind === 'space' ? authorities.find((c) => c.spaceId === scope.spaceId) : null;
+        return (inSpace ?? authorities[0])?.id ?? '';
     }, [id, scope, authorities]);
 
     useEffect(() => {
@@ -197,7 +197,7 @@ const MsaeSetup: React.FC = () => {
                         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
                             <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Setup kit for the customer's domain administrator</h2>
                             <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
-                                A zip with the service-account script, the Group Policy push for this policy server, the tenant root, a client self-check and a readme. It contains no secret: a generated account password was shown once at import and is not stored.
+                                A zip with the service-account script, the Group Policy push for this policy server, the root CA certificate, a client self-check and a readme. It contains no secret: a generated account password was shown once at import and is not stored.
                             </p>
                             <ul className="mt-3 space-y-2">
                                 {readiness.realms.map((r) => (
@@ -214,7 +214,7 @@ const MsaeSetup: React.FC = () => {
                     )}
 
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Once every step is green, run a policy refresh on a domain member and watch the MSAE tab under <Link to={`/audit?tab=MSAE${readiness.tenantId ? `&tenant=${readiness.tenantId}` : ''}&ca=${readiness.caId}`} className="text-blue-600 dark:text-blue-400 hover:underline">Audit Logs</Link>: an accepted ticket appears as an Enroll row, a refused one names its reason.
+                        Once every step is green, run a policy refresh on a domain member and watch the MSAE tab under <Link to={`/audit?tab=MSAE&ca=${encodeURIComponent(readiness.caLabel)}`} className="text-blue-600 dark:text-blue-400 hover:underline">Audit Logs</Link>: an accepted ticket appears as an Enroll row, a refused one names its reason.
                     </p>
                 </>
             )}

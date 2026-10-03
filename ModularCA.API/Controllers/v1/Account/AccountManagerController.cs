@@ -64,7 +64,8 @@ namespace ModularCA.API.Controllers.v1.Account
         /// updated freely. Changing the email address additionally requires a step-up MFA token
         /// (<see cref="StepUpOps.ChangeEmail"/>) because email is an identity/recovery field. Username
         /// is immutable here — it is the login identity and is managed by administrators only. A null
-        /// field is left unchanged; only fields that actually differ are written.
+        /// field is left unchanged; only fields that actually differ are written. A field holding a
+        /// control character is refused with 400.
         /// </summary>
         [HttpPut]
         public async Task<IActionResult> UpdateProfile([FromBody] UpdateAccountProfileRequest request,
@@ -77,6 +78,10 @@ namespace ModularCA.API.Controllers.v1.Account
             var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == _currentUser.User.Id);
             if (user == null)
                 return NotFound();
+
+            if (new[] { request.Email, request.DisplayName, request.FirstName, request.LastName }
+                .Any(ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter))
+                return BadRequest(new { error = "Profile fields must not contain control characters." });
 
             var changes = new List<string>();
             var emailChanged = false;

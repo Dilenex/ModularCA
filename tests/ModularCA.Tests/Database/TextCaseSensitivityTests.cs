@@ -156,7 +156,7 @@ public class TextCaseSensitivityTests
     [Theory]
     [InlineData(typeof(UserEntity), nameof(UserEntity.Username))]
     [InlineData(typeof(UserEntity), nameof(UserEntity.Email))]
-    [InlineData(typeof(TenantEntity), nameof(TenantEntity.Slug))]
+    [InlineData(typeof(SpaceEntity), nameof(SpaceEntity.Slug))]
     [InlineData(typeof(CertificateAuthorityEntity), nameof(CertificateAuthorityEntity.Label))]
     [InlineData(typeof(KerberosRealmEntity), nameof(KerberosRealmEntity.Realm))]
     [InlineData(typeof(RoleEntity), nameof(RoleEntity.Name))]

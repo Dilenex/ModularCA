@@ -29,9 +29,9 @@ public class RevocationScopeTests
         NotAfter = cert.NotAfter,
     };
 
-    private static CertificateAuthorityEntity Authority(CertificateEntity current, Guid tenant, string label) => new()
+    private static CertificateAuthorityEntity Authority(CertificateEntity current, Guid space, string label) => new()
     {
-        Id = Guid.NewGuid(), Name = label, Label = label, TenantId = tenant, IsEnabled = true, CertificateId = current.CertificateId,
+        Id = Guid.NewGuid(), Name = label, Label = label, SpaceId = space, IsEnabled = true, CertificateId = current.CertificateId,
     };
 
     [Fact]

@@ -1,24 +1,24 @@
-import { consoleCas, tenantsOf, type EffectiveCapabilities } from './authz';
+import { consoleCas, spacesOf, type EffectiveCapabilities } from './authz';
 
 /**
  * The console's CA scope: what the scoped tables list and what the scoped nav entries are
  * checked against.
  *
  * Four kinds of value. `all` is every CA the caller may see, offered only to callers with a
- * system-scoped capability. `tenant` is every CA of one tenant. `ca` is one CA, named by its label
- * (labels are unique across the instance), whether it belongs to a tenant or is an instance CA
- * (no tenant), which the switcher groups under "Instance". `mine` is the self-service view (my certificates,
+ * system-scoped capability. `space` is every CA of one space. `ca` is one CA, named by its label
+ * (labels are unique across the instance), whether it belongs to a space or is an instance CA
+ * (no space), which the switcher groups under "Instance". `mine` is the self-service view (my certificates,
  * my requests), which is what the `/user` portal is.
  *
- * The scope lives in the URL, as `?tenant=<slug>`, `?tenant=<slug>&ca=<label>`, `?ca=<label>`
+ * The scope lives in the URL, as `?space=<slug>`, `?space=<slug>&ca=<label>`, `?ca=<label>`
  * (an instance CA) or `?scope=mine`, so a link carries its scope and reload and the back button keep it. The last
  * choice is also remembered per browser so a fresh navigation without a query string opens
  * where the user left off.
  */
 export type Scope =
     | { kind: 'all' }
-    | { kind: 'tenant'; tenantId: string; slug: string; name: string }
-    | { kind: 'ca'; caId: string; label: string; tenantId: string | null; tenantSlug: string }
+    | { kind: 'space'; spaceId: string; slug: string; name: string }
+    | { kind: 'ca'; caId: string; label: string; spaceId: string | null; spaceSlug: string }
     | { kind: 'mine' };
 
 export const ALL_SCOPE: Scope = { kind: 'all' };
@@ -26,33 +26,68 @@ export const MINE_SCOPE: Scope = { kind: 'mine' };
 
 /** Query-string keys the scope is carried in. */
 export const SCOPE_CA_PARAM = 'ca';
-export const SCOPE_TENANT_PARAM = 'tenant';
+export const SCOPE_SPACE_PARAM = 'space';
 export const SCOPE_KIND_PARAM = 'scope';
 
-/** The CA scope for one administrable CA; an instance CA has a null tenant and an empty slug. */
-export function caScope(ca: { id: string; label: string; tenantId: string | null; tenantSlug: string }): Scope {
-    return { kind: 'ca', caId: ca.id, label: ca.label, tenantId: ca.tenantId ?? null, tenantSlug: ca.tenantId == null ? '' : ca.tenantSlug };
+/** The key a space scope was carried in before 0.4.0. Remove in 0.5. */
+export const LEGACY_SCOPE_SPACE_PARAM = 'tenant';
+
+/** The CA scope for one administrable CA; an instance CA has a null space and an empty slug. */
+export function caScope(ca: { id: string; label: string; spaceId: string | null; spaceSlug: string }): Scope {
+    return { kind: 'ca', caId: ca.id, label: ca.label, spaceId: ca.spaceId ?? null, spaceSlug: ca.spaceId == null ? '' : ca.spaceSlug };
+}
+
+/**
+ * The query string with a pre-0.4.0 `?tenant=<slug>` moved to `?space=<slug>`, or `null` when
+ * it carries none. A `space` already present wins and the legacy key is dropped. Bookmarks and
+ * stored scopes use it; remove in 0.5.
+ */
+export function rewriteLegacyScope(search: string | URLSearchParams): URLSearchParams | null {
+    const params = new URLSearchParams(typeof search === 'string' ? search : search.toString());
+    const legacy = params.get(LEGACY_SCOPE_SPACE_PARAM);
+    if (legacy === null) return null;
+    params.delete(LEGACY_SCOPE_SPACE_PARAM);
+    if (!params.has(SCOPE_SPACE_PARAM)) params.set(SCOPE_SPACE_PARAM, legacy);
+    return params;
+}
+
+/** Where a remembered scope lives: `localStorage` in the browser. */
+export interface ScopeStorage {
+    getItem(key: string): string | null;
+    setItem(key: string, value: string): void;
+}
+
+/**
+ * The scope remembered under `key`. One stored before 0.4.0 (`tenant=<slug>`) is translated to
+ * `space=<slug>` and written back, so the translation happens once. Remove it in 0.5.
+ */
+export function readStoredScope(storage: ScopeStorage, key: string): string | null {
+    const stored = storage.getItem(key);
+    const rewritten = stored ? rewriteLegacyScope(stored) : null;
+    if (!rewritten) return stored;
+    storage.setItem(key, rewritten.toString());
+    return rewritten.toString();
 }
 
 /**
  * Reads a scope from a query string. `?ca=<label>` wins when the label names a CA the caller
  * may scope to; labels are unique across the instance, so the label alone resolves it, and a
- * `?tenant=<slug>` beside it is optional but must be the CA's own. `?tenant=<slug>` alone is a
- * tenant scope; `?scope=mine` or `?scope=all` otherwise. Anything else (an unknown label or
- * slug, a CA the caller cannot see, a tenant that is not the CA's, nothing at all) is `null`,
+ * `?space=<slug>` beside it is optional but must be the CA's own. `?space=<slug>` alone is a
+ * space scope; `?scope=mine` or `?scope=all` otherwise. Anything else (an unknown label or
+ * slug, a CA the caller cannot see, a space that is not the CA's, nothing at all) is `null`,
  * so the caller falls back to a default.
  */
 export function parseScope(search: string | URLSearchParams, caps: EffectiveCapabilities): Scope | null {
     const params = typeof search === 'string' ? new URLSearchParams(search) : search;
-    const slug = params.get(SCOPE_TENANT_PARAM);
-    const tenant = slug ? tenantsOf(caps).find(t => t.slug === slug) ?? null : null;
-    if (slug && !tenant) return null;
+    const slug = params.get(SCOPE_SPACE_PARAM);
+    const space = slug ? spacesOf(caps).find(s => s.slug === slug) ?? null : null;
+    if (slug && !space) return null;
     const label = params.get(SCOPE_CA_PARAM);
     if (label) {
         const ca = consoleCas(caps).find(c => c.label === label);
-        return ca && (!tenant || ca.tenantId === tenant.id) ? caScope(ca) : null;
+        return ca && (!space || ca.spaceId === space.id) ? caScope(ca) : null;
     }
-    if (tenant) return { kind: 'tenant', tenantId: tenant.id, slug: tenant.slug, name: tenant.name };
+    if (space) return { kind: 'space', spaceId: space.id, slug: space.slug, name: space.name };
     const kind = params.get(SCOPE_KIND_PARAM);
     if (kind === 'mine') return MINE_SCOPE;
     if (kind === 'all') return canScopeToAll(caps) ? ALL_SCOPE : null;
@@ -63,13 +98,14 @@ export function parseScope(search: string | URLSearchParams, caps: EffectiveCapa
 export function withScope(search: string | URLSearchParams, scope: Scope): URLSearchParams {
     const params = new URLSearchParams(typeof search === 'string' ? search : search.toString());
     params.delete(SCOPE_CA_PARAM);
-    params.delete(SCOPE_TENANT_PARAM);
+    params.delete(SCOPE_SPACE_PARAM);
+    params.delete(LEGACY_SCOPE_SPACE_PARAM);
     params.delete(SCOPE_KIND_PARAM);
     if (scope.kind === 'ca') {
-        if (scope.tenantId != null) params.set(SCOPE_TENANT_PARAM, scope.tenantSlug);
+        if (scope.spaceId != null) params.set(SCOPE_SPACE_PARAM, scope.spaceSlug);
         params.set(SCOPE_CA_PARAM, scope.label);
-    } else if (scope.kind === 'tenant') {
-        params.set(SCOPE_TENANT_PARAM, scope.slug);
+    } else if (scope.kind === 'space') {
+        params.set(SCOPE_SPACE_PARAM, scope.slug);
     } else {
         params.set(SCOPE_KIND_PARAM, scope.kind);
     }
@@ -83,22 +119,22 @@ export function canScopeToAll(caps: EffectiveCapabilities): boolean {
 
 /**
  * Where the console opens when the URL carries no scope: "all CAs" for a system-scoped
- * caller; otherwise their tenant when everything they administer sits in one tenant;
+ * caller; otherwise their space when everything they administer sits in one space;
  * otherwise the first CA they may scope to; otherwise (nothing to administer) the
  * self-service view.
  */
 export function defaultScope(caps: EffectiveCapabilities): Scope {
     if (canScopeToAll(caps)) return ALL_SCOPE;
-    const tenants = tenantsOf(caps);
-    if (tenants.length === 1) return { kind: 'tenant', tenantId: tenants[0].id, slug: tenants[0].slug, name: tenants[0].name };
+    const spaces = spacesOf(caps);
+    if (spaces.length === 1) return { kind: 'space', spaceId: spaces[0].id, slug: spaces[0].slug, name: spaces[0].name };
     const first = consoleCas(caps)[0];
     if (first) return caScope(first);
     return MINE_SCOPE;
 }
 
-/** The tenant id a scope is confined to, or `null` when it spans tenants or is an instance CA. */
-export function scopeTenantId(scope: Scope): string | null {
-    return scope.kind === 'tenant' ? scope.tenantId : scope.kind === 'ca' ? scope.tenantId : null;
+/** The space id a scope is confined to, or `null` when it spans spaces or is an instance CA. */
+export function scopeSpaceId(scope: Scope): string | null {
+    return scope.kind === 'space' ? scope.spaceId : scope.kind === 'ca' ? scope.spaceId : null;
 }
 
 /** The CA id to send as a `caId` filter for this scope, or `null` for no filter. */
@@ -111,7 +147,7 @@ export function scopeLabel(scope: Scope): string {
     switch (scope.kind) {
         case 'all': return 'All CAs';
         case 'mine': return 'Mine';
-        case 'tenant': return scope.name;
+        case 'space': return scope.name;
         case 'ca': return scope.label;
     }
 }
@@ -120,6 +156,6 @@ export function scopeLabel(scope: Scope): string {
 export function sameScope(a: Scope, b: Scope): boolean {
     if (a.kind !== b.kind) return false;
     if (a.kind === 'ca' && b.kind === 'ca') return a.caId === b.caId;
-    if (a.kind === 'tenant' && b.kind === 'tenant') return a.tenantId === b.tenantId;
+    if (a.kind === 'space' && b.kind === 'space') return a.spaceId === b.spaceId;
     return true;
 }

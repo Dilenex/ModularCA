@@ -85,7 +85,7 @@ public class PublicScopeBucketingTests
     {
         // "/api/v1/publicsomething" must not match "/api/v1/public/..." by prefix accident, and
         // nothing outside the two named surfaces should reach Public.
-        Assert.NotEqual(WhitelistScope.Public, Bucket("/api/v1/admin/tenants").Scope);
+        Assert.NotEqual(WhitelistScope.Public, Bucket("/api/v1/admin/spaces").Scope);
         Assert.NotEqual(WhitelistScope.Public, Bucket("/admin/").Scope);
         Assert.NotEqual(WhitelistScope.Public, Bucket("/metrics").Scope);
     }

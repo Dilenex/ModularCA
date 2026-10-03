@@ -7,11 +7,16 @@ namespace ModularCA.Tests.Signer;
 /// The contract suite bound to <see cref="ModularCA.Signer.Client.RemoteSigningService"/>
 /// talking to the real gRPC signer hosted in the test process over loopback with mutual TLS,
 /// the identities generated the way <c>--init-identity</c> generates them. Every policy row,
-/// audit row and refusal reason the in-process suite asserts must hold across the wire.
+/// audit row and refusal reason the in-process suite asserts must hold across the wire. The
+/// shared world and its signer come from <see cref="RemoteSignerFixture"/>, built before the
+/// first test, and the class runs in <see cref="RemoteSignerCollection"/>.
 /// </summary>
-public sealed class RemoteSigningServiceTests : SigningServiceContractTests
+[Collection(RemoteSignerCollection.Name)]
+public sealed class RemoteSigningServiceTests(RemoteSignerFixture fixture) : SigningServiceContractTests, IClassFixture<RemoteSignerFixture>
 {
-    internal override ISigningService CreateSigner(SignerTestWorld world) => HostedSigners.For(world);
+    internal override SignerTestWorld SharedWorld => fixture.SharedWorld;
+
+    internal override async Task<ISigningService> CreateSignerAsync(SignerTestWorld world) => await fixture.ForAsync(world);
 
     protected override string ExpectedBackend => SignerHealth.SoftwareBackend;
 

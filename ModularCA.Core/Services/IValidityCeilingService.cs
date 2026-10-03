@@ -18,7 +18,7 @@ public interface IValidityCeilingService
     /// <summary>
     /// Resolves the effective validity ceiling for a signing profile / certificate profile pairing.
     /// </summary>
-    /// <param name="signingProfileId">The signing profile, which determines the issuing CA and so the tenant.</param>
+    /// <param name="signingProfileId">The signing profile, which determines the issuing CA and so the space.</param>
     /// <param name="certProfileId">The certificate profile, whose <c>ValidityPeriodMax</c> is the baseline.</param>
     /// <param name="notBefore">
     /// The start the request would carry. Null uses the backdated default that issuance itself

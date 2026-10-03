@@ -92,6 +92,18 @@ public static partial class UserFieldValidators
                 .WithMessage("Email is not in a valid format.");
     }
 
+    /// <summary>
+    /// Refuses a value holding a control character (U+0000 to U+001F, or U+007F). These fields
+    /// flow into stored ceremony parameters and the console, where none of them belongs, and
+    /// PostgreSQL jsonb rejects a NUL. Null passes.
+    /// </summary>
+    public static IRuleBuilderOptions<T, string?> NoControlCharacters<T>(this IRuleBuilder<T, string?> rule)
+    {
+        return rule
+            .Must(v => !ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(v))
+                .WithMessage("{PropertyName} must not contain control characters.");
+    }
+
     private static bool IsLikelyValidEmail(string value)
     {
         // Quick sanity check — full RFC 5322 validation is unrealistic. FluentValidation's
@@ -106,7 +118,8 @@ public static partial class UserFieldValidators
 }
 
 /// <summary>
-/// Validator for <see cref="CreateUserRequest"/>. Enforces username / email format rules.
+/// Validator for <see cref="CreateUserRequest"/>. Enforces username / email format rules, and
+/// refuses control characters in every name field.
 /// </summary>
 public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
 {
@@ -116,12 +129,17 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         RuleFor(x => x.Email).ValidEmail();
         RuleFor(x => x.FirstName).MaximumLength(100);
         RuleFor(x => x.LastName).MaximumLength(100);
+        RuleFor(x => (string?)x.Username).NoControlCharacters().OverridePropertyName(nameof(CreateUserRequest.Username));
+        RuleFor(x => (string?)x.Email).NoControlCharacters().OverridePropertyName(nameof(CreateUserRequest.Email));
+        RuleFor(x => (string?)x.FirstName).NoControlCharacters().OverridePropertyName(nameof(CreateUserRequest.FirstName));
+        RuleFor(x => (string?)x.LastName).NoControlCharacters().OverridePropertyName(nameof(CreateUserRequest.LastName));
+        RuleFor(x => x.DisplayName).NoControlCharacters();
     }
 }
 
 /// <summary>
 /// Validator for <see cref="UpdateUserRequest"/>. Username and email are optional but when
-/// supplied must match the same rules as create.
+/// supplied must match the same rules as create; no name field may hold a control character.
 /// </summary>
 public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 {
@@ -131,6 +149,11 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
         RuleFor(x => x.Email).ValidOptionalEmail();
         RuleFor(x => x.FirstName).MaximumLength(100);
         RuleFor(x => x.LastName).MaximumLength(100);
+        RuleFor(x => x.Username).NoControlCharacters();
+        RuleFor(x => x.Email).NoControlCharacters();
+        RuleFor(x => x.FirstName).NoControlCharacters();
+        RuleFor(x => x.LastName).NoControlCharacters();
+        RuleFor(x => x.DisplayName).NoControlCharacters();
     }
 }
 

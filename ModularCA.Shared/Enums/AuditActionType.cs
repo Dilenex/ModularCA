@@ -184,11 +184,7 @@ public static class AuditActionType
     public const string KeyCeremonyCancelled = "KeyCeremonyCancelled";
     public const string KeyCeremonyExpired = "KeyCeremonyExpired";
 
-    /// <summary>
-    /// Emitted when a <c>TenantPolicyChange</c> ceremony executes successfully and actually
-    /// mutates the tenant row — distinct from <c>KeyCeremonyExecuted</c> so the tenant-policy
-    /// before/after diff has its own action name for easier audit filtering.
-    /// </summary>
+    /// <summary>Retired in 0.4.0: recorded rows keep it. New events use <see cref="SpacePolicyChangeApplied"/>.</summary>
     public const string TenantPolicyChangeApplied = "TenantPolicyChangeApplied";
 
     /// <summary>
@@ -202,7 +198,7 @@ public static class AuditActionType
     public const string PolicySyncExecuted = "PolicySyncExecuted";
     public const string PolicySyncImported = "PolicySyncImported";
 
-    // Tenant management
+    // Retired in 0.4.0: recorded rows keep them. New events use SpaceCreated, SpaceUpdated and SpaceDisabled.
     public const string TenantCreated = "TenantCreated";
     public const string TenantUpdated = "TenantUpdated";
     public const string TenantDisabled = "TenantDisabled";
@@ -232,7 +228,7 @@ public static class AuditActionType
     public const string QuotaUpdated = "QuotaUpdated";
 
     // Privileged access / system-admin bypass events. Emitted from the
-    // authorization service when a system admin accesses a CA or tenant's rows without a
+    // authorization service when a system admin accesses a CA or space's rows without a
     // direct CA-scoped group membership.
     public const string SystemAdminElevatedAccess = "SystemAdminElevatedAccess";
 
@@ -284,7 +280,7 @@ public static class AuditActionType
     public const string BadgeDeleted = "BadgeDeleted";
 
     // Kerberos realm bindings (Windows autoenrollment)
-    /// <summary>A forest was bound to a tenant. Details name the realm, SPN and enrollment user; never a key.</summary>
+    /// <summary>A forest was bound to a space. Details name the realm, SPN and enrollment user; never a key.</summary>
     public const string KerberosRealmCreated = "KerberosRealmCreated";
     public const string KerberosRealmUpdated = "KerberosRealmUpdated";
     public const string KerberosRealmDisabled = "KerberosRealmDisabled";
@@ -334,4 +330,41 @@ public static class AuditActionType
     /// <c>host:break-glass</c>; details name the host and the operating-system user.
     /// </summary>
     public const string UserUnlockedOnHost = "UserUnlockedOnHost";
+
+    /// <summary>A space was created. Details name it and whether a licence was recommended.</summary>
+    public const string SpaceCreated = "SpaceCreated";
+
+    /// <summary>A space's name, description, validity ceiling, ceremony policy or quorum changed.</summary>
+    public const string SpaceUpdated = "SpaceUpdated";
+
+    /// <summary>A space was disabled.</summary>
+    public const string SpaceDisabled = "SpaceDisabled";
+
+    /// <summary>
+    /// A <c>SpacePolicyChange</c> ceremony executed and changed the space's ceremony policy.
+    /// Details carry the before/after values.
+    /// </summary>
+    public const string SpacePolicyChangeApplied = "SpacePolicyChangeApplied";
+
+    private static readonly Dictionary<string, string> RetiredNames = new(StringComparer.Ordinal)
+    {
+        [SpaceCreated] = TenantCreated,
+        [SpaceUpdated] = TenantUpdated,
+        [SpaceDisabled] = TenantDisabled,
+        [SpacePolicyChangeApplied] = TenantPolicyChangeApplied,
+    };
+
+    /// <summary>
+    /// The action types an audit search for <paramref name="actionType"/> matches: the type itself,
+    /// plus its retired tenant name for a space event, or its space name for a retired tenant event.
+    /// </summary>
+    public static IReadOnlyList<string> Synonyms(string actionType)
+    {
+        if (RetiredNames.TryGetValue(actionType, out var retired))
+            return [actionType, retired];
+        foreach (var (current, old) in RetiredNames)
+            if (old == actionType)
+                return [actionType, current];
+        return [actionType];
+    }
 }

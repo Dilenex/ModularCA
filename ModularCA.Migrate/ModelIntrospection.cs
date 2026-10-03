@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using ModularCA.Database;
 using ModularCA.Database.Conventions;
 
@@ -14,6 +15,12 @@ namespace ModularCA.Migrate;
 /// helper would be wrong within a release, and wrong in the way that is hardest to notice: a table
 /// added later simply would not be copied, and nothing would say so. Asking the model means the
 /// helper cannot drift from the schema it is migrating into.
+/// </para>
+/// <para>
+/// The copy writes into the frozen baselines (<see cref="BaselineModel"/>,
+/// <see cref="BaselineAuditModel"/>), the 0.3.0 schema, and never into the current model: the
+/// later migrations then transform the copied data exactly as they would on an upgrade, and a
+/// rename in the current model cannot redirect or drop a column of the copy.
 /// </para>
 /// </summary>
 public static class ModelIntrospection
@@ -92,6 +99,43 @@ public static class ModelIntrospection
             .Options;
         using var db = new AuditDbContext(options);
         return db.GetService<IDesignTimeModel>().Model;
+    }
+
+    /// <summary>
+    /// The application schema at <see cref="PostgresRoleLayout.AppBaselineMigration"/>: that
+    /// migration's own target model, built offline, which no later change to the entities alters.
+    /// </summary>
+    public static IModel BaselineModel()
+    {
+        using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca")
+            .Options);
+        return TargetModel(db, PostgresRoleLayout.AppBaselineMigration);
+    }
+
+    /// <summary>The audit schema at <see cref="PostgresRoleLayout.AuditBaselineMigration"/>, as <see cref="BaselineModel"/>.</summary>
+    public static IModel BaselineAuditModel()
+    {
+        using var db = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca_audit")
+            .Options);
+        return TargetModel(db, PostgresRoleLayout.AuditBaselineMigration);
+    }
+
+    /// <summary>The application tables the copy writes: the baseline's.</summary>
+    public static IReadOnlyList<TableInfo> AppCopyTables() => Tables(BaselineModel());
+
+    /// <summary>The audit tables the copy writes: the baseline's.</summary>
+    public static IReadOnlyList<TableInfo> AuditCopyTables() => Tables(BaselineAuditModel());
+
+    /// <summary>The target model of migration <paramref name="migrationId"/> of <paramref name="db"/>'s context.</summary>
+    private static IModel TargetModel(DbContext db, string migrationId)
+    {
+        var assembly = db.GetService<IMigrationsAssembly>();
+        if (!assembly.Migrations.TryGetValue(migrationId, out var type))
+            throw new InvalidOperationException($"{db.GetType().Name} carries no migration '{migrationId}'.");
+        return assembly.CreateMigration(type, db.Database.ProviderName!).TargetModel
+            ?? throw new InvalidOperationException($"Migration '{migrationId}' has no target model.");
     }
 
     /// <summary>
@@ -177,6 +221,11 @@ public static class ModelIntrospection
     /// issuer, and that is the schema working, not a collision. Sweeping the column alone reports
     /// every such CA as a problem and tells the operator to go and fix their data.
     /// </para>
+    /// <para>
+    /// A column folds case when the model declares it <c>citext</c>
+    /// (<see cref="TextCaseSensitivity.CaseInsensitiveColumnType"/>), which a baseline model
+    /// records as it was then, with no entity types to look up in the registry.
+    /// </para>
     /// </summary>
     /// <param name="model">A built model.</param>
     /// <returns>The constraints worth sweeping, skipping any whose columns all compare exactly.</returns>
@@ -194,8 +243,8 @@ public static class ModelIntrospection
             foreach (var properties in keys)
             {
                 var folds = properties
-                    .Where(p => TextCaseSensitivity.CaseInsensitive.Contains(
-                        new TextCaseSensitivity.Column(entityType.ClrType, p.Name)))
+                    .Where(p => string.Equals(p.FindAnnotation(RelationalAnnotationNames.ColumnType)?.Value as string,
+                        TextCaseSensitivity.CaseInsensitiveColumnType, StringComparison.OrdinalIgnoreCase))
                     .Select(p => p.GetColumnName())
                     .ToHashSet(StringComparer.Ordinal);
 

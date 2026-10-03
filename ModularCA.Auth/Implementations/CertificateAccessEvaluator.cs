@@ -25,17 +25,17 @@ namespace ModularCA.Auth.Implementations
         /// <summary>
         /// Checks if the user has the given capability for the given CA across all 4 grant sources.
         /// </summary>
-        private bool HasCapabilityForCa(Guid userId, string capability, Guid? caId, Guid? tenantId)
+        private bool HasCapabilityForCa(Guid userId, string capability, Guid? caId, Guid? spaceId)
         {
-            // Source 1: group direct grants (system, tenant, CA-scoped). The `caId != null` guard mirrors
+            // Source 1: group direct grants (system, space, CA-scoped). The `caId != null` guard mirrors
             // sources 3/4 — without it a null caId made `CertificateAuthorityId == caId` match every
-            // tenant-wide group (CA id null) across ALL tenants.
+            // space-wide group (CA id null) across ALL spaces.
             if (_db.CapabilityGrants.Any(g =>
                     g.Group.Members.Any(m => m.UserId == userId) &&
                     g.Capability == capability && g.ResourceType == null &&
                     (g.Group.IsSystemGroup
                      || (caId != null && g.Group.CertificateAuthorityId == caId)
-                     || (tenantId != null && g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup && g.Group.TenantId == tenantId))))
+                     || (spaceId != null && g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup && g.Group.SpaceId == spaceId))))
                 return true;
 
             // Source 2: role via group
@@ -45,14 +45,14 @@ namespace ModularCA.Auth.Implementations
                     ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null) &&
                     (ra.Group.IsSystemGroup
                      || (caId != null && ra.Group.CertificateAuthorityId == caId)
-                     || (tenantId != null && ra.Group.CertificateAuthorityId == null && !ra.Group.IsSystemGroup && ra.Group.TenantId == tenantId))))
+                     || (spaceId != null && ra.Group.CertificateAuthorityId == null && !ra.Group.IsSystemGroup && ra.Group.SpaceId == spaceId))))
                 return true;
 
             // Source 3: direct user grants
             if (_db.UserCapabilityGrants.Any(ug =>
                     ug.UserId == userId && ug.Capability == capability && ug.ResourceType == null &&
-                    ((ug.TenantId == null && ug.CertificateAuthorityId == null)
-                     || (tenantId != null && ug.TenantId == tenantId && ug.CertificateAuthorityId == null)
+                    ((ug.SpaceId == null && ug.CertificateAuthorityId == null)
+                     || (spaceId != null && ug.SpaceId == spaceId && ug.CertificateAuthorityId == null)
                      || (caId != null && ug.CertificateAuthorityId == caId))))
                 return true;
 
@@ -60,8 +60,8 @@ namespace ModularCA.Auth.Implementations
             if (_db.RoleAssignments.Any(ra =>
                     ra.UserId == userId && ra.GroupId == null &&
                     ra.Role.Capabilities.Any(rc => rc.Capability == capability && rc.ResourceType == null) &&
-                    ((ra.TenantId == null && ra.CertificateAuthorityId == null)
-                     || (tenantId != null && ra.TenantId == tenantId && ra.CertificateAuthorityId == null)
+                    ((ra.SpaceId == null && ra.CertificateAuthorityId == null)
+                     || (spaceId != null && ra.SpaceId == spaceId && ra.CertificateAuthorityId == null)
                      || (caId != null && ra.CertificateAuthorityId == caId))))
                 return true;
 
@@ -69,18 +69,18 @@ namespace ModularCA.Auth.Implementations
         }
 
         /// <summary>
-        /// Resolves the (CA, tenant) scope that gates a certificate: the CA that owns it as a CA
+        /// Resolves the (CA, space) scope that gates a certificate: the CA that owns it as a CA
         /// certificate (current or superseded), else the CA that owns its issuer certificate
         /// (current or superseded), per <see cref="IssuerChainResolver.OwnerOf(ModularCADbContext, CertificateEntity)"/>.
         /// The console's list filters use the same ownership, so the two agree. Returning null
-        /// here used to collapse tenant scoping and over-grant access across tenants.
+        /// here used to collapse space scoping and over-grant access across spaces.
         /// </summary>
-        private (Guid? caId, Guid? tenantId) ResolveCertScope(CertificateEntity cert)
+        private (Guid? caId, Guid? spaceId) ResolveCertScope(CertificateEntity cert)
         {
             var owner = IssuerChainResolver.OwnerOf(_db, cert);
             if (owner == null && cert.IssuerCertificateId is Guid issuerId && issuerId != cert.CertificateId)
                 owner = IssuerChainResolver.OwnerOf(_db, issuerId);
-            return (owner?.CaId, owner?.TenantId);
+            return (owner?.CaId, owner?.SpaceId);
         }
 
         /// <summary>
@@ -91,9 +91,9 @@ namespace ModularCA.Auth.Implementations
             var cert = _db.Certificates.FirstOrDefault(c => c.CertificateId == certificateId);
             if (cert == null) return false;
 
-            var (caId, tenantId) = ResolveCertScope(cert);
+            var (caId, spaceId) = ResolveCertScope(cert);
 
-            if (HasCapabilityForCa(userId, Capabilities.CertView, caId, tenantId))
+            if (HasCapabilityForCa(userId, Capabilities.CertView, caId, spaceId))
                 return true;
 
             // Original requestor can always view their own cert
@@ -115,11 +115,11 @@ namespace ModularCA.Auth.Implementations
             var cert = _db.Certificates.FirstOrDefault(c => c.CertificateId == certificateId);
             if (cert == null) return false;
 
-            var (caId, tenantId) = ResolveCertScope(cert);
+            var (caId, spaceId) = ResolveCertScope(cert);
 
-            if (HasCapabilityForCa(userId, Capabilities.SystemManage, caId, tenantId))
+            if (HasCapabilityForCa(userId, Capabilities.SystemManage, caId, spaceId))
                 return true;
-            if (HasCapabilityForCa(userId, Capabilities.CertRevoke, caId, tenantId))
+            if (HasCapabilityForCa(userId, Capabilities.CertRevoke, caId, spaceId))
                 return true;
 
             // The original requestor gets self-service over the certificate they asked for:

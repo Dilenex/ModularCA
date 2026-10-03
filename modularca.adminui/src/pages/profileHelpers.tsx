@@ -423,7 +423,7 @@ const expandCompactDuration = (compact: string): string => {
  * Helper text under a "Validity Period Min/Max" or "Max Validity Period" input.
  *
  * States the format with worked examples, names the other two layers that can shorten a
- * certificate (tenant cap and issuing CA expiry) so the operator does not treat this field as the
+ * certificate (space cap and issuing CA expiry) so the operator does not treat this field as the
  * final word, and previews the parsed value live. formatIso8601Duration echoes anything it does
  * not recognise verbatim, so "output equals input" is the parse-failure signal.
  */
@@ -435,7 +435,7 @@ export const DurationHint: React.FC<{ value: string; id?: string }> = ({ value, 
         <>
             <FieldHint id={id}>
                 ISO 8601 duration: P90D is 90 days, P1Y one year, P18M eighteen months, PT12H twelve hours.
-                The certificate&apos;s real ceiling is the strictest of this profile, the tenant&apos;s cap and the issuing CA&apos;s own expiry.
+                The certificate&apos;s real ceiling is the strictest of this profile, the space&apos;s cap and the issuing CA&apos;s own expiry.
                 {parsed && <> <span className="font-medium">= {expandCompactDuration(compact!)}</span></>}
             </FieldHint>
             {trimmed && !parsed && (

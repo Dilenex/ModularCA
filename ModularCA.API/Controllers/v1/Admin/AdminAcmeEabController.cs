@@ -19,7 +19,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// EAB keys are pre-shared HMAC keys that ACME clients must present when
 /// creating new accounts if the server requires external account binding
 /// (RFC 8555 section 7.3.4). An EAB key names no CA or space and is accepted at every CA's
-/// ACME endpoint, so it is an instance credential: listing keys needs a <see cref="TenantFence"/>
+/// ACME endpoint, so it is an instance credential: listing keys needs a <see cref="SpaceFence"/>
 /// instance-wide for cert.revoke, and creating or deleting one needs cert.revoke at system scope.
 /// </summary>
 [ApiController]
@@ -44,7 +44,7 @@ public class AdminAcmeEabController(
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> ListEabKeys()
     {
-        if (!TenantFence.From(HttpContext, Capabilities.CertRevoke).InstanceWide)
+        if (!SpaceFence.From(HttpContext, Capabilities.CertRevoke).InstanceWide)
             return Ok(Array.Empty<object>());
         var keys = await _db.AcmeEabKeys
             .OrderByDescending(k => k.CreatedAt)

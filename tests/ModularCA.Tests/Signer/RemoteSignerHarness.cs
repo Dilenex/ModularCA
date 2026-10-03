@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -13,6 +14,7 @@ using ModularCA.Shared.Signing;
 using ModularCA.Signer.Client;
 using ModularCA.Signer.Identity;
 using ModularCA.Signer.Server;
+using Xunit;
 
 namespace ModularCA.Tests.Signer;
 
@@ -107,7 +109,7 @@ internal sealed class HostedSigner : IAsyncDisposable
         var identity = RemoteSignerIdentity.Instance;
         var options = new RemoteSignerOptions(endpoint, clientCertificate ?? identity.Client, pinnedServerSpki ?? identity.ServerPin)
         {
-            CallTimeout = TimeSpan.FromSeconds(20),
+            CallTimeout = TimeSpan.FromSeconds(60),
             TransferTimeout = TimeSpan.FromSeconds(60),
             ConnectTimeout = TimeSpan.FromSeconds(3),
         };
@@ -125,19 +127,143 @@ internal sealed class HostedSigner : IAsyncDisposable
 }
 
 /// <summary>
-/// One hosted signer per test world, kept for the run: the contract suite asks for a signer
-/// many times over the same world, and a Kestrel host per call would be the slowest thing in
-/// the suite.
+/// The test classes that host a gRPC signer on loopback. They run alone, never beside the rest
+/// of the suite: under full parallelism a starved thread pool let calls miss their deadline.
 /// </summary>
-internal static class HostedSigners
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class RemoteSignerCollection
 {
-    private static readonly ConcurrentDictionary<string, Lazy<(HostedSigner Host, RemoteSigningService Client)>> ByWorld = new();
+    /// <summary>The collection's name.</summary>
+    public const string Name = "Remote signer";
+}
+
+/// <summary>
+/// The hosted signers of a remote contract class, one per test world, kept for the class: the
+/// suite asks for a signer many times over the same world, and a Kestrel host per call would be
+/// the slowest thing in the suite. The shared world and its signer are built before the first
+/// test runs, so no test pays for them inside its call deadline; another world's signer is
+/// started asynchronously on first use. All of them stop with the class.
+/// </summary>
+public sealed class RemoteSignerFixture : IAsyncLifetime
+{
+    private readonly ConcurrentDictionary<string, Task<(HostedSigner Host, RemoteSigningService Client)>> _byWorld = new();
+
+    /// <summary>The world the class's read-only tests share.</summary>
+    internal SignerTestWorld SharedWorld { get; private set; } = null!;
+
+    /// <inheritdoc />
+    public async Task InitializeAsync()
+    {
+        SharedWorld = SignerTestWorld.Create();
+        await ForAsync(SharedWorld);
+    }
 
     /// <summary>The remote client bound to the signer hosted over <paramref name="world"/>.</summary>
-    public static RemoteSigningService For(SignerTestWorld world)
-        => ByWorld.GetOrAdd(world.DatabaseName, _ => new Lazy<(HostedSigner, RemoteSigningService)>(() =>
+    internal async Task<RemoteSigningService> ForAsync(SignerTestWorld world)
+        => (await _byWorld.GetOrAdd(world.DatabaseName, _ => StartAsync(world))).Client;
+
+    private static async Task<(HostedSigner Host, RemoteSigningService Client)> StartAsync(SignerTestWorld world)
+    {
+        var host = await HostedSigner.StartAsync(world);
+        return (host, host.Connect());
+    }
+
+    /// <inheritdoc />
+    public async Task DisposeAsync()
+    {
+        foreach (var started in _byWorld.Values)
         {
-            var host = HostedSigner.StartAsync(world).GetAwaiter().GetResult();
-            return (host, host.Connect());
-        })).Value.Client;
+            var (host, client) = await started;
+            client.Dispose();
+            await host.DisposeAsync();
+        }
+    }
+}
+
+/// <summary>
+/// A loopback TCP relay that holds its own port for its whole life and forwards each connection
+/// to <see cref="Target"/>, or closes it at once while there is none. A test that needs a signer
+/// to go away and come back at the same address points the client here and swaps the signer
+/// behind it, so no port is released and rebound.
+/// </summary>
+internal sealed class LoopbackRelay : IAsyncDisposable
+{
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly CancellationTokenSource _stop = new();
+    private readonly ConcurrentDictionary<TcpClient, byte> _open = new();
+    private readonly Task _accepting;
+    private volatile Uri? _target;
+
+    public LoopbackRelay()
+    {
+        _listener.Start();
+        Endpoint = new Uri($"https://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}");
+        _accepting = AcceptAsync();
+    }
+
+    /// <summary>The relay's own address, stable for its life.</summary>
+    public Uri Endpoint { get; }
+
+    /// <summary>Where new connections are forwarded; null closes each as it arrives.</summary>
+    public Uri? Target { get => _target; set => _target = value; }
+
+    /// <summary>Closes every forwarded connection, as a signer that went away would.</summary>
+    public void Drop()
+    {
+        foreach (var connection in _open.Keys)
+            connection.Dispose();
+    }
+
+    private async Task AcceptAsync()
+    {
+        while (true)
+        {
+            TcpClient inbound;
+            try
+            {
+                inbound = await _listener.AcceptTcpClientAsync(_stop.Token);
+            }
+            catch (Exception) when (_stop.IsCancellationRequested)
+            {
+                return;
+            }
+            _ = RelayAsync(inbound);
+        }
+    }
+
+    private async Task RelayAsync(TcpClient inbound)
+    {
+        using (inbound)
+        {
+            if (Target is not { } target)
+                return;
+            using var outbound = new TcpClient();
+            _open[inbound] = 0;
+            _open[outbound] = 0;
+            try
+            {
+                await outbound.ConnectAsync(target.Host, target.Port, _stop.Token);
+                var client = inbound.GetStream();
+                var server = outbound.GetStream();
+                await Task.WhenAny(client.CopyToAsync(server, _stop.Token), server.CopyToAsync(client, _stop.Token));
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                _open.TryRemove(inbound, out _);
+                _open.TryRemove(outbound, out _);
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _stop.Cancel();
+        _listener.Stop();
+        Drop();
+        await _accepting;
+        _stop.Dispose();
+    }
 }

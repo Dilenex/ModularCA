@@ -11,7 +11,7 @@ import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/compone
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
 import { useAuth } from '../context/AuthContext';
-import { can, tenantsOf } from '../authz';
+import { can, spacesOf } from '../authz';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -35,12 +35,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const { capabilities } = useAuth();
     const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
     const [keys, setKeys] = useState<any[]>([]);
-    const [tenants, setTenants] = useState<any[]>([]);
+    const [spaces, setSpaces] = useState<any[]>([]);
     const [pendingCeremonies, setPendingCeremonies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [generating, setGenerating] = useState(false);
-    const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', tenantId: '' });
+    const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
     const [showGenForm, setShowGenForm] = useState(false);
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string; confirmLabel: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
@@ -52,12 +52,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
         Promise.all([
             apiGet<any>('/api/v1/admin/ssh/ca-keys'),
-            isSystemAdmin ? apiGet<any>('/api/v1/admin/tenants').catch(() => null) : Promise.resolve(null),
+            isSystemAdmin ? apiGet<any>('/api/v1/admin/spaces').catch(() => null) : Promise.resolve(null),
             apiGet<any>('/api/v1/admin/ceremonies?status=Pending').catch(() => []),
-        ]).then(([keyData, tenantData, ceremonyData]) => {
+        ]).then(([keyData, spaceData, ceremonyData]) => {
                 if (cancelled) return;
                 setKeys(Array.isArray(keyData) ? keyData : (keyData.items || keyData.keys || []));
-                setTenants(!tenantData ? tenantsOf(capabilities) : Array.isArray(tenantData) ? tenantData : (tenantData.items || tenantData.tenants || []));
+                setSpaces(!spaceData ? spacesOf(capabilities) : Array.isArray(spaceData) ? spaceData : (spaceData.items || spaceData.spaces || []));
                 const allCeremonies = Array.isArray(ceremonyData) ? ceremonyData : (ceremonyData.items || []);
                 setPendingCeremonies(allCeremonies.filter((c: any) =>
                     c.operationType === 'CreateSshCa' || c.operationType === 'DeleteSshCa'));
@@ -88,16 +88,16 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 isUserCa: genForm.isUserCa,
                 isHostCa: genForm.isHostCa,
                 maxValidityHours: parseInt(genForm.maxValidityHours) || 720,
-                tenantId: genForm.tenantId || undefined,
+                spaceId: genForm.spaceId || undefined,
             }, requireStepUp, StepUpOps.CreateSshCa);
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'Key ceremony created for approval.');
                 setShowGenForm(false);
-                setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', tenantId: '' });
+                setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
                 return;
             }
             setShowGenForm(false);
-            setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', tenantId: '' });
+            setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
             onRefresh();
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled')
@@ -271,14 +271,14 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                             />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Tenant</label>
+                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Space</label>
                             <select
-                                value={genForm.tenantId}
-                                onChange={(e) => setGenForm({ ...genForm, tenantId: e.target.value })}
+                                value={genForm.spaceId}
+                                onChange={(e) => setGenForm({ ...genForm, spaceId: e.target.value })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
                             >
-                                <option value="">Select tenant...</option>
-                                {tenants.map((t: any) => (
+                                <option value="">Select space...</option>
+                                {spaces.map((t: any) => (
                                     <option key={t.id} value={t.id}>{t.name || t.id}</option>
                                 ))}
                             </select>

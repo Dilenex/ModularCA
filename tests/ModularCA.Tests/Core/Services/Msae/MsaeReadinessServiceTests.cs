@@ -69,13 +69,13 @@ public class MsaeReadinessServiceTests
         public Profiles Profiles { get; } = new();
         public Names Names { get; } = new();
         public SystemConfig Config { get; } = new SystemConfig { Https = { PublicDomain = "ca4.example.test", PublicPort = 443 } };
-        public Guid TenantId { get; } = Guid.NewGuid();
+        public Guid SpaceId { get; } = Guid.NewGuid();
         public CertificateAuthorityEntity Ca { get; }
 
         public Harness()
         {
-            Db.Tenants.Add(new TenantEntity { Id = TenantId, Name = "Customer A", Slug = "customer-a" });
-            Ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Staging", Label = "staging", TenantId = TenantId, IsEnabled = true };
+            Db.Spaces.Add(new SpaceEntity { Id = SpaceId, Name = "Customer A", Slug = "customer-a" });
+            Ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Staging", Label = "staging", SpaceId = SpaceId, IsEnabled = true };
             Db.CertificateAuthorities.Add(Ca);
             Db.SaveChanges();
             Names.Canonical["ca4.example.test"] = "ca4.example.test";
@@ -101,7 +101,7 @@ public class MsaeReadinessServiceTests
         {
             var user = new UserEntity { Id = Guid.NewGuid(), Username = $"svc-{realm.ToLowerInvariant()}", Email = "x@y", PasswordHash = "x", IsActive = active, IsServiceIdentity = true };
             Db.Users.Add(user);
-            var entity = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = TenantId, Realm = realm, DnsDomain = realm.ToLowerInvariant(), ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
+            var entity = new KerberosRealmEntity { Id = Guid.NewGuid(), SpaceId = SpaceId, Realm = realm, DnsDomain = realm.ToLowerInvariant(), ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
             entity.Keys.Add(new KerberosRealmKeyEntity { Id = Guid.NewGuid(), RealmId = entity.Id, Kvno = 4, EncryptionType = "AES256", ProtectedKey = "x", Source = KerberosKeySource.Password, RetireAfter = liveKey ? null : DateTime.UtcNow.AddHours(-1) });
             Db.KerberosRealms.Add(entity); Db.SaveChanges();
             if (mayEnroll) Principals.MayEnroll.Add(user.Username);
@@ -213,7 +213,7 @@ public class MsaeReadinessServiceTests
         var host = Step(r, "hostname");
         Assert.Equal(MsaeReadinessState.Fail, host.State);
         Assert.Contains(host.Items, i => i.Contains("ca.customer-a.example") && i.Contains("is not the public hostname ca4.example.test"));
-        Assert.Equal($"/tenants/{h.TenantId}?tab=kerberos", host.Fix!.Path);
+        Assert.Equal($"/spaces/{h.SpaceId}?tab=kerberos", host.Fix!.Path);
         Assert.Equal("https://ca4.example.test/msae/staging/cep", r.CepUrl);
         Assert.False(r.Ready);
 
@@ -250,6 +250,7 @@ public class MsaeReadinessServiceTests
         Assert.Contains(ids.Items, i => i.StartsWith("C.TEST:") && i.Contains("holds no enrollment right"));
         Assert.Contains(ids.Items, i => i.StartsWith("D.TEST:") && i.Contains("is disabled"));
         Assert.Contains(ids.Items, i => i.StartsWith("A.TEST:") && i.Contains("may enroll"));
+        Assert.Equal("/users?tab=service-identities&space=customer-a", ids.Fix!.Path);
         Assert.False(r.Ready);
     }
 
@@ -268,7 +269,7 @@ public class MsaeReadinessServiceTests
         var failed = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "templates");
         Assert.Equal(MsaeReadinessState.Fail, failed.State);
         Assert.Contains(failed.Items, i => i.StartsWith("LabDevice2") && i.Contains("unreadable"));
-        Assert.Equal("/templates?tenant=customer-a&ca=staging", failed.Fix!.Path);
+        Assert.Equal("/templates?space=customer-a&ca=staging", failed.Fix!.Path);
     }
 
     [Fact]
@@ -283,7 +284,7 @@ public class MsaeReadinessServiceTests
         Assert.Equal(MsaeReadinessState.Fail, profiles.State);
         Assert.Contains("no signing profile and no certificate profile", profiles.Detail);
         Assert.Equal(MsaeReadinessState.Warn, Step(r, "auth-modes").State);
-        Assert.Equal("/authorities/protocols?tenant=customer-a&ca=staging", profiles.Fix!.Path);
+        Assert.Equal("/authorities/protocols?space=customer-a&ca=staging", profiles.Fix!.Path);
 
         row.IsEnabled = false; row.MsaeAllowUsernameToken = false;
         await h.Db.SaveChangesAsync();

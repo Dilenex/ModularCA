@@ -1,7 +1,9 @@
 # The instance is the tenant
 
 Status: accepted 2026-09-26; the work is release 0.4.0. No deployment runs more than one non-system tenant, so nothing
-has to be migrated before the change starts.
+has to be migrated before the change starts. Stages S0 to S6 are done (2026-10-03): the delegation
+scope is a space everywhere. The sections up to "Stages of 0.4.0" record the decisions as they were
+taken, in the words of the time.
 
 ## Why
 
@@ -224,11 +226,11 @@ that nothing is renamed only to be deleted.
     ceremony. The licence counts organisations only.
 - **S4.** Remove the isolation-only query filters and fences, and make CA labels and names
   unique across the instance. Done in the `InstanceUniqueCaNames` migration and the code around it:
-  - The only global query filters left are soft-delete ones (tenants, CAs, users). There is no
-    `ITenantContext`; `TenantResolutionMiddleware` stores the caller's `TenantFence` from
+  - The only global query filters left are soft-delete ones (spaces, CAs, users). There is no
+    `ITenantContext`; `SpaceFenceMiddleware` stores the caller's `SpaceFence` from
     `GetFenceAsync`, which reads all four grant sources under a worn badge, so the fence equals
     what authorization allows. A capability at system scope makes it instance-wide for that
-    capability only (`TenantFence.For`): each endpoint narrows the fence to the capability its
+    capability only (`SpaceFence.For`): each endpoint narrows the fence to the capability its
     policy demands, so a system auditor sees every space's audit views but not their operator
     configuration.
   - Every list and read of several spaces' rows applies the fence explicitly; the lists that leaked
@@ -247,7 +249,7 @@ that nothing is renamed only to be deleted.
   - CA labels (ignoring case) and names are unique over all rows, deleted ones included. The
     upgrade refuses while any two CAs collide. Tenant quotas are dropped; group quotas stay.
 - **S5.** Simplify ranks to instance, space, CA and operator. Done without a schema change:
-  - `ca.manage` at instance scope (no tenant, no CA) is the new controlled tier
+  - `ca.manage` at instance scope (no space, no CA) is the new controlled tier
     `SystemOperator = 7`, from a direct grant, a role on the account or the system-operator group.
     Before, it conferred no tier, so a lone system admin could make anyone an approver of every
     key ceremony without a ceremony. Granting, removing or deleting it now needs a controlled-user
@@ -261,7 +263,7 @@ that nothing is renamed only to be deleted.
   - One fail-closed covering tier (`ControlledTier.Covering`) replaces the separate total order
     used to classify groups, roles and deletions: super if present, else the tier that dominates
     all the others, else system admin.
-  - Ceremony descriptions and the console name the affected scope: a CA, a tenant or the instance.
+  - Ceremony descriptions and the console name the affected scope: a CA, a space or the instance.
   - Account administration is a controlled change too. Dominance alone let a peer take over an
     approver: reset its password and MFA, sign in as it and approve their own ceremonies. A
     non-super password reset, MFA reset, or change of username, email, enabled, locked or password
@@ -272,6 +274,28 @@ that nothing is renamed only to be deleted.
     is generated at execute and returned only to the executor, never stored in the ceremony.
   - A CA's key-ceremony quorum, when it comes from a group, comes from the CA's Administrator
     group. It could come from its Operator group, which also holds `ca.manage`.
-- **S6.** Rename tenant to space in the schema, API, console and docs. `MintedTierLevel`,
-  `MintedTierCaId` and `MintedTierTenantId` are JSON keys in stored ceremony `ParametersJson`, so
-  a rename must keep them with `[JsonPropertyName]` or migrate the stored data.
+- **S6.** Rename tenant to space in the schema, API, console and docs. Done in the
+  `RenameTenantToSpace` migration and the code around it:
+  - The `Tenants` table is `Spaces`, and the eleven `TenantId` columns are `SpaceId`, with their
+    indexes and constraints renamed in place: catalog changes only, nothing copied or dropped.
+    The same migration renames the scope keys in stored ceremony parameters (`TenantId`,
+    `MintedTierTenantId`, either casing) rather than keeping the old names with
+    `[JsonPropertyName]`, renames `TenantPolicyChange` operations, and renames each space's
+    `org-<slug>-*` groups to `space-<slug>-*`. It refuses on unreadable parameters and on taken
+    group names. Down refuses.
+  - Reading stored parameters fails closed: a leftover legacy key throws, because a null space
+    means instance scope.
+  - The audit database is unchanged. Its `TenantId` is the space on the protocol audit tables and
+    the retired chain on `AuditLogs`; the hash, and every persisted string it depends on, are
+    pinned by a golden vector. New events are `Space*`, and search treats the old and new names as
+    one.
+  - The admin API says space with no alias, and request bodies where no space means the instance
+    refuse unknown members, so a stale `tenantId` is a 400. The console moved to `/spaces`, with
+    redirects from `/tenants` and `?tenant=` until 0.5.
+  - `IntegrationApi.SpaceId` and `CertManager.SpaceId` replace the `TenantId` keys, which are
+    still read, with a warning; both set and different refuses to start. An LDAP mapping to an
+    `org-<slug>-*` group resolves to its `space-<slug>-*` group with a warning.
+  - The space gate is a soft cap (the guardrails above): `AllowMultipleOrganizations` and
+    `MCA-CFG-017` are retired, and from the fifth space a licence is recommended.
+  - `VocabularyTests` fails on "tenant" in source outside an explicit allowlist of migrations, the
+    audit schema, pinned strings, legacy readers and dated history.

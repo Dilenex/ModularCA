@@ -83,7 +83,7 @@ const GlobalSearch: React.FC = () => {
                 for (const ca of cas) {
                     if (!inScope(ca.id)) continue;
                     if (ca.label.toLowerCase().includes(lq) || ca.name.toLowerCase().includes(lq))
-                        found.ca.push({ key: `ca:${ca.id}`, title: ca.label || ca.name, subtitle: ca.tenantName, path: `/authorities/manage/${ca.id}` });
+                        found.ca.push({ key: `ca:${ca.id}`, title: ca.label || ca.name, subtitle: ca.spaceName, path: `/authorities/manage/${ca.id}` });
                 }
             }
             const jobs: Promise<void>[] = [];

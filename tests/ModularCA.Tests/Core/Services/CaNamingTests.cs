@@ -27,8 +27,8 @@ public class CaNamingTests
     {
         var db = InMemoryDbContextFactory.Create();
         db.CertificateAuthorities.AddRange(
-            new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Acme Root CA", Label = "acme-root", TenantId = Guid.NewGuid() },
-            new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Old CA", Label = "old-ca", TenantId = null, IsDeleted = true });
+            new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Acme Root CA", Label = "acme-root", SpaceId = Guid.NewGuid() },
+            new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Old CA", Label = "old-ca", SpaceId = null, IsDeleted = true });
         db.SaveChanges();
         return db;
     }
@@ -37,6 +37,7 @@ public class CaNamingTests
     [InlineData("Acme-Root")]
     [InlineData("system-root")]
     [InlineData("org-root")]
+    [InlineData("space-root")]
     [InlineData("-root")]
     [InlineData("")]
     public void An_invalid_or_reserved_label_is_refused(string label)
@@ -82,7 +83,7 @@ public class CaNamingTests
     public async Task UpdateCa_enforces_the_label_rules(string? label, string? name, int expected)
     {
         using var db = Seeded();
-        var target = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Target CA", Label = "target", TenantId = Guid.NewGuid() };
+        var target = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Target CA", Label = "target", SpaceId = Guid.NewGuid() };
         db.CertificateAuthorities.Add(target);
         db.SaveChanges();
 
@@ -126,7 +127,7 @@ public class CaNamingTests
         }
         var current = CaCert(0);
         var superseded = CaCert(300);
-        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Issuer CA", Label = "issuer", TenantId = Guid.NewGuid(), CertificateId = current.CertificateId };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Issuer CA", Label = "issuer", SpaceId = Guid.NewGuid(), CertificateId = current.CertificateId };
         db.CertificateAuthorities.Add(ca);
         if (issuedUnder != "none")
             db.Certificates.Add(new CertificateEntity
@@ -222,7 +223,7 @@ public class CaNamingTests
         var space = Guid.NewGuid();
         var parent = Guid.NewGuid();
         var profile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "ca", IsCaProfile = scope != "leaf", KeyUsages = "[]", ExtendedKeyUsages = "[]" };
-        (profile.TenantId, profile.CertificateAuthorityId) = scope switch
+        (profile.SpaceId, profile.CertificateAuthorityId) = scope switch
         {
             "own-space" => ((Guid?)space, (Guid?)null),
             "bound-to-parent" => (space, parent),
@@ -256,11 +257,11 @@ public class CaNamingTests
         var space = Guid.NewGuid();
         var ca = Guid.NewGuid();
         db.CertProfiles.AddRange(
-            new CertProfileEntity { Id = Guid.NewGuid(), Name = "a-other-space", TenantId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" },
-            new CertProfileEntity { Id = Guid.NewGuid(), Name = "b-other-ca", TenantId = space, CertificateAuthorityId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" },
+            new CertProfileEntity { Id = Guid.NewGuid(), Name = "a-other-space", SpaceId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" },
+            new CertProfileEntity { Id = Guid.NewGuid(), Name = "b-other-ca", SpaceId = space, CertificateAuthorityId = Guid.NewGuid(), KeyUsages = "[]", ExtendedKeyUsages = "[]" },
             new CertProfileEntity { Id = Guid.NewGuid(), Name = "c-ca-profile", IsCaProfile = true, KeyUsages = "[]", ExtendedKeyUsages = "[]" },
             new CertProfileEntity { Id = Guid.NewGuid(), Name = "e-unbound", KeyUsages = "[]", ExtendedKeyUsages = "[]" },
-            new CertProfileEntity { Id = Guid.NewGuid(), Name = "d-own-space", TenantId = space, KeyUsages = "[]", ExtendedKeyUsages = "[]" });
+            new CertProfileEntity { Id = Guid.NewGuid(), Name = "d-own-space", SpaceId = space, KeyUsages = "[]", ExtendedKeyUsages = "[]" });
         db.SaveChanges();
 
         Assert.Equal("d-own-space", (await CaCreationService.DefaultLeafProfileAsync(db, ca, space))!.Name);

@@ -14,17 +14,17 @@ namespace ModularCA.Auth.Authorization;
 public interface IControlledUserCeremonyService
 {
     /// <summary>
-    /// Classifies the tier a direct capability grant would confer at its scope (CA, tenant-wide, or
+    /// Classifies the tier a direct capability grant would confer at its scope (CA, space-wide, or
     /// system when both are null), or <c>null</c> when it confers none (no ceremony required).
     /// </summary>
-    ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? tenantId = null);
+    ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? spaceId = null);
 
     /// <summary>
     /// Classifies the tier a role assignment would confer (the covering tier of the role's controlled
     /// capabilities), or <c>null</c> when the role carries no controlled capability. An assignment to a group (<paramref name="groupId"/>) takes the group's
-    /// scope, as the authorization resolver does; otherwise the assignment's own tenant/CA scope.
+    /// scope, as the authorization resolver does; otherwise the assignment's own space/CA scope.
     /// </summary>
-    Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? tenantId = null, Guid? groupId = null);
+    Task<ControlledTier?> ClassifyRoleAssignmentAsync(Guid roleId, Guid? certificateAuthorityId, Guid? spaceId = null, Guid? groupId = null);
 
     /// <summary>
     /// The tiers that <paramref name="capabilities"/> on role <paramref name="roleId"/> confer through
@@ -83,7 +83,7 @@ public interface IControlledUserCeremonyService
     Task<ControlledTier?> GetDeletionTierAsync(Guid userId);
 
     /// <summary>
-    /// Names the scope of <paramref name="tier"/> for people: "on CA &lt;label&gt;", "in tenant
+    /// Names the scope of <paramref name="tier"/> for people: "on CA &lt;label&gt;", "in space
     /// &lt;name&gt;", or "instance" for a system tier. Falls back to the id when the row is gone.
     /// </summary>
     Task<string> DescribeScopeAsync(ControlledTier tier);
@@ -131,7 +131,7 @@ public interface IControlledUserCeremonyService
         Guid targetUserId,
         string? targetUsername,
         string capability,
-        Guid? tenantId,
+        Guid? spaceId,
         Guid? certificateAuthorityId,
         string? resourceType,
         Guid? resourceId,

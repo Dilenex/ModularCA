@@ -180,7 +180,7 @@ const RoleDetail: React.FC = () => {
                             <DetailField label="Description" value={role.description || '-'} />
                             <DetailField label="Type" value={role.isBuiltIn ? 'Built-in' : 'Custom'} />
                             <DetailField label="Created" value={formatDate(role.createdAt)} />
-                            {role.tenantId && <DetailField label="Tenant" value={role.tenantId} mono />}
+                            {role.spaceId && <DetailField label="Space" value={role.spaceId} mono />}
                         </div>
                     </DetailSection>
                 ) : (

@@ -92,7 +92,7 @@ export default function CaHierarchyDiagram() {
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
                     Issuing CAs are the leaf CAs in the hierarchy. They directly sign end-entity certificates
                     for users and servers. Each issuing CA can be scoped to a specific department, use case,
-                    or tenant.
+                    or space.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>Signed by an intermediate CA (or directly by root in simple deployments)</li>
@@ -201,15 +201,15 @@ export default function CaHierarchyDiagram() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Key Ceremony Workflow</h2>
                 <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Tenants with <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireKeyCeremony = true</code> must
+                    Spaces with <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireKeyCeremony = true</code> must
                     go through a multi-party approval workflow before creating new CAs. The number of required
                     approvals is configured
-                    via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CeremonyRequiredApprovals</code> on the tenant.
+                    via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CeremonyRequiredApprovals</code> on the space (the instance has its own).
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-3">
                     <li>CA creation endpoints auto-create a ceremony instead of creating the CA immediately</li>
                     <li>Each ceremony step requires step-up MFA (initiate, approve, reject, cancel, execute)</li>
-                    <li>The ceremony is scoped to the tenant's admin group and its quorum requirements</li>
+                    <li>The ceremony is scoped to the space's admin group and its quorum requirements</li>
                     <li>Once the required number of approvals is reached, the ceremony can be executed</li>
                 </ul>
             </section>

@@ -34,7 +34,7 @@ namespace ModularCA.API.Controllers.v1.Msae;
 /// Three credentials are understood, and the CA's MSAE configuration says which are allowed.
 /// <b>Kerberos</b>: a client configured for Windows integrated authentication sends
 /// <c>Authorization: Negotiate</c>; the token is accepted by <see cref="KerberosAcceptor"/>
-/// against the tenant's realm bindings, without the operating system's Kerberos stack. A client
+/// against the space's realm bindings, without the operating system's Kerberos stack. A client
 /// that sends nothing is challenged with 401 so it obtains a ticket. <b>UsernameToken</b>: the
 /// WS-Security header a client configured for username authentication sends. <b>Basic</b>: what
 /// a hand-driven test sends. The last two go through the same credential service as EST and the
@@ -180,7 +180,7 @@ public class MsaeController(
     [HttpGet("whoami")]
     public async Task<IActionResult> WhoAmI(string? caLabel = null)
     {
-        var (allowKerberos, _, caFound, tenantId) = await AuthModesAsync(caLabel);
+        var (allowKerberos, _, caFound, spaceId) = await AuthModesAsync(caLabel);
         if (!caFound)
             return NotFound(new { error = "No such CA, or MSAE is not enabled on it." });
 
@@ -195,7 +195,7 @@ public class MsaeController(
         try { bytes = Convert.FromBase64String(header.ToString()["Negotiate ".Length..].Trim()); }
         catch (FormatException) { return BadRequest(new { error = "The Negotiate header is not base64." }); }
 
-        var result = await kerberos.AcceptAsync(bytes, tenantId, HttpContext.RequestAborted);
+        var result = await kerberos.AcceptAsync(bytes, spaceId, HttpContext.RequestAborted);
         if (!result.Accepted)
             return StatusCode(StatusCodes.Status403Forbidden, new { refusal = result.Refusal.ToString(), result.Realm, servicePrincipal = result.ServicePrincipal, detail = result.Detail, kerberosEnabledOnCa = allowKerberos });
 
@@ -244,7 +244,7 @@ public class MsaeController(
     private async Task<(MsaeCaller? Caller, IActionResult? Fault)> AuthenticateAsync(
         string? caLabel, WstepMessages.WstepUsernameToken? token, WstepMessages.WstepKerberosToken? kerberosToken, string? messageId)
     {
-        var (allowKerberos, allowUsername, caFound, tenantId) = await AuthModesAsync(caLabel);
+        var (allowKerberos, allowUsername, caFound, spaceId) = await AuthModesAsync(caLabel);
 
         // The Windows enrollment engine set to Kerberos carries its AP-REQ in the WS-Security
         // header (Kerberos Token Profile); curl and the like carry it in the HTTP header. Both
@@ -275,13 +275,13 @@ public class MsaeController(
                 return (null, Fault("Kerberos authentication is not enabled for this CA.", messageId, "auth_mode"));
 
             Log.Information("MSAE: Kerberos token ({Bytes} bytes, {Where}) from {Ip} for CA {CaLabel}", bytes.Length, where, SourceIp, caLabel);
-            var result = await kerberos.AcceptAsync(bytes, tenantId, HttpContext.RequestAborted);
+            var result = await kerberos.AcceptAsync(bytes, spaceId, HttpContext.RequestAborted);
             if (!result.Accepted)
             {
                 Log.Warning("MSAE Kerberos token refused ({Refusal}) realm={Realm} spn={Spn} from {Ip} for CA {CaLabel}: {Detail}",
                     result.Refusal, result.Realm, result.ServicePrincipal, SourceIp, caLabel, result.Detail);
                 await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
-                    success: false, errorMessage: $"Kerberos token refused: {result.Refusal}{(string.IsNullOrEmpty(result.Detail) ? "" : " " + result.Detail)}", tenantId: tenantId,
+                    success: false, errorMessage: $"Kerberos token refused: {result.Refusal}{(string.IsNullOrEmpty(result.Detail) ? "" : " " + result.Detail)}", spaceId: spaceId,
                     callerPrincipal: result.Realm != null ? $"krb:?@{result.Realm}" : "krb:?", realm: result.Realm, authMethod: "Kerberos");
                 return (null, Fault("Authentication failed.", messageId, "auth_failed"));
             }
@@ -315,7 +315,7 @@ public class MsaeController(
             var headers = string.Join(",", Request.Headers.Keys);
             await protocolAudit.LogMsaeAsync(MsaeEnrollmentService.RejectOperation, null, null, null, null, null, caLabel, SourceIp,
                 success: false, errorMessage: Truncate($"No credential presented; challenged with Negotiate. Request headers: {headers}", 500),
-                tenantId: tenantId, callerPrincipal: null, realm: null, authMethod: "None");
+                spaceId: spaceId, callerPrincipal: null, realm: null, authMethod: "None");
 
             Response.StatusCode = StatusCodes.Status401Unauthorized;
             Response.Headers.WWWAuthenticate = "Negotiate";
@@ -348,9 +348,9 @@ public class MsaeController(
     /// The CA's MSAE authentication modes and scope. A CA that cannot be resolved (no label,
     /// protocol off) reports username-only and not found, so the request fails later with the
     /// resolver's own message rather than a Kerberos challenge that could never succeed. A found
-    /// instance CA has a null tenant, which an instance realm serves.
+    /// instance CA has a null space, which an instance realm serves.
     /// </summary>
-    private async Task<(bool AllowKerberos, bool AllowUsername, bool Found, Guid? TenantId)> AuthModesAsync(string? caLabel)
+    private async Task<(bool AllowKerberos, bool AllowUsername, bool Found, Guid? SpaceId)> AuthModesAsync(string? caLabel)
     {
         try
         {
@@ -361,7 +361,7 @@ public class MsaeController(
                 .Where(p => p.CaId == ca.Id && p.Protocol == MsaeEnrollmentService.Protocol)
                 .Select(p => new { p.MsaeAllowKerberos, p.MsaeAllowUsernameToken })
                 .FirstOrDefaultAsync();
-            return (config?.MsaeAllowKerberos ?? false, config?.MsaeAllowUsernameToken ?? true, true, ca.TenantId);
+            return (config?.MsaeAllowKerberos ?? false, config?.MsaeAllowUsernameToken ?? true, true, ca.SpaceId);
         }
         catch (InvalidOperationException)
         {

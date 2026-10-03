@@ -39,8 +39,8 @@ public sealed class DatabaseSignerAuditSink : ISignerAuditSink
         KeyCertificateId = decision.Key?.CertificateId,
         Keystore = decision.Key?.Keystore,
         CaId = decision.Context.CaId,
-        TenantId = decision.Context.TenantId,
-        EffectiveScope = decision.Context.TenantId != null ? SignerAuditEntity.TenantScope
+        SpaceId = decision.Context.SpaceId,
+        EffectiveScope = decision.Context.SpaceId != null ? SignerAuditEntity.SpaceScope
             : decision.Context.InstanceScope ? SignerAuditEntity.InstanceScope
             : SignerAuditEntity.NoScope,
         CeremonyId = decision.Context.CeremonyId,

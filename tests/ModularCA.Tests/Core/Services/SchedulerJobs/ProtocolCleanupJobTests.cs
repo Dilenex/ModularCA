@@ -30,7 +30,7 @@ public class ProtocolCleanupJobTests
         public List<(string Action, object? Details)> Entries { get; } = [];
         public Task LogAsync(string actionType, Guid? actorUserId, string? actorUsername, string? targetEntityType = null,
             string? targetEntityId = null, object? details = null, string? sourceIp = null, bool success = true,
-            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null)
         {
             Entries.Add((actionType, details));
             return Task.CompletedTask;

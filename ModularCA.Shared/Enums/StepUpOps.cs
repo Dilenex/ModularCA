@@ -161,14 +161,14 @@ public static class StepUpOps
     public const string BulkLdapPublisher = "bulk-ldap-publisher";
 
     // Certificate Transparency log catalog. CT log URL + public key are system-wide
-    // artifacts — corrupting them silently breaks SCT embedding for every tenant,
+    // artifacts — corrupting them silently breaks SCT embedding for every space,
     // so mutations require step-up MFA on top of the SystemOperator policy.
     public const string CreateCtLog = "create-ct-log";
     public const string UpdateCtLog = "update-ct-log";
     public const string DeleteCtLog = "delete-ct-log";
 
     // Certificate template catalog (bundles CA + signing profile + cert profile).
-    // Global artifacts that affect every tenant's enrollment flow; mutations require
+    // Global artifacts that affect every space's enrollment flow; mutations require
     // step-up MFA on top of the SystemOperator policy.
     public const string CreateCertificateTemplate = "create-certificate-template";
     public const string UpdateCertificateTemplate = "update-certificate-template";
@@ -210,14 +210,14 @@ public static class StepUpOps
     public const string MtlsEnroll = "mtls-enroll";
     public const string MtlsDelete = "mtls-delete";
 
-    // Tenants
-    public const string EnableTenant = "enable-tenant";
-    public const string DisableTenant = "disable-tenant";
+    // Spaces
+    public const string EnableSpace = "enable-space";
+    public const string DisableSpace = "disable-space";
 
-    // Combined tenant-settings save (detail page): a single token authorizes one atomic update of
-    // a tenant's ceilings, per-CA issuance quotas, and tenant/CA user-approval quorums — so editing
+    // Combined space-settings save (detail page): a single token authorizes one atomic update of
+    // a space's ceilings, per-CA issuance quotas, and space/CA user-approval quorums — so editing
     // several sensitive fields at once prompts for step-up exactly once.
-    public const string UpdateTenantSettings = "update-tenant-settings";
+    public const string UpdateSpaceSettings = "update-space-settings";
 
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
@@ -265,7 +265,7 @@ public static class StepUpOps
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,
         MtlsEnroll, MtlsDelete,
-        EnableTenant, DisableTenant, UpdateTenantSettings,
+        EnableSpace, DisableSpace, UpdateSpaceSettings,
     };
 
     /// <summary>

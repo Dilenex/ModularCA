@@ -14,7 +14,7 @@ import SetupUiGuide from './pages/SetupUiGuide';
 import AuthFlowDiagram from './pages/AuthFlowDiagram';
 import CertIssuanceFlow from './pages/CertIssuanceFlow';
 import CaHierarchyDiagram from './pages/CaHierarchyDiagram';
-import TenantModelDiagram from './pages/TenantModelDiagram';
+import SpaceModelDiagram from './pages/SpaceModelDiagram';
 import ConfigLifecycle from './pages/ConfigLifecycle';
 import ApiCategoryPage from './pages/ApiCategoryPage';
 import { SourceNotice } from '@shared/components/SourceNotice';
@@ -105,7 +105,7 @@ const navSections: NavSection[] = [
             { label: 'Auth Flow', to: '/architecture/auth-flow' },
             { label: 'Certificate Issuance', to: '/architecture/certificate-issuance' },
             { label: 'CA Hierarchy', to: '/architecture/ca-hierarchy' },
-            { label: 'Tenant Model', to: '/architecture/tenant-model' },
+            { label: 'Space Model', to: '/architecture/space-model' },
             { label: 'Config Lifecycle', to: '/architecture/config-lifecycle' },
         ],
     },
@@ -324,7 +324,9 @@ function AppShell() {
                         <Route path="/architecture/auth-flow" element={<AuthFlowDiagram />} />
                         <Route path="/architecture/certificate-issuance" element={<CertIssuanceFlow />} />
                         <Route path="/architecture/ca-hierarchy" element={<CaHierarchyDiagram />} />
-                        <Route path="/architecture/tenant-model" element={<TenantModelDiagram />} />
+                        <Route path="/architecture/space-model" element={<SpaceModelDiagram />} />
+                        {/* Renamed in 0.4.0; remove this redirect in 0.5. */}
+                        <Route path="/architecture/tenant-model" element={<Navigate to="/architecture/space-model" replace />} />
                         <Route path="/architecture/config-lifecycle" element={<ConfigLifecycle />} />
 
                         {/* Default redirect */}

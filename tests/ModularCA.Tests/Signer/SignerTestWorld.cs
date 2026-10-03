@@ -18,13 +18,13 @@ namespace ModularCA.Tests.Signer;
 
 /// <summary>
 /// One key the signer holds in a test, with everything a test needs to name it and check it:
-/// its reference, its public half, and the CA and tenant the database says own it.
+/// its reference, its public half, and the CA and space the database says own it.
 /// </summary>
 /// <param name="PrivateKeyPkcs8">The private half, DER-encoded PKCS#8, for the import tests; the signer never sees it otherwise.</param>
-internal sealed record SignerTestKey(string Name, KeyRef Ref, X509Certificate Certificate, AsymmetricKeyParameter PublicKey, Guid? CaId, Guid? TenantId, byte[] PrivateKeyPkcs8);
+internal sealed record SignerTestKey(string Name, KeyRef Ref, X509Certificate Certificate, AsymmetricKeyParameter PublicKey, Guid? CaId, Guid? SpaceId, byte[] PrivateKeyPkcs8);
 
 /// <summary>
-/// The world a signer contract test runs in: two CAs in two tenants, one RSA and one ECDSA,
+/// The world a signer contract test runs in: two CAs in two spaces, one RSA and one ECDSA,
 /// with the infrastructure keys a CA owns under the first, plus the keys that must be refused.
 /// The database rows are the ones the signer classifies from, seeded exactly as the node writes
 /// them; the keystore is the in-memory <see cref="TestKeystore"/> holding every key.
@@ -32,8 +32,8 @@ internal sealed record SignerTestKey(string Name, KeyRef Ref, X509Certificate Ce
 /// <remarks>
 /// Keys by name:
 /// <list type="bullet">
-/// <item><c>ca-rsa</c>: the RSA CA in tenant A.</item>
-/// <item><c>ca-ec</c>: the P-256 CA in tenant B.</item>
+/// <item><c>ca-rsa</c>: the RSA CA in space A.</item>
+/// <item><c>ca-ec</c>: the P-256 CA in space B.</item>
 /// <item><c>ocsp</c>: the delegated OCSP responder of <c>ca-rsa</c>.</item>
 /// <item><c>tsa</c>: the timestamp authority of <c>ca-rsa</c>.</item>
 /// <item><c>cmp</c>: the CMP protection key of <c>ca-rsa</c>.</item>
@@ -46,8 +46,8 @@ internal sealed record SignerTestKey(string Name, KeyRef Ref, X509Certificate Ce
 internal sealed class SignerTestWorld
 {
     public string DatabaseName { get; }
-    public Guid TenantA { get; }
-    public Guid TenantB { get; }
+    public Guid SpaceA { get; }
+    public Guid SpaceB { get; }
     public Guid CaRsaId { get; }
     public Guid CaEcId { get; }
     public Guid KeylessCaId { get; }
@@ -69,8 +69,8 @@ internal sealed class SignerTestWorld
     private SignerTestWorld(string databaseName, Ids ids, TestKeystore keystore, IServiceScopeFactory scopes, IReadOnlyDictionary<string, SignerTestKey> keys)
     {
         DatabaseName = databaseName;
-        TenantA = ids.TenantA;
-        TenantB = ids.TenantB;
+        SpaceA = ids.SpaceA;
+        SpaceB = ids.SpaceB;
         CaRsaId = ids.CaRsa;
         CaEcId = ids.CaEc;
         KeylessCaId = ids.KeylessCa;
@@ -79,7 +79,7 @@ internal sealed class SignerTestWorld
         Keys = keys;
     }
 
-    private sealed record Ids(Guid TenantA, Guid TenantB, Guid CaRsa, Guid CaEc, Guid KeylessCa);
+    private sealed record Ids(Guid SpaceA, Guid SpaceB, Guid CaRsa, Guid CaEc, Guid KeylessCa);
 
     /// <summary>Opens a context over the world's database, for seeding and for reading the audit back.</summary>
     public ModularCADbContext OpenDb() => InMemoryDbContextFactory.Create(DatabaseName);
@@ -104,12 +104,12 @@ internal sealed class SignerTestWorld
 
         using (var db = InMemoryDbContextFactory.Create(databaseName))
         {
-            // Both tenants waive ceremonies, as a tenant that creates its CAs directly does:
+            // Both spaces waive ceremonies, as a space that creates its CAs directly does:
             // the signer reads the waiver from the row, and the suite's id-less ceremony
-            // contexts are the direct-creation path. A tenant that requires them is seeded by
+            // contexts are the direct-creation path. A space that requires them is seeded by
             // the tests that need one.
-            db.Tenants.Add(new TenantEntity { Id = ids.TenantA, Name = "signer-test-a", Slug = "signer-test-a", RequireKeyCeremony = false });
-            db.Tenants.Add(new TenantEntity { Id = ids.TenantB, Name = "signer-test-b", Slug = "signer-test-b", RequireKeyCeremony = false });
+            db.Spaces.Add(new SpaceEntity { Id = ids.SpaceA, Name = "signer-test-a", Slug = "signer-test-a", RequireKeyCeremony = false });
+            db.Spaces.Add(new SpaceEntity { Id = ids.SpaceB, Name = "signer-test-b", Slug = "signer-test-b", RequireKeyCeremony = false });
 
             foreach (var m in world.Materials)
                 db.Certificates.Add(CertificateRow(m));
@@ -126,7 +126,7 @@ internal sealed class SignerTestWorld
 
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
-                Id = ids.CaRsa, Name = "signer-test-rsa", Label = "signer-test-rsa", TenantId = ids.TenantA,
+                Id = ids.CaRsa, Name = "signer-test-rsa", Label = "signer-test-rsa", SpaceId = ids.SpaceA,
                 CertificateId = caRsa.Id,
                 OcspResponderCertificateId = ocsp.Id,
                 TsaCertificateId = tsa.Id,
@@ -134,12 +134,12 @@ internal sealed class SignerTestWorld
             });
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
-                Id = ids.CaEc, Name = "signer-test-ec", Label = "signer-test-ec", TenantId = ids.TenantB,
+                Id = ids.CaEc, Name = "signer-test-ec", Label = "signer-test-ec", SpaceId = ids.SpaceB,
                 CertificateId = caEc.Id,
             });
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
-                Id = ids.KeylessCa, Name = "signer-test-keyless", Label = "signer-test-keyless", TenantId = ids.TenantA,
+                Id = ids.KeylessCa, Name = "signer-test-keyless", Label = "signer-test-keyless", SpaceId = ids.SpaceA,
                 CertificateId = keyless.Id,
             });
             db.SaveChanges();
@@ -159,14 +159,14 @@ internal sealed class SignerTestWorld
         var keys = new Dictionary<string, SignerTestKey>();
         foreach (var m in world.Materials)
         {
-            (Guid? caId, Guid? tenantId) = m.Name switch
+            (Guid? caId, Guid? spaceId) = m.Name switch
             {
-                "ca-rsa" or "ocsp" or "tsa" or "cmp" => (ids.CaRsa, ids.TenantA),
-                "ca-ec" => (ids.CaEc, ids.TenantB),
-                "keyless" => (ids.KeylessCa, ids.TenantA),
+                "ca-rsa" or "ocsp" or "tsa" or "cmp" => (ids.CaRsa, ids.SpaceA),
+                "ca-ec" => (ids.CaEc, ids.SpaceB),
+                "keyless" => (ids.KeylessCa, ids.SpaceA),
                 _ => ((Guid?)null, (Guid?)null),
             };
-            keys[m.Name] = new SignerTestKey(m.Name, new KeyRef(m.Id), m.Certificate, m.KeyPair.Public, caId, tenantId,
+            keys[m.Name] = new SignerTestKey(m.Name, new KeyRef(m.Id), m.Certificate, m.KeyPair.Public, caId, spaceId,
                 Org.BouncyCastle.Pkcs.PrivateKeyInfoFactory.CreatePrivateKeyInfo(m.KeyPair.Private).GetDerEncoded());
         }
 

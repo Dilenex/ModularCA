@@ -171,7 +171,7 @@ public sealed class CeremonyEndpointPipelineTests
     public async Task A_plain_user_and_a_ca_auditor_see_nothing_and_can_act_on_nothing()
     {
         var w = new World();
-        var auditorGroup = w.W.Group("org_a1_auditor", w.W.TenantA, w.W.CaA1, "Auditor");
+        var auditorGroup = w.W.Group("org_a1_auditor", w.W.SpaceA, w.W.CaA1, "Auditor");
         var caAuditor = w.W.User("a1-auditor", auditorGroup);
         var initiator = w.W.User("a1-initiator", w.W.A1Admin);
         var id = w.GrantOnA1(w.W.Plain, initiator);
@@ -245,25 +245,25 @@ public sealed class CeremonyEndpointPipelineTests
     }
 
     [Fact]
-    public async Task A_tenant_wide_ca_manage_holder_who_does_not_dominate_neither_sees_nor_rejects_it()
+    public async Task A_space_wide_ca_manage_holder_who_does_not_dominate_neither_sees_nor_rejects_it()
     {
         var w = new World();
-        var operatorGroup = w.W.Group("tenant-a-ca-operator", w.W.TenantA, null, null);
+        var operatorGroup = w.W.Group("space-a-ca-operator", w.W.SpaceA, null, null);
         w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = operatorGroup.Id, Capability = Capabilities.CaManage });
         w.Db.SaveChanges();
-        var orgOperator = w.W.User("tenant-a-operator", operatorGroup);
+        var spaceOperator = w.W.User("space-a-operator", operatorGroup);
 
         var initiator = w.W.User("a1-initiator", w.W.A1Admin);
         var id = w.GrantOnA1(w.W.Plain, initiator);
         var other = await w.Ceremonies.InitiateAsync("CreateRootCA", "root", string.Empty, initiator, "initiator",
-            $"{{\"TenantId\":\"{w.W.TenantA}\"}}");
+            $"{{\"SpaceId\":\"{w.W.SpaceA}\"}}");
 
-        var listed = Ids(await w.Send(orgOperator, null, "List", (string?)null));
+        var listed = Ids(await w.Send(spaceOperator, null, "List", (string?)null));
         Assert.DoesNotContain(id, listed);
         Assert.Contains(other.Id, listed);
-        Assert.Equal(403, Status(await w.Send(orgOperator, null, "GetById", id)));
-        Assert.Equal(403, Status(await w.Send(orgOperator, null, "Reject", id, w.StepUp(orgOperator, StepUpOps.RejectCeremony, id))));
-        Assert.Equal(200, Status(await w.Send(orgOperator, null, "GetById", other.Id)));
+        Assert.Equal(403, Status(await w.Send(spaceOperator, null, "GetById", id)));
+        Assert.Equal(403, Status(await w.Send(spaceOperator, null, "Reject", id, w.StepUp(spaceOperator, StepUpOps.RejectCeremony, id))));
+        Assert.Equal(200, Status(await w.Send(spaceOperator, null, "GetById", other.Id)));
         Assert.Equal("Pending", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
 
         // A system operator (system-wide ca.manage) does not dominate a CA admin tier either, so it
@@ -317,10 +317,10 @@ public sealed class CeremonyEndpointPipelineTests
     public async Task An_effectively_identical_grant_is_not_inserted_again()
     {
         var w = new World();
-        // Already held on CA A1, recorded with the CA's tenant; the ceremony names the CA only.
+        // Already held on CA A1, recorded with the CA's space; the ceremony names the CA only.
         w.Db.UserCapabilityGrants.Add(new UserCapabilityGrantEntity
         {
-            UserId = w.W.Plain, Capability = Capabilities.SystemManage, TenantId = w.W.TenantA, CertificateAuthorityId = w.W.CaA1,
+            UserId = w.W.Plain, Capability = Capabilities.SystemManage, SpaceId = w.W.SpaceA, CertificateAuthorityId = w.W.CaA1,
         });
         w.Db.SaveChanges();
         var initiator = w.W.User("a1-initiator", w.W.A1Admin);
@@ -333,6 +333,7 @@ public sealed class CeremonyEndpointPipelineTests
 
     [Theory]
     [InlineData("ControlledUserChange")]
+    [InlineData("SpacePolicyChange")]
     [InlineData("TenantPolicyChange")]
     [InlineData("RevokeCa")]
     [InlineData("CreateSshCa")]
@@ -344,7 +345,7 @@ public sealed class CeremonyEndpointPipelineTests
         var w = new World();
         var body = Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.InitiateCeremonyRequest"))!;
         body.GetType().GetProperty("OperationType")!.SetValue(body, operationType);
-        body.GetType().GetProperty("Parameters")!.SetValue(body, new KeyCeremonyParameters { TenantId = w.W.TenantA });
+        body.GetType().GetProperty("Parameters")!.SetValue(body, new KeyCeremonyParameters { SpaceId = w.W.SpaceA });
 
         var result = await w.Send(w.W.SystemAdmin, null, "Initiate", body, w.StepUp(w.W.SystemAdmin, StepUpOps.InitiateCeremony));
         Assert.Equal(400, Status(result));
@@ -368,7 +369,7 @@ public sealed class CeremonyEndpointPipelineTests
     public async Task A_ca_creation_ceremony_that_could_never_execute_is_refused_at_initiation()
     {
         var w = new World();
-        var foreignProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "b-ca", IsCaProfile = true, TenantId = w.W.TenantB, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
+        var foreignProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "b-ca", IsCaProfile = true, SpaceId = w.W.SpaceB, KeyUsages = "[]", ExtendedKeyUsages = "[]" };
         w.Db.CertProfiles.Add(foreignProfile);
         w.Db.SaveChanges();
 
@@ -382,12 +383,44 @@ public sealed class CeremonyEndpointPipelineTests
         Assert.Equal(409, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "b1", Label = "fresh", Scope = KeyCeremonyParameters.InstanceScope }));
         Assert.Equal(404, await Initiate("CreateIntermediateCA", new KeyCeremonyParameters
         {
-            SubjectCN = "Fresh Sub", Label = "fresh-sub", TenantId = w.W.TenantA, ParentCaId = w.W.CaA1, CertProfileId = foreignProfile.Id,
+            SubjectCN = "Fresh Sub", Label = "fresh-sub", SpaceId = w.W.SpaceA, ParentCaId = w.W.CaA1, CertProfileId = foreignProfile.Id,
         }));
         Assert.Empty(w.Db.KeyCeremonies);
 
         Assert.Equal(200, await Initiate("CreateRootCA", new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "fresh-root", Scope = KeyCeremonyParameters.InstanceScope }));
         Assert.Single(w.Db.KeyCeremonies);
+    }
+
+    /// <summary>
+    /// A control character in the description or any CA-creation text field is refused at
+    /// initiation with 400, and nothing is opened.
+    /// </summary>
+    [Theory]
+    [InlineData("Description", 0x00)]
+    [InlineData("SubjectCN", 0x00)]
+    [InlineData("SubjectO", 0x0A)]
+    [InlineData("SubjectOU", 0x1F)]
+    [InlineData("Label", 0x7F)]
+    [InlineData("PublicBaseUrl", 0x09)]
+    [InlineData("NameConstraintsPermitted", 0x00)]
+    public async Task A_control_character_in_ceremony_text_is_refused_at_initiation(string field, int code)
+    {
+        var w = new World();
+        var bad = "fresh" + (char)code;
+        var parameters = new KeyCeremonyParameters { SubjectCN = "Fresh Root", Label = "fresh-root", Scope = KeyCeremonyParameters.InstanceScope };
+        if (field == "NameConstraintsPermitted")
+            parameters.NameConstraintsPermitted = ["ok.example", bad];
+        else if (field != "Description")
+            typeof(KeyCeremonyParameters).GetProperty(field)!.SetValue(parameters, bad);
+        Assert.Equal(field == "Description" ? null : $"{field} must not contain control characters.", parameters.ControlCharacterError());
+        var body = InitiateBody("CreateRootCA", parameters);
+        if (field == "Description")
+            body.GetType().GetProperty("Description")!.SetValue(body, bad);
+
+        var result = await w.Send(w.W.SystemAdmin, null, "Initiate", body, w.StepUp(w.W.SystemAdmin, StepUpOps.InitiateCeremony));
+
+        Assert.Equal(400, Status(result));
+        Assert.Empty(w.Db.KeyCeremonies);
     }
 
     /// <summary>

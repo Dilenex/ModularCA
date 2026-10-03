@@ -221,7 +221,7 @@ public static class BootstrapCertCreator
 
     /// <summary>
     /// Creates a certificate authority entity in the database, linked to the given certificate.
-    /// Supports root, intermediate, and issuing CA types. A null <paramref name="tenantId"/>
+    /// Supports root, intermediate, and issuing CA types. A null <paramref name="spaceId"/>
     /// creates an instance CA, such as the system signing CA. A label (ignoring case) or name that
     /// another CA of the instance already has throws
     /// <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> naming both, rather
@@ -229,7 +229,7 @@ public static class BootstrapCertCreator
     /// <see cref="EnsureRootLabelUsable"/> refuses. An explicit <paramref name="label"/> may be reserved.
     /// </summary>
     public static void CreateCertificateAuthority(ModularCADbContext db, CertificateEntity caCertificateEntity,
-        string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? tenantId = null)
+        string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? spaceId = null)
     {
         var caName = CertificateUtil.ParseCnFromPem(caCertificateEntity.Pem);
         var caType = type;
@@ -256,7 +256,7 @@ public static class BootstrapCertCreator
             IsDefault = isDefault,
             Label = caLabel,
             ParentCaId = parentCaId,
-            TenantId = tenantId,
+            SpaceId = spaceId,
         };
         db.CertificateAuthorities.Add(caEntity);
         db.SaveChanges();
@@ -274,7 +274,7 @@ public static class BootstrapCertCreator
     /// <summary>
     /// Throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> when the root CA
     /// common name <paramref name="commonName"/> would give an invalid label, or one with a reserved
-    /// prefix (system- / org-), under <see cref="ModularCA.Core.Services.CaLabelRules"/>. Called
+    /// prefix (system- / space- / org-), under <see cref="ModularCA.Core.Services.CaLabelRules"/>. Called
     /// before any setup work so the operator can pick another name while nothing is built yet.
     /// </summary>
     public static void EnsureRootLabelUsable(string commonName)

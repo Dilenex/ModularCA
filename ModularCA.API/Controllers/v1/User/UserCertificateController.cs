@@ -64,7 +64,7 @@ public class UserCertificateController(
     ];
 
     /// <summary>
-    /// Lists certificates the authenticated user has access to, filtered by tenant scope and access control, with pagination.
+    /// Lists certificates the authenticated user has access to, filtered by space scope and access control, with pagination.
     /// </summary>
     /// <param name="page">Page number (1-based). Defaults to 1.</param>
     /// <param name="pageSize">Number of items per page. Defaults to 25, clamped to 1-100.</param>
@@ -91,11 +91,11 @@ public class UserCertificateController(
             .Where(c => !c.IsCA && !(c.SubjectDN?.Contains("System Signing CA") ?? false))
             .ToList();
 
-        var fence = ModularCA.Auth.Authorization.TenantFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+        var fence = ModularCA.Auth.Authorization.SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
         if (!fence.InstanceWide)
         {
             var accessibleCertIds = await _dbContext.CertificateAuthorities
-                .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.TenantId))
+                .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
                 .Where(ca => ca.CertificateId != null)
                 .Select(ca => ca.CertificateId!.Value)
                 .ToListAsync();

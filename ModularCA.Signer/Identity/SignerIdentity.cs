@@ -6,7 +6,7 @@ namespace ModularCA.Signer.Identity;
 
 /// <summary>
 /// The identities on the signer channel. The signer creates and holds a dedicated identity CA,
-/// self-signed and unrelated to any tenant CA, which issues one server certificate to the
+/// self-signed and unrelated to any space CA, which issues one server certificate to the
 /// signer and one client certificate to the node. Neither side ever validates a chain: each
 /// pins the other's public key, so the CA exists to make the two certificates and to reissue
 /// the node's when it expires, and for nothing else. Every key is ECDSA P-256.

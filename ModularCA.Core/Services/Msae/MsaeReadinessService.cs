@@ -66,7 +66,7 @@ public sealed class DnsHostNameProbe : IHostNameProbe
 /// </summary>
 /// <remarks>
 /// The preconditions live on four console pages with no visible order between them: the CA's
-/// protocol card, the tenant's realm bindings and keys, the enrollment identity under Users, and
+/// protocol card, the space's realm bindings and keys, the enrollment identity under Users, and
 /// the templates. Each refuses a step out of order with its own message, so an operator learns
 /// the order by hitting every refusal. This service answers all of them at once, from the same
 /// data the runtime uses, so a checklist built on it is true rather than decorative. Nothing here
@@ -84,21 +84,21 @@ public sealed class MsaeReadinessService(
     /// <summary>Evaluates the CA identified by <paramref name="caId"/>, or returns null when there is no such CA.</summary>
     public async Task<MsaeReadiness?> EvaluateAsync(Guid caId, CancellationToken cancellation = default)
     {
-        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Tenant).FirstOrDefaultAsync(c => c.Id == caId, cancellation);
+        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Space).FirstOrDefaultAsync(c => c.Id == caId, cancellation);
         if (ca == null) return null;
 
-        var hasTenant = ca.TenantId != null;
-        // The console's scope parser resolves ?tenant= by slug and ?ca= by label; an id there is
+        var hasSpace = ca.SpaceId != null;
+        // The console's scope parser resolves ?space= by slug and ?ca= by label; an id there is
         // silently dropped and the linked page opens unscoped.
-        var scope = hasTenant && !string.IsNullOrWhiteSpace(ca.Tenant?.Slug)
-            ? $"?tenant={Uri.EscapeDataString(ca.Tenant!.Slug)}&ca={Uri.EscapeDataString(ca.Label)}"
+        var scope = hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug)
+            ? $"?space={Uri.EscapeDataString(ca.Space!.Slug)}&ca={Uri.EscapeDataString(ca.Label)}"
             : $"?ca={Uri.EscapeDataString(ca.Label)}";
         var baseUrl = config.Https.GetPublicHttpsBaseUrl();
         var result = new MsaeReadiness
         {
             CaId = ca.Id,
             CaLabel = ca.Label,
-            TenantId = hasTenant ? ca.TenantId : null,
+            SpaceId = hasSpace ? ca.SpaceId : null,
             CepUrl = $"{baseUrl}/msae/{ca.Label}/cep",
             PolicyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}",
             EvaluatedAt = DateTime.UtcNow,
@@ -168,9 +168,9 @@ public sealed class MsaeReadinessService(
             Fix = kerberos ? null : protocolFix,
         });
 
-        // 4. Realm bindings on the tenant, or on the instance for an instance CA.
+        // 4. Realm bindings on the space, or on the instance for an instance CA.
         var realms = await db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
-            .Where(r => r.TenantId == ca.TenantId).OrderBy(r => r.Realm).ToListAsync(cancellation);
+            .Where(r => r.SpaceId == ca.SpaceId).OrderBy(r => r.Realm).ToListAsync(cancellation);
         var enabledRealms = realms.Where(r => r.IsEnabled).ToList();
         result.Realms = enabledRealms.Select(r => new MsaeReadinessRealm { Id = r.Id, Realm = r.Realm, DnsDomain = r.DnsDomain, ServicePrincipal = r.ServicePrincipal }).ToList();
 
@@ -182,10 +182,10 @@ public sealed class MsaeReadinessService(
             advertised[realm.Id] = $"{names.BaseUrlForServicePrincipal(realm.ServicePrincipal)}/msae/{ca.Label}/cep";
         if (enabledRealms.Count > 0)
             result.CepUrl = advertised[enabledRealms[0].Id];
-        var realmFix = hasTenant
-            ? new MsaeReadinessFix { Label = "Open the tenant's Kerberos realms", Path = $"/tenants/{ca.TenantId}?tab=kerberos" }
-            : new MsaeReadinessFix { Label = "Open the instance's Kerberos realms", Path = "/tenants?tab=kerberos" };
-        var owner = hasTenant ? "tenant" : "instance";
+        var realmFix = hasSpace
+            ? new MsaeReadinessFix { Label = "Open the space's Kerberos realms", Path = $"/spaces/{ca.SpaceId}?tab=kerberos" }
+            : new MsaeReadinessFix { Label = "Open the instance's Kerberos realms", Path = "/spaces?tab=kerberos" };
+        var owner = hasSpace ? "space" : "instance";
         steps.Add(new MsaeReadinessStep
         {
             Key = "realms", Title = $"An Active Directory forest is bound to the {owner}",
@@ -266,7 +266,7 @@ public sealed class MsaeReadinessService(
                 _ => "Accepted tickets act as an identity that may request certificates here.",
             },
             Items = idItems,
-            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(hasTenant ? $"&tenant={ca.TenantId}" : "")}" } : null,
+            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug) ? $"&space={Uri.EscapeDataString(ca.Space!.Slug)}" : "")}" } : null,
         });
 
         // 7. Templates offered to Windows.
@@ -373,7 +373,7 @@ public sealed class MsaeReadinessService(
         {
             Key = "client-policy", Title = "Clients point at this policy service",
             State = MsaeReadinessState.Pass,
-            Detail = "Register the policy server on each domain member, or push it by Group Policy; the tenant root must be trusted on the client.",
+            Detail = "Register the policy server on each domain member, or push it by Group Policy; the space's root CA must be trusted on the client.",
             Items =
             [
                 $"Policy server URL: {result.CepUrl}",

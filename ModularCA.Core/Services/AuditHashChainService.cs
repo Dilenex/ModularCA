@@ -726,7 +726,7 @@ public class AuditHashChainService
 
         return new HashChainVerificationResult
         {
-            TenantId = tenantId,
+            ChainId = tenantId,
             RecordsVerified = records.Count - unverifiable,
             UnverifiableRecords = unverifiable,
             Epochs = epochs,
@@ -906,7 +906,7 @@ public sealed class AuditChainLease : IDisposable, IAsyncDisposable
 /// <summary>Result of a hash chain verification run.</summary>
 public class HashChainVerificationResult
 {
-    public Guid? TenantId { get; set; }
+    public Guid? ChainId { get; set; }
     public int RecordsVerified { get; set; }
 
     /// <summary>

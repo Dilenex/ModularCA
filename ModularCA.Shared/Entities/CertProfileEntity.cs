@@ -96,13 +96,13 @@ public class CertProfileEntity
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
-    /// The tenant that owns this profile. Null means the profile
-    /// is not tenant-scoped (system-wide baseline profiles set by a system admin). When
-    /// non-null, the profile is only visible inside the owning tenant and cannot be
-    /// linked to a CA in a different tenant. Populated automatically when a CA-scoped
+    /// The space that owns this profile. Null means the profile
+    /// is not space-scoped (system-wide baseline profiles set by a system admin). When
+    /// non-null, the profile is only visible inside the owning space and cannot be
+    /// linked to a CA in a different space. Populated automatically when a CA-scoped
     /// profile is created via <c>CaCreationService</c> / <c>BootstrapProfileSeeder</c>.
     /// </summary>
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     /// <summary>
     /// Parent profile this profile inherits from. Null means standalone (no inheritance).

@@ -56,8 +56,8 @@ public class AuditService : IAuditService
 
     /// <summary>
     /// Persists an audit log entry. When <paramref name="certificateAuthorityId"/> is provided,
-    /// the event is scoped to that CA for filtered audit queries. <paramref name="tenantId"/> is
-    /// ignored: every new record is written with a null tenant, into the instance chain. The <paramref name="details"/>
+    /// the event is scoped to that CA for filtered audit queries. <paramref name="spaceId"/> is
+    /// ignored: every new record is written with a null space, into the instance chain. The <paramref name="details"/>
     /// object is serialized and scrubbed via <see cref="AuditJsonScrubber"/> before persistence.
     /// String fields are fitted to their columns, and the write goes through
     /// <see cref="AuditHashChainService.AppendAsync"/>, which detaches a failed entry so it does
@@ -74,7 +74,7 @@ public class AuditService : IAuditService
         bool success = true,
         string? errorMessage = null,
         Guid? certificateAuthorityId = null,
-        Guid? tenantId = null)
+        Guid? spaceId = null)
     {
         if (_auditDb == null)
         {
@@ -108,7 +108,7 @@ public class AuditService : IAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                // Every new record joins the single instance chain (0.4.0 S3); the tenant
+                // Every new record joins the single instance chain (0.4.0 S3); the space
                 // argument is ignored until S6 removes it.
                 TenantId = null,
                 // The badge the actor wore. Forgetting which hat you wear is the classic

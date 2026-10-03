@@ -60,7 +60,6 @@ public static class SchemaStartup
     private const int GateLockTimeoutMilliseconds = 3000;
     private const long ExtendTimeoutMicroseconds = 90_000_000;
     private const long PostGateExtendTimeoutMicroseconds = 300_000_000;
-    private const int ClientTimeoutMarginSeconds = 30;
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan ProgressLogInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan FirstDelay = TimeSpan.FromSeconds(2);
@@ -558,20 +557,15 @@ public static class SchemaStartup
     /// <summary>
     /// The migration connection: unpooled, <c>lock_timeout</c> from
     /// <c>Schema.MigrationLockTimeoutSeconds</c>, and <c>statement_timeout</c> from
-    /// <c>Schema.MigrationCommandTimeoutSeconds</c> with a slightly longer client timeout behind it.
+    /// <c>Schema.MigrationCommandTimeoutSeconds</c> with a slightly longer client timeout behind it
+    /// (<see cref="MigrationConnection"/>, shared with bootstrap and <c>modularca-migrate</c>).
     /// </summary>
     internal static string MigrationConnectionString(DbInstance instance, SchemaConfig config) =>
-        new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance))
-        {
-            Pooling = false,
-            CommandTimeout = MigrationClientTimeoutSeconds(config),
-            Options = $"-c lock_timeout={Math.Max(0, config.MigrationLockTimeoutSeconds) * 1000L} "
-                + $"-c statement_timeout={Math.Max(0, config.MigrationCommandTimeoutSeconds) * 1000L}",
-        }.ConnectionString;
+        MigrationConnection.ConnectionString(instance, config);
 
     /// <summary>The client-side command timeout for migrations: the server's limit plus a margin, or 0 for none.</summary>
     private static int MigrationClientTimeoutSeconds(SchemaConfig config) =>
-        config.MigrationCommandTimeoutSeconds > 0 ? config.MigrationCommandTimeoutSeconds + ClientTimeoutMarginSeconds : 0;
+        MigrationConnection.ClientTimeoutSeconds(config);
 
     /// <summary>A context of <paramref name="target"/>'s kind on its migration connection.</summary>
     private static DbContext CreateMigrationContext(SchemaTarget target, SchemaConfig config) =>

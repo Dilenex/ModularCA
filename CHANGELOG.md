@@ -13,7 +13,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   system admin could therefore reset another's password, which the response returned, strip their
   MFA, sign in as them with the temporary password, enrol their own authenticator, and then approve
   their own ceremonies as that account, and as every other admin in turn: the quorum was one person.
-  The same held for any account their rank dominated, such as a system operator or a tenant
+  The same held for any account their rank dominated, such as a system operator or a space
   admin, and for re-enabling, unlocking or re-addressing an approver. Resetting the password or the
   MFA of an account that holds an admin, operator or CA-admin tier, or changing its username, email,
   enabled or locked state, password expiry or forced change, now opens a controlled-user ceremony
@@ -66,10 +66,10 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   and an approval by a resetter no longer counts toward the quorum, so a promotion left short of
   it is expired (409).
 - **The Kerberos realm enrollment identity is confined to the realm's scope.** Every ticket a
-  realm accepts acts with its enrollment identity's rights on the tenant's CAs, and whoever holds
-  the realm's keys can mint a ticket for any principal. A tenant administrator could bind their
+  realm accepts acts with its enrollment identity's rights on the space's CAs, and whoever holds
+  the realm's keys can mint a ticket for any principal. A space administrator could bind their
   realm to any account, a system-super included, and enroll with its rights. A binding's
-  enrollment identity must now be a service identity of the realm's tenant (any service identity
+  enrollment identity must now be a service identity of the realm's space (any service identity
   for an instance realm), checked when a binding is created, re-pointed or re-enabled (400
   otherwise). Existing bindings keep working; each start names the ones that do not comply.
 - **Unlocking resets the failed-login count.** Unlocking an account left its failed-login count
@@ -84,8 +84,8 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   account. It does not: every account is created locally, and the switch has no effect.
 
 - **The instance operator rank is now controlled.** Holding `ca.manage` at instance scope, with
-  no tenant and no CA, makes an account an approver of every key ceremony on the instance and in
-  every tenant. It was not a controlled tier, so a single system admin could grant it by a direct
+  no space and no CA, makes an account an approver of every key ceremony on the instance and in
+  every space. It was not a controlled tier, so a single system admin could grant it by a direct
   grant, a role assignment or a capability added to a role held instance-wide, with no ceremony,
   and then fill any quorum with accounts of their choosing. It is now the system-operator tier.
   Granting it, removing it or deleting a holder needs a controlled-user ceremony at the instance
@@ -133,12 +133,12 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 - **The signer is its own process.** Every stored private key is reached through one signing
   contract, and nothing outside the keystore project can hold a key handle; an architecture test
-  fails the build if that changes. A key signs only for its own CA and tenant and only for the
+  fails the build if that changes. A key signs only for its own CA and space and only for the
   purposes its kind allows; every decision is recorded in the signer's own audit table with the
   ceremony it ran under and, over the wire, the peer that asked. `--role signer` runs the keystore
   behind gRPC with mutual TLS, pinned both ways from a dedicated identity CA the signer creates
   (`--init-identity`, `--issue-node-identity`), failing closed when it cannot record a decision; a
-  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A tenant
+  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A space
   that requires ceremonies gets no key without an approved, unexpired one; a CA's OCSP, timestamp
   and CMP signer keys are reissued under an infrastructure context that can never mint a CA key.
   The default single process is unchanged.
@@ -162,35 +162,82 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 - **The system tenant (0.4.0).** It is folded into the instance by the `FoldSystemTenant`
   migration. The system signing CA, SSH CAs, the system groups and those CAs' groups now have no
-  tenant, which means instance scope. The instance's CA policy (key-ceremony requirement and
+  space, which means instance scope. The instance's CA policy (key-ceremony requirement and
   quorum, validity ceiling, CA-level user quorum) moves to the security policy, with the system
   tenant's values copied as they were. Scopes are independent: the instance's policy governs
   instance CAs only, and a space keeps its own. The `org-system-*` groups and the
-  `Tenants.IsSystemTenant` column are removed. A null tenant is never read as "no policy" any more,
+  `Tenants.IsSystemTenant` column are removed. A null space is never read as "no policy" any more,
   so revoking the system signing CA or disabling an SSH CA now needs the instance's ceremony. The
   upgrade refuses, changing nothing, while open ceremonies name the system tenant, while the
   `org-system-*` groups have members or badge sources, while tenant-wide grants, role assignments,
   service identities or unbound profiles on the system tenant would become instance-wide, or while
-  there is more than one organisation. New audit records go to one instance chain, and each
-  per-tenant chain is sealed at the first start, with its final hash anchored in the instance
-  chain (`GET /api/v1/admin/audit/verify/chains`). The free edition counts organisations only,
-  four of them. Instance policy changes by anyone but a system-super open an
-  `InstancePolicyChange` ceremony. Down is not supported: restore the pre-upgrade dump. See
-  "Upgrading to 0.4.0" in the deploy readme.
+  there is more than one organisation tenant. New audit records go to one instance chain, and
+  each per-tenant chain is sealed at the first start, with its final hash anchored in the instance
+  chain (`GET /api/v1/admin/audit/verify/chains`). The licence no longer counts the system tenant,
+  and now gates no space at all ("tenants are spaces", under Changed). Instance policy changes
+  by anyone but a system-super open an `InstancePolicyChange` ceremony. Down is not supported:
+  restore the pre-upgrade dump. See "Upgrading to 0.4.0" in the deploy readme.
 
 - **Tenant quotas (0.4.0).** The tenant-level maximum CAs, certificates and users are removed,
   with their columns, by the `InstanceUniqueCaNames` migration, whatever values were set: nothing
-  is refused over them. Quotas are per CA, on the CA's admin group, as before. The tenant API no
+  is refused over them. Quotas are per CA, on the CA's admin group, as before. The space API no
   longer returns or accepts the three fields, and the console no longer shows them.
 
 - **The tenant query filter (0.4.0).** Spaces are an access scope, not a partition of data, so
-  the database no longer filters rows by tenant; the only global filters left hide soft-deleted
-  tenants, CAs and users. Every endpoint that lists or reads rows of several spaces applies the
+  the database no longer filters rows by space; the only global filters left hide soft-deleted
+  spaces, CAs and users. Every endpoint that lists or reads rows of several spaces applies the
   caller's fence explicitly, and a test drives each of them through the real authorization policy
   as users of one space and asserts no row of another space or of the instance comes back.
 
 ### Changed
 
+- **BREAKING: tenants are spaces (0.4.0).** The delegation scope is called a space in the schema,
+  the API, the console, the configuration and new audit records. A space delegates administration
+  within one organisation; the instance is the whole installation. Scripts and integrations that
+  call the admin API must change with the server, because nothing old is aliased:
+  - **API paths.** `/api/v1/admin/tenants`, `/tenants/{id}` and `/tenants/{id}/settings` are
+    `/api/v1/admin/spaces…`; `/admin/tenants/{tenantId}/kerberos-realms` is
+    `/admin/spaces/{spaceId}/kerberos-realms`; `/admin/quotas/by-tenant` is `/by-space`;
+    `/admin/user-quorum/tenant/{id}` is `/space/{id}`. The old paths answer 404.
+  - **Query parameters.** `?tenantId=` is `?spaceId=` on the audit, certificate, certificate
+    template, certificate profile and CSR lists. Audit chain verification takes `?chainId=`,
+    because a retired chain is not a space.
+  - **JSON members.** Request and response members say space: `spaceId`, `spaceName`,
+    `spaceSlug`, and `/api/v1/me` sends `spaces`. A service identity's scope is `space`, a
+    validity ceiling's source is `Space`, the ceremony type is `SpacePolicyChange`, the step-up
+    operations are `enable-space`, `disable-space` and `update-space-settings`, and audit rows
+    read from the unchanged audit database carry `spaceId` or `chainId`.
+  - **Stale bodies fail closed.** The request bodies where no space means the instance (creating
+    a root or intermediate CA, a group, a role, a role assignment, a user grant, a service
+    identity, an SSH CA key, and ceremony parameters) refuse unknown members. A client that still
+    sends `tenantId` gets 400 naming the member, where it would otherwise have created something
+    instance-wide.
+  - **Console.** `/admin/tenants` and `/admin/tenants/:id` are `/admin/spaces` and
+    `/admin/spaces/:id`; the old links, `?tenant=<slug>` and remembered scopes are carried over
+    until 0.5. Space Admin and Space Operator replace the Org tier labels. The docs site's tenant
+    model page is the space model page, with a redirect.
+  - **Groups.** The `RenameTenantToSpace` migration renames each space's `org-<slug>-admin`,
+    `-operator`, `-auditor` and `-user` groups to `space-<slug>-*`, the names new spaces get, and
+    refuses while a new name is taken. An `LdapAuth.GroupToRoleMappings` entry that still names an
+    `org-<slug>-*` group is read as its `space-<slug>-*` group, with a warning, until a super saves
+    the LDAP settings or the file is edited. No other name is translated.
+  - **Configuration.** `IntegrationApi.TenantId` and `CertManager.TenantId` are `SpaceId`. The
+    old key is read as the new one with a warning, and the process refuses to start (status 3)
+    when both are set and differ, so an integration key is never left unscoped. The first save of
+    the configuration writes the new name.
+  - **No space gate.** `Features.AllowMultipleOrganizations` is retired: it is ignored, with a
+    warning while it is still set. Creating a space always succeeds. From the fifth, without a
+    licence carrying the multi-space feature, the response and the console recommend a licence.
+    `MCA-CFG-017` is retired and will not be reused; the other error codes keep their numbers.
+  - **Audit.** New records use `SpaceCreated`, `SpaceUpdated`, `SpaceDisabled` and
+    `SpacePolicyChangeApplied`, with target type `Space`. Recorded rows keep `TenantCreated`,
+    `TenantUpdated`, `TenantDisabled`, `TenantPolicyChangeApplied` and target type `Tenant`, and
+    searching by either name finds both. The audit database and its hash chain are unchanged.
+
+  The migration renames the table, the eleven columns, their indexes and constraints in place,
+  and the scope keys in stored ceremony parameters. It copies no data and has no downgrade. Older
+  builds query the old names, so stop every node and the signer before the control role
+  upgrades. See "Upgrading to 0.4.0" in the deploy readme.
 - **CA labels and names are unique across the instance (0.4.0).** A label is the path of a CA's
   CRL, OCSP, AIA and enrolment URLs, so it names one CA, soft-deleted ones included, compared
   without regard to case; a deleted CA's label is never reused. Creating a CA, an SSH CA, or
@@ -223,7 +270,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   changing nothing, while an enabled configuration or template is like that; see "Upgrading to
   0.4.0" in the deploy readme. A CA profile for a new intermediate may be unbound, bound to the
   parent CA, or space-wide in the new CA's space.
-- **Grants given to a user directly work in lists (0.4.0).** A CA- or tenant-scoped capability
+- **Grants given to a user directly work in lists (0.4.0).** A CA- or space-scoped capability
   grant or role assignment held by a user without a group in that space was hidden from the user's
   lists and pending requests. The fence now comes from all four grant sources, under a worn
   badge, and equals what authorization allows.

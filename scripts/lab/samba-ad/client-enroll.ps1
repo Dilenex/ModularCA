@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Windows client side of the MSAE Kerberos lab: join the Samba forest, trust the tenant CA,
+  Windows client side of the MSAE Kerberos lab: join the Samba forest, trust the space's CA,
   and enroll from ModularCA by Windows integrated authentication.
 
 .DESCRIPTION
@@ -9,10 +9,10 @@
 
     .\client-enroll.ps1 -Join -DcIp 192.168.1.10 -DnsDomain lab.msae.test
       (reboots; log back in as LAB\Administrator or a local admin)
-    .\client-enroll.ps1 -TrustRoot -RootCer .\tenant-root.cer
+    .\client-enroll.ps1 -TrustRoot -RootCer .\space-root.cer
     .\client-enroll.ps1 -Ticket
     .\client-enroll.ps1 -Enroll -Template LabDevice -CaLabel staging-ca-r1
-    .\client-enroll.ps1 -Enroll -Template LabDevice -CaLabel other-tenant-ca   # expect a refusal
+    .\client-enroll.ps1 -Enroll -Template LabDevice -CaLabel other-space-ca   # expect a refusal
 
   The policy server URL is https://<CaHost>/msae/<CaLabel>/cep. No credential is passed: the
   enrollment engine obtains a service ticket for HTTP/<CaHost> from the lab KDC and ModularCA
@@ -48,8 +48,8 @@ if ($Join) {
 }
 
 if ($TrustRoot) {
-  if (-not $RootCer) { throw 'TrustRoot needs -RootCer <tenant root .cer>' }
-  Write-Host "==> Trusting the tenant CA root in LocalMachine\Root (Get-Certificate refuses an untrusted issuer)"
+  if (-not $RootCer) { throw 'TrustRoot needs -RootCer <space root .cer>' }
+  Write-Host "==> Trusting the space's root CA in LocalMachine\Root (Get-Certificate refuses an untrusted issuer)"
   Import-Certificate -FilePath $RootCer -CertStoreLocation Cert:\LocalMachine\Root | Format-List Subject, Thumbprint
   return
 }

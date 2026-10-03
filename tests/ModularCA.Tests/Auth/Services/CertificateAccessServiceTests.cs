@@ -12,8 +12,8 @@ namespace ModularCA.Tests.Auth.Services;
 /// <para>
 /// This method used to FIND the predecessor itself, by <c>SubjectDN</c> string equality across
 /// the whole Certificates table, ordered by NotBefore — and <c>CertificateEntity</c> carries no
-/// tenant query filter, so the search spanned every CA in every tenant. Any certificate anywhere
-/// sharing the subject, with a newer NotBefore, donated its ACL rows to this one. Two tenants
+/// space query filter, so the search spanned every CA in every space. Any certificate anywhere
+/// sharing the subject, with a newer NotBefore, donated its ACL rows to this one. Two spaces
 /// both issuing <c>CN=vpn.example.com</c> cross-pollinated permissions on every renewal with no
 /// attacker involved; a user able to get a certificate issued with a chosen subject on any CA
 /// could plant a Manage grant that landed on someone else's production certificate at its next
@@ -82,7 +82,7 @@ public class CertificateAccessServiceTests
     public async Task An_unrelated_certificate_with_the_same_subject_donates_nothing()
     {
         // THE security test. A certificate sharing the subject DN — issued by another CA, in
-        // another tenant, by anyone — must not contribute ACL rows just because it exists and
+        // another space, by anyone — must not contribute ACL rows just because it exists and
         // sorts newer. Under the old subject-DN search, mallory's row landed on newCert.
         using var db = InMemoryDbContextFactory.Create();
         var realPredecessor = NewCert("CN=vpn.example.com", Y2025);

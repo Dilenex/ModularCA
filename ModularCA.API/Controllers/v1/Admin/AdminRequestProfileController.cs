@@ -38,22 +38,22 @@ public class AdminRequestProfileController(
 
     /// <summary>
     /// Whether a request profile bound to <paramref name="caId"/> is inside the caller's
-    /// <see cref="TenantFence"/> for <paramref name="capability"/>: an unbound (system-wide) one
+    /// <see cref="SpaceFence"/> for <paramref name="capability"/>: an unbound (system-wide) one
     /// is, as an unbound certificate profile is; a CA-bound one follows its CA's scope, and a
     /// deleted CA's is not.
     /// </summary>
     private async Task<bool> InFenceAsync(Guid? caId, string capability)
     {
-        var fence = TenantFence.From(HttpContext, capability);
+        var fence = SpaceFence.From(HttpContext, capability);
         if (caId is not Guid id || fence.InstanceWide)
             return true;
         var ca = await db.CertificateAuthorities.AsNoTracking()
-            .Where(c => c.Id == id).Select(c => new { c.TenantId }).FirstOrDefaultAsync();
-        return ca != null && fence.Allows(ca.TenantId);
+            .Where(c => c.Id == id).Select(c => new { c.SpaceId }).FirstOrDefaultAsync();
+        return ca != null && fence.Allows(ca.SpaceId);
     }
 
     /// <summary>
-    /// Returns the request profiles inside the caller's <see cref="TenantFence"/> (see
+    /// Returns the request profiles inside the caller's <see cref="SpaceFence"/> (see
     /// <see cref="InFenceAsync"/>), ordered by name; a caller who is not a system admin also
     /// sees only those they hold a <c>profile.*</c> grant for.
     /// Supports optional filtering by CA ID; null returns system-wide profiles.
@@ -90,7 +90,7 @@ public class AdminRequestProfileController(
 
     /// <summary>
     /// Retrieves a single request profile by its GUID, including inheritance fields. A profile
-    /// outside the caller's <see cref="TenantFence"/> is not found.
+    /// outside the caller's <see cref="SpaceFence"/> is not found.
     /// </summary>
     [HttpGet("{id}")]
     [Authorize(Policy = "CaOperator")]
@@ -141,11 +141,11 @@ public class AdminRequestProfileController(
             return NotFound(new { message = "Request profile not found" });
         if (current.CertificateAuthorityId != request.CertificateAuthorityId)
         {
-            var ownerTenant = current.CertificateAuthorityId is Guid oldCa
-                ? await db.CertificateAuthorities.AsNoTracking().Where(c => c.Id == oldCa).Select(c => c.TenantId).FirstOrDefaultAsync()
+            var ownerSpace = current.CertificateAuthorityId is Guid oldCa
+                ? await db.CertificateAuthorities.AsNoTracking().Where(c => c.Id == oldCa).Select(c => c.SpaceId).FirstOrDefaultAsync()
                 : null;
-            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, TenantFence.From(HttpContext, Capabilities.CertRevoke),
-                    currentUser.User.Id, request.CertificateAuthorityId, ownerTenant, Capabilities.CertRevoke)) is { } refused)
+            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, SpaceFence.From(HttpContext, Capabilities.CertRevoke),
+                    currentUser.User.Id, request.CertificateAuthorityId, ownerSpace, Capabilities.CertRevoke)) is { } refused)
                 return refused;
         }
 
@@ -181,7 +181,7 @@ public class AdminRequestProfileController(
     /// <summary>
     /// Returns the effective (merged) request profile after resolving inheritance
     /// from parent profiles. Useful for previewing the actual constraints that will apply. A
-    /// profile outside the caller's <see cref="TenantFence"/> is not found.
+    /// profile outside the caller's <see cref="SpaceFence"/> is not found.
     /// </summary>
     /// <param name="id">The GUID of the request profile to resolve.</param>
     [HttpGet("{id}/resolved")]

@@ -48,7 +48,7 @@ internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
     public Task<string> GenerateTokenAsync(Guid userId, TimeSpan expiresIn, int maxUses = 1,
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
-        Guid? certificateAuthorityId = null, Guid? tenantId = null)
+        Guid? certificateAuthorityId = null, Guid? spaceId = null)
         => throw new NotSupportedException("Test stub: token generation not expected on this path.");
 
     public Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null)
@@ -61,7 +61,7 @@ internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
 
     public Task<(EnrollmentTokenEntity Entity, string PlaintextSecret)> GenerateCmpSharedSecretAsync(
         Guid userId, string referenceValue, TimeSpan expiresIn, int maxUses,
-        Guid? certificateAuthorityId, Guid? tenantId)
+        Guid? certificateAuthorityId, Guid? spaceId)
         => throw new NotSupportedException("Test stub: CMP secret generation not expected on this path.");
 
     public Task<EnrollmentTokenEntity?> ValidateAndConsumeCmpSecretAsync(string referenceValue, byte[] sharedSecret)
@@ -78,7 +78,7 @@ internal sealed class RecordingAuditService : ModularCA.Shared.Interfaces.IAudit
 
     public Task LogAsync(string actionType, Guid? actorUserId, string? actorUsername, string? targetEntityType = null,
         string? targetEntityId = null, object? details = null, string? sourceIp = null, bool success = true,
-        string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null)
+        string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null)
     {
         Entries.Add((actionType, targetEntityId, details));
         return Task.CompletedTask;
