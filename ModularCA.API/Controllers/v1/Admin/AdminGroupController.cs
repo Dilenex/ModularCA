@@ -432,7 +432,9 @@ public class AdminGroupController(
 
     /// <summary>
     /// Adds a user to a group by user ID. Requires step-up MFA because group membership grants
-    /// every capability and role assignment attached to the group.
+    /// every capability and role assignment attached to the group. A controlled membership added by
+    /// a non-super opens a ceremony (202); 409 when the caller reset the user's password or MFA in
+    /// the last 30 days.
     /// </summary>
     [HttpPost("{id:guid}/members")]
     [Authorize(Policy = "SystemAdmin")]
@@ -470,18 +472,26 @@ public class AdminGroupController(
         var groupTier = await _controlledUserSvc.ClassifyGroupAsync(group);
         if (groupTier != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
-            var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                new Shared.Models.ControlledUserChangeParameters
-                {
-                    ChangeType = "AddGroupMember",
-                    TargetUserId = request.UserId,
-                    TargetUsername = user.Username,
-                    GroupId = id,
-                    CertificateAuthorityId = group.CertificateAuthorityId,
-                },
-                groupTier.Value,
-                _currentUser.User.Id,
-                _currentUser.User.Username ?? string.Empty);
+            Guid ceremonyId;
+            try
+            {
+                ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                    new Shared.Models.ControlledUserChangeParameters
+                    {
+                        ChangeType = "AddGroupMember",
+                        TargetUserId = request.UserId,
+                        TargetUsername = user.Username,
+                        GroupId = id,
+                        CertificateAuthorityId = group.CertificateAuthorityId,
+                    },
+                    groupTier.Value,
+                    _currentUser.User.Id,
+                    _currentUser.User.Username ?? string.Empty);
+            }
+            catch (ControlledUserInitiationRefusedException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
 
             return Accepted(new
             {
@@ -517,7 +527,7 @@ public class AdminGroupController(
     /// tier guard, duplicate check, and the controlled-user gate. Crucially, promoting a controlled
     /// user starts its OWN ceremony, so a batch can spawn one ceremony PER controlled user while adding
     /// uncontrolled users directly. Returns a per-user result summary; never aborts the batch on a
-    /// single user's failure.
+    /// single user's failure. A promotion the caller may not open is reported as <c>refused</c>.
     /// </summary>
     [HttpPost("{id:guid}/members/bulk")]
     [Authorize(Policy = "SystemAdmin")]
@@ -556,19 +566,26 @@ public class AdminGroupController(
             // Controlled-user gate → a ceremony PER controlled user.
             if (groupTier != null && _currentUser.User != null && !callerIsSuper)
             {
-                var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                    new Shared.Models.ControlledUserChangeParameters
-                    {
-                        ChangeType = "AddGroupMember",
-                        TargetUserId = userId,
-                        TargetUsername = user.Username,
-                        GroupId = id,
-                        CertificateAuthorityId = group.CertificateAuthorityId,
-                    },
-                    groupTier.Value,
-                    _currentUser.User.Id,
-                    _currentUser.User.Username ?? string.Empty);
-                results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "ceremony", CeremonyId = ceremonyId });
+                try
+                {
+                    var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                        new Shared.Models.ControlledUserChangeParameters
+                        {
+                            ChangeType = "AddGroupMember",
+                            TargetUserId = userId,
+                            TargetUsername = user.Username,
+                            GroupId = id,
+                            CertificateAuthorityId = group.CertificateAuthorityId,
+                        },
+                        groupTier.Value,
+                        _currentUser.User.Id,
+                        _currentUser.User.Username ?? string.Empty);
+                    results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "ceremony", CeremonyId = ceremonyId });
+                }
+                catch (ControlledUserInitiationRefusedException ex)
+                {
+                    results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "refused", Error = ex.Message });
+                }
                 continue;
             }
 
@@ -586,7 +603,7 @@ public class AdminGroupController(
         {
             added = results.Count(r => r.Status == "added"),
             ceremonies = results.Count(r => r.Status == "ceremony"),
-            skipped = results.Count(r => r.Status is "already_member" or "not_found" or "denied"),
+            skipped = results.Count(r => r.Status is "already_member" or "not_found" or "denied" or "refused"),
             results,
         });
     }
@@ -818,9 +835,15 @@ public class BulkMemberResult
     /// <summary>The user's username, when resolved.</summary>
     public string? Username { get; set; }
 
-    /// <summary>One of: <c>added</c>, <c>ceremony</c>, <c>already_member</c>, <c>not_found</c>, <c>denied</c>.</summary>
+    /// <summary>
+    /// One of: <c>added</c>, <c>ceremony</c>, <c>already_member</c>, <c>not_found</c>, <c>denied</c>,
+    /// <c>refused</c> (the caller may not open this promotion; see <see cref="Error"/>).
+    /// </summary>
     public string Status { get; set; } = string.Empty;
 
     /// <summary>The controlled-user ceremony id, when <see cref="Status"/> is <c>ceremony</c>.</summary>
     public Guid? CeremonyId { get; set; }
+
+    /// <summary>Why, when <see cref="Status"/> is <c>refused</c>.</summary>
+    public string? Error { get; set; }
 }

@@ -510,3 +510,20 @@ It verifies the keystore's file signature and each entry's signature against the
 CA, then prints the entries as PEM. `--insecure-no-verify` skips the database-backed checks for
 the case where the database is what you have lost; it is also required before the tool will
 write decrypted keys to disk.
+
+### A locked account no one can unlock
+
+With `LockoutMinutes` at 0, enough wrong passwords lock an account until an administrator unlocks
+it. If that account is the only system-super, or every administrator who could unlock it is
+locked too, unlock it on the host:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --unlock-user <username>
+
+It connects with the application credentials in `config/db.yaml`, clears the lock, any temporary
+lockout and the failed-login count, rotates the account's security stamp, and exits. It does not
+re-enable a disabled account, or change its password or MFA. It runs only on the host, as the
+service user, never over HTTP, so it grants nothing that reading `db.yaml` does not already give.
+Each use is logged to `logs/modularca-bootstrap-<date>.log` and written to the audit trail, with the
+audit credentials in `db.yaml`, as `UserUnlockedOnHost` by `host:break-glass`. If the audit
+database cannot be reached the account is still unlocked, and the command prints a warning that
+no audit record was written: record that use by hand.

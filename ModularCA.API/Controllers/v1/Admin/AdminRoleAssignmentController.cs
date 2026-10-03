@@ -83,7 +83,9 @@ public class AdminRoleAssignmentController(
     /// Validates that the referenced role exists before creating the assignment. Requires step-up
     /// MFA because a fresh assignment immediately grants every capability bound to the role.
     /// Classification runs under a row lock on the role (shared with role capability changes) so a
-    /// concurrently added controlled capability cannot slip past the controlled-user gate.
+    /// concurrently added controlled capability cannot slip past the controlled-user gate. A
+    /// controlled assignment by a non-super opens a ceremony (202); 409 when the caller reset the
+    /// password or MFA of an account it promotes in the last 30 days.
     /// </summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.AssignRole)]
@@ -180,20 +182,28 @@ public class AdminRoleAssignmentController(
                 ? await _db.Users.Where(u => u.Id == request.UserId.Value).Select(u => u.Username).FirstOrDefaultAsync()
                 : null;
 
-            var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                new Shared.Models.ControlledUserChangeParameters
-                {
-                    ChangeType = "AssignRole",
-                    TargetUserId = request.UserId ?? Guid.Empty,
-                    TargetUsername = targetUsername,
-                    RoleId = request.RoleId,
-                    GroupId = request.GroupId,
-                    TenantId = request.TenantId,
-                    CertificateAuthorityId = request.CertificateAuthorityId,
-                },
-                minted.Value,
-                _currentUser.User.Id,
-                _currentUser.User.Username ?? string.Empty);
+            Guid ceremonyId;
+            try
+            {
+                ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                    new Shared.Models.ControlledUserChangeParameters
+                    {
+                        ChangeType = "AssignRole",
+                        TargetUserId = request.UserId ?? Guid.Empty,
+                        TargetUsername = targetUsername,
+                        RoleId = request.RoleId,
+                        GroupId = request.GroupId,
+                        TenantId = request.TenantId,
+                        CertificateAuthorityId = request.CertificateAuthorityId,
+                    },
+                    minted.Value,
+                    _currentUser.User.Id,
+                    _currentUser.User.Username ?? string.Empty);
+            }
+            catch (ControlledUserInitiationRefusedException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
 
             return Accepted(new
             {

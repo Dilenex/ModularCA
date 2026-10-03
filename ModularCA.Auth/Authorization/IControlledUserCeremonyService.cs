@@ -5,12 +5,11 @@ using ModularCA.Shared.Models;
 namespace ModularCA.Auth.Authorization;
 
 /// <summary>
-/// Orchestrates ceremony-gated changes to a <i>controlled user</i>'s privileges. A non-super
-/// actor who promotes (grants), demotes (revokes), or deletes a user holding an
-/// admin/operator/CA-admin tier must route the change through a
-/// <see cref="Shared.Enums.CeremonyType.ControlledUserChange"/> ceremony; system-super applies
-/// directly. Approvers must hold a tier that <see cref="ControlledTier.Dominates"/> the change.
-/// Stage 1 implements the capability-grant (promote) path.
+/// Orchestrates ceremony-gated changes to a <i>controlled user</i>. A non-super actor who promotes
+/// (grants), demotes (revokes) or deletes a user holding an admin/operator/CA-admin tier, or
+/// resets their password or MFA or changes their identity or account state, must route the change
+/// through a <see cref="Shared.Enums.CeremonyType.ControlledUserChange"/> ceremony; system-super
+/// applies directly. Approvers must hold a tier that <see cref="ControlledTier.Dominates"/> the change.
 /// </summary>
 public interface IControlledUserCeremonyService
 {
@@ -44,6 +43,10 @@ public interface IControlledUserCeremonyService
     /// <summary>
     /// Opens a <c>ControlledUserChange</c> ceremony for an arbitrary deferred change described by
     /// <paramref name="parameters"/>. Returns the ceremony id; threshold = resolved user quorum.
+    /// A promotion discloses, in its parameters and description, every password or MFA reset and
+    /// creation of an account it promotes in the last 30 days (or that the audit trail could not be
+    /// read), and throws <see cref="ControlledUserInitiationRefusedException"/> when the initiator,
+    /// not system-super, made such a reset.
     /// </summary>
     Task<Guid> InitiateChangeAsync(
         ControlledUserChangeParameters parameters,
@@ -71,12 +74,19 @@ public interface IControlledUserCeremonyService
     Task<IReadOnlyList<ControlledTier>> GetActorTiersAsync(Guid actorUserId);
 
     /// <summary>
-    /// The tier an approver must dominate to delete this user, or <c>null</c> if the user holds no
-    /// controlled tier (delete is uncontrolled). The covering tier of everything the user holds
+    /// The tier an approver must dominate to delete this user or change their account (password,
+    /// MFA, identity, account state), or <c>null</c> if the user holds no controlled tier (the change
+    /// is uncontrolled). The covering tier of everything the user holds
     /// (<see cref="ControlledTier.Covering"/>): holdings no single scoped tier covers collapse to
     /// system-admin.
     /// </summary>
     Task<ControlledTier?> GetDeletionTierAsync(Guid userId);
+
+    /// <summary>
+    /// Names the scope of <paramref name="tier"/> for people: "on CA &lt;label&gt;", "in tenant
+    /// &lt;name&gt;", or "instance" for a system tier. Falls back to the id when the row is gone.
+    /// </summary>
+    Task<string> DescribeScopeAsync(ControlledTier tier);
 
     /// <summary>
     /// True when the actor holds a tier that dominates <paramref name="minted"/> — i.e. they're
@@ -85,10 +95,26 @@ public interface IControlledUserCeremonyService
     Task<bool> CanInitiateAsync(Guid userId, ControlledTier minted);
 
     /// <summary>
-    /// Approver eligibility for a <c>ControlledUserChange</c> ceremony: the approver must dominate
-    /// the ceremony's affected tier and must not be the change's target user.
+    /// Approver eligibility for a <c>ControlledUserChange</c> ceremony: true when
+    /// <see cref="ApprovalRefusalAsync"/> finds no reason to refuse.
     /// </summary>
     Task<bool> CanApproveAsync(Guid approverUserId, KeyCeremonyEntity ceremony);
+
+    /// <summary>
+    /// True when <paramref name="userId"/>, the acting user, holds a tier dominating the ceremony's
+    /// affected tier under the badge they wear and is not the change's target. It decides who may
+    /// see and reject the ceremony; approving it also needs <see cref="CanApproveAsync"/>.
+    /// </summary>
+    Task<bool> HoldsApprovingTierAsync(Guid userId, KeyCeremonyEntity ceremony);
+
+    /// <summary>
+    /// Why <paramref name="approverUserId"/>, the acting user, may not approve the ceremony, or null
+    /// when they may: they do not hold an approving tier (<see cref="HoldsApprovingTierAsync"/>), or,
+    /// for a promotion, they reset the password or MFA of an account it promotes, as recorded at
+    /// initiation or as the audit trail shows now from 30 days before it was opened, and are not
+    /// system-super under the badge they wear.
+    /// </summary>
+    Task<string?> ApprovalRefusalAsync(Guid approverUserId, KeyCeremonyEntity ceremony);
 
     /// <summary>
     /// The user a <c>ControlledUserChange</c> ceremony changes, and the tier it was approved at; nulls
@@ -98,7 +124,8 @@ public interface IControlledUserCeremonyService
 
     /// <summary>
     /// Opens a <c>ControlledUserChange</c> ceremony for a deferred capability grant. Returns the
-    /// ceremony id. The approval threshold is the resolved <i>user quorum</i>.
+    /// ceremony id. The approval threshold is the resolved <i>user quorum</i>. Discloses and refuses
+    /// as <see cref="InitiateChangeAsync"/> does for a promotion.
     /// </summary>
     Task<Guid> InitiateCapabilityGrantAsync(
         Guid targetUserId,
@@ -125,13 +152,22 @@ public interface IControlledUserCeremonyService
         ControlledTier minted, Guid excludeUserId, Guid? ignoreGroupId = null, Guid? actorUserId = null, Guid? ignoreRoleAssignmentId = null);
 
     /// <summary>
-    /// True when <paramref name="actorUserId"/> may perform identity-altering administration
-    /// (password reset, MFA reset, activation/lock/username/email changes) on
-    /// <paramref name="targetUserId"/>. System-super may administer anyone. Otherwise the target must
-    /// not be super, a member of any system group needs a system-admin actor, and every tier the
-    /// target holds must be dominated by one of the actor's tiers.
+    /// True when <paramref name="actorUserId"/> may take up identity-altering administration
+    /// (password reset, MFA reset, activation/lock/username/email changes) of
+    /// <paramref name="targetUserId"/> at all. System-super may administer anyone. Otherwise the target
+    /// must not be super, a member of any system group needs a system-admin actor, and every tier the
+    /// target holds must be dominated by one of the actor's tiers. True does not mean the change
+    /// applies directly: a non-super actor's change to an account holding any controlled tier opens a
+    /// ceremony at <see cref="GetDeletionTierAsync"/>, because a peer could otherwise seize an approver.
     /// </summary>
     Task<bool> CanAdministerAccountAsync(Guid actorUserId, Guid targetUserId);
+
+    /// <summary>
+    /// True when a promotion (grant, role assignment or group membership) of
+    /// <paramref name="userId"/> is pending or approved but not yet executed, including a role
+    /// assigned to a group they belong to. Their credentials must not be reset meanwhile.
+    /// </summary>
+    Task<bool> HasOpenPromotionAsync(Guid userId);
 
     /// <summary>
     /// True when removing <paramref name="removedCapabilities"/> from role <paramref name="roleId"/>
@@ -146,8 +182,11 @@ public interface IControlledUserCeremonyService
     /// current state, and marks it Executed in the same transaction. Returns a summary for audit.
     /// Throws <see cref="Shared.Interfaces.CeremonyNotExecutableException"/> when the ceremony is no
     /// longer Approved (a concurrent execute ran it), and <see cref="ControlledUserChangeRefusedException"/>
-    /// when the privilege grew after approval, the approvals no longer cover it, or a demotion would
-    /// leave its scope without a dominating user.
+    /// when the privilege grew after approval, the approvals no longer cover it, a promoted account's
+    /// credentials or an identity change's account state changed since initiation, a promotion or
+    /// identity change was opened before that state was recorded, or a demotion,
+    /// deletion, disable or lock would leave its scope without a dominating user. A password reset's
+    /// temporary password is generated here and returned only in the result.
     /// </summary>
     Task<ControlledUserChangeResult> ApplyApprovedAsync(Guid ceremonyId);
 }
@@ -163,3 +202,9 @@ public sealed class ControlledUserChangeRefusedException(string message, bool ce
     /// <summary>True when the ceremony was marked Expired and can no longer be executed.</summary>
     public bool CeremonyExpired { get; } = ceremonyExpired;
 }
+
+/// <summary>
+/// A controlled-user ceremony that may not be opened by this initiator, such as a promotion of an
+/// account whose credentials the initiator recently reset. Nothing was created; endpoints answer 409.
+/// </summary>
+public sealed class ControlledUserInitiationRefusedException(string message) : InvalidOperationException(message);

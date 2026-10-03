@@ -60,7 +60,10 @@ public class AdminKerberosRealmController(
         return Ok(Project(realm));
     }
 
-    /// <summary>Creates a binding. Keys are added separately.</summary>
+    /// <summary>
+    /// Creates a binding. Keys are added separately. 400 unless the enrollment identity is a service
+    /// identity scoped to the binding's tenant (any service identity for the instance).
+    /// </summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.ManageKerberosRealm)]
     public async Task<IActionResult> Create([FromRoute] Guid? tenantId, [FromBody] KerberosRealmRequest request)
@@ -78,7 +81,11 @@ public class AdminKerberosRealmController(
         }
     }
 
-    /// <summary>Updates a binding's non-key fields, including enabling and disabling it.</summary>
+    /// <summary>
+    /// Updates a binding's non-key fields, including enabling and disabling it. Changing the
+    /// enrollment identity or re-enabling the binding needs an identity that passes the rule of
+    /// <see cref="Create"/> (400 otherwise).
+    /// </summary>
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> Update([FromRoute] Guid? tenantId, Guid id, [FromBody] KerberosRealmRequest request)

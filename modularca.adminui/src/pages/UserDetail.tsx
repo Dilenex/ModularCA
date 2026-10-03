@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { groupChipClass } from './Users';
 import { StepUpOps } from '@shared/generated';
@@ -22,8 +23,10 @@ function formatDate(d: string | null) {
 
 /// <summary>
 /// Detail page for a single user: identity, group membership management (add/remove, ceremony-aware),
-/// and guarded account actions (reset password, disable/enable, delete) in the action bar. The page is
-/// View/Edit — Edit mode exposes the add/remove-group controls.
+/// and guarded account actions (reset password, reset MFA, disable/enable, delete) in the action bar,
+/// each of which opens an approval ceremony instead when the server answers 202. A direct password
+/// reset shows the temporary password once. The page is View/Edit — Edit mode exposes the
+/// add/remove-group controls.
 /// </summary>
 const UserDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -46,6 +49,7 @@ const UserDetail: React.FC = () => {
     const [groupBusy, setGroupBusy] = useState(false);
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel?: string; action: () => Promise<void> } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
+    const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -94,9 +98,31 @@ const UserDetail: React.FC = () => {
         }
     };
 
+    // A change to an account holding a controlled tier, by anyone but a system-super, comes back
+    // 202 with a ceremony instead of being applied.
+    const ceremonyStarted = (res: any): boolean => {
+        if (!res?.requiresCeremony) return false;
+        showToast('info', res.message || 'A controlled-user ceremony was started — approve it on the Ceremonies page.');
+        setRefresh((r) => r + 1);
+        return true;
+    };
+
     const resetPassword = () => setConfirm({
-        title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"?`, confirmLabel: 'Reset Password',
-        action: async () => { await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, StepUpOps.ResetPassword, id!); showToast('success', 'Password reset initiated'); },
+        title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"? If they hold an admin / operator / CA-admin tier, this opens an approval ceremony and the temporary password is shown to whoever executes it.`, confirmLabel: 'Reset Password',
+        action: async () => {
+            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, StepUpOps.ResetPassword, id!);
+            if (ceremonyStarted(res)) return;
+            if (res?.newPassword) setTemporaryPassword(res.newPassword);
+            else showToast('success', 'Password reset');
+        },
+    });
+
+    const resetMfa = () => setConfirm({
+        title: 'Reset MFA', message: `Remove every MFA method of "${user.username}"? They must enrol again at next sign-in. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Reset MFA',
+        action: async () => {
+            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-mfa`, {}, requireStepUp, StepUpOps.ResetMfa, id!);
+            if (!ceremonyStarted(res)) showToast('success', 'MFA reset');
+        },
     });
 
     if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
@@ -122,12 +148,18 @@ const UserDetail: React.FC = () => {
         const superWarning = isSuperGroup ? ' WARNING: This is a super admin account. Once disabled, it can ONLY be re-enabled via direct database access.' : '';
         setConfirm({
             title: 'Disable Account', message: `Disable user "${user.username}"? They will not be able to log in.${superWarning}`, confirmLabel: 'Disable',
-            action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
+            action: async () => {
+                const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!);
+                if (!ceremonyStarted(res)) setRefresh((r) => r + 1);
+            },
         });
     };
     const enableAccount = () => setConfirm({
-        title: 'Enable Account', message: `Re-enable user "${user.username}"? They will be able to log in again.`, confirmLabel: 'Enable',
-        action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
+        title: 'Enable Account', message: `Re-enable user "${user.username}"? They will be able to log in again. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Enable',
+        action: async () => {
+            const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, StepUpOps.UpdateUser, id!);
+            if (!ceremonyStarted(res)) setRefresh((r) => r + 1);
+        },
     });
     const deleteUser = () => {
         if (isSelf) { showToast('warning', 'You cannot delete your own account.'); return; }
@@ -135,8 +167,7 @@ const UserDetail: React.FC = () => {
             title: 'Delete User', message: `Permanently delete user "${user.username}"? If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
             action: async () => {
                 const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, StepUpOps.DeleteUser, id!);
-                if (res?.requiresCeremony) { showToast('info', res.message || 'A controlled-user ceremony was started — approve it on the Ceremonies page.'); setRefresh((r) => r + 1); }
-                else { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
+                if (!ceremonyStarted(res)) { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
             },
         });
     };
@@ -163,6 +194,7 @@ const UserDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={resetPassword} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors">Reset Password</button>
+                    <button onClick={resetMfa} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors">Reset MFA</button>
                     {user.isActive !== false
                         ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Disable Account</button>
                         : <button onClick={enableAccount} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Enable Account</button>}
@@ -259,6 +291,7 @@ const UserDetail: React.FC = () => {
                     }}
                     onCancel={() => setConfirm(null)}
                 />
+                <TemporaryPasswordModal password={temporaryPassword} username={user.username} onClose={() => setTemporaryPassword(null)} />
             </>)}
         </DetailPage>
     );

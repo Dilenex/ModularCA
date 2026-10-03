@@ -352,7 +352,23 @@ public class ControlledUserBypassGuardTests
 
     // ---- execute-time re-validation ----------------------------------------------------------
 
-    private static KeyCeremonyEntity ApprovedCeremony(ControlledUserWorld w, ControlledUserChangeParameters p, ControlledTier minted,
+    /// <summary>
+    /// An Approved ceremony for <paramref name="p"/>, carrying the credential state initiation
+    /// records: a promotion's snapshots and an identity change's account state.
+    /// </summary>
+    private static async Task<KeyCeremonyEntity> ApprovedCeremonyAsync(ControlledUserWorld w, ControlledUserChangeParameters p, ControlledTier minted,
+        Guid initiator, params Guid[] approvers)
+    {
+        if (p.ChangeType is "GrantCapability" or "AssignRole" or "AddGroupMember")
+            p.CredentialSnapshots = await ControlledCredentials.SnapshotAsync(w.Db,
+                p.TargetUserId != Guid.Empty ? [p.TargetUserId] : w.Db.CaGroupMembers.Where(m => m.GroupId == p.GroupId).Select(m => m.UserId).ToList());
+        if (p.Identity is { Before: null } identity)
+            identity.Before = await ControlledCredentials.AccountStateAsync(w.Db, p.TargetUserId);
+        return ApprovedAsStored(w, p, minted, initiator, approvers);
+    }
+
+    /// <summary>An Approved ceremony for <paramref name="p"/> exactly as given, like one opened before credential state was recorded.</summary>
+    private static KeyCeremonyEntity ApprovedAsStored(ControlledUserWorld w, ControlledUserChangeParameters p, ControlledTier minted,
         Guid initiator, params Guid[] approvers)
     {
         p.MintedTierLevel = (int)minted.Level;
@@ -399,7 +415,7 @@ public class ControlledUserBypassGuardTests
 
         // The awaiting assignment counts as an assignment for the role-change guard.
         Assert.Empty(await w.Controlled.TiersConferredByRoleAsync(role.Id, new[] { Capabilities.SystemManage }));
-        var ceremony = ApprovedCeremony(w, p, minted, initiator, approver);
+        var ceremony = await ApprovedCeremonyAsync(w, p, minted, initiator, approver);
         Assert.Contains(new ControlledTier(ControlledTierLevel.OrgAdmin, null) { TenantId = w.TenantA },
             await w.Controlled.TiersConferredByRoleAsync(role.Id, new[] { Capabilities.SystemManage }));
 
@@ -420,13 +436,53 @@ public class ControlledUserBypassGuardTests
         var approver = OrgOperator(w, "op-approver");
         var role = w.Role(Capabilities.CaManage);
         var minted = new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = w.TenantA };
-        var ceremony = ApprovedCeremony(w, new ControlledUserChangeParameters
+        var ceremony = await ApprovedCeremonyAsync(w, new ControlledUserChangeParameters
         {
             ChangeType = "AssignRole", TargetUserId = w.Plain, RoleId = role.Id, TenantId = w.TenantA,
         }, minted, initiator, approver);
 
         await w.Controlled.ApplyApprovedAsync(ceremony.Id);
         Assert.True(w.Db.RoleAssignments.Any(ra => ra.RoleId == role.Id && ra.UserId == w.Plain));
+    }
+
+    [Fact]
+    public async Task A_promotion_or_identity_change_opened_before_the_credential_check_expires_at_execute()
+    {
+        var w = new ControlledUserWorld();
+        var initiator = OrgOperator(w, "op-initiator");
+        var approver = OrgOperator(w, "op-approver");
+        var role = w.Role(Capabilities.CaManage);
+        var orgOperator = new ControlledTier(ControlledTierLevel.OrgOperator, null) { TenantId = w.TenantA };
+        var caAdmin = new ControlledTier(ControlledTierLevel.CaAdmin, w.CaA1) { TenantId = w.TenantA };
+        var a1Approver = w.User("a1-approver", w.A1Admin);
+        var a1Target = w.User("a1-target", w.A1Admin);
+
+        var promotion = ApprovedAsStored(w, new ControlledUserChangeParameters
+        {
+            ChangeType = "AssignRole", TargetUserId = w.Plain, RoleId = role.Id, TenantId = w.TenantA,
+        }, orgOperator, initiator, approver);
+        var identity = ApprovedAsStored(w, new ControlledUserChangeParameters
+        {
+            ChangeType = "UpdateIdentity", TargetUserId = a1Target, Identity = new ControlledIdentityChange { Email = "seized@x" },
+        }, caAdmin, w.A1AdminUser, a1Approver);
+        // A demotion records no credential state, so one opened before the check still applies.
+        var demotion = ApprovedAsStored(w, new ControlledUserChangeParameters
+        {
+            ChangeType = "RemoveGroupMember", TargetUserId = a1Target, GroupId = w.A1Admin.Id,
+        }, caAdmin, w.A1AdminUser, a1Approver);
+
+        foreach (var legacy in new[] { promotion, identity })
+        {
+            var ex = await Assert.ThrowsAsync<ControlledUserChangeRefusedException>(() => w.Controlled.ApplyApprovedAsync(legacy.Id));
+            Assert.True(ex.CeremonyExpired);
+            Assert.Equal(ControlledUserCeremonyService.PredatesCredentialCheck, ex.Message);
+            Assert.Equal("Expired", w.Db.KeyCeremonies.Single(c => c.Id == legacy.Id).Status);
+        }
+        Assert.False(w.Db.RoleAssignments.Any(ra => ra.RoleId == role.Id && ra.UserId == w.Plain));
+        Assert.NotEqual("seized@x", w.Db.Users.Single(u => u.Id == a1Target).Email);
+
+        await w.Controlled.ApplyApprovedAsync(demotion.Id);
+        Assert.False(w.Db.CaGroupMembers.Any(m => m.GroupId == w.A1Admin.Id && m.UserId == a1Target));
     }
 
     [Fact]
@@ -441,12 +497,12 @@ public class ControlledUserBypassGuardTests
             ChangeType = "GrantCapability", TargetUserId = w.Plain, Capability = Capabilities.CaManage, TenantId = w.TenantA,
         };
 
-        var first = ApprovedCeremony(w, Grant(), minted, initiator, approver);
+        var first = await ApprovedCeremonyAsync(w, Grant(), minted, initiator, approver);
         Deactivate(w, approver);
         await Assert.ThrowsAsync<ControlledUserChangeRefusedException>(() => w.Controlled.ApplyApprovedAsync(first.Id));
 
         var approver2 = OrgOperator(w, "op-approver-2");
-        var second = ApprovedCeremony(w, Grant(), minted, initiator, approver2);
+        var second = await ApprovedCeremonyAsync(w, Grant(), minted, initiator, approver2);
         w.Db.UserCapabilityGrants.RemoveRange(w.Db.UserCapabilityGrants.Where(g => g.UserId == approver2));
         w.Db.SaveChanges();
         await Assert.ThrowsAsync<ControlledUserChangeRefusedException>(() => w.Controlled.ApplyApprovedAsync(second.Id));
@@ -464,7 +520,7 @@ public class ControlledUserBypassGuardTests
         var approver = OrgOperator(w, "op-approver");
         var minted = (await w.Controlled.ClassifyGroupAsync(tenantOps))!.Value;
         Assert.Equal(ControlledTierLevel.OrgOperator, minted.Level);
-        var ceremony = ApprovedCeremony(w, new ControlledUserChangeParameters
+        var ceremony = await ApprovedCeremonyAsync(w, new ControlledUserChangeParameters
         {
             ChangeType = "AddGroupMember", TargetUserId = w.Plain, GroupId = tenantOps.Id,
         }, minted, initiator, approver);
@@ -482,7 +538,7 @@ public class ControlledUserBypassGuardTests
         var w = new ControlledUserWorld();
         var target = w.User("a1-target", w.A1Admin);
         var minted = (await w.Controlled.GetDeletionTierAsync(target))!.Value;
-        var ceremony = ApprovedCeremony(w, new ControlledUserChangeParameters { ChangeType = "DeleteUser", TargetUserId = target },
+        var ceremony = await ApprovedCeremonyAsync(w, new ControlledUserChangeParameters { ChangeType = "DeleteUser", TargetUserId = target },
             minted, w.A1AdminUser, w.User("a1-approver", w.A1Admin));
 
         w.Db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = w.OrgAdminA.Id, UserId = target });
@@ -501,7 +557,7 @@ public class ControlledUserBypassGuardTests
         var initiator = w.User("a1-initiator", w.A1Admin);
         var approver = w.User("a1-approver", w.A1Admin);
         var minted = new ControlledTier(ControlledTierLevel.CaAdmin, w.CaA1) { TenantId = w.TenantA };
-        var ceremony = ApprovedCeremony(w, new ControlledUserChangeParameters
+        var ceremony = await ApprovedCeremonyAsync(w, new ControlledUserChangeParameters
         {
             ChangeType = "RemoveGroupMember", TargetUserId = w.A1AdminUser, GroupId = w.A1Admin.Id,
         }, minted, initiator, approver);
@@ -512,7 +568,7 @@ public class ControlledUserBypassGuardTests
         Assert.True(ex.CeremonyExpired);
         Assert.True(w.Db.CaGroupMembers.Any(m => m.GroupId == w.A1Admin.Id && m.UserId == w.A1AdminUser));
 
-        var second = ApprovedCeremony(w, new ControlledUserChangeParameters
+        var second = await ApprovedCeremonyAsync(w, new ControlledUserChangeParameters
         {
             ChangeType = "RemoveGroupMember", TargetUserId = w.A1AdminUser, GroupId = w.A1Admin.Id,
         }, minted, initiator, w.User("a1-approver-2", w.A1Admin));

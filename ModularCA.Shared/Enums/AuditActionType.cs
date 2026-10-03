@@ -328,4 +328,10 @@ public static class AuditActionType
     /// chain and its final hash, anchoring the retired chain's tail in the live chain.
     /// </summary>
     public const string AuditChainSuccession = "AuditChainSuccession";
+
+    /// <summary>
+    /// An account was unlocked on the host with <c>--unlock-user</c>, outside the API. The actor is
+    /// <c>host:break-glass</c>; details name the host and the operating-system user.
+    /// </summary>
+    public const string UserUnlockedOnHost = "UserUnlockedOnHost";
 }

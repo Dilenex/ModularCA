@@ -19,16 +19,29 @@ namespace ModularCA.Auth.Authorization;
 /// <c>ParametersJson</c>, and applies it on execute. Tiers come from effective capability across
 /// every grant source (<see cref="ControlledTierResolver"/>), not from group structure alone.
 /// The acting user's tiers (initiate, approve, super) honour the worn badge from
-/// <paramref name="badges"/>; a target account's tiers never do.
+/// <paramref name="badges"/>; a target account's tiers never do. A promotion reads recent
+/// credential resets from <paramref name="auditDb"/>; when it is null or unreadable the ceremony
+/// says so instead. Approval and execute read them again to bar the resetters from approving,
+/// falling back to those recorded at initiation.
 /// </summary>
 public class ControlledUserCeremonyService(
     ModularCADbContext db,
     IKeyCeremonyService keyCeremonyService,
     IUserManagementService userService,
     ILogger<ControlledUserCeremonyService> logger,
-    IAccessBadgeContext? badges = null) : IControlledUserCeremonyService
+    IAccessBadgeContext? badges = null,
+    AuditDbContext? auditDb = null) : IControlledUserCeremonyService
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>How far back a promotion looks for credential resets of the accounts it promotes.</summary>
+    public static readonly TimeSpan ResetDisclosureWindow = TimeSpan.FromDays(30);
+
+    /// <summary>The prefix of each description line that warns approvers; the console highlights those lines.</summary>
+    public const string WarningPrefix = "WARNING: ";
+
+    /// <summary>The refusal at execute of a promotion or identity change opened before its credential state was recorded.</summary>
+    public const string PredatesCredentialCheck = "This ceremony predates the credential check; open it again.";
 
     /// <inheritdoc />
     public ControlledTier? ClassifyCapabilityGrant(string capability, Guid? certificateAuthorityId, Guid? tenantId = null)
@@ -153,11 +166,12 @@ public class ControlledUserCeremonyService(
     }
 
     /// <summary>
-    /// The tier an approver must dominate to delete <paramref name="userId"/>: the covering tier
+    /// The tier an approver must dominate to delete <paramref name="userId"/> or change their account
+    /// (password reset, MFA reset, identity update): the covering tier
     /// (<see cref="ControlledTier.Covering"/>) of every tier the user holds, e.g. org-admin(T) over
     /// ca-admin(X in T), or system-admin when the holdings span scopes (two tenants, two CAs, or a
     /// CA and a tenant-wide operator tier) that no single scoped approver covers. Null when the user
-    /// holds no controlled tier, so the delete is uncontrolled.
+    /// holds no controlled tier, so the change is uncontrolled.
     /// </summary>
     public async Task<ControlledTier?> GetDeletionTierAsync(Guid userId)
         => ControlledTier.Covering((await GetUserTiersAsync(userId)).Select(t => (ControlledTier?)t));
@@ -251,16 +265,49 @@ public class ControlledUserCeremonyService(
 
     /// <inheritdoc />
     public async Task<bool> CanApproveAsync(Guid approverUserId, KeyCeremonyEntity ceremony)
+        => await ApprovalRefusalAsync(approverUserId, ceremony) == null;
+
+    /// <inheritdoc />
+    public async Task<bool> HoldsApprovingTierAsync(Guid userId, KeyCeremonyEntity ceremony)
     {
         var p = Deserialize(ceremony);
-        if (p == null) return false;
-
-        // The user being promoted/demoted can't approve their own privilege change.
-        if (approverUserId == p.TargetUserId) return false;
-
+        if (p == null || userId == p.TargetUserId) return false;
         var minted = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
-        var tiers = await GetActorTiersAsync(approverUserId);
-        return tiers.Any(t => t.Dominates(minted));
+        return (await GetActorTiersAsync(userId)).Any(t => t.Dominates(minted));
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> ApprovalRefusalAsync(Guid approverUserId, KeyCeremonyEntity ceremony)
+    {
+        if (!await HoldsApprovingTierAsync(approverUserId, ceremony))
+            return "You are not eligible to approve this controlled-user change: your role doesn't cover the affected privilege tier.";
+        var own = (await KnownResetsAsync(ceremony, Deserialize(ceremony)!)).FirstOrDefault(r => r.ActorUserId == approverUserId);
+        if (own != null && !await IsSuperAsync(approverUserId))
+            return $"You reset {own.Username ?? own.UserId.ToString()}'s credentials on {own.At:yyyy-MM-dd}; another administrator must approve this promotion.";
+        return null;
+    }
+
+    /// <summary>
+    /// The password and MFA resets, by anyone, of the accounts promotion <paramref name="p"/> raises:
+    /// those recorded at initiation, and those the audit trail shows now from
+    /// <see cref="ResetDisclosureWindow"/> before the ceremony was opened. When the audit trail
+    /// cannot be read, the recorded ones alone. Empty for any change that is not a promotion.
+    /// </summary>
+    private async Task<List<ControlledCredentialReset>> KnownResetsAsync(KeyCeremonyEntity ceremony, ControlledUserChangeParameters p)
+    {
+        if (!IsPromotion(p.ChangeType)) return [];
+        var resets = (p.RecentCredentialResets ?? []).ToList();
+        try
+        {
+            if (auditDb == null) throw new InvalidOperationException("The audit database is not configured.");
+            var promoted = p.CredentialSnapshots?.Select(s => s.UserId).ToList() ?? await PromotedUserIdsAsync(p);
+            resets.AddRange(await ControlledCredentials.RecentResetsAsync(db, auditDb, promoted, ceremony.CreatedAt - ResetDisclosureWindow));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not read recent credential resets for ControlledUserChange ceremony {CeremonyId}; using those recorded at initiation.", ceremony.Id);
+        }
+        return resets.Where(r => r.What is ControlledCredentialReset.Password or ControlledCredentialReset.Mfa).ToList();
     }
 
     /// <inheritdoc />
@@ -303,7 +350,13 @@ public class ControlledUserCeremonyService(
     /// Opens a <c>ControlledUserChange</c> ceremony for <paramref name="parameters"/>, recording the
     /// minted tier in the parameters and stamping the ceremony's tenant from the tier's scope (the
     /// tier's tenant, or its CA's tenant) so scoped approvers can reach it. System tiers leave the
-    /// tenant null, which keeps the ceremony system-only.
+    /// tenant null, which keeps the ceremony system-only. A promotion also records the credential
+    /// state of every account it promotes, and an identity change the account's state, for the
+    /// compare-and-set at execute. A promotion records and discloses recent credential resets of
+    /// those accounts (<see cref="RecordRecentResetsAsync"/>), which may refuse it, and discloses
+    /// those whose password an administrator set and that have not changed it since
+    /// (<see cref="ControlledCredentials.PasswordsSetByAdministratorAsync"/>) unless a recorded
+    /// password reset already names them.
     /// </summary>
     public async Task<Guid> InitiateChangeAsync(
         ControlledUserChangeParameters parameters,
@@ -315,12 +368,25 @@ public class ControlledUserCeremonyService(
         parameters.MintedTierLevel = (int)minted.Level;
         parameters.MintedTierCaId = minted.CaId;
         parameters.MintedTierTenantId = minted.TenantId;
+        List<string> adminSetPasswords = [];
+        if (IsPromotion(parameters.ChangeType))
+        {
+            var promoted = await PromotedUserIdsAsync(parameters);
+            parameters.CredentialSnapshots = await ControlledCredentials.SnapshotAsync(db, promoted);
+            await RecordRecentResetsAsync(parameters, promoted, initiatorUserId);
+            adminSetPasswords = (await ControlledCredentials.PasswordsSetByAdministratorAsync(db, promoted))
+                .Where(u => parameters.RecentCredentialResets?.Any(r => r.UserId == u.Id && r.What == ControlledCredentialReset.Password) != true)
+                .Select(u => u.Username)
+                .ToList();
+        }
+        if (parameters is { ChangeType: "UpdateIdentity", Identity: { Before: null } identity })
+            identity.Before = await ControlledCredentials.AccountStateAsync(db, parameters.TargetUserId);
 
         var quorum = await ResolveUserQuorumAsync(minted);
 
         var ceremony = await keyCeremonyService.InitiateAsync(
             operationType: "ControlledUserChange",
-            description: await DescribeChangeAsync(parameters, minted),
+            description: await DescribeChangeAsync(parameters, minted, adminSetPasswords),
             targetEntityId: (parameters.TargetUserId != Guid.Empty
                 ? parameters.TargetUserId
                 : parameters.GroupId)?.ToString() ?? "-",
@@ -344,28 +410,120 @@ public class ControlledUserCeremonyService(
     }
 
     /// <summary>
-    /// The ceremony description for <paramref name="p"/>, naming the minted tier's scope: on a CA
-    /// (by label), in a tenant (by name), or the instance.
+    /// Records in <paramref name="p"/> the password and MFA resets and creations of
+    /// <paramref name="promoted"/> within <see cref="ResetDisclosureWindow"/>, by anyone, or that the
+    /// audit trail could not be read, which never fails the request. Throws
+    /// <see cref="ControlledUserInitiationRefusedException"/> when <paramref name="initiatorUserId"/>
+    /// made one of those resets and is not system-super under the badge they wear.
     /// </summary>
-    private async Task<string> DescribeChangeAsync(ControlledUserChangeParameters p, ControlledTier minted)
+    private async Task RecordRecentResetsAsync(ControlledUserChangeParameters p, IReadOnlyCollection<Guid> promoted, Guid initiatorUserId)
+    {
+        if (promoted.Count == 0) return;
+        try
+        {
+            if (auditDb == null) throw new InvalidOperationException("The audit database is not configured.");
+            p.RecentCredentialResets = await ControlledCredentials.RecentResetsAsync(db, auditDb, promoted, DateTime.UtcNow - ResetDisclosureWindow);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not read recent credential resets for a ControlledUserChange promotion; the ceremony discloses that.");
+            p.RecentCredentialResets = null;
+            p.RecentResetsUnchecked = true;
+            return;
+        }
+
+        var own = p.RecentCredentialResets.FirstOrDefault(r => r.ActorUserId == initiatorUserId
+            && r.What is ControlledCredentialReset.Password or ControlledCredentialReset.Mfa);
+        if (own != null && !await IsSuperAsync(initiatorUserId))
+            throw new ControlledUserInitiationRefusedException(
+                $"You reset this user's credentials on {own.At:yyyy-MM-dd}; another administrator must open the promotion.");
+    }
+
+    /// <summary>
+    /// The warning lines a ceremony description leads with: each recent credential reset of an
+    /// account it promotes (at most three, then a count), or that they could not be checked; then
+    /// each of <paramref name="adminSetPasswords"/>, the promoted accounts whose password an
+    /// administrator set and that have not changed it since (at most three, then a count).
+    /// </summary>
+    private static List<string> ResetWarnings(ControlledUserChangeParameters p, IReadOnlyList<string> adminSetPasswords)
+    {
+        var lines = new List<string>();
+        if (p.RecentResetsUnchecked)
+            lines.Add(WarningPrefix + "could not check recent resets");
+        var resets = p.RecentCredentialResets ?? [];
+        foreach (var r in resets.Take(3))
+        {
+            var who = r.Username ?? r.UserId.ToString();
+            var by = r.ActorUsername ?? r.ActorUserId?.ToString() ?? "an unknown actor";
+            lines.Add(WarningPrefix + (r.What == ControlledCredentialReset.Created
+                ? $"{who}'s account and first password were created by {by} on {r.At:yyyy-MM-dd}"
+                : $"{who}'s {r.What} was reset by {by} on {r.At:yyyy-MM-dd}"));
+        }
+        if (resets.Count > 3)
+            lines.Add(WarningPrefix + $"{resets.Count - 3} more recent credential resets; see the ceremony parameters");
+        foreach (var who in adminSetPasswords.Take(3))
+            lines.Add(WarningPrefix + $"{who}'s password was set by an administrator and has not been changed since");
+        if (adminSetPasswords.Count > 3)
+            lines.Add(WarningPrefix + $"{adminSetPasswords.Count - 3} more accounts whose password was set by an administrator and has not been changed since");
+        return lines;
+    }
+
+    /// <summary>
+    /// True for a ceremony opened before its credential state was recorded: a promotion without
+    /// <see cref="ControlledUserChangeParameters.CredentialSnapshots"/>, or an identity change
+    /// without <see cref="ControlledIdentityChange.Before"/>.
+    /// </summary>
+    private static bool PredatesCredentialState(ControlledUserChangeParameters p)
+        => (IsPromotion(p.ChangeType) && p.CredentialSnapshots == null)
+           || (p.ChangeType == "UpdateIdentity" && p.Identity?.Before == null);
+
+    /// <summary>True for the change types that raise an account's privilege.</summary>
+    private static bool IsPromotion(string changeType) => changeType is "GrantCapability" or "AssignRole" or "AddGroupMember";
+
+    /// <summary>
+    /// The accounts a promotion raises: its target, or for a role assigned to a group, the group's
+    /// current members.
+    /// </summary>
+    private async Task<List<Guid>> PromotedUserIdsAsync(ControlledUserChangeParameters p)
+    {
+        if (p.TargetUserId != Guid.Empty) return [p.TargetUserId];
+        if (p.GroupId is not Guid groupId) return [];
+        return await db.CaGroupMembers.AsNoTracking().Where(m => m.GroupId == groupId).Select(m => m.UserId).ToListAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> HasOpenPromotionAsync(Guid userId)
+    {
+        var idText = userId.ToString();
+        var now = DateTime.UtcNow;
+        var open = await db.KeyCeremonies.AsNoTracking()
+            .Where(c => c.OperationType == "ControlledUserChange"
+                && ((c.Status == "Pending" && c.ExpiresAt > now) || c.Status == "Approved")
+                && c.ParametersJson.Contains(idText))
+            .ToListAsync();
+        return open.Select(Deserialize).Any(p => p != null && IsPromotion(p.ChangeType)
+            && (p.TargetUserId == userId || p.CredentialSnapshots?.Any(s => s.UserId == userId) == true));
+    }
+
+    /// <summary>
+    /// The ceremony description for <paramref name="p"/>, naming the minted tier's scope: on a CA
+    /// (by label), in a tenant (by name), or the instance. Any <see cref="ResetWarnings"/> lead it,
+    /// one per line, each starting with <see cref="WarningPrefix"/>. At most 500 characters.
+    /// </summary>
+    private async Task<string> DescribeChangeAsync(ControlledUserChangeParameters p, ControlledTier minted, IReadOnlyList<string> adminSetPasswords)
+    {
+        var lines = ResetWarnings(p, adminSetPasswords);
+        lines.Add(await DescribeBaseAsync(p, minted));
+        var text = string.Join("\n", lines);
+        return text.Length <= 500 ? text : text[..500];
+    }
+
+    /// <summary>The one-line description of the change itself, naming the minted tier's scope.</summary>
+    private async Task<string> DescribeBaseAsync(ControlledUserChangeParameters p, ControlledTier minted)
     {
         var who = p.TargetUsername
                   ?? (p.TargetUserId != Guid.Empty ? p.TargetUserId.ToString() : (p.GroupId?.ToString() ?? "?"));
-        string scope;
-        if (minted.CaId is Guid caId)
-        {
-            var label = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
-                .Where(c => c.Id == caId).Select(c => c.Label).FirstOrDefaultAsync();
-            scope = $" on CA {(string.IsNullOrEmpty(label) ? caId.ToString() : label)}";
-        }
-        else if (minted.TenantId is Guid tenantId)
-        {
-            var name = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
-                .Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync();
-            scope = $" in tenant {(string.IsNullOrEmpty(name) ? tenantId.ToString() : name)}";
-        }
-        else
-            scope = " (instance)";
+        var scope = minted.CaId != null || minted.TenantId != null ? " " + await DescribeScopeAsync(minted) : " (instance)";
         return p.ChangeType switch
         {
             "GrantCapability" => $"Promote controlled user {who}: grant '{p.Capability}'{scope}",
@@ -375,20 +533,62 @@ public class ControlledUserCeremonyService(
             "UnassignRole" => $"Demote controlled user {who}: unassign role {p.RoleId}{scope}",
             "RemoveGroupMember" => $"Demote controlled user {who}: remove from group {p.GroupId}{scope}",
             "DeleteUser" => $"Delete controlled user {who}{scope}",
+            "ResetPassword" => $"Reset the password of controlled user {who}{scope}",
+            "ResetMfa" => $"Reset the MFA of controlled user {who}{scope}",
+            "UpdateIdentity" => $"Change the account of controlled user {who}: {DescribeIdentity(p.Identity)}{scope}",
             _ => $"Controlled-user change ({p.ChangeType}) for {who}{scope}",
         };
+    }
+
+    /// <summary>The fields an identity change sets, e.g. "email to a@b, disable".</summary>
+    private static string DescribeIdentity(ControlledIdentityChange? c)
+    {
+        if (c == null) return "nothing";
+        var parts = new List<string>();
+        if (c.Username != null) parts.Add($"username to {c.Username}");
+        if (c.Email != null) parts.Add($"email to {c.Email}");
+        if (c.IsActive != null) parts.Add(c.IsActive.Value ? "enable" : "disable");
+        if (c.IsLocked != null) parts.Add(c.IsLocked.Value ? "lock" : "unlock");
+        if (c.PasswordNeverExpires != null) parts.Add(c.PasswordNeverExpires.Value ? "password never expires" : "password expires");
+        if (c.PasswordChangeOnNextLogon != null) parts.Add(c.PasswordChangeOnNextLogon.Value ? "force password change" : "no forced password change");
+        if (c.FirstName != null || c.LastName != null || c.DisplayName != null) parts.Add("name");
+        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+    }
+
+    /// <inheritdoc />
+    public async Task<string> DescribeScopeAsync(ControlledTier tier)
+    {
+        if (tier.CaId is Guid caId)
+        {
+            var label = await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(c => c.Id == caId).Select(c => c.Label).FirstOrDefaultAsync();
+            return $"on CA {(string.IsNullOrEmpty(label) ? caId.ToString() : label)}";
+        }
+        if (tier.TenantId is Guid tenantId)
+        {
+            var name = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == tenantId).Select(t => t.Name).FirstOrDefaultAsync();
+            return $"in tenant {(string.IsNullOrEmpty(name) ? tenantId.ToString() : name)}";
+        }
+        return "instance";
     }
 
     /// <summary>
     /// Applies an approved controlled-user ceremony. Inside a transaction it locks the ceremony row
     /// and re-reads its status, so of two concurrent executes only one finds it Approved; the other
     /// gets <see cref="CeremonyNotExecutableException"/>. It then takes the role lock where a role is
-    /// involved and recomputes the tier the change confers or removes now. When that tier is higher
-    /// than the approved one, or the recorded approvals no longer hold enough active approvers
-    /// dominating it, the ceremony is marked Expired and a
-    /// <see cref="ControlledUserChangeRefusedException"/> is thrown. A demotion or deletion that would
-    /// leave its scope without a dominating user is refused the same way but stays Approved.
-    /// Otherwise the ceremony is marked Executed in the same transaction as the change.
+    /// involved and recomputes the tier the change confers or removes now. When a promoted account's
+    /// password, MFA or identity changed since initiation, an identity change's account no longer
+    /// matches the state it was opened against, a promotion or identity change carries no such
+    /// state because it was opened before it was recorded (<see cref="PredatesCredentialCheck"/>),
+    /// that tier is higher than the approved one, or the
+    /// recorded approvals no longer hold enough active approvers dominating it (for a promotion, who
+    /// did not reset the credentials of an account it promotes), the ceremony is marked Expired and a
+    /// <see cref="ControlledUserChangeRefusedException"/> is thrown. A demotion, deletion, disable or
+    /// lock that would leave its scope without a dominating user is refused the same way but stays
+    /// Approved. Otherwise the ceremony is marked Executed in the same transaction as the change.
+    /// A password reset generates the temporary password now and returns it only in
+    /// <see cref="ControlledUserChangeResult.TemporaryPassword"/>.
     /// </summary>
     public async Task<ControlledUserChangeResult> ApplyApprovedAsync(Guid ceremonyId)
     {
@@ -406,11 +606,18 @@ public class ControlledUserCeremonyService(
             ?? throw new InvalidOperationException($"Ceremony {ceremonyId} parameters could not be deserialized.");
 
         var approved = new ControlledTier((ControlledTierLevel)p.MintedTierLevel, p.MintedTierCaId) { TenantId = p.MintedTierTenantId };
-        var (current, stale) = await RecomputeTierAsync(p);
+        var predates = PredatesCredentialState(p);
+        var (current, stale) = predates ? ((ControlledTier?)null, "it predates the credential check") : await RecomputeTierAsync(p);
+        if (stale == null && p.CredentialSnapshots is { } snapshots && await ControlledCredentials.AnyChangedAsync(db, snapshots))
+            stale = "the password, MFA or account of a user it promotes changed after it was opened";
+        if (stale == null && p.Identity is { Before: { } before } identity
+            && await ControlledCredentials.AccountStateAsync(db, p.TargetUserId) is { } state
+            && !ControlledCredentials.Unchanged(before, state, identity))
+            stale = "the account changed after it was opened";
         if (stale == null && current is { } now && !approved.Dominates(now))
             stale = "it now confers a higher privilege tier than the one approved";
         if (stale == null && !await ApprovalsStillCoverAsync(ceremony, p, approved, current))
-            stale = "the recorded approvals no longer include enough active approvers who dominate it";
+            stale = "the recorded approvals no longer include enough active approvers who dominate it and did not reset the credentials of a user it promotes";
         if (stale != null)
         {
             ceremony.Status = "Expired";
@@ -418,10 +625,12 @@ public class ControlledUserCeremonyService(
             if (tx != null) await tx.CommitAsync();
             logger.LogWarning("Refused ControlledUserChange ceremony {CeremonyId} at execute: {Reason}.", ceremonyId, stale);
             throw new ControlledUserChangeRefusedException(
-                $"The privilege changed after approval ({stale}); start a new ceremony.", ceremonyExpired: true);
+                predates ? PredatesCredentialCheck : $"The privilege changed after approval ({stale}); start a new ceremony.", ceremonyExpired: true);
         }
 
-        if (current is { } removed && p.ChangeType is "RevokeCapability" or "UnassignRole" or "RemoveGroupMember" or "DeleteUser"
+        var removesDominator = p.ChangeType is "RevokeCapability" or "UnassignRole" or "RemoveGroupMember" or "DeleteUser"
+            || (p.ChangeType == "UpdateIdentity" && p.Identity is { RemovesAccess: true });
+        if (current is { } removed && removesDominator
             && await CountDominatorsAsync(removed, p.TargetUserId, ceremony.InitiatedByUserId,
                 new ControlledSourceExclusions { RoleAssignmentId = p.ChangeType == "UnassignRole" ? p.RecordId : null },
                 actorIsRequestUser: false) == 0)
@@ -435,6 +644,7 @@ public class ControlledUserCeremonyService(
         ceremony.ExecutedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
+        string? temporaryPassword = null;
         switch (p.ChangeType)
         {
             case "GrantCapability":
@@ -563,6 +773,30 @@ public class ControlledUserCeremonyService(
                     await userService.DeleteUser(p.TargetUserId);
                     break;
                 }
+            case "ResetPassword":
+                temporaryPassword = await userService.ResetUserPassword(p.TargetUserId);
+                break;
+            case "ResetMfa":
+                await userService.ResetUserMfa(p.TargetUserId);
+                break;
+            case "UpdateIdentity":
+                {
+                    var c = p.Identity
+                        ?? throw new InvalidOperationException($"Ceremony {ceremonyId} has no account fields to set.");
+                    await userService.UpdateUser(p.TargetUserId, new ModularCA.Shared.Models.Management.UpdateUserRequest
+                    {
+                        Username = c.Username,
+                        Email = c.Email,
+                        FirstName = c.FirstName,
+                        LastName = c.LastName,
+                        DisplayName = c.DisplayName,
+                        IsActive = c.IsActive,
+                        IsLocked = c.IsLocked,
+                        PasswordNeverExpires = c.PasswordNeverExpires,
+                        PasswordChangeOnNextLogon = c.PasswordChangeOnNextLogon,
+                    });
+                    break;
+                }
             default:
                 throw new InvalidOperationException($"Unsupported controlled-user change type '{p.ChangeType}'.");
         }
@@ -573,14 +807,18 @@ public class ControlledUserCeremonyService(
             "Applied ControlledUserChange ceremony {CeremonyId}: {ChangeType} for user {TargetUserId}.",
             ceremonyId, p.ChangeType, p.TargetUserId);
 
-        return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.TenantId, p.CertificateAuthorityId);
+        return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.TenantId, p.CertificateAuthorityId)
+        {
+            TemporaryPassword = temporaryPassword,
+        };
     }
 
     /// <summary>
-    /// The tier the stored change would confer (promotion) or remove (demotion/deletion) against the
-    /// current state, taking the row lock on every role involved first. Null when the change no
-    /// longer touches a controlled tier (including a demotion whose record is already gone).
-    /// <c>Stale</c> is set when a record the promotion needs has disappeared.
+    /// The tier the stored change would confer (promotion) or remove (demotion/deletion), or the
+    /// target account's covering tier for an account change, against the current state, taking the
+    /// row lock on every role involved first. Null when the change no longer touches a controlled
+    /// tier (including a demotion whose record is already gone). <c>Stale</c> is set when a record
+    /// the change needs has disappeared, or an identity change's username or email was taken.
     /// </summary>
     private async Task<(ControlledTier? Tier, string? Stale)> RecomputeTierAsync(ControlledUserChangeParameters p)
     {
@@ -646,6 +884,17 @@ public class ControlledUserCeremonyService(
             case "DeleteUser":
                 return (await GetDeletionTierAsync(p.TargetUserId), null);
 
+            case "ResetPassword" or "ResetMfa" or "UpdateIdentity":
+                {
+                    if (!await db.Users.AnyAsync(u => u.Id == p.TargetUserId))
+                        return (null, "the account no longer exists");
+                    if (p.ChangeType == "UpdateIdentity" && p.Identity is { } c
+                        && ((c.Username != null && await db.Users.AnyAsync(u => u.Id != p.TargetUserId && u.Username == c.Username))
+                            || (c.Email != null && await db.Users.AnyAsync(u => u.Id != p.TargetUserId && u.Email == c.Email))))
+                        return (null, "the requested username or email now belongs to another account");
+                    return (await GetDeletionTierAsync(p.TargetUserId), null);
+                }
+
             default:
                 return (null, null);
         }
@@ -668,6 +917,9 @@ public class ControlledUserCeremonyService(
     /// <c>RequiredApprovals</c> distinct approvers, other than the initiator and the target, whose
     /// accounts can act (exist, active, not locked, not service identities) and who hold a tier
     /// dominating both the <paramref name="approved"/> tier and the <paramref name="current"/> one.
+    /// For a promotion, an approver who reset the password or MFA of an account it promotes
+    /// (<see cref="KnownResetsAsync"/>, read afresh) does not count unless their account is
+    /// system-super.
     /// </summary>
     private async Task<bool> ApprovalsStillCoverAsync(
         KeyCeremonyEntity ceremony, ControlledUserChangeParameters p, ControlledTier approved, ControlledTier? current)
@@ -691,10 +943,12 @@ public class ControlledUserCeremonyService(
             .Where(u => approverIds.Contains(u.Id) && u.IsActive && !u.IsLocked && !u.IsServiceIdentity)
             .Select(u => u.Id)
             .ToListAsync();
+        HashSet<Guid> resetters = usable.Count == 0 ? [] : (await KnownResetsAsync(ceremony, p)).Select(r => r.ActorUserId).OfType<Guid>().ToHashSet();
 
         var valid = 0;
         foreach (var id in usable)
         {
+            if (resetters.Contains(id) && !await IsSuperAccountAsync(id)) continue;
             var tiers = await GetUserTiersAsync(id);
             if (tiers.Any(t => t.Dominates(approved)) && (current is not { } c || tiers.Any(t => t.Dominates(c))))
                 valid++;

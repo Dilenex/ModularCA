@@ -8,6 +8,81 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ### Fixed
 
+- **A system admin can no longer seize another approver's account.** An admin could reset the
+  password and MFA of any account whose tiers theirs dominated, and a peer dominates a peer. One
+  system admin could therefore reset another's password, which the response returned, strip their
+  MFA, sign in as them with the temporary password, enrol their own authenticator, and then approve
+  their own ceremonies as that account, and as every other admin in turn: the quorum was one person.
+  The same held for any account their rank dominated, such as a system operator or a tenant
+  admin, and for re-enabling, unlocking or re-addressing an approver. Resetting the password or the
+  MFA of an account that holds an admin, operator or CA-admin tier, or changing its username, email,
+  enabled or locked state, password expiry or forced change, now opens a controlled-user ceremony
+  at that account's tier unless a system-super acts. As with every such ceremony the initiator never
+  counts and the account itself cannot approve. Disabling or locking is gated too, since locking out
+  approvers starves the quorum, and doing so to the last other active admin of a scope is refused,
+  as deleting them is. The temporary password is generated only when the approved ceremony is
+  executed and is returned only to whoever executes it; it is never stored in the ceremony or the
+  audit. Changes to accounts holding no controlled tier, and to your own account, apply directly
+  as before. A password sent in a user update, which was always ignored, is now refused, and the
+  password-expiry and forced-change flags of an update, which were also ignored, are applied.
+
+- **LDAP identity settings are super-only.** A sign-in accepts a directory bind for the local
+  account of the same name, super included, so whoever chooses the directory chooses who can sign
+  in as whom. A system admin could point LDAP at a directory they ran, create an entry named after
+  any account, and sign in as it. Changing the server, port, TLS, bind identity or password, the
+  user or group search settings or the group mappings, on either the LDAP settings or the group
+  mappings endpoint, or turning LDAP sign-in on, now needs a system-super (403 otherwise). Turning
+  LDAP sign-in off and the group-sync and auto-provisioning switches stay with operators. The
+  console shows those fields read-only to everyone else.
+- **A promotion expires if the target's credentials change.** An admin could open a ceremony to
+  promote a colleague who held no privileged tier, wait for a peer to approve it, then reset the
+  colleague's password and MFA directly, which needed no ceremony because the colleague was not
+  yet privileged, and execute: the colleague became an approver the admin could sign in as. A
+  promotion now records the security stamp and a digest of the MFA enrolment of each account it
+  promotes, and execute marks it Expired (409) if either changed. While a promotion is pending or
+  approved, a direct password reset, MFA reset or account change of that user is refused (409)
+  unless a system-super makes it. An MFA reset now rotates the security stamp and ends the user's
+  sessions, as a password reset does, and so does a username or email change by an admin. An
+  approved account change likewise expires if the account's username, email, enabled or locked
+  state changed since it was opened, so it cannot undo a super's incident response. An empty
+  username or email in a user update, which was written as a change, is refused (400). A promotion
+  or account change opened before this release carries none of that state, and is expired at
+  execute (409) with "This ceremony predates the credential check; open it again."
+- **A promotion discloses recent credential resets, and the resetter can neither open nor approve
+  it.** Resetting a colleague's password or MFA and then promoting them still gave the resetter an
+  approver account they could sign in as, as long as the reset came first. Opening a promotion now
+  looks in the audit trail for any password or MFA reset, or the creation, of each account it
+  promotes in the last 30 days, by anyone, and the ceremony description leads with a warning line
+  per reset ("alice's password was reset by bob on 2026-09-30") that the Ceremonies page
+  highlights for approvers. If the audit trail cannot be read, the promotion opens and says
+  "could not check recent resets". Because a failed audit write (Audit.FailMode=LogAndContinue)
+  loses the record of a reset, the promotion also reads the account itself: one that must change
+  its password at next logon, as an administrator's reset leaves it, is disclosed as "alice's
+  password was set by an administrator and has not been changed since" unless the audit trail
+  already names the reset. An administrator who made a password or MFA reset of the account cannot
+  open the promotion (409) or approve it (403, with the reason, which the Ceremonies page shows in
+  the ceremony's drawer) unless they are system-super; they can still see and reject it. Execute
+  reads the audit trail again, falling back to the resets recorded when the promotion was opened,
+  and an approval by a resetter no longer counts toward the quorum, so a promotion left short of
+  it is expired (409).
+- **The Kerberos realm enrollment identity is confined to the realm's scope.** Every ticket a
+  realm accepts acts with its enrollment identity's rights on the tenant's CAs, and whoever holds
+  the realm's keys can mint a ticket for any principal. A tenant administrator could bind their
+  realm to any account, a system-super included, and enroll with its rights. A binding's
+  enrollment identity must now be a service identity of the realm's tenant (any service identity
+  for an instance realm), checked when a binding is created, re-pointed or re-enabled (400
+  otherwise). Existing bindings keep working; each start names the ones that do not comply.
+- **Unlocking resets the failed-login count.** Unlocking an account left its failed-login count
+  as it was, so a single wrong password locked it again. Unlocking, directly or through a
+  ceremony, now clears the count and any temporary lockout, and an unlock also lifts a temporary
+  lockout on an account that is not hard-locked. A hard-locked account that no one left can
+  unlock, such as the only system-super with a permanent lockout policy, is recovered on the host
+  with `ModularCA.API --unlock-user <username>`, run as the service user. Each use is written to the
+  audit trail as `UserUnlockedOnHost` by `host:break-glass`; when the audit database cannot be
+  reached the account is still unlocked and the command warns that no record was written.
+- **The LDAP auto-provisioning hint was wrong.** Settings said a first LDAP login creates the
+  account. It does not: every account is created locally, and the switch has no effect.
+
 - **The instance operator rank is now controlled.** Holding `ca.manage` at instance scope, with
   no tenant and no CA, makes an account an approver of every key ceremony on the instance and in
   every tenant. It was not a controlled tier, so a single system admin could grant it by a direct

@@ -105,13 +105,17 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
     public Task<KerberosRealmEntity?> GetAsync(Guid id)
         => db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser).FirstOrDefaultAsync(r => r.Id == id);
 
-    /// <summary>Creates a binding for a tenant, or for the instance when null. The realm must be new across every tenant.</summary>
+    /// <summary>
+    /// Creates a binding for a tenant, or for the instance when null. The realm must be new across
+    /// every tenant, and the enrollment identity must be confined to the realm's scope
+    /// (<see cref="EnrollmentIdentityProblem"/>).
+    /// </summary>
     public async Task<KerberosRealmEntity> CreateAsync(Guid? tenantId, KerberosRealmSpec spec)
     {
         var realm = NormalizeRealm(spec.Realm);
         if (await db.KerberosRealms.AnyAsync(r => r.Realm == realm))
             throw new InvalidOperationException($"Realm '{realm}' is already bound.");
-        await ValidateSpecAsync(spec);
+        await ValidateSpecAsync(spec, tenantId, checkIdentity: true);
 
         var entity = new KerberosRealmEntity
         {
@@ -131,7 +135,12 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
         return entity;
     }
 
-    /// <summary>Updates the non-key fields. The realm name cannot change once a key exists, since keys are salted with it.</summary>
+    /// <summary>
+    /// Updates the non-key fields. The realm name cannot change once a key exists, since keys are
+    /// salted with it. A new enrollment identity, or re-enabling a disabled binding, must pass
+    /// <see cref="EnrollmentIdentityProblem"/>; other edits, disabling included, are allowed on a
+    /// binding that predates that rule.
+    /// </summary>
     public async Task<KerberosRealmEntity> UpdateAsync(Guid id, KerberosRealmSpec spec)
     {
         var entity = await db.KerberosRealms.Include(r => r.Keys).FirstOrDefaultAsync(r => r.Id == id)
@@ -145,7 +154,8 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
                 throw new InvalidOperationException($"Realm '{realm}' is already bound.");
             entity.Realm = realm;
         }
-        await ValidateSpecAsync(spec);
+        await ValidateSpecAsync(spec, entity.TenantId,
+            checkIdentity: spec.EnrollmentUserId != entity.EnrollmentUserId || (spec.IsEnabled && !entity.IsEnabled));
         entity.DnsDomain = NormalizeDnsDomain(spec.DnsDomain, realm);
         entity.ServicePrincipal = NormalizeSpn(spec.ServicePrincipal);
         entity.EnrollmentUserId = spec.EnrollmentUserId;
@@ -361,11 +371,48 @@ public sealed class KerberosRealmService(ModularCADbContext db, IDataProtectionP
         return key.GetKey().ToArray();
     }
 
-    private async Task ValidateSpecAsync(KerberosRealmSpec spec)
+    private async Task ValidateSpecAsync(KerberosRealmSpec spec, Guid? tenantId, bool checkIdentity)
     {
         NormalizeSpn(spec.ServicePrincipal);
-        if (!await db.Users.AnyAsync(u => u.Id == spec.EnrollmentUserId))
-            throw new InvalidOperationException("The enrollment user does not exist.");
+        var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == spec.EnrollmentUserId)
+            ?? throw new InvalidOperationException("The enrollment user does not exist.");
+        if (checkIdentity && EnrollmentIdentityProblem(user, tenantId) is { } problem)
+            throw new InvalidOperationException(problem);
+    }
+
+    /// <summary>
+    /// Why <paramref name="user"/> may not be the enrollment identity of a realm of
+    /// <paramref name="realmTenantId"/> (null for an instance realm), or null when it may. Whoever
+    /// holds the realm's keys can mint tickets for any principal, and every accepted ticket acts
+    /// with this identity's rights on the realm's CAs, so it must be a service identity, which cannot
+    /// sign in, scoped to the realm's tenant (any scope for an instance realm). A person, or an
+    /// identity of another tenant or of the instance, would let a tenant administrator act with
+    /// rights they were never given.
+    /// </summary>
+    public static string? EnrollmentIdentityProblem(UserEntity user, Guid? realmTenantId)
+    {
+        if (!user.IsServiceIdentity)
+            return $"The enrollment identity must be a service identity, not '{user.Username}': every ticket from the forest "
+                + "acts with that account's rights. Create one under Users, Service identities.";
+        if (realmTenantId != null && user.ServiceScopeTenantId != realmTenantId)
+            return $"Service identity '{user.Username}' is not scoped to this realm's tenant. Use a service identity of this tenant or one of its CAs.";
+        return null;
+    }
+
+    /// <summary>
+    /// The startup warning naming every enabled binding whose enrollment identity fails
+    /// <see cref="EnrollmentIdentityProblem"/>, or null when there is none. Such bindings keep
+    /// working; the rule is enforced when one is created, re-pointed or re-enabled.
+    /// </summary>
+    public static async Task<string?> UnconfinedRealmsWarningAsync(ModularCADbContext db, CancellationToken ct = default)
+    {
+        var realms = await db.KerberosRealms.AsNoTracking().Include(r => r.EnrollmentUser)
+            .Where(r => r.IsEnabled).OrderBy(r => r.Realm).ToListAsync(ct);
+        var bad = realms.Where(r => r.EnrollmentUser != null && EnrollmentIdentityProblem(r.EnrollmentUser, r.TenantId) != null)
+            .Select(r => $"{r.Realm} (acts as {r.EnrollmentUser!.Username})").ToList();
+        if (bad.Count == 0) return null;
+        return $"{bad.Count} Kerberos realm binding(s) act as an identity not confined to the realm's scope: {string.Join(", ", bad)}. "
+            + "Point each at a service identity of the realm's tenant; re-pointing or re-enabling a binding now requires one.";
     }
 
     /// <summary>Upper-case, trimmed, and shaped like a DNS name. Anything else is refused.</summary>

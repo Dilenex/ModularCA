@@ -8,6 +8,7 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
@@ -54,8 +55,10 @@ const TIER_LABELS: Record<number, string> = {
     2: 'CA Admin', 3: 'System Admin', 4: 'System Super', 5: 'Tenant Operator', 6: 'Tenant Admin', 7: 'System Operator',
 };
 
-/* the scope of a controlled-user ceremony's affected tier: its CA, else its tenant, else the instance */
-function tierScope(params: any): string {
+/* the scope of a controlled-user ceremony's affected tier, as the server names it (CA label,
+   tenant name or instance); the raw ids only if the server did not name it */
+function tierScope(detail: any, params: any): string {
+    if (detail?.tierScope) return detail.tierScope === 'instance' ? ' (instance)' : ` (${detail.tierScope})`;
     const caId = params.mintedTierCaId || params.MintedTierCaId;
     if (caId) return ` (CA ${caId})`;
     const tenantId = params.mintedTierTenantId || params.MintedTierTenantId;
@@ -71,11 +74,50 @@ function controlledChangeLabel(changeType: string): string {
         case 'UnassignRole': return 'Demote — unassign role';
         case 'RemoveGroupMember': return 'Demote — remove from group';
         case 'DeleteUser': return 'Delete user';
+        case 'ResetPassword': return 'Account — reset password';
+        case 'ResetMfa': return 'Account — reset MFA';
+        case 'UpdateIdentity': return 'Account — change identity or state';
         default: return changeType || '-';
     }
 }
 
+/* the fields an UpdateIdentity change sets, for the drawer */
+function identityChanges(identity: any): { label: string; value: string }[] {
+    if (!identity) return [];
+    const get = (k: string) => identity[k] ?? identity[k.charAt(0).toUpperCase() + k.slice(1)];
+    const yesNo = (v: any) => (v ? 'Yes' : 'No');
+    const rows: { label: string; value: string }[] = [];
+    const add = (label: string, k: string, fmt: (v: any) => string = String) => { const v = get(k); if (v !== null && v !== undefined) rows.push({ label, value: fmt(v) }); };
+    add('Username', 'username');
+    add('Email', 'email');
+    add('First name', 'firstName');
+    add('Last name', 'lastName');
+    add('Display name', 'displayName');
+    add('Enabled', 'isActive', yesNo);
+    add('Locked', 'isLocked', yesNo);
+    add('Password never expires', 'passwordNeverExpires', yesNo);
+    add('Change password at next logon', 'passwordChangeOnNextLogon', yesNo);
+    return rows;
+}
+
 const parseJson = (json: string | null): any => { if (!json) return null; try { return JSON.parse(json); } catch { return null; } };
+
+const WARNING_PREFIX = 'WARNING: ';
+
+/* the server leads a description with "WARNING: " lines for approvers, such as a recent password
+   or MFA reset of the account a promotion raises; split them from the description itself */
+function splitDescription(c: any): { text: string; warnings: string[] } {
+    const lines = String(c?.description || '').split('\n');
+    const warnings = lines.filter((l) => l.startsWith(WARNING_PREFIX)).map((l) => l.slice(WARNING_PREFIX.length));
+    const text = lines.filter((l) => !l.startsWith(WARNING_PREFIX)).join(' ').trim();
+    return { text: text || c?.operationType || '', warnings };
+}
+
+const CeremonyWarnings: React.FC<{ warnings: string[]; className?: string }> = ({ warnings, className = '' }) => warnings.length === 0 ? null : (
+    <div role="alert" className={`bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded p-3 text-xs text-amber-800 dark:text-amber-300 space-y-1 ${className}`}>
+        {warnings.map((w, i) => <p key={i} className="font-semibold">{w}</p>)}
+    </div>
+);
 
 /* ── read-only detail drawer (fetches full ceremony by id) ─────────────────── */
 const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
@@ -95,13 +137,21 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
     const family = ceremonyFamily(ceremony);
     const params = parseJson(detail?.parametersJson);
     const approvalLog = (parseJson(detail?.approvalsJson || ceremony.approvalsJson) as any[]) || [];
+    const { text, warnings } = splitDescription(ceremony);
+    const approvalRefusal: string | null = ceremony.status === 'Pending' ? (detail?.approvalRefusal ?? ceremony.approvalRefusal ?? null) : null;
 
     return (
         <div className="text-sm space-y-4">
+            <CeremonyWarnings warnings={warnings} />
+            {approvalRefusal && (
+                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded p-3 text-xs text-gray-700 dark:text-gray-300">
+                    <span className="font-semibold">You cannot approve this ceremony.</span> {approvalRefusal}
+                </div>
+            )}
             <div>
                 <DetailField label="Type" value={FAMILY_META[family].label} />
                 <DetailField label="Operation" value={ceremony.operationType} />
-                <DetailField label="Description" value={ceremony.description} />
+                <DetailField label="Description" value={text} />
                 <DetailField label="Status" value={ceremony.status} />
                 <DetailField label="Initiator" value={ceremony.initiatedByUsername || '-'} />
                 <DetailField label="Approvals" value={`${ceremony.currentApprovals ?? 0} / ${ceremony.requiredApprovals ?? '-'}`} />
@@ -119,10 +169,14 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                     <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Controlled-User Change</span>
                     <DetailField label="Action" value={controlledChangeLabel(params.changeType || params.ChangeType)} />
                     <DetailField label="Target user" value={params.targetUsername || params.TargetUsername || params.targetUserId || params.TargetUserId || '-'} mono />
-                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + tierScope(params)} />
+                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + tierScope(detail, params)} />
                     {(params.capability || params.Capability) && <DetailField label="Capability" value={params.capability || params.Capability} mono />}
                     {(params.roleId || params.RoleId) && <DetailField label="Role" value={params.roleId || params.RoleId} mono />}
                     {(params.groupId || params.GroupId) && <DetailField label="Group" value={params.groupId || params.GroupId} mono />}
+                    {identityChanges(params.identity || params.Identity).map((row) => <DetailField key={row.label} label={row.label} value={row.value} />)}
+                    {(params.changeType || params.ChangeType) === 'ResetPassword' && (
+                        <FieldHint className="mt-1">The temporary password is generated when this is executed and shown once, to whoever executes it.</FieldHint>
+                    )}
                 </div>
             )}
 
@@ -189,6 +243,7 @@ const Ceremonies: React.FC = () => {
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: React.ReactNode; confirmLabel: string; confirmClass?: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
     const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+    const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
 
     const [filterStatus, setFilterStatus] = useState<'mine' | 'pending' | 'all'>('mine');
     const [filterType, setFilterType] = useState<'all' | Family>('all');
@@ -222,11 +277,13 @@ const Ceremonies: React.FC = () => {
     const executeConfirmClass = 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors';
 
     const handleApprove = (ceremony: any) => {
+        const { text, warnings } = splitDescription(ceremony);
         setConfirmAction({
             title: 'Approve Ceremony',
             message: (
                 <>
-                    <p>Approve &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <CeremonyWarnings warnings={warnings} className="mb-2" />
+                    <p>Approve &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">You are one of the approvers of record for this ceremony; your approval is audited under your name.</p>
                 </>
             ),
@@ -243,7 +300,7 @@ const Ceremonies: React.FC = () => {
     const handleReject = (ceremony: any) => {
         setConfirmAction({
             title: 'Reject Ceremony',
-            message: `Reject "${ceremony.description || ceremony.operationType}"? This is permanent.`,
+            message: `Reject "${splitDescription(ceremony).text}"? This is permanent.`,
             confirmLabel: 'Reject',
             action: async () => {
                 await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/reject`, {}, requireStepUp, StepUpOps.RejectCeremony, ceremony.id);
@@ -256,7 +313,7 @@ const Ceremonies: React.FC = () => {
     const handleCancel = (ceremony: any) => {
         setConfirmAction({
             title: 'Cancel Ceremony',
-            message: `Cancel "${ceremony.description || ceremony.operationType}"? This cannot be undone.`,
+            message: `Cancel "${splitDescription(ceremony).text}"? This cannot be undone.`,
             confirmLabel: 'Cancel Ceremony',
             action: async () => {
                 await apiDeleteWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}`, requireStepUp, StepUpOps.CancelCeremony, ceremony.id);
@@ -270,22 +327,28 @@ const Ceremonies: React.FC = () => {
         // Only a CA-creation ceremony generates keys; the other two families apply a policy or
         // user change. The irreversibility is the same for all three.
         const isCa = ceremonyFamily(ceremony) === 'CaCreation';
+        const { text, warnings } = splitDescription(ceremony);
         setConfirmAction({
             title: 'Execute Ceremony',
             message: (
                 <>
-                    <p>Execute &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <CeremonyWarnings warnings={warnings} className="mb-2" />
+                    <p>Execute &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">
                         {isCa
                             ? 'This generates the CA’s key pair now. It cannot be re-run; a mistake means a new ceremony.'
                             : 'This applies the approved change now. It cannot be re-run; a mistake means a new ceremony.'}
                     </p>
+                    {ceremonyFamily(ceremony) === 'ControlledUserChange' && (
+                        <p className="mt-2">A password reset shows its temporary password to you once, when it executes. It is not stored and cannot be shown again.</p>
+                    )}
                 </>
             ),
             confirmLabel: 'Execute',
             confirmClass: executeConfirmClass,
             action: async () => {
                 const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, StepUpOps.ExecuteCeremony, ceremony.id);
+                if (result?.temporaryPassword) setTemporaryPassword(result.temporaryPassword);
                 showToast('success', result?.message || 'Ceremony executed successfully.');
                 setRefreshTrigger((t) => t + 1);
             },
@@ -318,7 +381,17 @@ const Ceremonies: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'description', header: 'Description', defaultWidth: 300, minWidth: 200, exportValue: (c) => c.description || c.operationType,
-            render: (c) => <span className="font-medium text-gray-900 dark:text-white">{c.description || c.operationType}</span> },
+            render: (c) => {
+                const { text, warnings } = splitDescription(c);
+                return (
+                    <span className="inline-flex items-center gap-2">
+                        {warnings.length > 0 && (
+                            <span title={warnings.join('\n')} className="inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded border bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700">Warning</span>
+                        )}
+                        <span className="font-medium text-gray-900 dark:text-white">{text}</span>
+                    </span>
+                );
+            } },
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (c) => FAMILY_META[ceremonyFamily(c)].label,
             render: (c) => <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded border w-fit ${FAMILY_META[ceremonyFamily(c)].cls}`}>{FAMILY_META[ceremonyFamily(c)].label}</span> },
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
@@ -345,7 +418,8 @@ const Ceremonies: React.FC = () => {
                 Ceremonies are created automatically when a multi-party action is required — you don't start one here.
                 They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
                 Tenant settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
-                (promoting, demoting, or deleting a controlled user as a non-super). Select one below to approve or reject.
+                (promoting, demoting, or deleting a controlled user, or resetting their password or MFA or changing their account,
+                as a non-super). Select one below to approve or reject.
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -376,7 +450,7 @@ const Ceremonies: React.FC = () => {
                 bulkActions={bulkActions}
                 exportFileName="ceremonies"
                 renderDrawer={(c) => <CeremonyDrawer ceremony={c} />}
-                drawerTitle={(c) => c.description || c.operationType}
+                drawerTitle={(c) => splitDescription(c).text}
             />
 
             <ConfirmModal
@@ -400,6 +474,7 @@ const Ceremonies: React.FC = () => {
                 }}
                 onCancel={() => setConfirmAction(null)}
             />
+            <TemporaryPasswordModal password={temporaryPassword} onClose={() => setTemporaryPassword(null)} />
         </div>
     );
 };

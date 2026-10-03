@@ -32,10 +32,10 @@ const cardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:bord
 
 /* Every primitive takes `hint`: what the value does, or what saving it causes, shown under the
    control. The label names the setting; the hint says what happens when you change it. */
-const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode }> = ({ label, value, onChange, type = 'text', placeholder, hint }) => (
+const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, type = 'text', placeholder, hint, disabled }) => (
     <div>
         <label className={labelClass}>{label}</label>
-        <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} />
+        <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled} />
         {hint && <FieldHint>{hint}</FieldHint>}
     </div>
 );
@@ -54,19 +54,19 @@ const ConfigTextarea: React.FC<{ label: string; value: any; onChange: (v: string
     </div>
 );
 
-const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode }> = ({ label, value, onChange, fallback = 0, hint }) => (
+const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, fallback = 0, hint, disabled }) => (
     <div>
         <label className={labelClass}>{label}</label>
-        <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} />
+        <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} disabled={disabled} />
         {hint && <FieldHint>{hint}</FieldHint>}
     </div>
 );
 
-const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn' }> = ({ label, checked, onChange, hint, hintTone }) => (
+const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn'; disabled?: boolean }> = ({ label, checked, onChange, hint, hintTone, disabled }) => (
     <div>
         <div className="flex items-center justify-between">
             <label className="text-xs text-gray-600 dark:text-gray-400">{label}</label>
-            <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-600'}`}>
+            <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-blue-600' : 'bg-gray-600'}`}>
                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
             </button>
         </div>
@@ -1100,39 +1100,46 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                             description={config.ldapAuth?.enabled ? `${config.ldapAuth.host}:${config.ldapAuth.port}` : 'Disabled'} tag="live" />
                         {expanded === 'ldapAuth' && (
                             <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                                {!user?.isSuper && (
+                                    <p className="text-[11px] text-gray-500">
+                                        Only a system super-administrator can change the server, TLS, bind identity, search settings or group mappings, or turn LDAP sign-in on.
+                                        A directory bind signs in as the local account of the same name, so whoever controls the directory can sign in as any account.
+                                        You can turn LDAP sign-in off and change group sync and auto-provisioning.
+                                    </p>
+                                )}
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} onChange={(v) => update('ldapAuth', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} onChange={(v) => update('ldapAuth', 'enabled', v)} disabled={!user?.isSuper && !config.ldapAuth.enabled}
                                         hint="Logins are verified by binding to the directory as the user; a successful bind is accepted as proof of the password. Applies live, no restart." />
-                                    <ConfigInput label="Host" value={config.ldapAuth.host} onChange={(v) => update('ldapAuth', 'host', v)}
+                                    <ConfigInput label="Host" value={config.ldapAuth.host} onChange={(v) => update('ldapAuth', 'host', v)} disabled={!user?.isSuper}
                                         hint="Directory server this instance binds to. Whoever controls this host can approve any login, so change it only over a verified channel." />
-                                    <ConfigNumber label="Port" value={config.ldapAuth.port} onChange={(v) => update('ldapAuth', 'port', v)} fallback={389}
+                                    <ConfigNumber label="Port" value={config.ldapAuth.port} onChange={(v) => update('ldapAuth', 'port', v)} fallback={389} disabled={!user?.isSuper}
                                         hint="389 for plain LDAP, 636 for LDAPS." />
-                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} onChange={(v) => update('ldapAuth', 'useSsl', v)}
+                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} onChange={(v) => update('ldapAuth', 'useSsl', v)} disabled={!user?.isSuper}
                                         hintTone={config.ldapAuth.useSsl ? 'muted' : 'warn'}
                                         hint="Connects over LDAPS. Off sends the service-account password and every user's login password to the directory in clear text; there is no StartTLS path." />
-                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)}
+                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for the user's entry, e.g. OU=People,DC=example,DC=com." />
-                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)}
+                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)} disabled={!user?.isSuper}
                                         hint="LDAP filter locating the user; {0} is replaced with the login name." />
-                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)}
+                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)} disabled={!user?.isSuper}
                                         hint="Service account used to search for users before they authenticate. Blank attempts an anonymous search." />
                                     {/* The bind password was previously not editable here at all, so it could
                                         only be set in config.yaml. It loads as *** when one is stored; leaving
                                         that placeholder untouched keeps the existing password. */}
-                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current"
+                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current" disabled={!user?.isSuper}
                                         hint="Shown as *** when one is stored. Leave it as-is to keep the current password; type a new one to replace it." />
                                     <ConfigToggle label="Group Sync Enabled" checked={config.ldapAuth.groupSyncEnabled} onChange={(v) => update('ldapAuth', 'groupSyncEnabled', v)}
                                         hint="The LdapGroupSync job periodically re-reads each LDAP user's groups and applies the mappings below, granting and revoking local group membership to match." />
                                     <ConfigToggle label="Auto Provision Users" checked={config.ldapAuth.autoProvisionUsers} onChange={(v) => update('ldapAuth', 'autoProvisionUsers', v)}
-                                        hint="A first successful LDAP login creates the local account automatically. Off means only users an administrator created here can log in." />
-                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)}
+                                        hint="Has no effect: an LDAP login never creates an account. Every account is created here by an administrator, and a directory bind signs in only as the existing local account of the same name." />
+                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for groups during sync." />
-                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)}
+                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)} disabled={!user?.isSuper}
                                         hint="Filter selecting the groups a user belongs to; {0} is replaced with the user's DN." />
-                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)}
+                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)} disabled={!user?.isSuper}
                                         hint="Attribute on the user entry listing its groups (memberOf on Active Directory)." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Group to Role Mappings (JSON)" value={config.ldapAuth.groupToRoleMappings} onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)} placeholder='{"CN=Admins,DC=...": "CaAdmin"}'
+                                        <ConfigInput label="Group to Role Mappings (JSON)" value={config.ldapAuth.groupToRoleMappings} onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)} placeholder='{"CN=Admins,DC=...": "CaAdmin"}' disabled={!user?.isSuper}
                                             hint="JSON object mapping an LDAP group DN to a local group name. LDAP groups not listed here grant nothing." />
                                     </div>
                                 </div>

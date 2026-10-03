@@ -99,7 +99,7 @@ export const adminGroups: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Confirmation message with username and group name.',
-        notes: 'Returns 409 if the user is already a member. Tenant-fenced.',
+        notes: 'Returns 409 if the user is already a member. Tenant-fenced. A membership conferring a controlled tier, added by a non-super, opens a controlled-user ceremony (202) whose description leads with any password or MFA reset of the user in the last 30 days; 409 when the caller made such a reset.',
     },
     {
         method: 'DELETE',

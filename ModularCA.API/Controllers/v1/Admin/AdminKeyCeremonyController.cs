@@ -201,8 +201,9 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Lists key ceremonies scoped by tenant. System admins see all ceremonies; system-wide
     /// <c>ca.manage</c> holders see every other ceremony, and tenant-level CA admins those of their
     /// tenant(s). Controlled-user ceremonies are shown only to a system admin, their initiator, and
-    /// whoever could approve them (see <c>CanAccessCeremonyAsync</c>), all under the worn badge.
-    /// Authorization is per ceremony, so the route carries plain <c>[Authorize]</c>: a CA-scoped
+    /// whoever holds a tier that could approve them (see <c>CanAccessCeremonyAsync</c>), all under
+    /// the worn badge. Each row carries <c>canApprove</c> for the caller and, for a controlled-user
+    /// ceremony they may not approve, the reason (<c>approvalRefusal</c>). Authorization is per ceremony, so the route carries plain <c>[Authorize]</c>: a CA-scoped
     /// policy cannot resolve a CA here.
     /// </summary>
     [HttpGet]
@@ -249,14 +250,11 @@ public class AdminKeyCeremonyController : ControllerBase
                     ceremonies.Add(c);
         }
 
-        // Per-row "can the current user approve this?" — single-sources the eligibility rule
-        // (pending, not the initiator, has ceremony access, and for ControlledUserChange holds a
-        // dominating tier) so the UI doesn't re-implement it. Only computed for pending rows.
         var viewerId = _currentUser.User.Id;
-        var canApproveMap = new Dictionary<Guid, bool>();
+        var approvalMap = new Dictionary<Guid, (bool CanApprove, string? Refusal)>();
         foreach (var c in ceremonies)
         {
-            canApproveMap[c.Id] = await ComputeCanApproveAsync(c, viewerId);
+            approvalMap[c.Id] = await ComputeCanApproveAsync(c, viewerId);
         }
 
         var result = ceremonies.Select(c => new
@@ -275,14 +273,17 @@ public class AdminKeyCeremonyController : ControllerBase
             c.ExpiresAt,
             c.ExecutedAt,
             c.ApprovalsJson,
-            CanApprove = canApproveMap[c.Id]
+            CanApprove = approvalMap[c.Id].CanApprove,
+            ApprovalRefusal = approvalMap[c.Id].Refusal,
         });
 
         return Ok(result);
     }
 
     /// <summary>
-    /// Retrieves full detail for a single key ceremony, including the approval records.
+    /// Retrieves full detail for a single key ceremony, including the approval records, and for a
+    /// controlled-user ceremony the named scope of its affected tier (<c>tierScope</c>) and why the
+    /// caller may not approve it (<c>approvalRefusal</c>), if so.
     /// Enforces tenant-level access: only system admins or tenant-level CA admins can view.
     /// </summary>
     [HttpGet("{id:guid}")]
@@ -298,6 +299,7 @@ public class AdminKeyCeremonyController : ControllerBase
         if (!await CanAccessCeremonyAsync(ceremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
+        var approval = await ComputeCanApproveAsync(ceremony, _currentUser.User.Id);
         return Ok(new
         {
             ceremony.Id,
@@ -315,28 +317,37 @@ public class AdminKeyCeremonyController : ControllerBase
             ceremony.ExecutedAt,
             ceremony.ParametersJson,
             ceremony.ApprovalsJson,
-            CanApprove = await ComputeCanApproveAsync(ceremony, _currentUser.User.Id)
+            CanApprove = approval.CanApprove,
+            ApprovalRefusal = approval.Refusal,
+            TierScope = IsControlledUserChange(ceremony) && _controlledUserSvc.DescribeCeremony(ceremony).Minted is { } minted
+                ? await _controlledUserSvc.DescribeScopeAsync(minted)
+                : null,
         });
     }
 
     /// <summary>
     /// Whether <paramref name="viewerId"/> may approve <paramref name="ceremony"/> right now:
-    /// pending, not the initiator, has ceremony access, and — for ControlledUserChange — holds a
-    /// tier that dominates the affected privilege. Single source of approver eligibility for the UI.
+    /// pending, not the initiator, has ceremony access, and, for ControlledUserChange, no
+    /// <see cref="IControlledUserCeremonyService.ApprovalRefusalAsync"/> reason, which is returned
+    /// as <c>Refusal</c> (an approving tier, and not a resetter of a promoted account's credentials).
+    /// Single source of approver eligibility for the UI.
     /// </summary>
-    private async Task<bool> ComputeCanApproveAsync(ModularCA.Shared.Entities.KeyCeremonyEntity ceremony, Guid viewerId)
+    private async Task<(bool CanApprove, string? Refusal)> ComputeCanApproveAsync(ModularCA.Shared.Entities.KeyCeremonyEntity ceremony, Guid viewerId)
     {
-        if (ceremony.Status != "Pending") return false;
-        if (ceremony.InitiatedByUserId == viewerId) return false;
-        if (!await CanAccessCeremonyAsync(ceremony)) return false;
-        if (ceremony.OperationType == "ControlledUserChange")
-            return await _controlledUserSvc.CanApproveAsync(viewerId, ceremony);
-        return true;
+        if (ceremony.Status != "Pending") return (false, null);
+        if (ceremony.InitiatedByUserId == viewerId) return (false, null);
+        if (!await CanAccessCeremonyAsync(ceremony)) return (false, null);
+        if (ceremony.OperationType == "ControlledUserChange"
+            && await _controlledUserSvc.ApprovalRefusalAsync(viewerId, ceremony) is { } refusal)
+            return (false, refusal);
+        return (true, null);
     }
 
     /// <summary>
     /// Approves a pending key ceremony. Requires step-up MFA verification.
-    /// Self-approval is forbidden: the initiator cannot approve their own ceremony.
+    /// Self-approval is forbidden: the initiator cannot approve their own ceremony. A controlled-user
+    /// ceremony the caller may not approve is 403 with the reason: no approving tier, or, for a
+    /// promotion, a recent reset by the caller of the credentials of an account it promotes.
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
     [HttpPost("{id:guid}/approve")]
@@ -352,12 +363,10 @@ public class AdminKeyCeremonyController : ControllerBase
         if (!await CanAccessCeremonyAsync(approveCeremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
-        // Controlled-user ceremonies require tier-dominance: the approver must hold a tier that
-        // dominates the affected privilege (and may not be the change's target user). Initiator
-        // self-approval is blocked separately by the ceremony service.
+        // Initiator self-approval is blocked separately by the ceremony service.
         if (approveCeremony.OperationType == "ControlledUserChange"
-            && !await _controlledUserSvc.CanApproveAsync(_currentUser.User.Id, approveCeremony))
-            return StatusCode(403, new { error = "You are not eligible to approve this controlled-user change — your role doesn't cover the affected privilege tier." });
+            && await _controlledUserSvc.ApprovalRefusalAsync(_currentUser.User.Id, approveCeremony) is { } refusal)
+            return StatusCode(403, new { error = refusal });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
                 _cache, User, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
@@ -400,7 +409,8 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Now step-up gated so an attacker with a hijacked admin
     /// session cannot silently reject legitimate ceremonies as a DOS against the
     /// key-rotation workflow. A controlled-user ceremony can be rejected only by a system admin or
-    /// by someone eligible to approve it, and never by the user it changes.
+    /// by someone holding a tier that could approve it, including one barred from approving it as
+    /// a resetter, and never by the user it changes.
     /// </summary>
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -417,7 +427,7 @@ public class AdminKeyCeremonyController : ControllerBase
             var userId = _currentUser.User.Id;
             if (_controlledUserSvc.DescribeCeremony(rejectCeremony).TargetUserId == userId)
                 return StatusCode(403, new { error = "You cannot reject a change to your own privileges." });
-            if (!await _groupAuth.IsSystemAdminAsync(userId) && !await _controlledUserSvc.CanApproveAsync(userId, rejectCeremony))
+            if (!await _groupAuth.IsSystemAdminAsync(userId) && !await _controlledUserSvc.HoldsApprovingTierAsync(userId, rejectCeremony))
                 return StatusCode(403, new { error = "You are not eligible to reject this controlled-user change: your role doesn't cover the affected privilege tier." });
         }
 
@@ -498,7 +508,9 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Executes an approved key ceremony, triggering the actual CA creation.
     /// Only the initiator or an approver may execute. Parameters are locked from initiation.
     /// A label or name another CA took meanwhile is 409, an invalid or reserved label 400, and a
-    /// CA certificate profile outside the new CA's scope 404.
+    /// CA certificate profile outside the new CA's scope 404. A controlled-user password reset
+    /// returns the temporary password it generates (<c>temporaryPassword</c>) in this response only,
+    /// to the caller who executes it; it is not stored, audited or shown again.
     /// Requires step-up MFA verification.
     /// </summary>
     [HttpPost("{id:guid}/execute")]
@@ -794,12 +806,20 @@ public class AdminKeyCeremonyController : ControllerBase
                         result.CertificateAuthorityId,
                     });
 
+                await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, result.TargetUserId);
+                await AuditAccountChangeAsync(result, ceremony.Id);
+
+                if (result.TemporaryPassword != null)
+                    Response.Headers.CacheControl = "no-store";
                 return Ok(new
                 {
                     ceremony.Id,
                     Status = "Executed",
-                    message = "Controlled-user change applied.",
+                    message = result.TemporaryPassword != null
+                        ? "Password reset. The temporary password is shown only in this response."
+                        : "Controlled-user change applied.",
                     result,
+                    temporaryPassword = result.TemporaryPassword,
                 });
             }
             else
@@ -869,7 +889,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Checks if the current user can access the given ceremony, all under the worn badge. A
     /// controlled-user ceremony is open to a system admin, its initiator, and anyone whose tier could
-    /// approve it (which excludes its target), so a CA admin reaches the changes on their CA and a
+    /// approve it (which excludes its target), barred from approving or not, so a CA admin reaches the changes on their CA and a
     /// tenant-wide <c>ca.manage</c> holder does not see changes above their rank. Its target gets no
     /// access as such: a pending demotion or deletion must not tip off the account it removes. Any
     /// other ceremony is open to a system admin or a holder of <c>ca.manage</c> tenant-wide in its
@@ -886,11 +906,42 @@ public class AdminKeyCeremonyController : ControllerBase
             return true;
 
         if (IsControlledUserChange(ceremony))
-            return ceremony.InitiatedByUserId == userId || await _controlledUserSvc.CanApproveAsync(userId, ceremony);
+            return ceremony.InitiatedByUserId == userId || await _controlledUserSvc.HoldsApprovingTierAsync(userId, ceremony);
 
         // An instance ceremony (no tenant) is open to ca.manage at system scope, as the System
         // tenant's were.
         return await _groupAuth.HasScopeCapabilityAsync(userId, ceremony.TenantId, Capabilities.CaManage);
+    }
+
+    /// <summary>
+    /// Writes the audit rows and raises the alerts the direct account endpoints do, for an account
+    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony.
+    /// Nothing written carries the temporary password.
+    /// </summary>
+    private async Task AuditAccountChangeAsync(ControlledUserChangeResult result, Guid ceremonyId)
+    {
+        var user = _currentUser.User!;
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var target = result.TargetUserId;
+        switch (result.ChangeType)
+        {
+            case "ResetPassword":
+                await _audit.LogAsync(AuditActionType.UserPasswordReset, user.Id, user.Username, "User", target.ToString(),
+                    new { CeremonyId = ceremonyId }, ip);
+                _ = _alertService.RaiseAlertAsync("AdminPasswordReset", AlertSeverity.Warning,
+                    $"Password reset for user {target} by {user.Username} (ceremony {ceremonyId})", new { TargetUserId = target, CeremonyId = ceremonyId });
+                break;
+            case "ResetMfa":
+                await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
+                    new { Action = "MfaReset", CeremonyId = ceremonyId }, ip);
+                _ = _alertService.RaiseAlertAsync("UserMfaReset", AlertSeverity.Critical,
+                    $"MFA reset for user {target} by {user.Username} (ceremony {ceremonyId})", new { TargetUserId = target, CeremonyId = ceremonyId });
+                break;
+            case "UpdateIdentity":
+                await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
+                    new { Action = "UpdateIdentity", CeremonyId = ceremonyId }, ip);
+                break;
+        }
     }
 
     /// <summary>True for a ceremony that gates a controlled user's privileges.</summary>

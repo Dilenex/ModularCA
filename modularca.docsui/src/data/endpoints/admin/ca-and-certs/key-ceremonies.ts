@@ -32,7 +32,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of key ceremony records with ID, operationType, description, targetEntityId, initiatedBy, approvals, status, and timestamps.',
+        responseDescription: 'Array of key ceremony records with ID, operationType, description, targetEntityId, initiatedBy, approvals, status, timestamps, canApprove for the caller, and approvalRefusal: why the caller may not approve a pending controlled-user ceremony, or null.',
         notes: 'Automatically expires stale ceremonies before listing. CA-scoped admins (without tenant-wide CaManage) cannot see ceremonies.',
     },
     {
@@ -44,7 +44,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Full ceremony detail including parametersJson and approvalsJson.',
+        responseDescription: 'Full ceremony detail including parametersJson, approvalsJson, canApprove and approvalRefusal.',
         notes: 'Returns 403 if the caller does not have access to the ceremony\'s tenant.',
     },
     {
@@ -58,7 +58,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Approval status with currentApprovals, requiredApprovals, and status. Message indicates if quorum is reached.',
-        notes: 'The initiator cannot approve their own ceremony. Returns 403 for self-approval attempts.',
+        notes: 'The initiator cannot approve their own ceremony. Returns 403 for self-approval attempts. A controlled-user ceremony returns 403 with the reason when the caller holds no tier that covers it, or when it is a promotion and the caller, not being system-super, reset the password or MFA of an account it promotes in the 30 days before it was opened or since.',
     },
     {
         method: 'POST',
@@ -95,7 +95,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
-        responseDescription: 'Execution result varies by operation type. For CA creation: { id, status, newCa: { id, name, label, type } }. For SSH CA: { id, status, newSshCaKey }. For revocation: { id, status, certificateId, serialNumber, newStatus, reason, crlNumber }.',
-        notes: 'Parameters are locked from initiation; the ceremony uses the parameters approved by the quorum. Supported operations: CreateRootCA, CreateIntermediateCA, CreateSshCa, DeleteSshCa, RevokeCa.',
+        responseDescription: 'Execution result varies by operation type. For CA creation: { id, status, newCa: { id, name, label, type } }. For SSH CA: { id, status, newSshCaKey }. For revocation: { id, status, certificateId, serialNumber, newStatus, reason, crlNumber }. For a controlled-user change: { id, status, message, result, temporaryPassword }, where temporaryPassword is set only for a password reset: generated now, returned in this response only, never stored or audited.',
+        notes: 'Parameters are locked from initiation; the ceremony uses the parameters approved by the quorum. Supported operations: CreateRootCA, CreateIntermediateCA, CreateSshCa, DeleteSshCa, RevokeCa, ControlledUserChange. A controlled-user promotion is marked Expired and refused (409) when the password, MFA, username or email of an account it promotes changed after it was opened; an account change is refused the same way when the account\'s username, email, enabled or locked state changed. A promotion or account change opened before that state was recorded is expired the same way ("This ceremony predates the credential check; open it again.").',
     },
 ];

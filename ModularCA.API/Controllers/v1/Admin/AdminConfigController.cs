@@ -316,10 +316,12 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Updates the LDAP authentication and group-sync configuration. Step-up gated. Changing the
-    /// server, bind identity, search settings or group mappings needs <c>system.manage</c> (403
-    /// otherwise): whoever controls the directory can sign in as any LDAP user, super included.
-    /// Operators may still toggle Enabled, GroupSyncEnabled and AutoProvisionUsers. Changing the
+    /// Updates the LDAP authentication and group-sync configuration. Step-up gated. A sign-in accepts
+    /// a directory bind for any local username, so whoever controls the directory can sign in as any
+    /// account, super included. Changing what decides who authenticates as whom (host, port, TLS,
+    /// bind DN and password, search base and filter, group search base, filter and member attribute,
+    /// group mappings), or turning LDAP sign-in on, is therefore super-only (403 otherwise). Others
+    /// may turn LDAP sign-in off and toggle GroupSyncEnabled and AutoProvisionUsers. Changing the
     /// Host, Port or UseSsl while a bind password is stored needs the password re-entered (400), so
     /// the stored secret is never sent to a new server. New or changed group mappings that target a
     /// system or privilege-controlled group are rejected with 400.
@@ -332,7 +334,7 @@ public class AdminConfigController(
     // controlled directory therefore yields any user's JWT.
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update, [FromServices] ILdapGroupSyncService ldapSync,
-        [FromServices] ICaGroupAuthorizationService groupAuth)
+        [FromServices] IControlledUserCeremonyService controlledUsers)
     {
         var cur = _config.LdapAuth;
         var newBindPassword = update.BindPassword != null && !IsRedactionSentinel(update.BindPassword);
@@ -340,6 +342,7 @@ public class AdminConfigController(
                               || (update.Port > 0 && update.Port != cur.Port)
                               || update.UseSsl != cur.UseSsl;
         var identityChanged = endpointChanged
+                              || (update.Enabled && !cur.Enabled)
                               || Sets(update.SearchBaseDn, cur.SearchBaseDn)
                               || Sets(update.SearchFilter, cur.SearchFilter)
                               || (update.BindDn != null && update.BindDn != cur.BindDn)
@@ -348,8 +351,7 @@ public class AdminConfigController(
                               || Sets(update.GroupSearchFilter, cur.GroupSearchFilter)
                               || Sets(update.GroupMemberAttribute, cur.GroupMemberAttribute)
                               || (update.GroupToRoleMappings != null && update.GroupToRoleMappings != cur.GroupToRoleMappings);
-        if (identityChanged && await RequireSystemAdminAsync(groupAuth,
-                "Changing the LDAP server, bind identity, search settings or group mappings requires system.manage.") is { } denied)
+        if (identityChanged && await RequireSuperAsync(controlledUsers, LdapIdentitySuperOnly) is { } denied)
             return denied;
         if (endpointChanged && !newBindPassword && !string.IsNullOrEmpty(cur.BindPassword))
             return BadRequest(new { error = "Re-enter the bind password when changing the server." });
@@ -886,14 +888,19 @@ public class AdminConfigController(
     private static bool Sets(string? incoming, string? current) =>
         !string.IsNullOrEmpty(incoming) && !string.Equals(incoming, current, StringComparison.Ordinal);
 
+    /// <summary>The 403 message for a non-super change to the LDAP settings that decide who authenticates as whom.</summary>
+    internal const string LdapIdentitySuperOnly =
+        "Only a system-super can change the LDAP server, TLS, bind identity, search settings or group mappings, or turn LDAP sign-in on: "
+        + "a directory bind signs in as the local account of the same name, so whoever controls the directory can sign in as any account.";
+
     /// <summary>
-    /// 403 with <paramref name="error"/> unless the caller holds <c>system.manage</c> at system scope;
-    /// null when they do.
+    /// 403 with <paramref name="error"/> unless the caller is system-super under the badge they wear;
+    /// null when they are.
     /// </summary>
-    private async Task<IActionResult?> RequireSystemAdminAsync(ICaGroupAuthorizationService groupAuth, string error)
+    private async Task<IActionResult?> RequireSuperAsync(IControlledUserCeremonyService controlledUsers, string error)
     {
         await _currentUser.EnsureLoadedAsync();
-        if (_currentUser.User != null && await groupAuth.IsSystemAdminAsync(_currentUser.User.Id))
+        if (_currentUser.User != null && await controlledUsers.IsSuperAsync(_currentUser.User.Id))
             return null;
         return StatusCode(403, new { error });
     }

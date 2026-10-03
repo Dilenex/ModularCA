@@ -388,6 +388,39 @@ if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
         ownershipTargets.Add(new("audit", DatabaseKind.Audit, ownershipConfig.DB.Audit));
     Environment.Exit(await ModularCA.API.Startup.SchemaStartup.CheckOwnershipAsync(ownershipTargets));
 }
+// Host-local recovery: unlocks an account with the db.yaml application credentials and audits it
+// with the db.yaml audit credentials. See UnlockUserCommand.
+if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.OrdinalIgnoreCase))
+{
+    var unlockName = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    var unlockDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (string.IsNullOrWhiteSpace(unlockName) || unlockName.StartsWith("--", StringComparison.Ordinal) || unlockDbYaml == null)
+    {
+        Console.Error.WriteLine("Usage: --unlock-user <username>   (run as the service user after bootstrap)");
+        Environment.Exit(1);
+    }
+    var unlockConfig = new SystemConfig();
+    unlockConfig.DB.App.Host = unlockDbYaml.App.Host;
+    unlockConfig.DB.App.Port = unlockDbYaml.App.Port;
+    unlockConfig.DB.App.Database = unlockDbYaml.App.Database;
+    unlockConfig.DB.App.Username = unlockDbYaml.App.Username;
+    unlockConfig.DB.App.Password = unlockDbYaml.App.Password;
+    unlockConfig.DB.App.SslMode = unlockDbYaml.App.SslMode;
+    unlockConfig.DB.Audit.Host = unlockDbYaml.Audit.Host;
+    unlockConfig.DB.Audit.Port = unlockDbYaml.Audit.Port;
+    unlockConfig.DB.Audit.Database = unlockDbYaml.Audit.Database;
+    unlockConfig.DB.Audit.Username = unlockDbYaml.Audit.Username;
+    unlockConfig.DB.Audit.Password = unlockDbYaml.Audit.Password;
+    unlockConfig.DB.Audit.SslMode = unlockDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(unlockConfig);
+    using var unlockDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(unlockConfig.DB.App)).Options);
+    using var unlockAuditDb = string.IsNullOrWhiteSpace(unlockConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(unlockConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --unlock-user for {Username}", unlockName);
+    Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSystemd();
@@ -2705,7 +2738,8 @@ if (!isSetupMode && controlActive)
 }
 
 // 0.4.0 S5: ca.manage at instance scope became a controlled tier. Name the accounts that hold it
-// outside the system-operator group, so the change is visible after an upgrade.
+// outside the system-operator group, so the change is visible after an upgrade. Likewise the
+// Kerberos realms whose enrollment identity is not a service identity of the realm's scope.
 if (!isSetupMode && controlActive)
 {
     try
@@ -2717,6 +2751,12 @@ if (!isSetupMode && controlActive)
         {
             Log.Warning("{InstanceOperatorWarning}", operatorWarning);
             Console.WriteLine($"[STARTUP] WARNING: {operatorWarning}");
+        }
+        var realmWarning = await ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService.UnconfinedRealmsWarningAsync(operatorDb);
+        if (realmWarning is not null)
+        {
+            Log.Warning("{KerberosRealmWarning}", realmWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {realmWarning}");
         }
     }
     catch (Exception ex)

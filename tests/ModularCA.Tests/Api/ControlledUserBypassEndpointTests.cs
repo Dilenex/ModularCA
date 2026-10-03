@@ -101,7 +101,9 @@ public sealed class ControlledUserBypassEndpointTests
 
     private static object UserManager(ControlledUserWorld w, Guid actor, IDistributedCache cache, object? updateValidator = null)
         => New(Ns + "Management.AdminUserManagerController", actor,
-            w.Db, null, new CurrentUserStub(actor), new RecordingAuditService(), cache, new RecordingAlertService(),
+            w.Db, new ModularCA.Auth.Services.UserManagementService(w.Db, Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Services.UserManagementService>.Instance,
+                new ModularCA.Shared.Models.Config.SystemConfig(), null!, new ControlledUserBypassGuardTests.AllowAllPasswords()),
+            new CurrentUserStub(actor), new RecordingAuditService(), cache, new RecordingAlertService(),
             null, updateValidator, w.Controlled);
 
     [Fact]
@@ -329,26 +331,121 @@ public sealed class ControlledUserBypassEndpointTests
         Assert.True(config.Email.UseTls);
     }
 
-    [Fact]
-    public async Task Ldap_auth_server_changes_need_system_manage_and_the_bind_password()
+    private static ModularCA.Shared.Models.Config.SystemConfig LdapConfig()
     {
-        var w = new ControlledUserWorld();
         var config = new ModularCA.Shared.Models.Config.SystemConfig();
+        config.LdapAuth.Enabled = true;
         config.LdapAuth.Host = "dc.example";
         config.LdapAuth.Port = 636;
         config.LdapAuth.UseSsl = true;
+        config.LdapAuth.SearchBaseDn = "dc=example";
+        config.LdapAuth.BindDn = "cn=svc,dc=example";
         config.LdapAuth.BindPassword = "stored";
-        var sync = new LdapGroupSyncService(w.Db, config, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LdapGroupSyncService>.Instance);
-        var auth = new ModularCA.Auth.Authorization.CaGroupAuthorizationService(w.Db,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Authorization.CaGroupAuthorizationService>.Instance);
-
-        ModularCA.Shared.Models.Config.LdapAuthConfig Change() => new() { Host = "evil.example", Port = 636, UseSsl = true, BindPassword = "***" };
-
-        Assert.Equal(403, Status(await Call(Config(w, w.Operator, config), "UpdateLdapAuth", Change(), sync, auth)));
-        Assert.Equal(400, Status(await Call(Config(w, w.SystemAdmin, config), "UpdateLdapAuth", Change(), sync, auth)));
-        Assert.Equal("dc.example", config.LdapAuth.Host);
-        Assert.Equal("stored", config.LdapAuth.BindPassword);
+        config.LdapAuth.GroupSearchBaseDn = "ou=groups,dc=example";
+        return config;
     }
+
+    /// <summary>The stored LDAP settings with <paramref name="edit"/> applied, as the console PUTs them.</summary>
+    private static ModularCA.Shared.Models.Config.LdapAuthConfig LdapUpdate(ModularCA.Shared.Models.Config.SystemConfig config,
+        Action<ModularCA.Shared.Models.Config.LdapAuthConfig> edit)
+    {
+        var c = config.LdapAuth;
+        var update = new ModularCA.Shared.Models.Config.LdapAuthConfig
+        {
+            Enabled = c.Enabled, Host = c.Host, Port = c.Port, UseSsl = c.UseSsl, SearchBaseDn = c.SearchBaseDn, SearchFilter = c.SearchFilter,
+            BindDn = c.BindDn, BindPassword = "***", GroupSyncEnabled = c.GroupSyncEnabled, AutoProvisionUsers = c.AutoProvisionUsers,
+            GroupSearchBaseDn = c.GroupSearchBaseDn, GroupSearchFilter = c.GroupSearchFilter, GroupMemberAttribute = c.GroupMemberAttribute,
+            GroupToRoleMappings = c.GroupToRoleMappings,
+        };
+        edit(update);
+        return update;
+    }
+
+    [Fact]
+    public async Task Ldap_auth_identity_settings_are_super_only_and_a_server_change_needs_the_bind_password()
+    {
+        var w = new ControlledUserWorld();
+        var config = LdapConfig();
+        var sync = new LdapGroupSyncService(w.Db, config, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LdapGroupSyncService>.Instance);
+
+        var identityEdits = new Action<ModularCA.Shared.Models.Config.LdapAuthConfig>[]
+        {
+            u => u.Host = "evil.example",
+            u => u.Port = 389,
+            u => u.UseSsl = false,
+            u => u.BindDn = "cn=attacker,dc=evil",
+            u => u.BindPassword = "attacker-chosen",
+            u => u.SearchBaseDn = "dc=evil",
+            u => u.SearchFilter = "(uid={0})",
+            u => u.GroupSearchBaseDn = "ou=evil",
+            u => u.GroupSearchFilter = "(member={0})",
+            u => u.GroupMemberAttribute = "isMemberOf",
+            u => u.GroupToRoleMappings = "{}",
+        };
+        foreach (var actor in new[] { w.Operator, w.SystemAdmin })
+            foreach (var edit in identityEdits)
+            {
+                var refused = await Call(Config(w, actor, config), "UpdateLdapAuth", LdapUpdate(config, edit), sync, w.Controlled);
+                Assert.Equal(403, Status(refused));
+                Assert.Contains("system-super", JsonText(refused));
+            }
+        Assert.Equal("dc.example", config.LdapAuth.Host);
+        Assert.Equal("cn=svc,dc=example", config.LdapAuth.BindDn);
+        Assert.Equal("stored", config.LdapAuth.BindPassword);
+        Assert.Equal("dc=example", config.LdapAuth.SearchBaseDn);
+        Assert.Null(config.LdapAuth.GroupToRoleMappings);
+
+        // A super may change the server, but the stored bind password is never sent to a new one.
+        Assert.Equal(400, Status(await Call(Config(w, w.Super, config), "UpdateLdapAuth", LdapUpdate(config, u => u.Host = "dc2.example"), sync, w.Controlled)));
+        Assert.Equal("dc.example", config.LdapAuth.Host);
+    }
+
+    [Fact]
+    public async Task A_non_super_may_turn_ldap_sign_in_off_but_not_on()
+    {
+        var w = new ControlledUserWorld();
+        var config = LdapConfig();
+        var sync = new LdapGroupSyncService(w.Db, config, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LdapGroupSyncService>.Instance);
+
+        var off = await Call(Config(w, w.SystemAdmin, config), "UpdateLdapAuth", LdapUpdate(config, u => { u.Enabled = false; u.GroupSyncEnabled = true; }), sync, w.Controlled);
+        Assert.NotEqual(403, Status(off));
+        Assert.False(config.LdapAuth.Enabled);
+        Assert.True(config.LdapAuth.GroupSyncEnabled);
+
+        Assert.Equal(403, Status(await Call(Config(w, w.SystemAdmin, config), "UpdateLdapAuth", LdapUpdate(config, u => u.Enabled = true), sync, w.Controlled)));
+        Assert.False(config.LdapAuth.Enabled);
+    }
+
+    [Fact]
+    public async Task Ldap_group_mapping_and_search_changes_are_super_only()
+    {
+        var w = new ControlledUserWorld();
+        var config = LdapConfig();
+        var sync = new LdapGroupSyncService(w.Db, config, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LdapGroupSyncService>.Instance);
+        object Ldap(Guid actor) => New(Ns + "AdminLdapController", actor, sync, config, new RecordingAuditService(), new CurrentUserStub(actor),
+            new ModularCA.Shared.Utils.EnvVarConfigOverlay());
+
+        foreach (var actor in new[] { w.Operator, w.SystemAdmin })
+        {
+            Assert.Equal(403, Status(await Call(Ldap(actor), "UpdateGroupMappings",
+                Body(Ns + "UpdateGroupMappingsRequest", ("GroupToRoleMappings", "{}")), w.Controlled)));
+            Assert.Equal(403, Status(await Call(Ldap(actor), "UpdateGroupMappings",
+                Body(Ns + "UpdateGroupMappingsRequest", ("GroupSearchBaseDn", "ou=evil,dc=example")), w.Controlled)));
+            Assert.Equal(403, Status(await Call(Ldap(actor), "UpdateGroupMappings",
+                Body(Ns + "UpdateGroupMappingsRequest", ("GroupSearchFilter", "(member={0})")), w.Controlled)));
+        }
+        Assert.Null(config.LdapAuth.GroupToRoleMappings);
+        Assert.Equal("ou=groups,dc=example", config.LdapAuth.GroupSearchBaseDn);
+
+        Assert.Equal(200, Status(await Call(Ldap(w.SystemAdmin), "UpdateGroupMappings",
+            Body(Ns + "UpdateGroupMappingsRequest", ("GroupSyncEnabled", (bool?)true), ("AutoProvisionUsers", (bool?)true)), w.Controlled)));
+        Assert.True(config.LdapAuth.GroupSyncEnabled);
+        Assert.Equal(200, Status(await Call(Ldap(w.Super), "UpdateGroupMappings",
+            Body(Ns + "UpdateGroupMappingsRequest", ("GroupSearchBaseDn", "ou=people,dc=example")), w.Controlled)));
+        Assert.Equal("ou=people,dc=example", config.LdapAuth.GroupSearchBaseDn);
+    }
+
+    private static string JsonText(IActionResult result) => System.Text.Json.JsonSerializer.Serialize(((ObjectResult)result).Value);
 
     // ---- group deletion ----------------------------------------------------------------------
 

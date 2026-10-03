@@ -237,7 +237,16 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Updates a user account (e.g. activate/deactivate). Requires CaAdmin policy and step-up MFA verification.
-        /// Identity-altering changes to a controlled user need a caller who dominates every tier it holds (403 otherwise).
+        /// Only identity fields whose value differs from the account's are applied. Changing one
+        /// (username, email, enabled, locked, password expiry, forced change) on another account
+        /// needs a caller who dominates every tier it holds (403 otherwise); when that account holds
+        /// a controlled tier and the caller is not system-super, the whole update opens a
+        /// controlled-user ceremony instead (202 with the ceremony id). Disabling or locking the
+        /// last other active dominator of the account's scope is refused (400), as deletion is.
+        /// A password is never set here (400): use reset-password. An empty or whitespace username
+        /// or email is refused (400). Unlocking also clears a temporary lockout and the failed-login
+        /// count. An identity-altering change to another account with a pending promotion is
+        /// refused (409) unless the caller is system-super.
         /// </summary>
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "CaAdmin")]
@@ -252,15 +261,61 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Shape-validate any username/email that the caller is changing.
             request.Username = UserFieldValidators.NormalizeIdentity(request.Username);
             request.Email = UserFieldValidators.NormalizeIdentity(request.Email);
+            if ((request.Username != null && string.IsNullOrWhiteSpace(request.Username))
+                || (request.Email != null && string.IsNullOrWhiteSpace(request.Email)))
+                return BadRequest(new { error = "Username and email cannot be empty. Omit a field to leave it unchanged." });
             var updateValidation = await _updateValidator.ValidateAsync(request);
             if (!updateValidation.IsValid)
                 return BadRequest(new { error = string.Join("; ", updateValidation.Errors.Select(e => e.ErrorMessage)) });
+            if (request.Password != null)
+                return BadRequest(new { error = "A password cannot be set here. Use reset-password." });
 
             if (_currentUser.User?.Id == id && request.IsActive == false)
                 return BadRequest(new { error = "You cannot deactivate your own account" });
-            if (AltersIdentity(request) && await AuthorizeAccountAdministrationAsync(id) is { } denied)
-                return denied;
-            if (!(await _userService.UpdateUser(id, request)))
+
+            var target = await _dbContext.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
+            if (target == null)
+                return NotFound(new { message = $"User with ID {id} not found" });
+            var change = new ModularCA.Shared.Models.ControlledIdentityChange
+            {
+                Username = request.Username != null && request.Username != target.Username ? request.Username : null,
+                Email = request.Email != null && request.Email != target.Email ? request.Email : null,
+                IsActive = request.IsActive != null && request.IsActive != target.IsActive ? request.IsActive : null,
+                IsLocked = request.IsLocked != null
+                           && (request.IsLocked != target.IsLocked || (request.IsLocked == false && target.LockoutEndUtc > DateTime.UtcNow))
+                    ? request.IsLocked : null,
+                PasswordNeverExpires = request.PasswordNeverExpires != null && request.PasswordNeverExpires != target.PasswordNeverExpires ? request.PasswordNeverExpires : null,
+                PasswordChangeOnNextLogon = request.PasswordChangeOnNextLogon != null && request.PasswordChangeOnNextLogon != target.PasswordChangeOnNextLogon ? request.PasswordChangeOnNextLogon : null,
+            };
+            var altersIdentity = change.Username != null || change.Email != null || change.IsActive != null || change.IsLocked != null
+                || change.PasswordNeverExpires != null || change.PasswordChangeOnNextLogon != null;
+            change.FirstName = request.FirstName;
+            change.LastName = request.LastName;
+            change.DisplayName = request.DisplayName;
+
+            if (altersIdentity)
+            {
+                if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                    return denied;
+                if (change.RemovesAccess
+                    && await _controlledUserSvc.GetDeletionTierAsync(id) is { } tier
+                    && await _controlledUserSvc.CountDominatingControlledUsersAsync(tier, id, actorUserId: _currentUser.User!.Id) == 0)
+                    return BadRequest(new { error = "Refusing to disable or lock the last controlled user of this scope." });
+                if (await OpenAccountCeremonyAsync(id, target.Username,
+                        new ModularCA.Shared.Models.ControlledUserChangeParameters { ChangeType = "UpdateIdentity", Identity = change },
+                        "Changing this controlled user's account") is { } accepted)
+                    return accepted;
+                if (await RefuseWhilePromotionPendingAsync(id) is { } pending)
+                    return pending;
+            }
+
+            var effective = new UpdateUserRequest
+            {
+                Username = change.Username, Email = change.Email, FirstName = change.FirstName, LastName = change.LastName,
+                DisplayName = change.DisplayName, IsActive = change.IsActive, IsLocked = change.IsLocked,
+                PasswordNeverExpires = change.PasswordNeverExpires, PasswordChangeOnNextLogon = change.PasswordChangeOnNextLogon,
+            };
+            if (!(await _userService.UpdateUser(id, effective)))
                 return NotFound(new { message = $"User with ID {id} not found" });
             // Drop any cached stamp so the disable/lock change propagates
             // to the next authenticated request instead of waiting 30 s for the cache TTL.
@@ -331,7 +386,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Resets another user's password. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
-        /// Refused (403) when the target holds a controlled tier the caller does not dominate.
+        /// Refused (403) when the target holds a controlled tier the caller does not dominate. When it
+        /// holds any controlled tier and the caller is not system-super, opens a controlled-user
+        /// ceremony instead (202 with the ceremony id, no password); the temporary password is then
+        /// generated at execute and returned only to whoever executes it. Refused (409) for another
+        /// account with a pending promotion unless the caller is system-super.
         /// </summary>
         [HttpPost("{id:guid}/reset-password")]
         [Authorize(Policy = "CaAdmin")]
@@ -346,8 +405,17 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetPassword, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            var targetUsername = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.Username).FirstOrDefaultAsync();
+            if (targetUsername == null)
+                return NotFound(new { message = $"User with ID {id} not found" });
             if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
                 return denied;
+            if (await OpenAccountCeremonyAsync(id, targetUsername,
+                    new ModularCA.Shared.Models.ControlledUserChangeParameters { ChangeType = "ResetPassword" },
+                    "Resetting this controlled user's password") is { } accepted)
+                return accepted;
+            if (await RefuseWhilePromotionPendingAsync(id) is { } pending)
+                return pending;
 
             var newPassword = await _userService.ResetUserPassword(id);
             if (newPassword != null)
@@ -367,7 +435,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Removes all MFA methods (TOTP secrets and WebAuthn credentials) for a user,
         /// forcing them to re-enroll on next login. Requires step-up MFA verification
         /// via X-MFA-Token header. Requires SystemOperator authorization policy. Refused (403) when
-        /// the target holds a controlled tier the caller does not dominate.
+        /// the target holds a controlled tier the caller does not dominate. When it holds any
+        /// controlled tier and the caller is not system-super, opens a controlled-user ceremony
+        /// instead (202 with the ceremony id). Refused (409) for another account with a pending
+        /// promotion unless the caller is system-super. A reset ends the account's sessions.
         /// </summary>
         [HttpPost("{id:guid}/reset-mfa")]
         [Authorize(Policy = "SystemOperator")]
@@ -381,39 +452,34 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetMfa, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-            var user = await _dbContext.Users.FindAsync(id);
-            if (user == null)
+            var targetUsername = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.Username).FirstOrDefaultAsync();
+            if (targetUsername == null)
                 return NotFound(new { message = $"User with ID {id} not found" });
 
             if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
                 return denied;
+            if (await OpenAccountCeremonyAsync(id, targetUsername,
+                    new ModularCA.Shared.Models.ControlledUserChangeParameters { ChangeType = "ResetMfa" },
+                    "Resetting this controlled user's MFA") is { } accepted)
+                return accepted;
+            if (await RefuseWhilePromotionPendingAsync(id) is { } pending)
+                return pending;
 
-            // Remove all TOTP secrets
-            var totpSecrets = await _dbContext.TotpSecrets.Where(t => t.UserId == id).ToListAsync();
-            if (totpSecrets.Count > 0)
-                _dbContext.TotpSecrets.RemoveRange(totpSecrets);
-
-            // Remove all WebAuthn credentials
-            var webAuthnCreds = await _dbContext.Fido2Credentials.Where(c => c.UserId == id).ToListAsync();
-            if (webAuthnCreds.Count > 0)
-                _dbContext.Fido2Credentials.RemoveRange(webAuthnCreds);
-
-            // Reset MFA enrollment timestamp so user is forced to re-enroll
-            user.MfaEnrolledAt = null;
-
-            await _dbContext.SaveChangesAsync();
+            if (await _userService.ResetUserMfa(id) is not { } removed)
+                return NotFound(new { message = $"User with ID {id} not found" });
+            await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, id);
 
             await _audit.LogAsync(AuditActionType.UserUpdated, _currentUser.User.Id, _currentUser.User.Username,
                 "User", id.ToString(),
-                new { Action = "MfaReset", TotpSecretsRemoved = totpSecrets.Count, WebAuthnCredentialsRemoved = webAuthnCreds.Count },
+                new { Action = "MfaReset", removed.TotpSecretsRemoved, removed.WebAuthnCredentialsRemoved },
                 HttpContext.Connection.RemoteIpAddress?.ToString());
 
-            _ = _alertService.RaiseAlertAsync("UserMfaReset", AlertSeverity.Critical, $"MFA reset for user {id} by {_currentUser.User?.Username}", new { TargetUserId = id, TotpSecretsRemoved = totpSecrets.Count, WebAuthnCredentialsRemoved = webAuthnCreds.Count });
+            _ = _alertService.RaiseAlertAsync("UserMfaReset", AlertSeverity.Critical, $"MFA reset for user {id} by {_currentUser.User?.Username}", new { TargetUserId = id, removed.TotpSecretsRemoved, removed.WebAuthnCredentialsRemoved });
             return Ok(new
             {
                 message = $"MFA reset for user {id}",
-                totpSecretsRemoved = totpSecrets.Count,
-                webAuthnCredentialsRemoved = webAuthnCreds.Count
+                totpSecretsRemoved = removed.TotpSecretsRemoved,
+                webAuthnCredentialsRemoved = removed.WebAuthnCredentialsRemoved
             });
         }
 
@@ -421,7 +487,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Tier gate for identity-altering administration of another account (password reset,
         /// MFA reset, activation/lock/username/email changes). Self-targeting is left to the
         /// endpoint's existing rules. Returns a 403 when the target holds a controlled tier the
-        /// caller does not dominate, or is system-super and the caller is not.
+        /// caller does not dominate, or is system-super and the caller is not. Passing it does not
+        /// mean the change applies directly; see <see cref="OpenAccountCeremonyAsync"/>.
         /// </summary>
         private async Task<IActionResult?> AuthorizeAccountAdministrationAsync(Guid targetUserId)
         {
@@ -432,18 +499,58 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             return StatusCode(403, new
             {
                 error = "This account holds a privileged tier you do not dominate. Only a system-super, "
-                        + "or an administrator whose tier dominates every tier the account holds, can change its credentials or account state."
+                        + "or an administrator whose tier dominates every tier the account holds, can request a change to its credentials or account state."
             });
         }
 
         /// <summary>
-        /// True when an update touches credentials, account state or identity fields rather than
-        /// only cosmetic name fields.
+        /// Opens a controlled-user ceremony for an identity-altering change to another account and
+        /// returns 202 with its id, when the caller is not system-super and the account holds a
+        /// controlled tier: a peer could otherwise take over an approver and satisfy a quorum alone.
+        /// The ceremony is minted at the covering tier of the account's holdings; 403 when the caller
+        /// does not dominate it. Null when the change applies directly: the caller's own account, a
+        /// system-super caller, or an account holding no controlled tier. Call it after
+        /// <see cref="AuthorizeAccountAdministrationAsync"/>.
         /// </summary>
-        private static bool AltersIdentity(UpdateUserRequest request) =>
-            request.Username != null || request.Email != null || request.Password != null
-            || request.IsActive != null || request.IsLocked != null
-            || request.PasswordNeverExpires != null || request.PasswordChangeOnNextLogon != null;
+        private async Task<IActionResult?> OpenAccountCeremonyAsync(Guid targetUserId, string? targetUsername,
+            ModularCA.Shared.Models.ControlledUserChangeParameters parameters, string what)
+        {
+            var actor = _currentUser.User!;
+            if (targetUserId == actor.Id) return null;
+            var tier = await _controlledUserSvc.GetDeletionTierAsync(targetUserId);
+            if (tier == null || await _controlledUserSvc.IsSuperAsync(actor.Id)) return null;
+            if (!await _controlledUserSvc.CanInitiateAsync(actor.Id, tier.Value))
+                return StatusCode(403, new { error = "You cannot change the account of a user above your own tier." });
+
+            parameters.TargetUserId = targetUserId;
+            parameters.TargetUsername = targetUsername;
+            var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(parameters, tier.Value, actor.Id, actor.Username ?? string.Empty);
+            return Accepted(new
+            {
+                ceremonyId,
+                requiresCeremony = true,
+                message = what + " requires a controlled-user ceremony. "
+                          + "Approve via /api/v1/admin/ceremonies/" + ceremonyId + "/approve."
+            });
+        }
+
+        /// <summary>
+        /// 409 when a promotion of <paramref name="targetUserId"/> is pending or approved and the caller
+        /// is neither that user nor system-super: resetting the credentials of an account about to
+        /// become an approver would let the caller sign in as it once the promotion executes. Null
+        /// otherwise.
+        /// </summary>
+        private async Task<IActionResult?> RefuseWhilePromotionPendingAsync(Guid targetUserId)
+        {
+            var actor = _currentUser.User!;
+            if (targetUserId == actor.Id || await _controlledUserSvc.IsSuperAsync(actor.Id)) return null;
+            if (!await _controlledUserSvc.HasOpenPromotionAsync(targetUserId)) return null;
+            return Conflict(new
+            {
+                error = "A promotion of this user is pending. Their password, MFA and account cannot be changed until it is "
+                        + "executed or rejected, or a system-super makes the change."
+            });
+        }
 
         /// <summary>
         /// Tiered authorization for membership writes.
@@ -533,6 +640,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>
         /// Adds a user to a CA group by group ID. Requires CaAdmin policy and step-up MFA verification.
+        /// A controlled membership added by a non-super opens a ceremony (202); 409 when the caller
+        /// reset the user's password or MFA in the last 30 days.
         /// </summary>
         [HttpPost("{id:guid}/groups/{groupId:guid}")]
         [Authorize(Policy = "CaAdmin")]
@@ -554,16 +663,24 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (addTier != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User!.Id))
             {
                 var targetUsername = (await _dbContext.Users.FindAsync(id))?.Username;
-                var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                    new ModularCA.Shared.Models.ControlledUserChangeParameters
-                    {
-                        ChangeType = "AddGroupMember",
-                        TargetUserId = id,
-                        TargetUsername = targetUsername,
-                        GroupId = groupId,
-                        CertificateAuthorityId = addGroup!.CertificateAuthorityId,
-                    },
-                    addTier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
+                Guid ceremonyId;
+                try
+                {
+                    ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                        new ModularCA.Shared.Models.ControlledUserChangeParameters
+                        {
+                            ChangeType = "AddGroupMember",
+                            TargetUserId = id,
+                            TargetUsername = targetUsername,
+                            GroupId = groupId,
+                            CertificateAuthorityId = addGroup!.CertificateAuthorityId,
+                        },
+                        addTier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
+                }
+                catch (ControlledUserInitiationRefusedException ex)
+                {
+                    return Conflict(new { error = ex.Message });
+                }
                 return Accepted(new
                 {
                     ceremonyId,
@@ -647,7 +764,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <see cref="AddUserToGroup"/> / <see cref="RemoveUserFromGroup"/> — tier guard, controlled-user
         /// gate, and the last-controlled-user guard. A privileged add/remove spawns its OWN controlled-user
         /// ceremony, so a batch can start several ceremonies (one per privileged group) while applying
-        /// uncontrolled changes directly. Never aborts on one group's failure; returns a per-group summary.
+        /// uncontrolled changes directly. Never aborts on one group's failure; returns a per-group summary,
+        /// where a promotion the caller may not open is <c>refused</c>.
         /// </summary>
         [HttpPost("{id:guid}/groups/bulk")]
         [Authorize(Policy = "CaAdmin")]
@@ -678,14 +796,22 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 var tier = await _controlledUserSvc.ClassifyGroupAsync(grp);
                 if (tier != null && !isSuper)
                 {
-                    var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                        new ModularCA.Shared.Models.ControlledUserChangeParameters
-                        {
-                            ChangeType = "AddGroupMember", TargetUserId = id, TargetUsername = user.Username,
-                            GroupId = groupId, CertificateAuthorityId = grp.CertificateAuthorityId,
-                        },
-                        tier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
-                    results.Add(new { groupId, action = "add", status = "ceremony", ceremonyId }); ceremonies++; continue;
+                    try
+                    {
+                        var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                            new ModularCA.Shared.Models.ControlledUserChangeParameters
+                            {
+                                ChangeType = "AddGroupMember", TargetUserId = id, TargetUsername = user.Username,
+                                GroupId = groupId, CertificateAuthorityId = grp.CertificateAuthorityId,
+                            },
+                            tier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
+                        results.Add(new { groupId, action = "add", status = "ceremony", ceremonyId }); ceremonies++;
+                    }
+                    catch (ControlledUserInitiationRefusedException ex)
+                    {
+                        results.Add(new { groupId, action = "add", status = "refused", error = ex.Message }); skipped++;
+                    }
+                    continue;
                 }
 
                 if (await _userService.AddUserToGroup(id, groupId, _currentUser.User?.Id))

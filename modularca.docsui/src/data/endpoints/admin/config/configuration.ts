@@ -71,13 +71,15 @@ export const adminConfiguration: ApiEndpoint[] = [
     {
         method: 'PUT',
         path: '/api/v1/admin/config/ldap-auth',
-        summary: 'Update LDAP authentication configuration.',
+        summary: 'Update LDAP authentication configuration. Requires step-up MFA.',
         auth: 'Authorize (SystemOperator)',
         category: 'Admin Configuration',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Update confirmation.',
+        notes: 'A sign-in accepts a directory bind for the local account of the same name, so whoever controls the directory can sign in as any account. Changing the host, port, TLS, bind DN or password, search base or filter, group search base, filter or member attribute, or group mappings, or turning LDAP sign-in on, is system-super only (403 otherwise). Others may turn LDAP sign-in off and toggle group sync and auto-provisioning; auto-provisioning has no effect, since an LDAP login never creates an account and every account is created locally. Changing the server while a bind password is stored needs the password re-entered (400). Mappings to a system or privilege-controlled group are refused (400).',
     },
     {
         method: 'PUT',

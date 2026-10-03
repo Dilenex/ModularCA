@@ -96,21 +96,21 @@ public class AdminLdapController(
     /// Updates LDAP group-to-role mapping configuration. Requires step-up MFA (the same
     /// <see cref="StepUpOps.UpdateConfig"/> token as the LDAP config save). Mappings that target a
     /// system or privilege-controlled group are rejected with 400 unless already stored unchanged.
-    /// Changing the group search base, filter or mappings needs <c>system.manage</c> (403 otherwise);
-    /// operators may toggle GroupSyncEnabled and AutoProvisionUsers.
+    /// Changing the group search base, filter or mappings is super-only (403 otherwise), as on the
+    /// LDAP config save; others may toggle GroupSyncEnabled and AutoProvisionUsers.
     /// </summary>
     [HttpPut("group-mappings")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateGroupMappings([FromBody] UpdateGroupMappingsRequest request,
-        [FromServices] ICaGroupAuthorizationService groupAuth)
+        [FromServices] IControlledUserCeremonyService controlledUsers)
     {
         await currentUser.EnsureLoadedAsync();
         var identityChanged =
             (request.GroupSearchBaseDn != null && request.GroupSearchBaseDn.Trim() != config.LdapAuth.GroupSearchBaseDn)
             || (request.GroupSearchFilter != null && request.GroupSearchFilter != config.LdapAuth.GroupSearchFilter)
             || (request.GroupToRoleMappings != null && request.GroupToRoleMappings != config.LdapAuth.GroupToRoleMappings);
-        if (identityChanged && (currentUser.User == null || !await groupAuth.IsSystemAdminAsync(currentUser.User.Id)))
-            return StatusCode(403, new { error = "Changing the LDAP group search settings or group mappings requires system.manage." });
+        if (identityChanged && (currentUser.User == null || !await controlledUsers.IsSuperAsync(currentUser.User.Id)))
+            return StatusCode(403, new { error = AdminConfigController.LdapIdentitySuperOnly });
         if (request.GroupToRoleMappings != null
             && await syncService.ValidateMappingsAsync(request.GroupToRoleMappings, config.LdapAuth.GroupToRoleMappings) is { } mappingError)
             return BadRequest(new { error = mappingError });

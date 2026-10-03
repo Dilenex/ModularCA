@@ -63,6 +63,8 @@ public class AdminUserGrantController(
     /// Creates a direct capability grant for a user. The capability must be a known value
     /// from <see cref="Capabilities.All"/>. Requires step-up MFA because direct grants bypass
     /// the role/group catalog and immediately expand the target user's effective authorization.
+    /// A controlled grant by a non-super opens a ceremony (202); 409 when the caller reset the
+    /// grantee's password or MFA in the last 30 days.
     /// </summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.GrantUserCapability)]
@@ -118,10 +120,18 @@ public class AdminUserGrantController(
                 .Select(u => u.Username)
                 .FirstOrDefaultAsync();
 
-            var ceremonyId = await _controlledUserSvc.InitiateCapabilityGrantAsync(
-                request.UserId, targetUsername, request.Capability,
-                request.TenantId, request.CertificateAuthorityId, request.ResourceType, request.ResourceId,
-                minted.Value, _currentUser.User.Id, _currentUser.User.Username ?? string.Empty);
+            Guid ceremonyId;
+            try
+            {
+                ceremonyId = await _controlledUserSvc.InitiateCapabilityGrantAsync(
+                    request.UserId, targetUsername, request.Capability,
+                    request.TenantId, request.CertificateAuthorityId, request.ResourceType, request.ResourceId,
+                    minted.Value, _currentUser.User.Id, _currentUser.User.Username ?? string.Empty);
+            }
+            catch (ControlledUserInitiationRefusedException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
 
             return Accepted(new
             {

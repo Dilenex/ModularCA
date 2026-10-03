@@ -55,16 +55,16 @@ public static partial class UserFieldValidators
 
     /// <summary>
     /// Applies the <c>Username</c> validation rule chain for a nullable username (update DTOs).
-    /// When the incoming value is null or empty, validation passes; otherwise the same rules
-    /// as <see cref="ValidUsername{T}"/> apply.
+    /// Null (unchanged) passes; anything else, the empty string included, must pass the same rules
+    /// as <see cref="ValidUsername{T}"/>.
     /// </summary>
     public static IRuleBuilderOptions<T, string?> ValidOptionalUsername<T>(this IRuleBuilder<T, string?> rule)
     {
         return rule
             .MaximumLength(MaxUsernameLength)
                 .WithMessage($"Username must not exceed {MaxUsernameLength} characters.")
-            .Must(u => string.IsNullOrEmpty(u) || UsernameRegex().IsMatch(NormalizeIdentity(u) ?? u))
-                .WithMessage("Username may only contain letters, digits, '.', '_' and '-'.");
+            .Must(u => u == null || UsernameRegex().IsMatch(NormalizeIdentity(u) ?? u))
+                .WithMessage("Username may only contain letters, digits, '.', '_' and '-', and cannot be empty.");
     }
 
     /// <summary>
@@ -80,14 +80,15 @@ public static partial class UserFieldValidators
     }
 
     /// <summary>
-    /// Applies the <c>Email</c> validation rule chain for a nullable email (update DTOs).
+    /// Applies the <c>Email</c> validation rule chain for a nullable email (update DTOs). Null
+    /// (unchanged) passes; the empty string does not.
     /// </summary>
     public static IRuleBuilderOptions<T, string?> ValidOptionalEmail<T>(this IRuleBuilder<T, string?> rule)
     {
         return rule
             .MaximumLength(MaxEmailLength)
                 .WithMessage($"Email must not exceed {MaxEmailLength} characters.")
-            .Must(e => string.IsNullOrEmpty(e) || IsLikelyValidEmail(e))
+            .Must(e => e == null || IsLikelyValidEmail(e))
                 .WithMessage("Email is not in a valid format.");
     }
 

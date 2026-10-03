@@ -65,16 +65,12 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
             walk(all);
             if (labels.length > 0) setTenantCaLabels(labels);
         }).catch(() => {});
-        // Service identities first: the natural choice for a forest to act as. People after.
-        Promise.all([
-            apiGet<any>('/api/v1/admin/service-identities').catch(() => []),
-            apiGet<any>('/api/v1/admin/users').catch(() => []),
-        ]).then(([svc, people]) => {
-            const s = (Array.isArray(svc) ? svc : svc.items || []).filter((u: any) => u.isActive !== false)
-                .map((u: any) => ({ id: u.id, username: u.username, service: true, scope: u.scope === 'ca' ? `CA ${u.caLabel}` : u.scope === 'tenant' ? `tenant ${u.tenantName}` : 'system' }));
-            const p = (Array.isArray(people) ? people : people.items || []).filter((u: UserOption) => u.isActive !== false)
-                .map((u: any) => ({ id: u.id, username: u.username, service: false }));
-            setUsers([...s, ...p]);
+        // Only service identities of this tenant (any, for the instance): the server refuses a person
+        // or another tenant's identity, since every forest ticket acts with the identity's rights.
+        apiGet<any>('/api/v1/admin/service-identities').catch(() => []).then((svc) => {
+            setUsers((Array.isArray(svc) ? svc : svc.items || [])
+                .filter((u: any) => u.isActive !== false && (tenantId == null || u.tenantId === tenantId))
+                .map((u: any) => ({ id: u.id, username: u.username, service: true, scope: u.scope === 'ca' ? `CA ${u.caLabel}` : u.scope === 'tenant' ? `tenant ${u.tenantName}` : 'system' })));
         });
     }, [load]);
 
@@ -147,7 +143,7 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
                             </FieldHint>
                         </div>
                         <div>
-                            <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(create one under Users, Service identities)</span></label>
+                            <label className={labelClass}>Enrollment identity * <span className="font-normal text-gray-500">(a service identity of {tenantId == null ? 'the instance' : 'this tenant'}; create one under Users, Service identities)</span></label>
                             <select className={inputClass} value={form.enrollmentUserId} onChange={(e) => setForm({ ...form, enrollmentUserId: e.target.value })}>
                                 <option value="">-- identity the forest's principals act as --</option>
                                 {users.some((u) => u.service) && (
@@ -155,9 +151,6 @@ const KerberosRealmsPanel: React.FC<{ tenantId: string | null; tenantName: strin
                                         {users.filter((u) => u.service).map((u) => <option key={u.id} value={u.id}>{u.username} · {u.scope}</option>)}
                                     </optgroup>
                                 )}
-                                <optgroup label="People">
-                                    {users.filter((u) => !u.service).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
-                                </optgroup>
                             </select>
                         </div>
                         <ToggleField size="md" labelSide="left" label="Machines may enroll" description="Computer accounts (name$)" checked={form.allowMachines} onChange={(v) => setForm({ ...form, allowMachines: v })} />
@@ -310,8 +303,7 @@ const RealmDrawer: React.FC<{ realm: Realm; base: string; tenantName: string; ca
                         <div>
                             <label className={labelClass}>Enrollment identity</label>
                             <select className={inputClass} value={realm.enrollmentUserId} disabled={busy} onChange={(e) => save({ enrollmentUserId: e.target.value })}>
-                                {users.filter((u) => u.service).map((u) => <option key={u.id} value={u.id}>{u.username} · {u.scope}</option>)}
-                                {users.filter((u) => !u.service).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+                                {users.map((u) => <option key={u.id} value={u.id}>{u.username} · {u.scope}</option>)}
                                 {!users.some((u) => u.id === realm.enrollmentUserId) && <option value={realm.enrollmentUserId}>{realm.enrollmentUsername || realm.enrollmentUserId}</option>}
                             </select>
                         </div>

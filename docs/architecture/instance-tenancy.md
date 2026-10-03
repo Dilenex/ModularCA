@@ -223,6 +223,14 @@ that nothing is renamed only to be deleted.
     used to classify groups, roles and deletions: super if present, else the tier that dominates
     all the others, else system admin.
   - Ceremony descriptions and the console name the affected scope: a CA, a tenant or the instance.
+  - Account administration is a controlled change too. Dominance alone let a peer take over an
+    approver: reset its password and MFA, sign in as it and approve their own ceremonies. A
+    non-super password reset, MFA reset, or change of username, email, enabled, locked or password
+    flags on an account holding any controlled tier opens a `ControlledUserChange` ceremony
+    (`ResetPassword`, `ResetMfa`, `UpdateIdentity`) at the covering tier of its holdings. The
+    initiator must still dominate every tier the account holds. Disabling and locking are gated
+    as well, and refused for the last other active dominator of the scope. The temporary password
+    is generated at execute and returned only to the executor, never stored in the ceremony.
   - A CA's key-ceremony quorum, when it comes from a group, comes from the CA's Administrator
     group. It could come from its Operator group, which also holds `ca.manage`.
 - **S6.** Rename tenant to space in the schema, API, console and docs. `MintedTierLevel`,

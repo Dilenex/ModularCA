@@ -30,9 +30,19 @@ public class KerberosRealmServiceTests
         {
             Service = new KerberosRealmService(Db, new EphemeralDataProtectionProvider(), Clock);
             Db.Tenants.Add(new TenantEntity { Id = TenantId, Name = "Customer A", Slug = "customer-a" });
-            EnrollmentUser = new UserEntity { Id = Guid.NewGuid(), Username = "svc-enroll-a", Email = "svc@customer-a.example" };
-            Db.Users.Add(EnrollmentUser);
+            EnrollmentUser = Identity("svc-enroll-a", service: true, scopeTenantId: TenantId);
+        }
+
+        public UserEntity Identity(string username, bool service, Guid? scopeTenantId = null, Guid? scopeCaId = null)
+        {
+            var user = new UserEntity
+            {
+                Id = Guid.NewGuid(), Username = username, Email = $"{username}@customer-a.example",
+                IsServiceIdentity = service, ServiceScopeTenantId = scopeTenantId, ServiceScopeCaId = scopeCaId,
+            };
+            Db.Users.Add(user);
             Db.SaveChanges();
+            return user;
         }
 
         public Task<KerberosRealmEntity> Bind(InProcessKdc forest, bool enabled = true)
@@ -192,5 +202,61 @@ public class KerberosRealmServiceTests
         await w.Service.DeleteAsync(realm.Id); // another enabled realm now covers the CA
         Assert.Null(await w.Service.GetAsync(realm.Id));
         Assert.NotNull(await w.Service.GetAsync(second.Id));
+    }
+
+    [Fact]
+    public async Task The_enrollment_identity_must_be_a_service_identity_of_the_realms_tenant()
+    {
+        var w = new World();
+        var otherTenant = Guid.NewGuid();
+        var caInTenant = Guid.NewGuid();
+        var person = w.Identity("super", service: false);
+        var instanceIdentity = w.Identity("svc-instance", service: true);
+        var otherTenantIdentity = w.Identity("svc-other", service: true, scopeTenantId: otherTenant);
+        var caIdentity = w.Identity("svc-ca", service: true, scopeTenantId: w.TenantId, scopeCaId: caInTenant);
+        KerberosRealmSpec Spec(string realm, UserEntity user, bool enabled = true) => new(realm, null, "HTTP/ca.example", user.Id, IsEnabled: enabled);
+
+        foreach (var refused in new[] { person, instanceIdentity, otherTenantIdentity })
+        {
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => w.Service.CreateAsync(w.TenantId, Spec("REFUSED.LOCAL", refused)));
+            Assert.Contains(refused.Username, ex.Message);
+        }
+        Assert.Empty(w.Db.KerberosRealms);
+
+        var tenantRealm = await w.Service.CreateAsync(w.TenantId, Spec("TENANT.LOCAL", w.EnrollmentUser));
+        await w.Service.CreateAsync(w.TenantId, Spec("CA.LOCAL", caIdentity));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => w.Service.UpdateAsync(tenantRealm.Id, Spec("TENANT.LOCAL", person)));
+        Assert.Equal(w.EnrollmentUser.Id, (await w.Service.GetAsync(tenantRealm.Id))!.EnrollmentUserId);
+
+        // An instance realm takes any service identity, never a person.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => w.Service.CreateAsync(null, Spec("INSTANCE.LOCAL", person)));
+        await w.Service.CreateAsync(null, Spec("INSTANCE.LOCAL", instanceIdentity));
+    }
+
+    [Fact]
+    public async Task A_binding_that_predates_the_rule_warns_at_startup_and_may_be_disabled_but_not_re_enabled()
+    {
+        var w = new World();
+        var person = w.Identity("alice", service: false);
+        var legacy = new KerberosRealmEntity
+        {
+            Id = Guid.NewGuid(), TenantId = w.TenantId, Realm = "LEGACY.LOCAL", DnsDomain = "legacy.local",
+            ServicePrincipal = "HTTP/ca.example", EnrollmentUserId = person.Id, IsEnabled = true,
+        };
+        w.Db.KerberosRealms.Add(legacy);
+        await w.Db.SaveChangesAsync();
+
+        var warning = await KerberosRealmService.UnconfinedRealmsWarningAsync(w.Db);
+        Assert.NotNull(warning);
+        Assert.Contains("LEGACY.LOCAL", warning);
+        Assert.Contains("alice", warning);
+        Assert.NotNull(await w.Service.FindAsync("LEGACY.LOCAL"));
+
+        await w.Service.UpdateAsync(legacy.Id, new KerberosRealmSpec("LEGACY.LOCAL", null, "HTTP/ca.example", person.Id, IsEnabled: false, Notes: "incident"));
+        Assert.Null(await KerberosRealmService.UnconfinedRealmsWarningAsync(w.Db));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            w.Service.UpdateAsync(legacy.Id, new KerberosRealmSpec("LEGACY.LOCAL", null, "HTTP/ca.example", person.Id, IsEnabled: true)));
+        await w.Service.UpdateAsync(legacy.Id, new KerberosRealmSpec("LEGACY.LOCAL", null, "HTTP/ca.example", w.EnrollmentUser.Id, IsEnabled: true));
+        Assert.Null(await KerberosRealmService.UnconfinedRealmsWarningAsync(w.Db));
     }
 }
