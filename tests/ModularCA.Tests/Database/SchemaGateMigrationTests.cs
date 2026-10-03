@@ -195,6 +195,68 @@ namespace ModularCA.Tests.Database
             Assert.False(SchemaVersionGate.LeavesNonTransactionalStatements(db, "20990101000099_NotAMigration"));
         }
 
+        [Fact]
+        public async Task A_dry_run_rehearses_what_is_pending_and_applies_nothing()
+        {
+            Execute("SELECT 1");
+            await ApplyUpToAsync(B2);
+
+            await using var db = Context();
+            var result = await SchemaVersionGate.DryRunPendingAsync(db);
+
+            Assert.True(result.Passed, result.Error?.ToString());
+            Assert.Equal([C], result.Pending);
+            Assert.Equal([C], result.Rehearsed);
+            Assert.Equal([A, B1, B2], (await SchemaVersionGate.ReadAsync(db)).Applied);
+            Assert.DoesNotContain("c", Tables());
+            Assert.Null(await SchemaVersionGate.ApplyPendingAsync(db, await SchemaVersionGate.ReadAsync(db)));
+            Assert.Contains("c", Tables());
+        }
+
+        [Fact]
+        public async Task A_migration_outside_a_transaction_is_not_rehearsed_and_the_earlier_ones_are_rolled_back()
+        {
+            Execute("SELECT 1");
+            await ApplyUpToAsync(A);
+
+            await using var db = Context();
+            var result = await SchemaVersionGate.DryRunPendingAsync(db);
+
+            Assert.False(result.Passed);
+            Assert.True(result.NotRehearsable);
+            Assert.Equal(B2, result.Migration);
+            Assert.Equal([B1], result.Rehearsed);
+            Assert.Equal([A], (await SchemaVersionGate.ReadAsync(db)).Applied);
+            Assert.DoesNotContain("b1", Tables());
+            Assert.Contains("cannot rehearse it", SchemaVersionGate.DryRunFailedMessage("application", result));
+            Execute("BEGIN EXCLUSIVE; CREATE TABLE lock_probe (id INTEGER); COMMIT;");
+        }
+
+        [Fact]
+        public async Task A_dry_run_that_fails_reports_the_error_and_leaves_the_history_as_it_was()
+        {
+            Execute("SELECT 1");
+            await ApplyUpToAsync(B2);
+            Execute("CREATE TABLE c (id INTEGER)");
+
+            await using var db = Context();
+            var result = await SchemaVersionGate.DryRunPendingAsync(db);
+
+            Assert.False(result.Passed);
+            Assert.False(result.NotRehearsable);
+            Assert.Equal(C, result.Migration);
+            Assert.Empty(result.Rehearsed);
+            Assert.NotNull(result.Error);
+            Assert.Equal([A, B1, B2], (await SchemaVersionGate.ReadAsync(db)).Applied);
+            var message = SchemaVersionGate.DryRunFailedMessage("application", result);
+            Assert.Contains($"failed at migration {C}, command 1 of 2", message);
+            Assert.Contains("The checks after this point could not run.", message);
+            Assert.Contains("nothing was applied", message);
+            Assert.Empty(result.Refusals);
+            Assert.Equal(1, result.Command);
+            Execute("BEGIN EXCLUSIVE; CREATE TABLE lock_probe (id INTEGER); COMMIT;");
+        }
+
         /// <summary>A context on the temporary file, unpooled so the file can be deleted.</summary>
         private GateTestContext Context() =>
             new(new DbContextOptionsBuilder<GateTestContext>().UseSqlite($"Data Source={_path};Pooling=False").Options);

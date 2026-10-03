@@ -79,6 +79,8 @@ public sealed class VocabularyTests
         new(Tests + "Database/PostgresUpgradeHarnessTests.cs", Reason.Migration),
         new(Tests + "Database/PostgresOwnershipHarnessTests.cs", Reason.Migration),
         new(Tests + "Database/FrozenBaselineTests.cs", Reason.Migration),
+        new("ModularCA.Database/MigrationCheckLabels.cs", Reason.Migration),
+        new(Tests + "Database/DryRunCollectorTests.cs", Reason.Migration),
         new(Tests + "Database/MigrationLintTests.cs", Reason.Migration, Text: "\\\"Tenants\\\""),
         new(Tests + "Database/MigrationLintTests.cs", Reason.Migration, Text: "Table = \"Tenants\""),
         new(Tests + "Database/SchemaVersionGateTests.cs", Reason.Migration, Text: "\\\"Tenants\\\""),

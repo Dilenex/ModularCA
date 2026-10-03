@@ -217,9 +217,13 @@ that nothing is renamed only to be deleted.
   - The system tenant's `org-system-*` groups are deleted, and `Tenants.IsSystemTenant` is dropped.
     The tenant foreign keys are `ON DELETE RESTRICT`.
   - The upgrade refuses, rolling back, while open ceremonies name the system tenant, while the
-    `org-system-*` groups have members or badge sources, while tenant-wide grants or service
-    identities on the system tenant would become instance-wide, or while the instance has more
-    than one organisation, whatever the multiple-organisations flag says.
+    `org-system-*` groups have members or badge sources, or while tenant-wide grants or service
+    identities on the system tenant would become instance-wide.
+  - Every organisation tenant becomes a space as it is, however many there are. The migration
+    first also refused an instance with more than one organisation (its P2). That was dropped
+    (owner decision) when staging, which has two, was refused: scopes are independent, so the
+    fold copies only the system tenant's values and each organisation keeps its own, and several
+    spaces per instance is the model. P2's number is left unused.
   - New audit records go to the instance chain. Each per-tenant chain is sealed once at control
     start, with its final hash anchored in the instance chain.
   - Instance policy changes by anyone but a system-super go through an `InstancePolicyChange`

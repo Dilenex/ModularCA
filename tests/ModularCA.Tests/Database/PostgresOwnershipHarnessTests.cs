@@ -31,6 +31,63 @@ namespace ModularCA.Tests.Database
     }
 
     /// <summary>
+    /// A <see cref="TheoryAttribute"/> that runs only when <paramref name="variable"/> is set and
+    /// <see cref="PostgresClientTools.Directory"/> finds <c>pg_dump</c> and <c>pg_restore</c>.
+    /// </summary>
+    public sealed class RequiresPostgresClientToolsTheoryAttribute : TheoryAttribute
+    {
+        /// <summary>Skips the theory unless <paramref name="variable"/> is set and the client tools are found.</summary>
+        public RequiresPostgresClientToolsTheoryAttribute(string variable)
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(variable)))
+                Skip = $"Opt-in: set {variable} to run.";
+            else if (PostgresClientTools.Directory is null)
+                Skip = $"pg_dump and pg_restore were not found: set {PostgresClientTools.Variable} to PostgreSQL's bin folder, or put it on PATH.";
+        }
+    }
+
+    /// <summary>
+    /// Finds the folder holding <c>pg_dump</c> and <c>pg_restore</c> for the harness: the folder in
+    /// <see cref="Variable"/>, else one on PATH, else the newest <c>C:\Program Files\PostgreSQL\*\bin</c>
+    /// on Windows. The product itself only looks on PATH.
+    /// </summary>
+    internal static class PostgresClientTools
+    {
+        /// <summary>The optional environment variable naming PostgreSQL's bin folder.</summary>
+        public const string Variable = "MODULARCA_TEST_PG_BIN";
+
+        private static readonly Lazy<string?> Found = new(Locate);
+
+        /// <summary>The folder holding both tools, or null when none does.</summary>
+        public static string? Directory => Found.Value;
+
+        /// <summary>Puts <see cref="Directory"/> first on this process's PATH, so the product's bare-name lookup finds the tools.</summary>
+        public static void EnsureOnPath()
+        {
+            var dir = Directory ?? throw new InvalidOperationException("pg_dump and pg_restore were not found.");
+            var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (!path.Split(Path.PathSeparator).Contains(dir, StringComparer.OrdinalIgnoreCase))
+                Environment.SetEnvironmentVariable("PATH", dir + Path.PathSeparator + path);
+        }
+
+        private static string? Locate()
+        {
+            var candidates = new List<string>();
+            if (Environment.GetEnvironmentVariable(Variable) is { Length: > 0 } configured)
+                candidates.Add(configured);
+            candidates.AddRange((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+            var installs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PostgreSQL");
+            if (OperatingSystem.IsWindows() && System.IO.Directory.Exists(installs))
+                candidates.AddRange(System.IO.Directory.GetDirectories(installs)
+                    .OrderByDescending(d => int.TryParse(Path.GetFileName(d), out var major) ? major : -1)
+                    .Select(d => Path.Combine(d, "bin")));
+            var suffix = OperatingSystem.IsWindows() ? ".exe" : "";
+            return candidates.FirstOrDefault(d =>
+                File.Exists(Path.Combine(d, "pg_dump" + suffix)) && File.Exists(Path.Combine(d, "pg_restore" + suffix)));
+        }
+    }
+
+    /// <summary>
     /// Opt-in ownership and startup-gate tests against a real PostgreSQL server
     /// (<c>MODULARCA_TEST_PG</c>, a superuser connection string). Each test builds throwaway roles
     /// and databases with a random suffix in one of three layouts and drops them afterwards:
@@ -108,12 +165,12 @@ namespace ModularCA.Tests.Database
         {
             await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
             await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql
-                + PostgresUpgradeHarnessTests.SeedSecondOrganisationSql);
+                + PostgresUpgradeHarnessTests.SeedSecurityPolicySql);
 
             var refused = await Assert.ThrowsAsync<MigrationFailedException>(() => f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None));
 
             Assert.Contains("_" + PostgresUpgradeHarnessTests.FoldSystemTenant, refused.Message);
-            Assert.Contains("This instance has 2 organisation tenants (Acme, Globex)", refused.Message);
+            Assert.Contains("This instance has 2 SecurityPolicy rows", refused.Message);
             Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
 
             await DestinationBuilder.RollbackAsync(f.MigrateOptions!, _ => { }, CancellationToken.None);
@@ -364,7 +421,7 @@ namespace ModularCA.Tests.Database
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_failing_migration_after_a_statement_outside_a_transaction_stops_with_3_and_says_it_stays_applied()
+        public async Task A_migration_with_a_statement_outside_a_transaction_is_not_rehearsed_and_the_start_stops_with_3_having_applied_nothing()
         {
             await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
             using var log = new CapturedSerilog();
@@ -375,9 +432,10 @@ namespace ModularCA.Tests.Database
             var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig { WaitSeconds = 1 });
 
             Assert.Equal(3, exit);
-            Assert.True(log.Has(LogEventLevel.Fatal, "stay applied"), Dump(log));
-            Assert.True(log.Has(LogEventLevel.Fatal, "22012"), Dump(log));
+            Assert.True(log.Has(LogEventLevel.Fatal, "cannot rehearse it"), Dump(log));
+            Assert.True(log.Has(LogEventLevel.Fatal, "defective"), Dump(log));
             Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{NonTransactionalProbeContext.History}\""));
+            Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_nt'"));
         }
 
         [RequiresEnvironmentFact(ServerVariable)]
@@ -437,11 +495,12 @@ namespace ModularCA.Tests.Database
             Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_drift'"));
         }
 
-        [RequiresEnvironmentTheory(ServerVariable)]
+        [RequiresPostgresClientToolsTheory(ServerVariable)]
         [InlineData(OwnershipLayout.Migrated)]
         [InlineData(OwnershipLayout.Legacy)]
         public async Task A_backup_restores_as_the_runtime_roles(OwnershipLayout layout)
         {
+            PostgresClientTools.EnsureOnPath();
             await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
             if (layout == OwnershipLayout.Legacy)
             {

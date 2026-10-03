@@ -141,7 +141,10 @@ public sealed class MigrationOptions
             TargetHost, TargetPort, TargetAdminUser, TargetAdminPassword, TargetSslMode,
             database ?? "postgres");
 
-    /// <summary>The application database instance as the node will be configured to see it.</summary>
+    /// <summary>
+    /// The application database instance as the node will be configured to see it, with
+    /// <see cref="TargetSslMode"/>, as db.yaml gets it.
+    /// </summary>
     /// <param name="password">The password generated for the application role.</param>
     /// <returns>A <see cref="DbInstance"/> ready to be written into db.yaml.</returns>
     public DbInstance AppInstance(string password) => new()
@@ -151,9 +154,13 @@ public sealed class MigrationOptions
         Username = TargetAppRole,
         Password = password,
         Database = TargetAppDatabase,
+        SslMode = TargetSslMode,
     };
 
-    /// <summary>The audit database instance as the node will be configured to see it.</summary>
+    /// <summary>
+    /// The audit database instance as the node will be configured to see it, with
+    /// <see cref="TargetSslMode"/>, as db.yaml gets it.
+    /// </summary>
     /// <param name="password">The password generated for the audit role.</param>
     /// <returns>A <see cref="DbInstance"/> ready to be written into db.yaml.</returns>
     public DbInstance AuditInstance(string password) => new()
@@ -163,5 +170,6 @@ public sealed class MigrationOptions
         Username = TargetAuditRole,
         Password = password,
         Database = TargetAuditDatabase,
+        SslMode = TargetSslMode,
     };
 }

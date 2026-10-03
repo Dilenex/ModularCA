@@ -32,7 +32,6 @@ public sealed class UpgradePrecheckTests
     {
         [Hostnames] = ["""FROM "TenantHostnames" """],
         [$"{Fold} P1"] = [$"""(SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") > 1 OR ((SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") = 0 AND EXISTS (SELECT 1 FROM "Tenants"))"""],
-        [$"{Fold} P2"] = ["""(SELECT count(*) FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted") > 1"""],
         [$"{Fold} P3"] = ["""(SELECT count(*) FROM "SecurityPolicy") > 1"""],
         [$"{Fold} P4"] = [$"""FROM "KeyCeremonies" WHERE "Status" IN ('Pending', 'Approved') AND ("TenantId" = {Sys} OR strpos(lower("ParametersJson"), {Sys}::text) > 0)"""],
         [$"{Fold} P5"] =
@@ -53,7 +52,7 @@ public sealed class UpgradePrecheckTests
             $"""(g."TenantId" <> ca."TenantId" AND (g."TenantId" = {Sys} OR ca."TenantId" = {Sys}))""",
         ],
         [$"{Fold} P9"] = [$"""FROM "CertProfiles" WHERE "TenantId" = {Sys} AND "CertificateAuthorityId" IS NULL AND NOT "IsCaProfile" """],
-        [$"{Unique} P1"] = ["""FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY"""],
+        [$"{Unique} P1"] = ["""FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY ca."Label"::text HAVING count(*) > 1"""],
         [$"{Unique} P2"] = ["""FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY lower(ca."Label") HAVING count(*) > 1"""],
         [$"{Unique} P3"] = ["""FROM "CertificateAuthorities" ca WHERE ca."Name" IS NOT NULL GROUP BY ca."Name" HAVING count(*) > 1"""],
         [$"{Unique} P4"] = ["""FROM "CaProtocolConfigs" pc """ + string.Format(Misissuing, "pc")],

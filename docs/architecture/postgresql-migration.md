@@ -245,7 +245,7 @@ So the run now goes:
    exactly as an upgraded install's rows do, so a copied CA keeps its space under the new names.
 5. Only then is the configuration written.
 
-A precondition that refuses the copied data, such as `FoldSystemTenant` P1 to P9,
+A precondition that refuses the copied data, such as `FoldSystemTenant` P1 and P3 to P9,
 `InstanceUniqueCaNames` P1 to P5 or `RenameTenantToSpace` P1 and P2, fails the run. The message names the migration, quotes its
 `RAISE` text, and lists what was committed before it. The usual rollback then drops both databases
 and the three roles, or `--keep-on-failure` leaves them for inspection. Fix the data on the 0.3.0
@@ -487,7 +487,9 @@ migrationBuilder.FailIf(
 ```
 
 It emits `DO $$ BEGIN IF (<condition>) THEN RAISE EXCEPTION '<message>'; END IF; END $$;`. The
-raise rolls back the migration's transaction.
+raise rolls back the migration's transaction. Before it applies anything, the control role
+rehearses every pending migration in one transaction that it rolls back (see "At startup"). A
+refusal in the last pending migration therefore leaves the earlier ones unapplied too.
 
 A message can name values the database computes when the check fails: `{0}`, `{1}` and so on
 stand for SQL expressions passed after the message.
@@ -513,7 +515,12 @@ the schema"), on every install, with nothing else in reach. So a migration:
 - contains no `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES` or `OWNER TO`;
 - creates or drops no schema, role or database, and puts everything in `public`;
 - adds no extension to the audit context, and none except `citext` to the application context;
-- does not use `suppressTransaction: true` when it has a `FailIf` precondition.
+- runs entirely inside a transaction. That rules out `suppressTransaction: true`, an index
+  created concurrently, and any statement PostgreSQL refuses in a transaction block, such as
+  `VACUUM`. It also rules out `ALTER TYPE ... ADD VALUE`, whose new value a later statement of the
+  same transaction cannot use. The dry run runs every pending migration in one transaction. It
+  will not run a migration it cannot rehearse, and the start refuses it as a defective build.
+  `MigrationLintTests` checks every migration's generated commands for all of this.
 
 A migration that breaks one of these rules fails with 42501 on its first real upgrade, on every
 install at once. Long statements are fine. A migration runs with a `lock_timeout` of
@@ -556,20 +563,53 @@ ingress-only process are not checked. The check has four phases.
    - **Model.** Before applying anything, the control role checks that this build's model matches
      its latest migration. If it does not, the build is defective, and the process exits 3 having
      applied nothing.
-3. **Apply** (control role only). The application database's pending migrations go first, then the
-   audit database's. Each database gets its own migration connection, with a `lock_timeout` of
-   `Schema.MigrationLockTimeoutSeconds` (30) and a `statement_timeout` of
-   `Schema.MigrationCommandTimeoutSeconds` (3600; 0 means no limit). The start timeout is extended
-   every 20 s. Each migration commits on its own. If one fails, the message:
-   - names the first migration not applied;
-   - lists the migrations committed in this run;
-   - says whether statements the migration ran outside a transaction stayed applied.
+3. **Dry run, then apply** (control role only). Each database gets its own migration connection as
+   its runtime role, with a `lock_timeout` of `Schema.MigrationLockTimeoutSeconds` (30) and a
+   `statement_timeout` of `Schema.MigrationCommandTimeoutSeconds` (3600; 0 means no limit).
+   - **Dry run.** `SchemaVersionGate.DryRunPendingAsync` opens one transaction and takes the lock
+     on `__EFMigrationsHistory` that EF's apply takes. Under that lock it reads the history again
+     and runs every pending migration in order. For each it runs the commands EF's migrator
+     generates for the real apply, history insert included (`SchemaVersionGate.UpCommands`; the
+     same `IMigrationsSqlGenerator` call against the same finalized target model, which
+     `MigrationLintTests` pins against `Migrator.GenerateUpSql`). It then rolls back, whatever
+     happened, and closes the unpooled connection, so no lock outlives it. PostgreSQL DDL is
+     transactional, so a later migration sees what the earlier ones did, as it will for real. The
+     application database is rehearsed first, then the audit database. If either refuses, the
+     process exits 3 having applied nothing to either database. A migration with a command that
+     must run outside a transaction is not run: the dry run reports it, and the start exits 3 as a
+     defective build.
+   - **Collect mode.** The dry run reports every refusal it can reach, not only the first. Each
+     command runs under its own savepoint, released when it succeeds and rolled back to when it
+     fails (`SchemaVersionGate.DryRunPendingAsync`, deciding through `DryRunCollector`):
+     - a refusal (SQLSTATE P0001, which `FailIf` raises) is recorded with its migration, its check
+       label (`MigrationCheckLabels`, pinned to the `// Pn` comments by `MigrationCheckLabelsTests`)
+       and its `RAISE` text, and the run continues;
+     - another error in a migration that has already refused is taken as its knock-on (a unique
+       index the refused duplicates break): the rest of that migration is skipped and the run
+       continues with the next;
+     - any other error, or a lock timeout, deadlock, lost connection or statement timeout even
+       after a refusal, stops the run: the checks after it could not run.
+
+     It passes only when every command of every pending migration ran. The message numbers the
+     refusals ("1 of N"), marks every one after the first "also found" (real on the current data,
+     but its outcome may change once the earlier ones are fixed), lists the skipped migration
+     tails and where it stopped, and says that nothing was applied. A refusal in the application
+     database does not stop the audit database's dry run, so the journal lists both. A transient
+     error is retried (below) only when no refusal came before it. The real apply is unchanged: it
+     runs only after both dry runs pass, and stops at its first error.
+   - **Apply.** Only when both dry runs pass. The application database's pending migrations go
+     first, then the audit database's. Each migration commits on its own. If one still fails (an
+     error the data could not predict, such as a timeout), the message:
+     - names the first migration not applied;
+     - lists the migrations committed in this run;
+     - says whether statements the migration ran outside a transaction stayed applied.
 
    A lock timeout, a deadlock, a serialization failure, a lost connection or a connection that
-   could not be opened is retried in the process: back to step 1 after a backoff from 2 s to
-   30 s, for up to `Schema.WaitSeconds` from the first such failure, and only then does it exit
-   75. A statement timeout exits 3: raise `Schema.MigrationCommandTimeoutSeconds`. Any other
-   failure exits 3. The start timeout is extended every 20 s throughout steps 1 to 4.
+   could not be opened, in the dry run or the apply, is retried in the process: back to step 1
+   after a backoff from 2 s to 30 s, for up to `Schema.WaitSeconds` from the first such failure,
+   and only then does it exit 75. A statement timeout exits 3: raise
+   `Schema.MigrationCommandTimeoutSeconds`. Any other failure exits 3. The start timeout is
+   extended every 20 s throughout steps 1 to 4.
 4. **Verify.** Both databases are read again, and each must now be current.
 
 Both units carry `RestartPreventExitStatus=3`. A refusal therefore leaves the unit failed, with its
@@ -577,7 +617,33 @@ reason in the journal, instead of being retried. Status 75 is retried, up to the
 `StartLimitBurst` (5 in 300 s). `modularca-signer.service` is ordered after `modularca.service`,
 so on a shared host the signer starts once the node has migrated. Enrollment, validation and signer
 processes may be started together with control, and they wait for it. To recover from a refusal,
-fix the cause and start again, or restore the pre-upgrade dump and run the previous release.
+fix the cause and start again, or run the previous release: a dry-run refusal leaves the schema as
+the previous release left it. A dump is needed only after a migration failed for real.
+
+### Checking an upgrade before it is installed
+
+`ModularCA.API --upgrade-check [--config-dir <dir>]` runs steps 1 and 2 and the dry run of step 3
+as the control role would, then stops. It uses the runtime roles from `db.yaml` and the `Schema`
+budgets from `config.yaml`, both read from `--config-dir`, which defaults to the `config/` beside
+the binary. It never applies anything: the dry run is rolled back. For each database it prints
+the schema (current, the pending list, newer than the build, no history, missing or empty), the
+ownership probe and its warnings, and the dry-run result. The last line is a one-line verdict.
+
+| Exit | Verdict line | When |
+|---|---|---|
+| 0 | `UPGRADE CHECK: PASS (...)` | every pending migration would apply cleanly, or there is nothing to apply (a missing or empty database included) |
+| 3 | `UPGRADE CHECK: REFUSED (...)` | anything the start would refuse with 3, a migration that refuses in the dry run, ownership that is not sound even with nothing pending, or a configuration this build cannot use |
+| 75 | `UPGRADE CHECK: UNREACHABLE (...)` | a database could not be reached or was locked, or the dry run hit a transient error |
+
+`packaging/install.sh` runs the new build's check on an upgrade, as the service account, against
+`/opt/modularca/config`, after it stops the units and before it replaces anything. It runs the build
+where it was unpacked if the service account can, and otherwise from a copy in a root-owned
+directory beside `/opt/modularca`, which it then removes. A non-zero status starts the stopped
+units again on the installed build, and the installer exits with that status, having changed
+nothing. `--skip-upgrade-check` skips the check with a warning; the start's own dry run still
+applies nothing on a refusal. The `.deb` has no such step. `preinst` runs before the new build is
+unpacked, and by `postinst` the old one is gone. So it relies on the start's dry run, and
+`postinst` does not run a second rehearsal (`packaging/README-PACKAGING.md`).
 
 The time budgets live in `config.yaml`; these are the defaults:
 
@@ -617,13 +683,36 @@ MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgr
   dotnet test tests/ModularCA.Tests --filter "FullyQualifiedName~PostgresUpgradeHarnessTests"
 ```
 
+The dry run has its own tests on the same server.
+
+- A 0.3.x database where `InstanceUniqueCaNames` refuses (P1, a label two CAs share). The dry run
+  names it with its message, having rehearsed `RetireTenantHostnames` and `FoldSystemTenant`. The
+  history still holds only the baseline, `TenantHostnames` and `Tenants.IsSystemTenant` are still
+  there, and nothing is renamed. A new connection then takes ACCESS EXCLUSIVE on every table at
+  once, and no client session holds a lock. `--upgrade-check` and the control role's start both
+  exit 3, and still nothing is applied.
+- A `RenameTenantToSpace` refusal raised after that migration's own renames leaves every name as
+  it was.
+- A clean 0.3.x database passes the dry run unchanged, the audit database has nothing pending,
+  `--upgrade-check` exits 0 with the pending count, and the start then migrates it to current.
+- The audit dry run on an empty database rehearses the history table and the baseline and leaves
+  the database empty.
+
+On SQLite, `SchemaGateMigrationTests` covers the same outcomes without a server, including a
+migration outside a transaction that is not rehearsed.
+
+The backup test in `PostgresOwnershipHarnessTests` also needs `pg_dump` and `pg_restore`. It looks
+in `MODULARCA_TEST_PG_BIN`, then on PATH, then in the newest `C:\Program Files\PostgreSQL\*\bin`, and
+is skipped with that reason when it does not find both.
+
 A later stage that adds a data migration extends the seed with the rows its precondition and
 transformation care about, and extends the assertions. For `InstanceUniqueCaNames` (0.4.0 S4) the
 test asserts that plain unique indexes on CA `Label` and `Name` exist with no filter, that the
 non-unique `IX_CertificateAuthorities_TenantId` backs the foreign key, that the four per-tenant and
 instance-only indexes and the three tenant quota columns are gone, and that a space CA cannot take
 an instance CA's label nor a CA a deleted CA's name. One further test per precondition seeds an
-instance SSH CA labelled like the space's root CA (P1), the same with a soft-deleted CA (P1), a
+instance SSH CA labelled like the space's root CA (P1), a second space's root CA labelled the same
+(P1), the same with a soft-deleted CA (P1), a
 label that differs only in case (P2), a duplicate name (P3), an enabled and a disabled protocol
 configuration naming a signing profile that issues from no CA (P4), and the same for certificate
 templates (P5), and asserts the message and that nothing of the migration was applied. For `FoldSystemTenant` (0.4.0 S3) the seed
@@ -635,9 +724,14 @@ service identity. The test asserts that no system tenant and no `IsSystemTenant`
 every row that named the system tenant now has a null tenant, that the `org-system-*` groups are
 gone, that `SecurityPolicy` holds the system tenant's values while the organisation keeps its own,
 that the tenant foreign keys are `ON DELETE RESTRICT`, and that the partial unique indexes refuse a
-second instance CA with the same label. One further test per precondition (P1 to P9) seeds the
-shape that precondition refuses and asserts its message and that nothing was applied, and a fresh
-database migrates without a `SecurityPolicy` row, which bootstrap then seeds. This test runs everything as the
+second instance CA with the same label. One further test per precondition (P1 and P3 to P9; P2,
+which refused more than one organisation, was dropped) seeds the shape that precondition refuses
+and asserts its message and that nothing was applied, and a fresh database migrates without a
+`SecurityPolicy` row, which bootstrap then seeds. Another adds a second organisation with its own
+policy, root CA, groups, CA-bound profile and open ceremony, and one of each for the first: the
+dry run and `--upgrade-check` pass, the control role's start upgrades it, each organisation is a
+space with its rows and policy, the instance has the system tenant's policy, and the three
+retired audit chains seal and verify. This test runs everything as the
 connection's user, so it does not exercise ownership. The rehearsal below does.
 
 For `RenameTenantToSpace` (0.4.0 S6) the seed, added at the stage before it, holds an open ceremony

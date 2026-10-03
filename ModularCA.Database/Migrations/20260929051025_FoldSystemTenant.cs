@@ -6,11 +6,12 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace ModularCA.Database.Migrations
 {
     /// <summary>
-    /// 0.4.0 S3: the system tenant is folded into the instance. Refuses (P1-P9) when a row would
+    /// 0.4.0 S3: the system tenant is folded into the instance. Refuses (P1, P3-P9) when a row would
     /// widen privilege, bypass a ceremony, or be lost; then copies the system tenant's CA policy to
     /// <c>SecurityPolicy</c> as it is, deletes its tenant-wide <c>org-system-*</c> groups, gives
     /// every row that named it a null tenant (instance scope), makes the tenant foreign keys
-    /// RESTRICT, deletes the tenant, and drops <c>Tenants.IsSystemTenant</c>. It also adds
+    /// RESTRICT, deletes the tenant, and drops <c>Tenants.IsSystemTenant</c>. Every organisation
+    /// tenant, however many, keeps its rows and its own policy. It also adds
     /// <c>SignerAudit.EffectiveScope</c>, so new signer rows tell the instance from no stated
     /// scope; existing rows keep it null. A database with no
     /// tenants at all (a fresh install, seeded after the schema) passes and changes no data.
@@ -32,15 +33,6 @@ namespace ModularCA.Database.Migrations
                 "This instance has {0} system tenant(s), counting soft-deleted ones; 0.4.0 folds exactly one into the instance. "
                 + "The database is not in a state any release produced: restore the pre-upgrade dump and contact support.",
                 """(SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant")""");
-
-            // P2
-            migrationBuilder.FailIf(
-                """(SELECT count(*) FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted") > 1""",
-                "This instance has {0} organisation tenants ({1}); 0.4.0 folds the system tenant into an instance with one "
-                + "organisation, whatever Features.AllowMultipleOrganizations says. Move all but one organisation to its own "
-                + "instance before upgrading.",
-                """(SELECT count(*) FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted")""",
-                """(SELECT string_agg("Name", ', ' ORDER BY "Name") FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted")""");
 
             // P3
             migrationBuilder.FailIf(

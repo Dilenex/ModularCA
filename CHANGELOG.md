@@ -170,8 +170,11 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   so revoking the system signing CA or disabling an SSH CA now needs the instance's ceremony. The
   upgrade refuses, changing nothing, while open ceremonies name the system tenant, while the
   `org-system-*` groups have members or badge sources, while tenant-wide grants, role assignments,
-  service identities or unbound profiles on the system tenant would become instance-wide, or while
-  there is more than one organisation tenant. New audit records go to one instance chain, and
+  service identities or unbound profiles on the system tenant would become instance-wide. Every
+  organisation tenant, however many, becomes a space with its CAs, groups, profiles and policy
+  as they were. An earlier 0.4.0 build also refused more than one organisation tenant; that was
+  dropped once scopes became independent and an instance could hold several spaces, after
+  staging, which has two organisations, was refused. New audit records go to one instance chain, and
   each per-tenant chain is sealed at the first start, with its final hash anchored in the instance
   chain (`GET /api/v1/admin/audit/verify/chains`). The licence no longer counts the system tenant,
   and now gates no space at all ("tenants are spaces", under Changed). Instance policy changes
@@ -190,6 +193,17 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   as users of one space and asserts no row of another space or of the instance comes back.
 
 ### Changed
+
+- **The upgrade check lists every problem in one run (0.4.0).** `--upgrade-check`, and the
+  service's own dry run at start, no longer stop at the first migration that refuses. Each
+  statement runs under its own savepoint, so one run reports every precondition that refuses,
+  across all pending migrations and both databases, numbered and with its message verbatim.
+  Refusals after the first are marked "also found": real on the current data, but their outcome
+  may change once the earlier ones are fixed. A migration whose later steps fail because of its
+  own refusal has those steps reported as skipped; any other error stops the check, which then
+  says the checks after it could not run. The check passes (exit 0) only when every statement of
+  every pending migration ran; exit codes are unchanged, and nothing is applied either way. The
+  real apply is unchanged. See "Checking an upgrade before installing it" in the deploy readme.
 
 - **BREAKING: tenants are spaces (0.4.0).** The delegation scope is called a space in the schema,
   the API, the console, the configuration and new audit records. A space delegates administration

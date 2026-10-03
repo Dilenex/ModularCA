@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Internal;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using ModularCA.Database;
 using Xunit;
@@ -13,7 +14,9 @@ namespace ModularCA.Tests.Database;
 /// runtime role that owns the schema, so they never touch roles, privileges, ownership, schemas,
 /// databases or extensions (the application context's <c>citext</c> excepted), and a migration
 /// guarded by a <see cref="MigrationPreconditions.FailIf"/> block runs entirely inside its
-/// transaction, so a failed precondition leaves nothing applied.
+/// transaction, so a failed precondition leaves nothing applied. Every migration also runs inside
+/// one transaction, which the startup dry run needs, and the dry run runs exactly the commands
+/// EF's migrator would.
 /// </summary>
 public class MigrationLintTests
 {
@@ -112,6 +115,90 @@ public class MigrationLintTests
         Assert.Empty(Lint("application", "x", [failIf, new SqlOperation { Sql = "UPDATE \"Tenants\" SET \"Name\" = 'x'" }]));
         Assert.Empty(Lint("application", "x", [new SqlOperation { Sql = "UPDATE \"Tenants\" SET \"Name\" = 'x'", SuppressTransaction = true }]));
     }
+
+    /// <summary>
+    /// The startup dry run rehearses every pending migration in one transaction, so no migration
+    /// may generate a command EF runs outside a transaction, nor a statement PostgreSQL refuses
+    /// inside a transaction block, or adds an enum value a later statement would use.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Contexts))]
+    public void Every_migration_runs_inside_one_transaction_so_the_dry_run_can_rehearse_it(string context)
+    {
+        using var db = Create(context);
+        var violations = new List<string>();
+        foreach (var id in db.GetService<IMigrationsAssembly>().Migrations.Keys)
+        {
+            foreach (var command in SchemaVersionGate.UpCommands(db, id))
+            {
+                if (command.TransactionSuppressed)
+                    violations.Add($"{context} {id}: runs outside a transaction: {Excerpt(command.CommandText)}");
+                violations.AddRange(NonTransactional(command.CommandText).Select(what => $"{context} {id}: {what}: {Excerpt(command.CommandText)}"));
+            }
+        }
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Theory]
+    [InlineData("CREATE INDEX CONCURRENTLY \"IX_x\" ON \"Tenants\" (\"Name\")")]
+    [InlineData("vacuum analyze \"Tenants\"")]
+    [InlineData("ALTER TYPE mood ADD VALUE 'ok'")]
+    [InlineData("COMMIT;")]
+    [InlineData("ALTER SYSTEM SET work_mem = '1GB'")]
+    [InlineData("CREATE TABLESPACE t LOCATION '/x'")]
+    public void The_transaction_lint_catches_statements_a_transaction_block_refuses(string sql)
+    {
+        Assert.NotEmpty(NonTransactional(sql));
+    }
+
+    [Theory]
+    [InlineData("CREATE UNIQUE INDEX \"IX_Concurrently\" ON \"Commit\" (\"Vacuum\")")]
+    [InlineData("DO $$ BEGIN IF (SELECT 1) = 2 THEN RAISE EXCEPTION 'x'; END IF; END $$;")]
+    public void The_transaction_lint_ignores_quoted_identifiers_and_do_blocks(string sql)
+    {
+        Assert.Empty(NonTransactional(sql));
+    }
+
+    /// <summary>
+    /// The dry run's commands are exactly the ones EF's migrator generates for the real apply,
+    /// text and transaction flag, for every migration of both contexts.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Contexts))]
+    public void The_dry_run_runs_exactly_what_the_migrator_runs(string context)
+    {
+        using var db = Create(context);
+        var migrator = db.GetService<IMigrator>();
+        var generateUpSql = typeof(Migrator).GetMethod("GenerateUpSql",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var assembly = db.GetService<IMigrationsAssembly>();
+        foreach (var (id, type) in assembly.Migrations)
+        {
+            var migration = assembly.CreateMigration(type, db.Database.ProviderName!);
+            var expected = (IReadOnlyList<MigrationCommand>)generateUpSql.Invoke(migrator, [migration, MigrationsSqlGenerationOptions.Default])!;
+            var actual = SchemaVersionGate.UpCommands(db, id);
+            Assert.Equal(expected.Select(c => (c.CommandText, c.TransactionSuppressed)), actual.Select(c => (c.CommandText, c.TransactionSuppressed)));
+        }
+    }
+
+    /// <summary>What in <paramref name="sql"/>, outside quoted identifiers, cannot run inside a transaction block.</summary>
+    private static List<string> NonTransactional(string sql)
+    {
+        var text = Regex.Replace(sql, "\"(?:[^\"]|\"\")*\"", "\"\"");
+        return NonTransactionalSql.Where(p => p.Pattern.IsMatch(text)).Select(p => p.What).ToList();
+    }
+
+    private static readonly (Regex Pattern, string What)[] NonTransactionalSql =
+    [
+        (Word(@"CONCURRENTLY"), "CONCURRENTLY"),
+        (Word(@"VACUUM"), "VACUUM"),
+        (Word(@"ADD\s+VALUE"), "ALTER TYPE ... ADD VALUE"),
+        (Word(@"(?:COMMIT|ROLLBACK|SAVEPOINT)"), "transaction control"),
+        (Word(@"ALTER\s+SYSTEM"), "ALTER SYSTEM"),
+        (Word(@"(?:CREATE|DROP)\s+TABLESPACE"), "CREATE/DROP TABLESPACE"),
+        (Word(@"(?:CREATE|DROP)\s+DATABASE"), "CREATE/DROP DATABASE"),
+        (Word(@"REINDEX\s+(?:SYSTEM|DATABASE)"), "REINDEX SYSTEM/DATABASE"),
+    ];
 
     /// <summary>
     /// Every rule <paramref name="operations"/> of migration <paramref name="id"/> breaks, one line

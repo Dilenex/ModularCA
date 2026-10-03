@@ -11,7 +11,8 @@ namespace ModularCA.Database.Migrations
     /// CA issued. Refuses (P1-P3) while two CAs share a label, a label up to case, or a name, and
     /// while an enabled protocol configuration (P4) or certificate template (P5) of a live X.509 CA
     /// names a signing profile that does not issue from that CA's current certificate, which 0.4.0
-    /// resolution refuses; then
+    /// resolution refuses. Label is citext, so P1 compares it as text (exact duplicates) and P2
+    /// reports the case-only ones; Name is citext and P3 compares it as its unique index will. Then
     /// replaces the per-tenant and instance-only unique indexes with plain ones, adds a raw-SQL
     /// unique index on <c>lower("Label")</c> (outside the EF model) so case cannot be raced past
     /// the application check, and drops the tenant quota columns, whatever they hold. Not
@@ -41,7 +42,7 @@ namespace ModularCA.Database.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             // P1
-            var p1 = Duplicates("""ca."Label" """, "Label");
+            var p1 = Duplicates("""ca."Label"::text""", "Label");
             migrationBuilder.FailIf(p1.Condition,
                 "This instance has {0} CA label(s) used by more than one CA, counting soft-deleted CAs: {1}. From 0.4.0 a label "
                 + "names one CA across the instance; it is the path of its CRL, OCSP, AIA and enrolment URLs." + Rename,

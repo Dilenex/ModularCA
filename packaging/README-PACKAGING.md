@@ -108,6 +108,16 @@ is a wait, or in-process retries of a migration that failed on a transient error
 after `Schema.WaitSeconds`, and systemd retries it. `preinst` warns about this on upgrade and tells you
 to back up first.
 
+Unlike `install.sh`, the package runs no upgrade check before it replaces the binary: `preinst`
+runs before the new build is unpacked, and a refusal in `postinst` would come after dpkg has
+replaced the old one. This is a decision, not a gap. The service dry-runs every pending migration
+of both databases in one rolled-back transaction before it applies the first. A refusal therefore
+exits 3 with nothing applied, and the database stays on the old schema, ready for the old package.
+`postinst` does not run `--upgrade-check` for information either: it would run a second full
+rehearsal, holding the migrations' locks inside dpkg, moments before the service's own, and could
+change nothing. To check first, run the check from an unpacked copy of the package: see "Upgrading
+to 0.4.0" in `README-DEPLOY.md`.
+
 ## The one database step the package takes: schema ownership
 
 Before 0.4.0 the setup wizard and `--bootstrap` built PostgreSQL installs whose tables the

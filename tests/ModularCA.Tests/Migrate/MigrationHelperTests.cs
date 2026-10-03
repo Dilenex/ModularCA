@@ -263,4 +263,17 @@ public class MigrationHelperTests
         // require would be a bootstrap deadlock and disable would be a choice nobody made.
         Assert.Equal("prefer", CommandLine.Parse(MinimalArgs()).TargetSslMode);
     }
+
+    /// <summary>
+    /// The tool's own connections as the runtime roles use the mode it writes to db.yaml, not the
+    /// <c>Require</c> a bare <see cref="ModularCA.Shared.Models.Config.DbInstance"/> defaults to.
+    /// </summary>
+    [Fact]
+    public void The_runtime_role_instances_carry_the_target_tls_mode()
+    {
+        var options = CommandLine.Parse(MinimalArgs().Concat(["--target-ssl-mode", "disable"]).ToArray());
+
+        Assert.Equal("disable", options.AppInstance("x").SslMode);
+        Assert.Equal("disable", options.AuditInstance("x").SslMode);
+    }
 }

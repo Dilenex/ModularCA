@@ -71,7 +71,7 @@ public class MigrationRunTests
     public async Task A_refusal_by_a_later_migration_is_the_runs_failure_and_is_rolled_back()
     {
         var refusal = "migration 20260929051025_FoldSystemTenant of the application database failed on the copied data: "
-            + "PostgresException P0001: This instance has 2 organisation tenants (Acme, Globex).";
+            + "PostgresException P0001: This instance has 2 SecurityPolicy rows.";
         var stages = new FakeStages { ApplyThrows = new MigrationFailedException(refusal) };
         var (ok, errors) = await RunAsync(stages);
 

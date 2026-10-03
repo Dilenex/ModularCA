@@ -50,12 +50,64 @@ The wizard prints a one-time setup token to the service log:
 
 ## Upgrading
 
-Re-run `install.sh`. It stops `modularca` and `modularca-signer` if they are running, replaces
-binaries and `wwwroot`, leaves `config/` and `keystores/` alone, and starts again the units that
-were running. Database migrations are applied by the service when it starts.
+Re-run `install.sh`. It stops `modularca` and `modularca-signer` if they are running, then runs
+the **new** build's `--upgrade-check` (below) as the service account against the installed
+`config/`, before it replaces anything. If the check does not pass, it prints the check's report
+and "the upgrade would be refused; nothing was changed", starts again the units it stopped, on
+the build still installed, and exits with the check's status (3 refused, 75 a database could not
+be reached). If it passes, it replaces binaries and `wwwroot`, leaves `config/` and `keystores/`
+alone, and starts again the units that were running. Database migrations are applied by the
+service when it starts. A fresh install (no `config/db.yaml`) has nothing to check.
+
+`sudo ./install.sh --skip-upgrade-check` installs without the check, with a warning. Use it only in
+an emergency, such as a database you cannot reach from this host during the install. The service
+still dry-runs every pending migration when it starts and applies nothing if one refuses, but it
+then exits 3 on the new build, and going back means reinstalling the previous tarball.
 
 Take a backup first — the CA private keys are the part you cannot recreate. Dump both databases
 too (`pg_dump -Fc`); the dump is how you go back if a migration cannot be completed.
+
+### Checking an upgrade before installing it
+
+    sudo -u modularca <new build>/ModularCA.API --upgrade-check --config-dir /opt/modularca/config
+
+`install.sh` runs exactly this. Run it as the service account, never as root, from a directory
+that account can read. The tarball carries no executable bits, so `install.sh` copies the build
+into a root-owned directory beside `/opt/modularca` first. `--config-dir` names the installed
+configuration; without it the binary reads the `config/` beside itself. The check uses `db.yaml`'s
+runtime roles, as the service does, and the `Schema` time budgets in `config.yaml`. For each
+database it reports the schema (current, pending migrations, newer than the build, no history,
+missing), the ownership probe and its warnings, and a **dry run**: every pending migration, history
+inserts included, in one transaction that is then rolled back. The last line is the verdict:
+
+| Exit | Verdict | Meaning |
+|---|---|---|
+| 0 | `UPGRADE CHECK: PASS` | every pending migration would apply cleanly, or nothing is pending |
+| 3 | `UPGRADE CHECK: REFUSED` | a migration refuses (each refusal named, with its message), the schema is newer than the build, ownership is not sound, or the configuration cannot be used |
+| 75 | `UPGRADE CHECK: UNREACHABLE` | a database could not be reached, or was locked; try again |
+
+It applies nothing. While its dry run runs, it holds the locks the migrations take, as the upgrade
+itself would, so run it with the units stopped, as `install.sh` does, on a large database.
+
+The dry run does not stop at the first refusal. It runs each statement under its own savepoint,
+so one run lists every precondition that refuses, in every pending migration, and you can fix them
+all before checking again. The report numbers them ("1 of 3") and quotes each message as the
+migration raises it. Exit 0 means every statement of every pending migration ran; if the check
+had to skip a statement or could not reach one, it exits 3. The other wording:
+
+- **"also found"** marks every refusal after the first. Each is real on the data as it is now, but
+  its outcome may change once the earlier ones are fixed. For example, two CAs with the same label
+  also share it up to case, so `InstanceUniqueCaNames` P1 and P2 both list them; renaming one CA
+  fixes both.
+- **"Skipped: the rest of migration X"** follows a refusal whose migration then failed on a later
+  statement, typically because that statement needs the refusal fixed, as a unique index needs the
+  duplicates gone. Those steps are checked once the refusal is fixed.
+- **"Stopped: ... The checks after this point could not run"** is an error that is not a refusal.
+  The check cannot go on past it, so migrations after it were not checked; "which may follow from
+  the steps skipped above" says it is likely a consequence of a skip. Fix what is listed and check
+  again to see the rest.
+
+The service's own dry run at start (below) lists the same, in the journal.
 
 ### What the service checks when it starts
 
@@ -65,10 +117,21 @@ operator sees:
 
 | Outcome | Exit status | What happens |
 |---|---|---|
-| Everything current, or the control role applied the pending migrations | — | starts |
+| Everything current, or the control role dry-ran and then applied the pending migrations | — | starts |
 | Database unreachable, locked by a migration, or (enrollment, validation, signer) waiting for the control role's migrations | — then **75** | waits up to `Schema.WaitSeconds` (900 s), then exits and systemd retries |
-| A migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
+| The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
+| A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
 | Schema newer than this build, tables without history, wrong password, `pg_hba.conf` refusal, TLS failure, tables the runtime role does not own, a migration that failed for good, PostgreSQL older than 14 | **3** | not retried (`RestartPreventExitStatus=3`); the journal says why and prints the fix |
+
+The control role applies nothing it has not rehearsed. Before the first migration it runs every
+pending migration of both databases in one transaction per database and rolls it back. One refusal
+anywhere stops the start with nothing applied, so a precondition in the fourth migration can no
+longer leave the first three applied and the database half-upgraded. The dry run still reports
+every refusal it finds, as `--upgrade-check` does; the apply, when it runs, stops at its first
+error. PostgreSQL DDL is
+transactional, so the rehearsal runs the same statements as the real apply. A migration that would
+have to run outside a transaction cannot be rehearsed. The service refuses it as a defective build,
+and the migration lint keeps one from being written.
 
     journalctl -u modularca -n 100
 
@@ -92,9 +155,12 @@ has.
 
 #### Checklist
 
-Follow it in order, on staging first and then on production. Every check runs with the build you
-run now and changes nothing. An install already on a 0.4.0 pre-release has passed the checks of the
-stages it has; each migration refuses anyway, changing nothing, if a check was missed.
+Follow it in order, on staging first and then on production. Nothing in it changes the database
+until the control role starts on 0.4.0, and even that applies nothing unless every migration
+passes its dry run. `install.sh` runs the same dry run before it replaces anything
+(`--upgrade-check`, above), so the SQL in step 2 is an optional preview: it needs only the build
+you run now, and can be run before the tarball is even copied to the host. An install already on a
+0.4.0 pre-release has passed the checks of the stages it has.
 
 1. **Back up.** Take the usual backup (the keystores and `config/` are what you cannot recreate),
    then dump both databases. The dumps are the only way back: no 0.4.0 migration has a downgrade.
@@ -102,7 +168,7 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
        sudo -u postgres pg_dump -Fc -d '<app database>' -f ~postgres/modularca-app-pre-0.4.0.dump
        sudo -u postgres pg_dump -Fc -d '<audit database>' -f ~postgres/modularca-audit-pre-0.4.0.dump
 
-2. **Run the read-only pre-checks** in `sudo -u postgres psql -X -d '<app database>'`. Each one
+2. **Optionally, preview with the read-only pre-checks** in `sudo -u postgres psql -X -d '<app database>'`. Each one
    mirrors a migration precondition, named in its label, and passes when it returns no rows; check
    n passes when it prints no notice. The first line makes the session read-only. What each one
    guards is under "What changes" below. On an install already on a 0.4.0 pre-release, a check
@@ -116,9 +182,6 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
    -- b. FoldSystemTenant P1: exactly one system tenant, soft-deleted ones counted, unless there are no tenants
    SELECT (SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") AS system_tenants
     WHERE (SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") > 1 OR ((SELECT count(*) FROM "Tenants" WHERE "IsSystemTenant") = 0 AND EXISTS (SELECT 1 FROM "Tenants"));
-   -- c. FoldSystemTenant P2: at most one organisation tenant that is not soft-deleted
-   SELECT "Name" FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted"
-      AND (SELECT count(*) FROM "Tenants" WHERE NOT "IsSystemTenant" AND NOT "IsDeleted") > 1;
    -- d. FoldSystemTenant P3: at most one security policy row
    SELECT "Id", "UpdatedAt" FROM "SecurityPolicy" WHERE (SELECT count(*) FROM "SecurityPolicy") > 1;
    -- e. FoldSystemTenant P4: open ceremonies naming the system tenant
@@ -146,8 +209,10 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
    -- j. FoldSystemTenant P9: certificate profiles on the system tenant bound to no CA
    SELECT "Name" FROM "CertProfiles"
     WHERE "TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant") AND "CertificateAuthorityId" IS NULL AND NOT "IsCaProfile";
-   -- k. InstanceUniqueCaNames P1, P2, P3: CA labels (ignoring case) or names shared, deleted CAs included
-   SELECT 'label' AS clash, lower(ca."Label") AS value, string_agg(ca."Name"::text, ', ') AS cas
+   -- k. InstanceUniqueCaNames P1, P2, P3: CA labels shared exactly or up to case, or names shared, deleted CAs included
+   SELECT 'label' AS clash, ca."Label"::text AS value, string_agg(ca."Name"::text, ', ') AS cas
+     FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY ca."Label"::text HAVING count(*) > 1
+   UNION ALL SELECT 'label, any case', lower(ca."Label"), string_agg(ca."Label"::text || ' (' || ca."Name"::text || ')', ', ')
      FROM "CertificateAuthorities" ca WHERE ca."Label" IS NOT NULL GROUP BY lower(ca."Label") HAVING count(*) > 1
    UNION ALL SELECT 'name', min(ca."Name"::text), string_agg(coalesce(ca."Label"::text, '-'), ', ')
      FROM "CertificateAuthorities" ca WHERE ca."Name" IS NOT NULL GROUP BY ca."Name" HAVING count(*) > 1;
@@ -225,17 +290,22 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
        sudo systemctl stop modularca modularca-signer
        systemctl is-active modularca modularca-signer     # both inactive
 
-4. **Install on the control host and start the control role alone.** `install.sh` starts nothing
-   when nothing was running; the `.deb` upgrade from 0.3.x starts `modularca` itself (see below),
-   which on the control host is this step.
+4. **Install on the control host and start the control role alone.** `install.sh` first runs the
+   new build's `--upgrade-check`, which dry-runs all four migrations; if any refuse, it lists every
+   precondition that refuses and what each found, changes nothing and exits 3. Fix the data with
+   the build you run now and run `install.sh` again; if the report says checks could not run, the
+   next run may find more. `install.sh` starts nothing when nothing was running; the
+   `.deb` upgrade from 0.3.x starts `modularca` itself (see below), which on the control host is
+   this step.
 
        sudo systemctl start modularca
        journalctl -u modularca -n 200 --no-pager
 
-   The journal names each migration applied: `RetireTenantHostnames`, `FoldSystemTenant`,
-   `InstanceUniqueCaNames` and `RenameTenantToSpace` on a 0.3.x database. A refusal stops the
-   service with status 3 and names the precondition and what it found, with nothing of that
-   migration applied: fix it and start again, or restore the dumps and run the previous release.
+   The journal reports the dry run, then names each migration applied: `RetireTenantHostnames`,
+   `FoldSystemTenant`, `InstanceUniqueCaNames` and `RenameTenantToSpace` on a 0.3.x database. A
+   refusal stops the service with status 3, and the journal lists every refusal, each with the
+   migration, the precondition and what it found. Nothing is applied to either database: the dry run catches a refusal in any of the four
+   before the first is applied. Fix it and start again, or run the previous release.
    An install made by the wizard or `--bootstrap` before 0.4.0 is refused for ownership first;
    repair it as below. Expect warnings for a legacy `TenantId` key, a retired
    `AllowMultipleOrganizations` and each LDAP mapping to an `org-*` group.
@@ -289,6 +359,18 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
   if it was running. If the node was stopped on purpose, stop it again afterwards
   (`sudo systemctl stop modularca`), or `systemctl disable modularca` before upgrading. From 0.4.0
   on, `prerm` records which units were running and the upgrade starts exactly those.
+- **The `.deb` has no installer-side upgrade check.** Its `preinst` runs before the new binary is
+  unpacked, and by `postinst` dpkg has already replaced the old one, so a refusal there could not
+  keep the installed build. The `.deb` relies on the service's own dry run when it starts, which
+  applies nothing on a refusal. `postinst` does not run `--upgrade-check` either: it would hold the
+  migrations' locks for a second full rehearsal inside dpkg, moments before the service's own,
+  and could change nothing. To check before installing, unpack the package and run the check from
+  the unpacked copy:
+
+      d=$(sudo mktemp -d /opt/.modularca-deb-check.XXXXXX) && sudo dpkg-deb -x modularca_<version>_amd64.deb "$d"
+      sudo chmod -R go+rX "$d" && sudo chmod 0755 "$d/opt/modularca/ModularCA.API"
+      sudo -u modularca "$d/opt/modularca/ModularCA.API" --upgrade-check --config-dir /opt/modularca/config
+      sudo rm -rf "$d"
 - **Tenant hostnames are gone.** 0.4.0 serves only the instance's own names, under its web TLS
   certificate. Its first migration, `RetireTenantHostnames`, drops the `TenantHostnames` table and
   refuses (status 3, nothing applied) while the table has any row (check a); the journal says how
@@ -307,8 +389,10 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
 - **The system tenant is folded into the instance.** The `FoldSystemTenant` migration moves the
   system signing CA, SSH CAs, the system groups and those CAs' groups to the instance (no space),
   copies the system tenant's CA policy to the security policy as it is, and deletes the tenant and
-  its four tenant-wide `org-system-*` groups. It changes nothing and stops the service (status 3,
-  the journal names the precondition and what it found) unless all of these hold (checks b to j):
+  its four tenant-wide `org-system-*` groups. Every organisation tenant becomes a space, however
+  many there are, with its CAs, groups, profiles and policy as they were. It changes nothing and
+  stops the service (status 3, the journal names the precondition and what it found) unless all of
+  these hold (checks b and d to j; there is no check c):
   - **No open ceremony names the system tenant.** Execute or cancel every Pending or Approved
     ceremony on a system CA (the system signing CA, an SSH CA) or on the System tenant's policy,
     and every controlled-user ceremony on those. The migration never rewrites a ceremony.
@@ -320,15 +404,15 @@ stages it has; each migration refuses anyway, changing nothing, if a check was m
     role assignments given to users directly across the whole System tenant (grants on one of
     its CAs are fine), service identities scoped to the whole System tenant (scope them to a CA),
     and certificate profiles on the System tenant that are bound to no CA.
-  - **One organisation.** An instance with more than one organisation tenant is refused,
-    whatever `Features.AllowMultipleOrganizations` says. A soft-deleted tenant does not count; a
-    disabled one does.
   - **One security policy row.**
   - **Every group is in an existing tenant, and a CA's group is in its CA's tenant**, wherever the
     system tenant is involved. Correct each group listed.
 
   After the upgrade, the instance's policy (Settings, Security Policy, Instance CA policy) governs
-  the instance CAs only and the space keeps its own; nothing is merged. At its first start
+  the instance CAs only and each space keeps its own; nothing is merged. Pre-releases of 0.4.0
+  also refused an instance with more than one organisation tenant. That refusal was dropped: with
+  independent scopes and several spaces per instance it guarded nothing, and staging had two
+  organisations. At its first start
   the control role seals each per-tenant audit chain and anchors its final hash in the instance
   chain, where every new record now goes; `GET /api/v1/admin/audit/verify/chains` reports them.
   Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the

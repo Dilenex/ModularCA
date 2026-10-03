@@ -20,9 +20,9 @@ public class FrozenBaselineTests
         { "ModularCA.Database/Migrations/Audit/20260919181510_InitialAuditSchema.Designer.cs", "65f03a5cd541e9cdadf1fd9ac49c9787a7e492955f2a969badd6985539defd5c" },
         { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.cs", "e2bbdaf780a0dadea929fc14e4af18bfe42d8958d5f0f3c39034816ca84cda72" },
         { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.Designer.cs", "ac3faaa65310b11f75e65c4609fb88b959424a8e506faa769959a49d855ffecb" },
-        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.cs", "09de8f2e88a6e0fd44d43999479410c7f2cc6c5cd5ccd2e6cfe48819fc348ca0" },
+        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.cs", "75df215642b49f5138a02bb89911f4685caf1ba4f3da6b0689ea59838e0578d3" },
         { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.Designer.cs", "d551ca553511bb480ed49d6e7f65eb374a32b56557d947e53ad83b5c1d88f446" },
-        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.cs", "682c1be3e0dd9fdc9ef5aaf909fb59a3f55fb0b6e2ea43e065e968fa7380687d" },
+        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.cs", "9dede60cd637444e3e270f4fc8baeec28b689800cb075c06b3de35bcb5abba5b" },
         { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.Designer.cs", "2a9c245bd5c2c95195915be692f7936f7cc3e6e0aa0d70cc3d209967712863cd" },
     };
 

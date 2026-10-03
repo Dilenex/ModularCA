@@ -15,6 +15,19 @@ namespace ModularCA.API.Startup;
 /// <param name="Instance">Its <c>db.yaml</c> connection settings: the runtime role.</param>
 public sealed record SchemaTarget(string Name, DatabaseKind Kind, DbInstance Instance);
 
+/// <summary>What <c>--upgrade-check</c> concluded for one database.</summary>
+public enum UpgradeReadiness
+{
+    /// <summary>The upgrade would apply cleanly, or there is nothing to apply.</summary>
+    Clean,
+
+    /// <summary>The control role's start would refuse, or the operator must act first.</summary>
+    Refused,
+
+    /// <summary>The database could not be reached, or was locked: try again.</summary>
+    Unreachable,
+}
+
 /// <summary>
 /// Applies <see cref="SchemaVersionGate"/> and <see cref="SchemaOwnership"/> at process start,
 /// to every database the process uses, before anything is written to either.
@@ -28,11 +41,14 @@ public sealed record SchemaTarget(string Name, DatabaseKind Kind, DbInstance Ins
 /// database, a migration in progress, or (a non-control role) migrations only the control role
 /// applies are waited for, up to <c>Schema.WaitSeconds</c>, then the process exits with
 /// <see cref="TempFailExitCode"/> so the service manager retries. The control role refuses to
-/// migrate a database whose runtime role does not own it. Phase 3, the control role only,
-/// applies the application database's migrations, then the audit database's, each on its own
-/// connection with the migration time budget; a transient failure goes back to phase 1 after a
-/// backoff, within <c>Schema.WaitSeconds</c>, instead of exiting. Phase 4 reads both again. A
-/// heartbeat extends the systemd start timeout every 20 s through every phase.
+/// migrate a database whose runtime role does not own it. Phase 3, the control role only, first
+/// dry-runs every pending migration of the application database, then of the audit database
+/// (<see cref="SchemaVersionGate.DryRunPendingAsync"/>, rolled back), and refuses having applied
+/// nothing if one fails; it then applies the application database's migrations, then the audit
+/// database's, each on its own connection with the migration time budget. A transient failure
+/// in either step goes back to phase 1 after a backoff, within <c>Schema.WaitSeconds</c>, instead
+/// of exiting. Phase 4 reads both again. A heartbeat extends the systemd start timeout every 20 s
+/// through every phase.
 /// </para>
 /// <para>
 /// A missing or empty database is not refused: bootstrap creates it, and the control role's
@@ -83,10 +99,12 @@ public static class SchemaStartup
 
     /// <summary>
     /// Checks every database in <paramref name="targets"/> against this build and, when
-    /// <paramref name="appliesMigrations"/> is true, applies what is pending. A migration that
-    /// fails on a transient error (a lock timeout, a deadlock, a lost or refused connection) is
-    /// retried in process, from phase 1, with backoff, for up to <c>Schema.WaitSeconds</c> from
-    /// the first such failure. A systemd heartbeat runs throughout. Returns the exit code to
+    /// <paramref name="appliesMigrations"/> is true, dry-runs everything pending in every database,
+    /// then applies it, or refuses having applied nothing when a dry run fails. A refusal in one
+    /// database does not stop the others' dry runs, so the journal lists every refusal found. A dry run or a
+    /// migration that fails on a transient error (a lock timeout, a deadlock, a lost or refused
+    /// connection) is retried in process, from phase 1, with backoff, for up to
+    /// <c>Schema.WaitSeconds</c> from the first such failure. A systemd heartbeat runs throughout. Returns the exit code to
     /// stop with (<see cref="ExitCode"/>, or <see cref="TempFailExitCode"/> once a wait or the
     /// retries run out), or <see langword="null"/> to continue starting.
     /// </summary>
@@ -151,7 +169,24 @@ public static class SchemaStartup
             }
 
             string? transient = null;
+            int? refused = null;
             foreach (var o in toApply)
+            {
+                var outcome = await DryRunAsync(o, config, heartbeat, ct);
+                if (outcome.Exit is int dryRunExit)
+                {
+                    refused ??= dryRunExit;
+                    continue;
+                }
+                if (outcome.Retry is { } retry && refused is null)
+                {
+                    transient = retry;
+                    break;
+                }
+            }
+            if (refused is int refusedExit)
+                return refusedExit;
+            foreach (var o in transient is null ? toApply : [])
             {
                 var outcome = await ApplyAsync(o, config, heartbeat, ct);
                 if (outcome.Exit is int applyExit)
@@ -230,6 +265,146 @@ public static class SchemaStartup
         }
         return sound ? 0 : ExitCode;
     }
+
+    /// <summary>
+    /// The <c>--upgrade-check</c> verb: reads each database as its runtime role, as phase 1 does,
+    /// and where migrations are pending checks the model and dry-runs them on the migration
+    /// connection (<see cref="SchemaVersionGate.DryRunPendingAsync"/>, rolled back). Prints each
+    /// database's schema, ownership and dry-run result, every refusal the dry run found listed
+    /// with its message, then a one-line verdict. Applies nothing. Returns
+    /// <see cref="UpgradeCheckExitCode"/> of the findings.
+    /// </summary>
+    /// <param name="targets">The databases the control role checks, the application database first.</param>
+    /// <param name="config">The migration time budgets the dry run runs under.</param>
+    /// <param name="output">Where the report goes; the console when null.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task<int> UpgradeCheckAsync(
+        IReadOnlyList<SchemaTarget> targets, SchemaConfig? config, TextWriter? output = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        config ??= new SchemaConfig();
+        output ??= Console.Out;
+        var findings = new List<UpgradeFinding>();
+        foreach (var target in targets)
+        {
+            var instance = target.Instance;
+            output.WriteLine($"{target.Name}: database '{instance.Database}' on {instance.Host}:{instance.Port} as '{instance.Username}'");
+            var finding = await AssessUpgradeAsync(await ObserveAsync(target, appliesMigrations: true, ct), config, output, ct);
+            output.WriteLine($"  {finding.Readiness switch
+            {
+                UpgradeReadiness.Clean => "ok",
+                UpgradeReadiness.Refused => "REFUSED",
+                _ => "UNREACHABLE",
+            }}: {finding.Detail.ReplaceLineEndings(Environment.NewLine + "    ")}");
+            findings.Add(finding);
+        }
+        output.WriteLine(UpgradeCheckVerdict(findings));
+        return UpgradeCheckExitCode(findings.Select(f => f.Readiness));
+    }
+
+    /// <summary>
+    /// The exit status of <c>--upgrade-check</c>: <see cref="ExitCode"/> when any database would
+    /// be refused, otherwise <see cref="TempFailExitCode"/> when any could not be reached or was
+    /// locked, otherwise 0.
+    /// </summary>
+    internal static int UpgradeCheckExitCode(IEnumerable<UpgradeReadiness> readiness)
+    {
+        var all = readiness.ToList();
+        return all.Contains(UpgradeReadiness.Refused) ? ExitCode
+            : all.Contains(UpgradeReadiness.Unreachable) ? TempFailExitCode
+            : 0;
+    }
+
+    /// <summary>The final one-line verdict of <c>--upgrade-check</c>.</summary>
+    internal static string UpgradeCheckVerdict(IReadOnlyList<UpgradeFinding> findings)
+    {
+        string Of(UpgradeReadiness r) => string.Join("; ", findings.Where(f => f.Readiness == r).Select(f => f.Summary));
+        return UpgradeCheckExitCode(findings.Select(f => f.Readiness)) switch
+        {
+            ExitCode => $"UPGRADE CHECK: REFUSED ({Of(UpgradeReadiness.Refused)}). Nothing was changed.",
+            TempFailExitCode => $"UPGRADE CHECK: UNREACHABLE ({Of(UpgradeReadiness.Unreachable)}); try again. Nothing was changed.",
+            _ => findings.Sum(f => f.Pending) is var n and > 0
+                ? $"UPGRADE CHECK: PASS ({n} pending migration(s) would apply cleanly). Nothing was changed."
+                : "UPGRADE CHECK: PASS (nothing to apply). Nothing was changed.",
+        };
+    }
+
+    /// <summary>
+    /// What <c>--upgrade-check</c> concludes for one database from <paramref name="o"/>, refusing
+    /// exactly what the control role's start refuses, and an unsound ownership even with nothing
+    /// pending. Prints the schema, ownership and dry-run lines to <paramref name="output"/> as it goes.
+    /// A dry run that found a refusal is refused even when it then stopped on a transient error.
+    /// </summary>
+    private static async Task<UpgradeFinding> AssessUpgradeAsync(Observation o, SchemaConfig config, TextWriter output, CancellationToken ct)
+    {
+        var name = o.Target.Name;
+        var port = o.Target.Instance.Port;
+        UpgradeFinding Refuse(string summary, string detail) => new(name, UpgradeReadiness.Refused, $"{name}: {summary}", detail, 0);
+
+        if (o.Failure is SchemaFailureKind.Unreachable or SchemaFailureKind.MigrationInProgress)
+        {
+            var why = o.Failure == SchemaFailureKind.Unreachable ? "cannot be reached" : "is locked, most likely by a migration in progress";
+            return new(name, UpgradeReadiness.Unreachable, $"{name} {why}", $"The {name} database {why}: {SchemaFailure.Describe(o.Error!)}.", 0);
+        }
+        if (o.Failure == SchemaFailureKind.Misconfigured)
+            return Refuse("could not be read", MisconfiguredMessage(o));
+
+        var state = o.State!;
+        output.WriteLine("  schema: " + (state.Presence switch
+        {
+            DatabasePresence.Missing => "the database does not exist (bootstrap creates it)",
+            DatabasePresence.Empty => "no tables (bootstrap creates the schema)",
+            DatabasePresence.Unmanaged => "tables but no migration history",
+            _ when state.Unknown.Count > 0 => $"newer than this build: {string.Join(", ", state.Unknown)}",
+            _ when state.Pending.Count > 0 => $"{state.Applied.Count} applied; {state.Pending.Count} pending: {string.Join(", ", state.Pending)}",
+            _ => $"current ({state.Applied.Count} applied)",
+        }));
+        if (o.Ownership is { } report)
+        {
+            output.WriteLine($"  ownership: {(report.IsSound ? "sound" : "NOT sound")}; objects not owned by '{report.Role}': {report.NotOwned.Count}; "
+                + $"PostgreSQL {report.ServerVersionNum / 10000}");
+            foreach (var warning in SchemaOwnership.Warnings(report))
+                output.WriteLine($"  warning: {warning}");
+            if (report.ServerVersionNum < PostgresRoleLayout.MinimumServerVersionNum)
+                return Refuse("PostgreSQL too old", $"The {name} database runs on PostgreSQL {report.ServerVersionNum / 10000}; this release needs PostgreSQL 14 or later.");
+        }
+        if (o.Verdict is SchemaVerdict.NewerThanBuild or SchemaVerdict.Unmanaged)
+            return Refuse(o.Verdict == SchemaVerdict.NewerThanBuild ? "schema newer than this build" : "tables but no migration history",
+                SchemaVersionGate.RefusalMessage(o.Verdict.Value, state, name)!);
+        if (o.Ownership is { IsSound: false } unsound)
+            return Refuse("ownership not sound", unsound.Unusable || state.Pending.Count > 0
+                ? SchemaOwnership.RefusalMessage(unsound, state.Pending, port)
+                : SchemaOwnership.DriftWarning(unsound, port));
+        if (o.Verdict == SchemaVerdict.Unbootstrapped)
+            return new(name, UpgradeReadiness.Clean, name, "nothing to upgrade: bootstrap creates this database's schema.", 0);
+        if (o.Verdict != SchemaVerdict.ApplyPending)
+            return new(name, UpgradeReadiness.Clean, name, "current: nothing to apply.", 0);
+
+        await using var db = CreateMigrationContext(o.Target, config);
+        if (db.Database.HasPendingModelChanges())
+            return Refuse("defective build", $"This build's {name} model differs from its latest migration; the build is defective.");
+        var timeout = config.MigrationCommandTimeoutSeconds > 0 ? config.MigrationCommandTimeoutSeconds : (int?)null;
+        var result = await SchemaVersionGate.DryRunPendingAsync(db, ct);
+        if (result.Passed)
+        {
+            output.WriteLine($"  dry run: passed; {result.Rehearsed.Count} migration(s) ran in one transaction and were rolled back.");
+            return new(name, UpgradeReadiness.Clean, name, $"would apply {result.Rehearsed.Count} migration(s) cleanly.", result.Rehearsed.Count);
+        }
+        var message = SchemaVersionGate.DryRunFailedMessage(name, result, timeout);
+        var summary = SchemaVersionGate.DryRunSummary(result);
+        output.WriteLine("  dry run: " + summary);
+        if (result.Refusals.Count == 0 && result.Error is { } error && SchemaFailure.TransientForMigration(error))
+            return new(name, UpgradeReadiness.Unreachable, $"{name} dry run hit a transient error", message, 0);
+        return Refuse(summary, message);
+    }
+
+    /// <summary>What <c>--upgrade-check</c> concluded for one database.</summary>
+    /// <param name="Name">The database, as named in the messages.</param>
+    /// <param name="Readiness">The conclusion.</param>
+    /// <param name="Summary">A few words for the one-line verdict.</param>
+    /// <param name="Detail">The full reason, with its fix.</param>
+    /// <param name="Pending">The migrations that would apply cleanly.</param>
+    internal sealed record UpgradeFinding(string Name, UpgradeReadiness Readiness, string Summary, string Detail, int Pending);
 
     /// <summary>What phase 1 saw for one database.</summary>
     private sealed class Observation(SchemaTarget target)
@@ -436,11 +611,44 @@ public static class SchemaStartup
             + $"'{instance.Username}': {cause}.{hint} Nothing was applied to either database.";
     }
 
-    /// <summary>How phase 3 ended for one database: an exit code, a transient failure to retry, or neither when applied.</summary>
+    /// <summary>How a step of phase 3 ended for one database: an exit code, a transient failure to retry, or neither when it passed.</summary>
     private sealed record ApplyOutcome(int? Exit, string? Retry)
     {
-        /// <summary>Every pending migration was applied.</summary>
+        /// <summary>The step passed: the dry run, or every pending migration was applied.</summary>
         public static readonly ApplyOutcome Applied = new(null, null);
+    }
+
+    /// <summary>
+    /// The first step of phase 3 for one database: rehearses every pending migration in one
+    /// transaction on a migration connection and rolls it back. Refusals, listed in one message
+    /// with everything else the dry run found, or a migration that cannot be rehearsed, return
+    /// <see cref="ExitCode"/> with nothing applied to either database; a transient failure with no
+    /// refusal before it returns its description for the caller to retry.
+    /// </summary>
+    private static async Task<ApplyOutcome> DryRunAsync(Observation o, SchemaConfig config, Heartbeat heartbeat, CancellationToken ct)
+    {
+        var name = o.Target.Name;
+        heartbeat.Update($"Dry-running {o.State!.Pending.Count} {name} migration(s)");
+        DryRunResult result;
+        await using (var db = CreateMigrationContext(o.Target, config))
+            result = await SchemaVersionGate.DryRunPendingAsync(db, ct);
+
+        var timeout = config.MigrationCommandTimeoutSeconds > 0 ? config.MigrationCommandTimeoutSeconds : (int?)null;
+        if (result.Passed)
+        {
+            Info($"Dry run passed: {result.Rehearsed.Count} {name} migration(s) ran in one transaction and were rolled back.");
+            return ApplyOutcome.Applied;
+        }
+        var message = SchemaVersionGate.DryRunFailedMessage(name, result, timeout, "either database");
+        if (result.Refusals.Count == 0 && result.Error is { } error && SchemaFailure.TransientForMigration(error))
+            return new ApplyOutcome(null, message);
+        var advice = result.Error is { } e && SchemaFailure.IsStatementTimeout(e)
+            ? " If the statement needs longer, raise Schema.MigrationCommandTimeoutSeconds (0 means no limit)."
+            : "";
+        Fatal(message + " Fix the cause and start again, or run the previous release." + advice);
+        if (result.Error is not null)
+            Log.Fatal(result.Error, "The dry run of the {Context} database failed at {Migration}", name, result.Migration ?? "(before any migration)");
+        return new ApplyOutcome(ExitCode, null);
     }
 
     /// <summary>

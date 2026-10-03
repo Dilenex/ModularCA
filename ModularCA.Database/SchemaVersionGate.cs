@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -102,6 +103,139 @@ public sealed record MigrationFailure(
     bool LeavesNonTransactionalStatements);
 
 /// <summary>
+/// How <see cref="SchemaVersionGate.DryRunPendingAsync"/> ended. Whatever the outcome, it was
+/// rolled back and nothing was applied.
+/// </summary>
+/// <param name="Pending">The migrations the dry run found pending, in order.</param>
+/// <param name="Rehearsed">The pending migrations every command of which ran without error, in order.</param>
+/// <param name="Migration">
+/// The migration the dry run stopped at, on an error that is not a refusal or one it cannot
+/// rehearse, or <see langword="null"/> when it ran to the end or stopped before any migration ran.
+/// </param>
+/// <param name="Error">The error it stopped on, or <see langword="null"/>.</param>
+/// <param name="NotRehearsable">
+/// <paramref name="Migration"/> runs a statement outside a transaction, so it was not run.
+/// </param>
+public sealed record DryRunResult(
+    IReadOnlyList<string> Pending,
+    IReadOnlyList<string> Rehearsed,
+    string? Migration,
+    Exception? Error,
+    bool NotRehearsable)
+{
+    /// <summary>Every refusal the dry run found, in the order it found them.</summary>
+    public IReadOnlyList<DryRunRefusal> Refusals { get; init; } = [];
+
+    /// <summary>The migrations whose later commands were skipped after a refusal in them, in order.</summary>
+    public IReadOnlyList<DryRunSkip> Skipped { get; init; } = [];
+
+    /// <summary>The 1-based command of <see cref="Migration"/> the dry run stopped at, or <see langword="null"/>.</summary>
+    public int? Command { get; init; }
+
+    /// <summary>How many commands <see cref="Migration"/> has, its history insert included, or <see langword="null"/>.</summary>
+    public int? Commands { get; init; }
+
+    /// <summary>The dry run stopped before running every command: the checks after that point did not run.</summary>
+    public bool Stopped => Error is not null || NotRehearsable;
+
+    /// <summary>Every command of every pending migration ran, with no refusal and no other error.</summary>
+    public bool Passed => !Stopped && Refusals.Count == 0 && Skipped.Count == 0;
+}
+
+/// <summary>A refusal the dry run found: a precondition that raised SQLSTATE P0001.</summary>
+/// <param name="Migration">The migration whose check refused.</param>
+/// <param name="Check">
+/// The check's label in the migration's source (<see cref="MigrationCheckLabels"/>), such as
+/// "P1", or <see langword="null"/> when it has none.
+/// </param>
+/// <param name="Message">The refusal's message, verbatim.</param>
+/// <param name="AlsoFound">
+/// Found after an earlier refusal: real on the current data, but its outcome may change once the
+/// earlier ones are fixed.
+/// </param>
+public sealed record DryRunRefusal(string Migration, string? Check, string Message, bool AlsoFound);
+
+/// <summary>
+/// The rest of a migration the dry run skipped: a command that is not a refusal failed after a
+/// refusal in the same migration, most likely because of it.
+/// </summary>
+/// <param name="Migration">The migration.</param>
+/// <param name="Command">The 1-based command that failed; it and every later command of the migration were skipped.</param>
+/// <param name="Commands">How many commands the migration has, its history insert included.</param>
+/// <param name="Error">The error the command failed with.</param>
+public sealed record DryRunSkip(string Migration, int Command, int Commands, Exception Error);
+
+/// <summary>What the dry run does after a command fails.</summary>
+public enum DryRunAction
+{
+    /// <summary>Go on with the next command.</summary>
+    Continue,
+
+    /// <summary>Skip the rest of this migration and go on with the next migration.</summary>
+    SkipMigration,
+
+    /// <summary>Stop: the checks after this point cannot run.</summary>
+    Stop,
+}
+
+/// <summary>
+/// The dry run's collect mode: records each command that fails and decides what follows, so one
+/// run reports every refusal it can reach without inventing any. A refusal (SQLSTATE P0001, what a
+/// precondition raises) is recorded and the run continues. Another error in a migration that has
+/// already refused is taken as a knock-on of that refusal: the rest of the migration is skipped
+/// and the run continues with the next migration, unless the error is transient or a timeout,
+/// which no refusal causes. Any other error stops the run.
+/// </summary>
+public sealed class DryRunCollector
+{
+    /// <summary>SQLSTATE raise_exception, which <see cref="MigrationPreconditions.FailIf"/> raises.</summary>
+    public const string RefusalSqlState = "P0001";
+
+    private readonly List<DryRunRefusal> _refusals = [];
+    private readonly List<DryRunSkip> _skipped = [];
+
+    /// <summary>The refusals so far, in order.</summary>
+    public IReadOnlyList<DryRunRefusal> Refusals => _refusals;
+
+    /// <summary>The skipped migration tails so far, in order.</summary>
+    public IReadOnlyList<DryRunSkip> Skipped => _skipped;
+
+    /// <summary>
+    /// Records that command <paramref name="command"/> of <paramref name="commands"/> of
+    /// <paramref name="migration"/>, labelled <paramref name="check"/>, failed with
+    /// <paramref name="error"/>, and returns what the dry run does next.
+    /// </summary>
+    public DryRunAction Failed(string migration, int command, int commands, string? check, Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        if (IsRefusal(error))
+        {
+            _refusals.Add(new DryRunRefusal(migration, check, RefusalMessage(error), AlsoFound: _refusals.Count > 0));
+            return DryRunAction.Continue;
+        }
+        if (_refusals.Any(r => r.Migration == migration)
+            && !SchemaFailure.TransientForMigration(error) && !SchemaFailure.IsStatementTimeout(error))
+        {
+            _skipped.Add(new DryRunSkip(migration, command, commands, error));
+            return DryRunAction.SkipMigration;
+        }
+        return DryRunAction.Stop;
+    }
+
+    /// <summary>True when <paramref name="error"/> is a precondition's refusal (SQLSTATE P0001).</summary>
+    public static bool IsRefusal(Exception error) => SchemaFailure.SqlState(error) == RefusalSqlState;
+
+    /// <summary>The text a refusal raised: the PostgreSQL message, without the driver's prefix.</summary>
+    private static string RefusalMessage(Exception error)
+    {
+        for (var e = error; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException pg)
+                return pg.MessageText;
+        return error.Message;
+    }
+}
+
+/// <summary>
 /// The startup rule for schema versions, shared by every process role.
 /// </summary>
 /// <remarks>
@@ -119,10 +253,16 @@ public sealed record MigrationFailure(
 /// Only <see cref="ApplyAllForBootstrapAsync"/> and <see cref="ApplyBaselineForBootstrapAsync"/>
 /// apply a baseline, and only to an empty database.
 /// </para>
+/// <para>
+/// The control role first rehearses every pending migration with
+/// <see cref="DryRunPendingAsync"/>, in one transaction it rolls back, and applies nothing unless
+/// all of them pass.
+/// </para>
 /// </remarks>
 public static class SchemaVersionGate
 {
     private const string CreatedConcurrentlyAnnotation = "Npgsql:CreatedConcurrently";
+    private const string DryRunSavepoint = "modularca_dry_run_step";
 
     /// <summary>
     /// Reads what <paramref name="db"/>'s database holds and which migrations it records, as the
@@ -328,6 +468,254 @@ public static class SchemaVersionGate
     }
 
     /// <summary>
+    /// Rehearses every migration <paramref name="db"/>'s database lacks, in order, in ONE
+    /// transaction on <paramref name="db"/>'s connection, then rolls it back. Each migration runs
+    /// exactly the commands the real apply runs (<see cref="UpCommands"/>), its history insert
+    /// included, so a later migration sees what the earlier ones did. Takes the same history-table
+    /// lock as the real apply, then reads the history under it. Collects every refusal it can
+    /// reach instead of stopping at the first (<see cref="DryRunCollector"/>).
+    /// </summary>
+    /// <remarks>
+    /// Each command runs under its own savepoint, released when it succeeds. A command that fails
+    /// is rolled back to its savepoint, and <see cref="DryRunCollector"/> decides whether the run
+    /// continues, skips the rest of that migration, or stops. Without savepoint support the first
+    /// failure stops it. Nothing is ever committed: the transaction is rolled back and the
+    /// connection closed on every path, so no lock outlives the call. A migration with a command
+    /// that must run outside a transaction is not run, and is reported as
+    /// <see cref="DryRunResult.NotRehearsable"/>. Errors, a failure to connect
+    /// (<see cref="SchemaConnectException"/>) included, are returned in the result; only
+    /// cancellation throws.
+    /// </remarks>
+    public static async Task<DryRunResult> DryRunPendingAsync(DbContext db, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        var known = db.Database.GetMigrations().ToList();
+        var pending = new List<string>();
+        var rehearsed = new List<string>();
+        var collector = new DryRunCollector();
+        string? current = null;
+        var opened = false;
+        IDbContextTransaction? transaction = null;
+        DryRunResult Result(string? migration, Exception? error, bool notRehearsable = false, int? command = null, int? commands = null) =>
+            new(pending, rehearsed, migration, error, notRehearsable)
+            {
+                Refusals = collector.Refusals.ToList(),
+                Skipped = collector.Skipped.ToList(),
+                Command = command,
+                Commands = commands,
+            };
+        try
+        {
+            await OpenAsync(db, ct);
+            opened = true;
+            transaction = await db.Database.BeginTransactionAsync(ct);
+            var connection = db.GetService<IRelationalConnection>();
+            var history = db.GetService<IHistoryRepository>();
+            var catalog = await ReadCatalogAsync(db, ct);
+            if (!catalog.HistoryExists)
+                await RawCommand(db, history.GetCreateIfNotExistsScript()).ExecuteNonQueryAsync(connection, null, ct);
+            if (history.LockReleaseBehavior == LockReleaseBehavior.Transaction)
+                await history.AcquireDatabaseLockAsync(ct);
+            var applied = (catalog.HistoryExists ? await QueryAppliedAsync(db, catalog, ct) : []).ToHashSet(StringComparer.Ordinal);
+            pending.AddRange(known.Where(id => !applied.Contains(id)));
+
+            foreach (var id in pending)
+            {
+                current = id;
+                var commands = UpCommands(db, id);
+                if (commands.Any(c => c.TransactionSuppressed))
+                    return Result(id, null, notRehearsable: true);
+                var checks = MigrationCheckLabels.ForCommands(id, commands.Select(c => c.CommandText).ToList());
+                var clean = true;
+                for (var i = 0; i < commands.Count; i++)
+                {
+                    var (error, recovered) = await RehearseAsync(transaction, commands[i], connection, ct);
+                    if (error is null)
+                        continue;
+                    clean = false;
+                    var action = recovered
+                        ? collector.Failed(id, i + 1, commands.Count, checks[i], error)
+                        : DryRunAction.Stop;
+                    if (action == DryRunAction.Continue)
+                        continue;
+                    if (action == DryRunAction.SkipMigration)
+                        break;
+                    return Result(id, error, command: i + 1, commands: commands.Count);
+                }
+                if (clean)
+                    rehearsed.Add(id);
+            }
+            return Result(null, null);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            return Result(current, ex);
+        }
+        finally
+        {
+            if (transaction is not null)
+            {
+                try
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                }
+                catch (Exception)
+                {
+                }
+                await transaction.DisposeAsync();
+            }
+            if (opened)
+                await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>
+    /// Runs one dry-run command under its own savepoint: released when it succeeds, rolled back to
+    /// when it fails. Returns the error, or <see langword="null"/>, and whether the transaction is
+    /// still usable after it. Without savepoint support the error propagates.
+    /// </summary>
+    private static async Task<(Exception? Error, bool Recovered)> RehearseAsync(
+        IDbContextTransaction transaction, MigrationCommand command, IRelationalConnection connection, CancellationToken ct)
+    {
+        if (!transaction.SupportsSavepoints)
+        {
+            await command.ExecuteNonQueryAsync(connection, null, ct);
+            return (null, true);
+        }
+        await transaction.CreateSavepointAsync(DryRunSavepoint, ct);
+        try
+        {
+            await command.ExecuteNonQueryAsync(connection, null, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await transaction.RollbackToSavepointAsync(DryRunSavepoint, ct);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                return (ex, false);
+            }
+            return (ex, true);
+        }
+        await transaction.ReleaseSavepointAsync(DryRunSavepoint, ct);
+        return (null, true);
+    }
+
+    /// <summary>
+    /// The commands EF's migrator runs to apply migration <paramref name="migrationId"/>: the
+    /// provider's SQL for its up operations against its finalized target model, then the history
+    /// insert, flagged as EF flags them.
+    /// </summary>
+    public static IReadOnlyList<MigrationCommand> UpCommands(DbContext db, string migrationId)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        var assembly = db.GetService<IMigrationsAssembly>();
+        var migration = assembly.CreateMigration(assembly.Migrations[migrationId], db.Database.ProviderName!);
+        var model = migration.TargetModel is { } target
+            ? db.GetService<IModelRuntimeInitializer>().Initialize(target, designTime: true, validationLogger: null)
+            : null;
+        var commands = db.GetService<IMigrationsSqlGenerator>()
+            .Generate(migration.UpOperations, model, MigrationsSqlGenerationOptions.Default);
+        var insert = RawCommand(db,
+            db.GetService<IHistoryRepository>().GetInsertScript(new HistoryRow(migrationId, ProductInfo.GetVersion())),
+            commands.Any(c => c.TransactionSuppressed));
+        return [.. commands, insert];
+    }
+
+    /// <summary>
+    /// The operator-facing message for a dry run that did not pass. With no refusal, one paragraph:
+    /// where it stopped and why, or which migration cannot be rehearsed, and that nothing was
+    /// applied. With refusals, one line per refusal ("1 of N", "also found" after the first), each
+    /// with its message verbatim, then each migration whose later commands were skipped, where the
+    /// run stopped and that the checks after that point could not run, and that nothing was applied.
+    /// </summary>
+    /// <param name="contextName">Which database, for the message.</param>
+    /// <param name="result">The result of <see cref="DryRunPendingAsync"/>.</param>
+    /// <param name="commandTimeoutSeconds">The migration command timeout in force.</param>
+    /// <param name="scope">What nothing was applied to, e.g. "either database".</param>
+    public static string DryRunFailedMessage(
+        string contextName, DryRunResult result, int? commandTimeoutSeconds = null, string scope = "this database")
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var pending = result.Pending.Count > 0 ? string.Join(", ", result.Pending) : "none";
+        var footer = $"The dry run ran the pending migrations ({pending}) in one transaction and rolled it back; "
+            + $"nothing was applied to {scope}.";
+        var cause = result.Error is null ? "unknown error" : SchemaFailure.Describe(result.Error, commandTimeoutSeconds);
+        var where = result.Command is int command ? $"command {command} of {result.Commands}" : null;
+
+        if (result.Refusals.Count == 0 && result.Skipped.Count == 0)
+        {
+            if (result.NotRehearsable)
+                return $"Migration {result.Migration} of the {contextName} database runs a statement outside a transaction, so the "
+                    + $"dry run cannot rehearse it, and nothing is applied that was not rehearsed: nothing was applied to {scope}. "
+                    + "This build is defective: install a correct build.";
+            var what = result.Migration is null
+                ? $"The dry run of the {contextName} database failed before any migration ran: {cause}."
+                : $"The dry run of the {contextName} database failed at migration {result.Migration}{(where is null ? "" : ", " + where)}: {cause}.";
+            return what + (result.Migration is not null ? " The checks after this point could not run." : "")
+                + " " + footer;
+        }
+
+        var lines = new List<string>
+        {
+            $"The dry run of the {contextName} database found {result.Refusals.Count} refusal(s); fix each, then check again:",
+        };
+        for (var i = 0; i < result.Refusals.Count; i++)
+        {
+            var r = result.Refusals[i];
+            lines.Add($"  {i + 1} of {result.Refusals.Count}{(r.AlsoFound ? ", also found" : "")}: migration {r.Migration}"
+                + $"{(r.Check is null ? "" : $" ({CheckName(r.Check)})")} refuses: {r.Message}");
+        }
+        foreach (var s in result.Skipped)
+            lines.Add($"  Skipped: the rest of migration {s.Migration}, from command {s.Command} of {s.Commands}, which failed "
+                + $"after its refusal above ({SchemaFailure.Describe(s.Error, commandTimeoutSeconds)}). Those steps depend on fixing "
+                + "that refusal; they are checked once it is fixed.");
+        if (result.NotRehearsable)
+            lines.Add($"  Stopped: migration {result.Migration} runs a statement outside a transaction, so the dry run cannot "
+                + "rehearse it; this build is defective: install a correct build. The checks after this point could not run.");
+        else if (result.Stopped)
+            lines.Add("  Stopped: " + (result.Migration is null
+                    ? $"the dry run failed outside any migration ({cause})"
+                    : $"migration {result.Migration} failed{(where is null ? "" : " at " + where)} ({cause})")
+                + (result.Skipped.Count > 0 ? ", which may follow from the steps skipped above" : "")
+                + ". The checks after this point could not run.");
+        if (result.Refusals.Any(r => r.AlsoFound))
+            lines.Add("\"Also found\" refusals came after an earlier refusal: each is real on the current data, but its outcome "
+                + "may change once the earlier ones are fixed.");
+        lines.Add(footer);
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
+    /// A few words for a dry run that did not pass: the migrations that refuse, and whether the
+    /// run stopped early; or where it failed, or which migration cannot be rehearsed.
+    /// </summary>
+    public static string DryRunSummary(DryRunResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var refusing = result.Refusals.Select(r => r.Migration).Distinct(StringComparer.Ordinal).ToList();
+        var stopped = result.NotRehearsable ? $"migration {result.Migration} cannot be rehearsed"
+            : result.Migration is not null ? $"migration {result.Migration} fails"
+            : "dry run failed";
+        if (refusing.Count == 0)
+            return stopped;
+        var refuse = refusing.Count == 1
+            ? $"migration {refusing[0]} refuses"
+            : $"migrations {string.Join(", ", refusing)} refuse";
+        return result.Stopped ? $"{refuse}; then {stopped}, and the checks after it could not run" : refuse;
+    }
+
+    /// <summary>"P1" as it is, a bare step number as "step 7".</summary>
+    private static string CheckName(string check) => char.IsAsciiDigit(check[0]) ? $"step {check}" : check;
+
+    /// <summary>A migration command running <paramref name="sql"/> on <paramref name="db"/>'s connection.</summary>
+    private static MigrationCommand RawCommand(DbContext db, string sql, bool transactionSuppressed = false) =>
+        new(db.GetService<IRawSqlCommandBuilder>().Build(sql), db,
+            db.GetService<IRelationalCommandDiagnosticsLogger>(), transactionSuppressed);
+
+    /// <summary>
     /// The operator-facing message for a migration that failed while the control role applied it.
     /// </summary>
     /// <param name="contextName">Which database, for the message.</param>
@@ -461,6 +849,7 @@ public static class SchemaVersionGate
             return (await db.Database.GetAppliedMigrationsAsync(ct)).ToList();
         await using var cmd = db.Database.GetDbConnection().CreateCommand();
         cmd.CommandTimeout = db.Database.GetCommandTimeout() ?? 30;
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
         cmd.CommandText = $"SELECT \"MigrationId\" FROM {catalog.HistoryTable} ORDER BY \"MigrationId\"";
         var applied = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -481,6 +870,7 @@ public static class SchemaVersionGate
         var connection = db.Database.GetDbConnection();
         await using var cmd = connection.CreateCommand();
         cmd.CommandTimeout = db.Database.GetCommandTimeout() ?? 30;
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
 
         string qualified;
         if (db.Database.IsNpgsql())

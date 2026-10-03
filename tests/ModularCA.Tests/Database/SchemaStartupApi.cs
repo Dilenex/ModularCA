@@ -73,6 +73,43 @@ internal static class SchemaStartupApi
         return await (Task<int>)method.Invoke(null, [array, ct])!;
     }
 
+    /// <summary>Calls <c>SchemaStartup.UpgradeCheckAsync</c>, the <c>--upgrade-check</c> verb, writing its report to <paramref name="output"/>.</summary>
+    public static async Task<int> UpgradeCheckAsync(
+        IReadOnlyList<(string Name, DatabaseKind Kind, DbInstance Instance)> targets, SchemaConfig config, TextWriter output,
+        CancellationToken ct = default)
+    {
+        var targetType = ApiAssembly.TypeNamed(Namespace + "SchemaTarget");
+        var array = Array.CreateInstance(targetType, targets.Count);
+        for (var i = 0; i < targets.Count; i++)
+            array.SetValue(Activator.CreateInstance(targetType, targets[i].Name, targets[i].Kind, targets[i].Instance), i);
+        var method = Startup.GetMethod("UpgradeCheckAsync", BindingFlags.Public | BindingFlags.Static)!;
+        return await (Task<int>)method.Invoke(null, [array, config, output, ct])!;
+    }
+
+    /// <summary>Calls <c>SchemaStartup.UpgradeCheckExitCode</c> with <c>UpgradeReadiness</c> values named by <paramref name="readiness"/>.</summary>
+    public static int UpgradeCheckExitCode(params string[] readiness)
+    {
+        var type = ApiAssembly.TypeNamed(Namespace + "UpgradeReadiness");
+        var values = Array.CreateInstance(type, readiness.Length);
+        for (var i = 0; i < readiness.Length; i++)
+            values.SetValue(Enum.Parse(type, readiness[i]), i);
+        return (int)Startup.GetMethod("UpgradeCheckExitCode", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [values])!;
+    }
+
+    /// <summary>
+    /// Calls <c>SchemaStartup.UpgradeCheckVerdict</c> with one finding per entry of
+    /// <paramref name="findings"/> (readiness named as in <c>UpgradeReadiness</c>).
+    /// </summary>
+    public static string UpgradeCheckVerdict(params (string Readiness, string Summary, int Pending)[] findings)
+    {
+        var findingType = ApiAssembly.TypeNamed(Namespace + "SchemaStartup+UpgradeFinding");
+        var readinessType = ApiAssembly.TypeNamed(Namespace + "UpgradeReadiness");
+        var list = (System.Collections.IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(findingType))!;
+        foreach (var (readiness, summary, pending) in findings)
+            list.Add(Activator.CreateInstance(findingType, "db", Enum.Parse(readinessType, readiness), summary, "detail", pending));
+        return (string)Startup.GetMethod("UpgradeCheckVerdict", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [list])!;
+    }
+
     /// <summary>
     /// Calls <c>SchemaStartup.UseContextFactory</c>: for the calling async flow, the startup check
     /// builds its contexts with <paramref name="factory"/> (kind, connection string, command

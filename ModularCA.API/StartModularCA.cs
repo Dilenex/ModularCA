@@ -388,6 +388,21 @@ if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
         ownershipTargets.Add(new("audit", DatabaseKind.Audit, ownershipConfig.DB.Audit));
     Environment.Exit(await ModularCA.API.Startup.SchemaStartup.CheckOwnershipAsync(ownershipTargets));
 }
+// Read-only apart from a dry run it rolls back: would this build's control role upgrade the
+// databases cleanly? Runs as the service user with the db.yaml roles; --config-dir names the
+// installed config, so a new build can be checked from where it was unpacked. 0 clean, 3 refused,
+// 75 unreachable, 1 usage.
+if (args.Contains("--upgrade-check", StringComparer.OrdinalIgnoreCase))
+{
+    var checkConfigDir = args.SkipWhile(a => !a.Equals("--config-dir", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    if (args.Contains("--config-dir", StringComparer.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(checkConfigDir) || checkConfigDir.StartsWith("--", StringComparison.Ordinal)))
+    {
+        Console.Error.WriteLine("Usage: --upgrade-check [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Environment.Exit(1);
+    }
+    checkConfigDir = Path.GetFullPath(checkConfigDir ?? Path.Combine(AppContext.BaseDirectory, "config"));
+    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(checkConfigDir));
+}
 // Host-local recovery: unlocks an account with the db.yaml application credentials and audits it
 // with the db.yaml audit credentials. See UnlockUserCommand.
 if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.OrdinalIgnoreCase))

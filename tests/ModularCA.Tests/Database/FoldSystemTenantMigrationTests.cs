@@ -38,16 +38,21 @@ public class FoldSystemTenantMigrationTests
     private static bool Sql(MigrationOperation o, string startsWith) =>
         o is SqlOperation s && s.Sql.TrimStart().StartsWith(startsWith, StringComparison.Ordinal);
 
+    /// <summary>
+    /// Eight preconditions (P1, P3-P9) come first, inside the transaction. None counts the
+    /// organisation tenants: each becomes a space, however many there are.
+    /// </summary>
     [Fact]
-    public void Nine_preconditions_come_first_and_nothing_runs_outside_the_transaction()
+    public void Eight_preconditions_come_first_and_nothing_runs_outside_the_transaction()
     {
         var ops = Up();
-        Assert.All(ops.Take(9), o => Assert.True(Sql(o, "DO $$ BEGIN IF (")));
-        Assert.False(Sql(ops[9], "DO $$ BEGIN IF ("));
+        Assert.All(ops.Take(8), o => Assert.True(Sql(o, "DO $$ BEGIN IF (")));
+        Assert.False(Sql(ops[8], "DO $$ BEGIN IF ("));
         Assert.DoesNotContain(ops, o => o is SqlOperation { SuppressTransaction: true });
         Assert.Contains("\"IsSystemTenant\") > 1", ((SqlOperation)ops[0]).Sql);
-        Assert.Contains("'Pending', 'Approved'", ((SqlOperation)ops[3]).Sql);
-        Assert.Contains("strpos(lower(\"ParametersJson\")", ((SqlOperation)ops[3]).Sql);
+        Assert.Contains("'Pending', 'Approved'", ((SqlOperation)ops[2]).Sql);
+        Assert.Contains("strpos(lower(\"ParametersJson\")", ((SqlOperation)ops[2]).Sql);
+        Assert.All(ops.Take(8), o => Assert.DoesNotContain("NOT \"IsSystemTenant\"", ((SqlOperation)o).Sql));
     }
 
     [Fact]
