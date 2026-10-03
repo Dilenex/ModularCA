@@ -80,6 +80,45 @@ it manages:
 - **Every visor action is recorded in the instance's own audit chain**, attributed to the
   visor identity.
 
+### Guardrails against spaces used as tenants
+
+A space delegates administration within one organisation: business units, sites, teams. It
+isolates nothing. Spaces in one instance share sign-in, backups, the audit chain, the signer and
+the instance administrators. An MSP that puts several customers into one instance as spaces
+gets none of the isolation this design exists for. The guardrails make that unattractive and
+visibly wrong, without getting in the way of legitimate delegation.
+
+**Economics remove the incentive.**
+- Pricing is per instance, or per CA or certificate volume, and never per space. Ten customers
+  in one instance must not be cheaper than ten instances.
+- A licence names one organisation per instance. Its terms say an instance serves one
+  organisation, and that serving several customers needs one instance each (the MSP offering,
+  through the visor).
+- Spaces carry no hard licence gate. Up to four spaces need nothing. From the fifth, the console
+  recommends a licence, but creation is never blocked.
+
+**Spaces never get tenant features.** No change may give a space any of these:
+- its own identity provider (LDAP, SSO or MFA policy);
+- its own hostname or console;
+- its own backup, restore, export or retention;
+- its own branding, mail settings, quotas, or billing or contact details.
+
+A request for one of those means the requester needs another instance, and the visor makes
+that cheap. Review new features against this rule. What a crammed customer would see is the
+point: one sign-in directory, administrators who see every space, CA labels that collide
+across the instance, and one audit trail.
+
+**Disclosure where the decision is made.**
+- Creating a space shows what spaces share, and says that a separate customer needs a separate
+  instance.
+- The docs and decks say "spaces are for delegation, not isolation" in those words.
+- *Later, in the visor:* an instance whose spaces have disjoint user populations gets a
+  fleet-view advisory. It is a hint, not enforcement.
+
+**What is deliberately not enforced.** Nothing guesses intent from data. For example, nothing
+requires every CA's `O=` to match the instance's organisation, because subsidiaries and brands
+legitimately differ, and such a check would break real users while being trivial to evade.
+
 ## Connectivity
 
 Either side may open the connection. Which one did is recorded on both sides — in the
