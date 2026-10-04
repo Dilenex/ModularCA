@@ -158,6 +158,39 @@ public sealed class SpaceBindingTests
         Assert.Equal(w.A.CaId, w.Db.RequestProfiles.Single(p => p.Id == w.A.RequestProfile).CertificateAuthorityId);
     }
 
+    /// <summary>
+    /// A request or signing profile has no scope of its own beyond its CA, so unbinding one makes
+    /// it instance-wide: it needs the capability at system scope, as creating an unbound one does.
+    /// A space admin, who holds it only across their space, is refused (403) and the binding
+    /// stays; a system admin unbinds.
+    /// </summary>
+    [Fact]
+    public async Task Unbinding_a_request_or_signing_profile_needs_system_scope()
+    {
+        var w = new World();
+        var spaceAdmin = w.Users["space admin"];
+        var systemAdmin = w.User("system-admin", w.Group("system-admin", null, null, Capabilities.AdministratorTemplate, system: true));
+
+        Task<(int Status, string Body)> UnbindRequest(Guid user) => SendAsync(w, user, Send("PUT", RequestProfiles, "Update",
+            $"/api/v1/admin/request-profiles/{w.A.RequestProfile}", ("id", w.A.RequestProfile),
+            ("request", new UpdateRequestProfileRequest { Name = "a-request", CertificateAuthorityId = null }),
+            ("mfaToken", w.StepUp(user, StepUpOps.UpdateRequestProfile, w.A.RequestProfile))));
+        Task<(int Status, string Body)> UnbindSigning(Guid user) => SendAsync(w, user, Send("PUT", SigningProfiles, "Update",
+            $"/api/v1/admin/signing-profiles/{w.A.SigningProfile}", ("id", w.A.SigningProfile),
+            ("r", new UpdateSigningProfileRequest { Name = "a-signing", IssuerId = null })));
+
+        Assert.Equal(403, (await UnbindRequest(spaceAdmin)).Status);
+        Assert.Equal(w.A.CaId, w.Db.RequestProfiles.AsNoTracking().Single(p => p.Id == w.A.RequestProfile).CertificateAuthorityId);
+        Assert.Equal(403, (await UnbindSigning(spaceAdmin)).Status);
+        Assert.Equal(403, (await UnbindSigning(w.Users["CA-X admin"])).Status);
+        Assert.Equal(w.A.CaCertId, w.Db.SigningProfiles.AsNoTracking().Single(p => p.Id == w.A.SigningProfile).IssuerId);
+
+        Assert.Equal(200, (await UnbindRequest(systemAdmin)).Status);
+        Assert.Null(w.Db.RequestProfiles.AsNoTracking().Single(p => p.Id == w.A.RequestProfile).CertificateAuthorityId);
+        Assert.Equal(204, (await UnbindSigning(systemAdmin)).Status);
+        Assert.Null(w.Db.SigningProfiles.AsNoTracking().Single(p => p.Id == w.A.SigningProfile).IssuerId);
+    }
+
     // ── SSH templates and profiles (item 11) ────────────────────────────────
 
     /// <summary>

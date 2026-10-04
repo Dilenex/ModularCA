@@ -51,8 +51,18 @@ public class AuditLogEntity
     /// </summary>
     public Guid? CertificateAuthorityId { get; set; }
 
-    /// <summary>Tenant ID for tenant-scoped audit filtering. Derived from the CA's tenant when available.</summary>
+    /// <summary>
+    /// The hash chain the record belongs to: null for the instance chain, where every record goes
+    /// from 0.4.0, or the id of the tenant whose retired per-tenant chain holds a record written before.
+    /// </summary>
     public Guid? TenantId { get; set; }
+
+    /// <summary>
+    /// The space the event belongs to, or null for the instance or an event of no space. It does not
+    /// select the chain (<see cref="TenantId"/> does), and it is hashed only when set, so records
+    /// written before it existed verify unchanged.
+    /// </summary>
+    public Guid? SpaceId { get; set; }
 
     /// <summary>The access badge the actor wore, if any; the audit trail names the badge, not just the user.</summary>
     public Guid? AccessBadgeId { get; set; }

@@ -40,10 +40,17 @@ public class AuditHashGoldenVectorTests
 
     private static readonly Guid Tenant = Guid.Parse("3d2c1b0a-9f8e-4d7c-b6a5-948372615a40");
     private static readonly Guid Ca = Guid.Parse("9b2e4f8a-1c3d-4e5f-8a7b-6c5d4e3f2a1b");
+    private static readonly Guid Space = Guid.Parse("6e1d2c3b-4a59-4876-9564-738291a0b1c2");
 
     private const string GenesisHash = "8337b6606a173d3465a2a91bf7e2e56c76b7aa3d1678876bcbb2311c1740bfe0";
     private const string ChainedHash = "e835d003ed7f3b126b18ffdc6610eaffe4c0310edb75195f67ecd76b309a2cab";
     private const string InstanceHash = "c79815e244fffd35689ecfa2949845fe2fc093f6e15a74046a8dd4e7110b5299";
+
+    /// <summary>
+    /// An instance-chain record of a space: the documented form with <c>space:&lt;id&gt;</c> joined
+    /// after the (empty) tenant field and before <c>GENESIS</c>.
+    /// </summary>
+    private const string SpaceHash = "d0c9ff2d675ad2954bf7d97c89bb21fb51053ea3c006df231603afca5dc84381";
 
     [Fact]
     public void A_tenant_record_at_the_head_of_its_chain_hashes_to_the_golden_value()
@@ -61,6 +68,23 @@ public class AuditHashGoldenVectorTests
     [Fact]
     public void A_record_with_no_tenant_or_ca_hashes_them_as_empty_fields()
     {
+        Assert.Equal(InstanceHash, AuditHashChainService.ComputeHash(Record(null, null), null));
+    }
+
+    [Fact]
+    public void A_record_with_a_space_hashes_the_space_after_the_tenant_field()
+    {
+        var record = Record(null, Ca);
+        record.SpaceId = Space;
+        Assert.Equal(SpaceHash, AuditHashChainService.ComputeHash(record, null));
+    }
+
+    [Fact]
+    public void A_record_without_a_space_hashes_as_before_the_space_existed()
+    {
+        var record = Record(Tenant, Ca);
+        record.SpaceId = null;
+        Assert.Equal(GenesisHash, AuditHashChainService.ComputeHash(record, null));
         Assert.Equal(InstanceHash, AuditHashChainService.ComputeHash(Record(null, null), null));
     }
 

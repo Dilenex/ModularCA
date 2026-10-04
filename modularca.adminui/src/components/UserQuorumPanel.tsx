@@ -8,6 +8,8 @@ import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { ceremonyLink } from '../pages/ceremonyLinks';
+import { quorumProblem } from './userQuorum';
 
 /** Same sentence as on Settings → Security Policy; the number is "other people", never "people". */
 const INITIATOR_EXCLUDED = 'The initiator is always excluded, so the effective minimum is 1 other approver.';
@@ -29,12 +31,15 @@ export const QuorumRow: React.FC<{
     effective: number;
     allowInherit: boolean;       // false for System (must always have a value)
     max?: number;                // ceiling (space effective, for CAs) — drives the invalid-border hint
+    maxLabel?: string;           // names the ceiling in the hint
+    invalid?: boolean;           // the parent found the value unsaveable; red border
     readOnly?: boolean;          // render values without inputs (View mode)
     trailing?: React.ReactNode;  // inline control at the end of the row (editable rows only)
     className?: string;
-}> = ({ label, sublabel, value, onChange, override, effective, allowInherit, max, readOnly, trailing, className }) => {
+}> = ({ label, sublabel, value, onChange, override, effective, allowInherit, max, maxLabel = "the space's quorum", invalid, readOnly, trailing, className }) => {
     const parsed = value.trim() === '' ? null : parseInt(value, 10);
     const tooHigh = max != null && parsed != null && parsed > max;
+    const flagged = tooHigh || !!invalid;
 
     return (
         <div className={`flex items-center gap-3 px-3 py-2 ${className || ''}`}>
@@ -49,9 +54,9 @@ export const QuorumRow: React.FC<{
             ) : (
                 <input inputMode="numeric" value={value}
                     placeholder={allowInherit ? `inherit (${effective})` : ''}
-                    title={tooHigh ? `Can't exceed the space's quorum (${max})` : allowInherit ? 'Blank = inherit the parent value' : undefined}
+                    title={tooHigh ? `Can't exceed ${maxLabel} (${max})` : allowInherit ? 'Blank = inherit the parent value' : undefined}
                     onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
-                    className={`w-24 px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border rounded text-gray-900 dark:text-white focus:outline-none ${tooHigh ? 'border-red-500' : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
+                    className={`w-24 px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border rounded text-gray-900 dark:text-white focus:outline-none ${flagged ? 'border-red-500' : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
             )}
             <span className="text-[11px] text-gray-500 w-28 shrink-0">
                 effective {effective}{allowInherit && override == null ? ' · inherited' : ''}
@@ -99,9 +104,10 @@ export const SystemQuorumCard: React.FC = () => {
 
     const parsed = val.trim() === '' ? null : parseInt(val, 10);
     const changed = !!system && parsed != null && parsed !== system.quorum;
+    const systemProblem = changed ? quorumProblem(val, { allowInherit: false }) : null;
 
     const save = async () => {
-        if (!changed || parsed == null) return;
+        if (!changed || parsed == null || systemProblem) return;
         setSaving(true);
         try {
             await apiPutWithMfa('/api/v1/admin/security-policy', { userQuorum: parsed }, requireStepUp, StepUpOps.UpdateConfig);
@@ -115,7 +121,7 @@ export const SystemQuorumCard: React.FC = () => {
         setSaving(true);
         try {
             const result = await apiPutWithMfa<any>(url, { quorum }, requireStepUp, StepUpOps.UpdateSpaceSettings, target);
-            if (result?.ceremonyId) showToast('info', 'Quorum change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
+            if (result?.ceremonyId) showToast('info', `Quorum change ceremony started. Approve it at ${ceremonyLink(result.ceremonyId)}`);
             else showToast('success', 'Quorum updated');
             load();
         } catch (err: any) { if (err?.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed'); }
@@ -144,39 +150,51 @@ export const SystemQuorumCard: React.FC = () => {
                     label="System" sublabel="System administrators · standalone"
                     value={val} onChange={setVal}
                     override={system.quorum} effective={system.quorum} allowInherit={false}
-                    readOnly={!isSuper}
+                    readOnly={!isSuper} invalid={!!systemProblem}
                     trailing={
-                        <button onClick={save} disabled={!changed || saving}
+                        <button onClick={save} disabled={!changed || !!systemProblem || saving}
                             className="px-2.5 py-1 text-[11px] bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
                             {saving ? '…' : 'Save'}
                         </button>
                     } />
+                {isSuper && systemProblem && <FieldHint tone="warn" className="px-3">{systemProblem}</FieldHint>}
                 <FieldHint className="px-3 pb-3">{INITIATOR_EXCLUDED}</FieldHint>
                 {!isSuper && (
                     <p className="px-3 pb-3 -mt-1 text-[11px] text-gray-500">
                         Only a system super-administrator can change the System quorum. Space and per-CA quorums are set on each space's page (and start a ceremony for non-super admins).
                     </p>
                 )}
-                {instance && (
-                    <div className="border-t border-gray-300 dark:border-gray-700">
-                        <QuorumRow
-                            label="Instance" sublabel="Instance CA administrators / operators · ceiling for instance CAs"
-                            value={instanceVal} onChange={setInstanceVal}
-                            override={instance.override} effective={instance.effective} allowInherit
-                            className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30"
-                            trailing={saveButton(num(instanceVal) === instance.override || (num(instanceVal) ?? 1) < 1,
-                                () => saveScoped('/api/v1/admin/user-quorum/instance', num(instanceVal)))} />
-                        {instance.cas.map((ca) => (
-                            <QuorumRow key={ca.id}
-                                label={ca.label || ca.name} sublabel="Instance CA administrators / operators"
-                                value={caVals[ca.id] ?? ''} onChange={(v) => setCaVals((m) => ({ ...m, [ca.id]: v }))}
-                                override={ca.override} effective={ca.effective} allowInherit max={instance.effective}
-                                className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8"
-                                trailing={saveButton(num(caVals[ca.id] ?? '') === ca.override,
-                                    () => saveScoped(`/api/v1/admin/user-quorum/ca/${ca.id}`, num(caVals[ca.id] ?? ''), ca.id))} />
-                        ))}
-                    </div>
-                )}
+                {instance && (() => {
+                    const instanceProblem = quorumProblem(instanceVal, { allowInherit: true });
+                    return (
+                        <div className="border-t border-gray-300 dark:border-gray-700">
+                            <QuorumRow
+                                label="Instance" sublabel="Instance CA administrators / operators · ceiling for instance CAs"
+                                value={instanceVal} onChange={setInstanceVal}
+                                override={instance.override} effective={instance.effective} allowInherit invalid={!!instanceProblem}
+                                className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30"
+                                trailing={saveButton(num(instanceVal) === instance.override || !!instanceProblem,
+                                    () => saveScoped('/api/v1/admin/user-quorum/instance', num(instanceVal)))} />
+                            {instanceProblem && <FieldHint tone="warn" className="px-3 pb-2">{instanceProblem}</FieldHint>}
+                            {instance.cas.map((ca) => {
+                                const caProblem = quorumProblem(caVals[ca.id] ?? '', { allowInherit: true, max: instance.effective, maxLabel: "the instance's quorum" });
+                                return (
+                                    <React.Fragment key={ca.id}>
+                                        <QuorumRow
+                                            label={ca.label || ca.name} sublabel="Instance CA administrators / operators"
+                                            value={caVals[ca.id] ?? ''} onChange={(v) => setCaVals((m) => ({ ...m, [ca.id]: v }))}
+                                            override={ca.override} effective={ca.effective} allowInherit max={instance.effective}
+                                            maxLabel="the instance's quorum" invalid={!!caProblem}
+                                            className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8"
+                                            trailing={saveButton(num(caVals[ca.id] ?? '') === ca.override || !!caProblem,
+                                                () => saveScoped(`/api/v1/admin/user-quorum/ca/${ca.id}`, num(caVals[ca.id] ?? ''), ca.id))} />
+                                        {caProblem && <FieldHint tone="warn" className="pl-8 pr-3 pb-2">{caProblem}</FieldHint>}
+                                    </React.Fragment>
+                                );
+                            })}
+                        </div>
+                    );
+                })()}
             </>)}
         </div>
     );

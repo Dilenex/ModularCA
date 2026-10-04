@@ -86,7 +86,7 @@ const ExpiryCalendar: React.FC = () => {
     const [error, setError] = useState<NoticeInput | null>(null);
     const [authorities, setAuthorities] = useState<any[]>([]);
     // The sidebar scope pins the CA filter; the select below is locked while it does.
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, spaceId: scopeSpaceId, inScope } = useScope();
     const scopeLocked = !!scopeCaId;
     const [caId, setCaId] = useState(scopeCaId ?? '');
     useEffect(() => { setCaId(scopeCaId ?? ''); }, [scopeCaId]);
@@ -107,22 +107,23 @@ const ExpiryCalendar: React.FC = () => {
                 const flat: any[] = [];
                 const flatten = (list: any[]) => { for (const ca of list) { flat.push(ca); if (ca.children) flatten(ca.children); } };
                 flatten(cas);
-                setAuthorities(flat);
+                setAuthorities(flat.filter((ca) => inScope(ca.id)));
             })
             .catch(() => { /* non-fatal: filter just stays empty */ });
-    }, []);
+    }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // monthly histogram (re-fetch only when the CA filter changes)
     useEffect(() => {
         setLoading(true);
         const params = new URLSearchParams();
         if (caId) params.set('caId', caId);
+        else if (scopeSpaceId) params.set('spaceId', scopeSpaceId);
         const qs = params.toString();
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram${qs ? `?${qs}` : ''}`)
             .then((data) => { setResp(data); setError(null); })
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
-    }, [caId]);
+    }, [caId, scopeSpaceId]);
 
     // day-level drill-down for the selected month
     useEffect(() => {
@@ -135,11 +136,12 @@ const ExpiryCalendar: React.FC = () => {
         params.set('from', isoDate(from));
         params.set('to', isoDate(to));
         if (caId) params.set('caId', caId);
+        else if (scopeSpaceId) params.set('spaceId', scopeSpaceId);
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram?${params.toString()}`)
             .then((data) => setDayBuckets(data.buckets))
             .catch(() => setDayBuckets([]))
             .finally(() => setDayLoading(false));
-    }, [selectedMonth, caId]);
+    }, [selectedMonth, caId, scopeSpaceId]);
 
     const bucketMap = useMemo(() => {
         const m = new Map<string, Bucket>();
@@ -258,7 +260,7 @@ const ExpiryCalendar: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : 'Filter by issuing CA'}>
-                        <option value="">All CAs</option>
+                        <option value="">{scopeSpaceId ? 'All CAs in this space' : 'All CAs'}</option>
                         {authorities.map((ca) => (
                             <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>
                         ))}

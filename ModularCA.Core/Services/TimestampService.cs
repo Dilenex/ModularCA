@@ -136,13 +136,16 @@ public class TimestampService : ITimestampService
     /// Resolves the TSA certificate of the addressed CA together with the reference the signer
     /// knows its key by and the context holding that key to the CA. Whether the key is present
     /// is asked of the signer here, so a TSA certificate without its key is reported as it was
-    /// when the keystore was consulted directly.
+    /// when the keystore was consulted directly. With no label the CA is the default one, the
+    /// first of <see cref="CaResolverService.DefaultCandidates"/> that is marked default; with
+    /// none marked the request is rejected rather than answered by whichever CA sorts first, since
+    /// a timestamp token is evidence signed under a TSA the operator should have chosen.
     /// </summary>
     private async Task<(X509Certificate? cert, KeyRef? key, SigningContext? context)> ResolveTsaSignerAsync(string? caLabel)
     {
         var caEntity = caLabel != null
             ? await _db.CertificateAuthorities.FirstOrDefaultAsync(ca => ca.Label == caLabel && ca.IsEnabled)
-            : await _db.CertificateAuthorities.FirstOrDefaultAsync(ca => ca.IsDefault && ca.IsEnabled);
+            : await CaResolverService.DefaultCandidates(_db.CertificateAuthorities.Where(ca => ca.IsDefault)).FirstOrDefaultAsync();
 
         if (caEntity == null) return (null, null, null);
 

@@ -334,9 +334,10 @@ public class AdminKeyCeremonyController : ControllerBase
 
     /// <summary>
     /// Whether <paramref name="viewerId"/> may approve <paramref name="ceremony"/> right now:
-    /// pending, not the initiator, has ceremony access, and, for ControlledUserChange, no
-    /// <see cref="IControlledUserCeremonyService.ApprovalRefusalAsync"/> reason, which is returned
-    /// as <c>Refusal</c> (an approving tier, and not a resetter of a promoted account's credentials).
+    /// pending, not the initiator, has ceremony access, and no refusal reason, which is returned
+    /// as <c>Refusal</c>: for ControlledUserChange, <see cref="IControlledUserCeremonyService.ApprovalRefusalAsync"/>
+    /// (an approving tier, and not a resetter of a promoted account's credentials); for a policy
+    /// change, <see cref="PolicyApprovalRefusalAsync"/> (admin rank at its scope).
     /// Single source of approver eligibility for the UI.
     /// </summary>
     private async Task<(bool CanApprove, string? Refusal)> ComputeCanApproveAsync(ModularCA.Shared.Entities.KeyCeremonyEntity ceremony, Guid viewerId)
@@ -347,14 +348,37 @@ public class AdminKeyCeremonyController : ControllerBase
         if (ceremony.OperationType == "ControlledUserChange"
             && await _controlledUserSvc.ApprovalRefusalAsync(viewerId, ceremony) is { } refusal)
             return (false, refusal);
+        if (await PolicyApprovalRefusalAsync(ceremony, viewerId) is { } policyRefusal)
+            return (false, policyRefusal);
         return (true, null);
+    }
+
+    /// <summary>
+    /// Why <paramref name="userId"/> may not approve a policy-change ceremony, or null when they
+    /// may or the ceremony is of another type. A SpacePolicyChange needs a space administrator
+    /// (<c>system.manage</c> space-wide in its space) and an InstancePolicyChange a system
+    /// administrator: the change sets the ceremony requirement and quorums every operator is held
+    /// to, so an operator of that scope may see it but not approve or reject it. The initiator never
+    /// counts, which <see cref="IKeyCeremonyService.ApproveAsync"/> enforces for every ceremony.
+    /// <paramref name="verb"/> names the decision in the refusal ("approve" or "reject").
+    /// </summary>
+    private async Task<string?> PolicyApprovalRefusalAsync(KeyCeremonyEntity ceremony, Guid userId, string verb = "approve")
+    {
+        if (ceremony.OperationType is not (nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange)))
+            return null;
+        if (await _groupAuth.HasScopeCapabilityAsync(userId, ceremony.SpaceId, Capabilities.SystemManage))
+            return null;
+        return ceremony.SpaceId == null
+            ? $"Only a system administrator can {verb} a change to the instance's policy."
+            : $"Only an administrator of this space can {verb} a change to its policy.";
     }
 
     /// <summary>
     /// Approves a pending key ceremony. Requires step-up MFA verification.
     /// Self-approval is forbidden: the initiator cannot approve their own ceremony. A controlled-user
     /// ceremony the caller may not approve is 403 with the reason: no approving tier, or, for a
-    /// promotion, a recent reset by the caller of the credentials of an account it promotes.
+    /// promotion, a recent reset by the caller of the credentials of an account it promotes. A
+    /// policy-change ceremony needs admin rank at its scope (403 for an operator of that scope).
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
     [HttpPost("{id:guid}/approve")]
@@ -374,6 +398,8 @@ public class AdminKeyCeremonyController : ControllerBase
         if (approveCeremony.OperationType == "ControlledUserChange"
             && await _controlledUserSvc.ApprovalRefusalAsync(_currentUser.User.Id, approveCeremony) is { } refusal)
             return StatusCode(403, new { error = refusal });
+        if (await PolicyApprovalRefusalAsync(approveCeremony, _currentUser.User.Id) is { } policyRefusal)
+            return StatusCode(403, new { error = policyRefusal });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
                 _cache, User, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
@@ -417,7 +443,9 @@ public class AdminKeyCeremonyController : ControllerBase
     /// session cannot silently reject legitimate ceremonies as a DOS against the
     /// key-rotation workflow. A controlled-user ceremony can be rejected only by a system admin or
     /// by someone holding a tier that could approve it, including one barred from approving it as
-    /// a resetter, and never by the user it changes.
+    /// a resetter, and never by the user it changes. A policy-change ceremony is rejected under the
+    /// approval rule, <see cref="PolicyApprovalRefusalAsync"/> (403 for an operator of its scope),
+    /// except by its initiator, who may withdraw it.
     /// </summary>
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -429,6 +457,9 @@ public class AdminKeyCeremonyController : ControllerBase
         if (rejectCeremony == null) return NotFound(new { error = "Ceremony not found." });
         if (!await CanAccessCeremonyAsync(rejectCeremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
+        if (rejectCeremony.InitiatedByUserId != _currentUser.User.Id
+            && await PolicyApprovalRefusalAsync(rejectCeremony, _currentUser.User.Id, "reject") is { } policyRefusal)
+            return StatusCode(403, new { error = policyRefusal });
         if (IsControlledUserChange(rejectCeremony))
         {
             var userId = _currentUser.User.Id;

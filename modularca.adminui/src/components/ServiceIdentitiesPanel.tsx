@@ -64,12 +64,16 @@ const ServiceIdentitiesPanel: React.FC = () => {
     // the record as reloaded after a save, and disappears when the identity is deleted.
     const [openId, setOpenId] = useState<string | null>(null);
 
-    /** Scopes the caller may create in: system when ca.manage is held at system scope, then spaces held space-wide, then single CAs. */
+    /**
+     * Scopes the caller may create in: system when ca.manage is held at system scope, then spaces
+     * held space-wide, then single CAs. Instance CAs are not offered: their groups are instance
+     * groups, which no service identity may hold, so an identity there could hold nothing.
+     */
     const scopes = useMemo<ScopeChoice[]>(() => {
         const out: ScopeChoice[] = [];
         if (can(capabilities, Capabilities.SystemManage) || can(capabilities, Capabilities.CaManage)) out.push({ key: 'system', label: 'System (any space, any CA)', spaceId: null, caId: null });
         for (const t of spacesOf(capabilities)) if (canAtSpace(capabilities, Capabilities.CaManage, t.id)) out.push({ key: `t:${t.id}`, label: `Space: ${t.name}`, spaceId: t.id, caId: null });
-        for (const ca of consoleCas(capabilities)) if (can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.spaceId == null ? 'Instance' : ca.spaceName || ca.spaceSlug})`, spaceId: ca.spaceId, caId: ca.id });
+        for (const ca of consoleCas(capabilities)) if (ca.spaceId != null && can(capabilities, Capabilities.CaManage, ca.id)) out.push({ key: `c:${ca.id}`, label: `CA: ${ca.label} (${ca.spaceName || ca.spaceSlug})`, spaceId: ca.spaceId, caId: ca.id });
         return out;
     }, [capabilities]);
 

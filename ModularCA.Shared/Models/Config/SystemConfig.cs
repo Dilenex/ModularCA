@@ -558,6 +558,13 @@ namespace ModularCA.Shared.Models.Config
 
     public class TokenConfig
     {
+        /// <summary>
+        /// The longest refresh-token lifetime the admin API accepts, in days. A refresh token is a
+        /// bearer credential for the console; the security policy's session caps bound a session
+        /// further.
+        /// </summary>
+        public const int MaxRefreshTokenDays = 30;
+
         public int RefreshTokenDays { get; set; } = 7;
     }
 
@@ -1451,12 +1458,15 @@ namespace ModularCA.Shared.Models.Config
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
-        /// AUTH-06: optional space scope for the API key. When set, the integration API
-        /// restricts operations to CAs belonging to this space. Requests targeting CAs
-        /// in a different space are rejected with 403. When null (default), the API key
-        /// grants access to all CAs (backward compatible).
+        /// AUTH-06: optional space scope for the API key: a space id restricts the integration
+        /// API to that space's CAs, <c>instance</c> to the instance's CAs (those in no space), and
+        /// unset (the default) grants every CA. Requests targeting a CA outside the scope are
+        /// rejected with 403. Any other value matches no CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
-        public Guid? SpaceId { get; set; }
+        public string? SpaceId { get; set; }
+
+        /// <summary>The parsed <see cref="SpaceId"/>.</summary>
+        public Utils.IntegrationSpaceScope SpaceScope() => Utils.IntegrationSpaceScope.Parse(SpaceId);
     }
 
     /// <summary>
@@ -1502,13 +1512,16 @@ namespace ModularCA.Shared.Models.Config
         public Guid? DefaultSigningProfileId { get; set; }
 
         /// <summary>
-        /// AUTH-06: optional space scope for the cert-manager API key. When set, the
-        /// cert-manager integration restricts signing to CAs belonging to this space.
-        /// Requests whose signing profile resolves to a CA in a different space are
-        /// rejected with 403. When null (default), the API key grants access to all
-        /// CAs (backward compatible).
+        /// AUTH-06: optional space scope for the cert-manager API key: a space id restricts
+        /// signing to that space's CAs, <c>instance</c> to the instance's CAs (those in no space),
+        /// and unset (the default) allows every CA. Requests whose signing profile resolves to a
+        /// CA outside the scope, or to no CA, are rejected with 403. Any other value matches no
+        /// CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
-        public Guid? SpaceId { get; set; }
+        public string? SpaceId { get; set; }
+
+        /// <summary>The parsed <see cref="SpaceId"/>.</summary>
+        public Utils.IntegrationSpaceScope SpaceScope() => Utils.IntegrationSpaceScope.Parse(SpaceId);
     }
 
     /// <summary>

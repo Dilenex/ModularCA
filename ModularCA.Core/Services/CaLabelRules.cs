@@ -9,7 +9,8 @@ namespace ModularCA.Core.Services;
 /// <c>^[a-z0-9][a-z0-9-]{0,62}$</c>, carries no reserved prefix unless the caller is bootstrap,
 /// and a label (compared case-insensitively) or name is unique across the instance, soft-deleted
 /// CAs included, because a label is the path of the CRL, OCSP, AIA and enrolment URLs of every
-/// certificate its CA issued.
+/// certificate its CA issued. A label may change only while nothing references it
+/// (<see cref="EnsureLabelChangeableAsync"/>), so a label that was used is never freed for reuse.
 /// </summary>
 public static class CaLabelRules
 {
@@ -56,6 +57,62 @@ public static class CaLabelRules
             && await db.CertificateAuthorities.IgnoreQueryFilters().AnyAsync(c => c.Id != exceptCaId && c.Name == name))
             throw new ResourceConflictException(
                 $"A CA named '{name}' already exists in this instance, or did and was deleted.", ErrorCodes.NameAlreadyTaken);
+    }
+
+    /// <summary>
+    /// What references CA <paramref name="caId"/> or its current <paramref name="label"/> (compared
+    /// ignoring case): issued certificates (<see cref="Helpers.IssuerChainResolver.HasIssuedAsync"/>),
+    /// ACME accounts bound to the CA or registered under the label, ACME orders placed under the
+    /// label or by such an account, and protocol audit records (EST, SCEP, CMP, MSAE, ACME) naming
+    /// the label, read from <paramref name="auditDb"/> when one is configured. Empty when nothing does.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> LabelReferencesAsync(
+        ModularCADbContext db, AuditDbContext? auditDb, Guid caId, string? label, CancellationToken ct = default)
+    {
+        var references = new List<string>();
+        if (await Helpers.IssuerChainResolver.HasIssuedAsync(db, caId))
+            references.Add("issued certificates");
+
+        var lowered = label?.ToLowerInvariant();
+        if (await db.AcmeAccounts.AsNoTracking().AnyAsync(a => a.CertificateAuthorityId == caId
+                || (lowered != null && a.CaLabel != null && a.CaLabel.ToLower() == lowered), ct))
+            references.Add("ACME accounts");
+        if (await db.AcmeOrders.AsNoTracking().AnyAsync(o => (lowered != null && o.CaLabel != null && o.CaLabel.ToLower() == lowered)
+                || db.AcmeAccounts.Any(a => a.Id == o.AccountId && a.CertificateAuthorityId == caId), ct))
+            references.Add("ACME orders");
+
+        if (auditDb != null && lowered != null)
+        {
+            var audited = new List<string>();
+            if (await auditDb.AuditEst.AsNoTracking().AnyAsync(a => a.CaLabel != null && a.CaLabel.ToLower() == lowered, ct)) audited.Add("EST");
+            if (await auditDb.AuditScep.AsNoTracking().AnyAsync(a => a.CaLabel != null && a.CaLabel.ToLower() == lowered, ct)) audited.Add("SCEP");
+            if (await auditDb.AuditCmp.AsNoTracking().AnyAsync(a => a.CaLabel != null && a.CaLabel.ToLower() == lowered, ct)) audited.Add("CMP");
+            if (await auditDb.AuditMsae.AsNoTracking().AnyAsync(a => a.CaLabel != null && a.CaLabel.ToLower() == lowered, ct)) audited.Add("MSAE");
+            if (await auditDb.AuditAcme.AsNoTracking().AnyAsync(a => a.CaLabel != null && a.CaLabel.ToLower() == lowered, ct)) audited.Add("ACME");
+            if (audited.Count > 0)
+                references.Add($"protocol audit records ({string.Join(", ", audited)})");
+        }
+        return references;
+    }
+
+    /// <summary>
+    /// Throws <see cref="ResourceConflictException"/> (<see cref="ErrorCodes.CaLabelLocked"/>) naming
+    /// what references the label when CA <paramref name="caId"/>'s <paramref name="label"/> may no
+    /// longer change: a label may change only while nothing references it
+    /// (<see cref="LabelReferencesAsync"/>), and is fixed for good after that, so a label once
+    /// used is never freed for another CA.
+    /// </summary>
+    public static async Task EnsureLabelChangeableAsync(
+        ModularCADbContext db, AuditDbContext? auditDb, Guid caId, string? label, CancellationToken ct = default)
+    {
+        var references = await LabelReferencesAsync(db, auditDb, caId, label, ct);
+        if (references.Count == 0)
+            return;
+        throw new ResourceConflictException(
+            $"The label '{label}' cannot be changed because {string.Join(", ", references)} name this CA by it. A label is fixed "
+            + "once anything references it: it is in the CRL, OCSP and AIA URLs of the certificates the CA issued, in the "
+            + "account URLs ACME clients keep, and in the audit trail. Its name can be changed.",
+            ErrorCodes.CaLabelLocked);
     }
 
     /// <summary>

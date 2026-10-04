@@ -16,6 +16,9 @@ import { Space, CaQuotaRow, formatDate, numInput } from './SpacesAndQuotas';
 import { labelClass as labelCls, FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 import type { ValidityCeilingBehavior } from '@shared/generated';
+import { SPACE_REALMS_ANCHOR } from './msaeRefusals';
+import { useScrollToHash } from '../hooks/useScrollToHash';
+import { ceremonyLink } from './ceremonyLinks';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));
 
@@ -80,6 +83,7 @@ const SpaceDetail: React.FC = () => {
     }, [id, seed]);
 
     useEffect(() => { load(); }, [load]);
+    useScrollToHash(!loading && !!space);
 
     const resetEdits = useCallback(() => { if (space) seed(space, quorum); }, [space, quorum, seed]);
 
@@ -138,7 +142,7 @@ const SpaceDetail: React.FC = () => {
             };
             // 202 + ceremonyId when a key-ceremony downgrade is gated behind a space policy ceremony.
             const result = await apiPutWithMfa<any>(`/api/v1/admin/spaces/${t.id}/settings`, body, requireStepUp, StepUpOps.UpdateSpaceSettings, t.id);
-            if (result?.ceremonyId) showToast('info', 'Policy change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
+            if (result?.ceremonyId) showToast('info', `Policy change ceremony started. Approve it at ${ceremonyLink(result.ceremonyId)}`);
             else showToast('success', 'Changes saved');
             load();
         } catch (err: any) {
@@ -147,11 +151,15 @@ const SpaceDetail: React.FC = () => {
         }
     };
 
+    // The server has no delete for a space: DELETE disables it (keeping its CAs and data), and
+    // PUT { isEnabled: true } enables it again.
     const toggleEnabled = () => {
         const enabling = t.isEnabled === false;
         setConfirm({
             title: enabling ? 'Enable Space' : 'Disable Space',
-            message: `Are you sure you want to ${enabling ? 'enable' : 'disable'} space "${t.name}"?`,
+            message: enabling
+                ? `Enable space "${t.name}"? Its CAs may issue again.`
+                : `Disable space "${t.name}"? Its CAs stop issuing. Nothing is deleted, and the space can be enabled again.`,
             confirmLabel: enabling ? 'Enable' : 'Disable',
             confirmClass: enabling
                 ? 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors'
@@ -163,17 +171,6 @@ const SpaceDetail: React.FC = () => {
             },
         });
     };
-
-    const softDelete = () => setConfirm({
-        title: 'Soft Delete Space',
-        message: `Are you sure you want to disable space "${t.name}"? This is a soft delete.`,
-        confirmLabel: 'Soft Delete',
-        confirmClass: 'px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors',
-        action: async () => {
-            await apiDeleteWithMfa(`/api/v1/admin/spaces/${t.id}`, requireStepUp, StepUpOps.DisableSpace, t.id);
-            load();
-        },
-    });
 
     return (
         <DetailPage
@@ -189,11 +186,8 @@ const SpaceDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {t.isEnabled !== false
-                        ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors">Disable</button>
-                        : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Enable</button>}
-                    {t.isEnabled !== false && (
-                        <button onClick={softDelete} className="px-3 py-1.5 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors">Soft Delete</button>
-                    )}
+                        ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-100 dark:hover:bg-yellow-900/70 dark:hover:text-yellow-200 transition-colors">Disable</button>
+                        : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-100 dark:hover:bg-green-900/70 dark:hover:text-green-200 transition-colors">Enable</button>}
                 </div>
             }
         >
@@ -296,7 +290,9 @@ const SpaceDetail: React.FC = () => {
                     )}
                 </div>
 
-                <KerberosRealmsPanel spaceId={t.id} spaceName={t.name} caLabels={cas.map((c: any) => c.caLabel || c.label || c.name).filter(Boolean)} />
+                <div id={SPACE_REALMS_ANCHOR} className="scroll-mt-4">
+                    <KerberosRealmsPanel spaceId={t.id} spaceName={t.name} caLabels={cas.filter((c) => !c.isSshCa && c.label).map((c) => c.label!)} />
+                </div>
 
                 <ConfirmModal
                     isOpen={!!confirm}

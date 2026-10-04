@@ -78,6 +78,8 @@ public class ControlledUserCeremonyService(
     /// The tiers that <paramref name="capabilities"/> on role <paramref name="roleId"/> confer through
     /// the role's current assignments and through pending or approved-but-unexecuted
     /// <c>AssignRole</c> ceremonies, so a role awaiting a ceremony-gated assignment counts as assigned.
+    /// An open ceremony that names the role but whose parameters cannot be read counts as an
+    /// instance-wide assignment (fail closed).
     /// </summary>
     public async Task<IReadOnlyList<ControlledTier>> TiersConferredByRoleAsync(Guid roleId, IEnumerable<string> capabilities)
     {
@@ -98,7 +100,11 @@ public class ControlledUserCeremonyService(
         foreach (var c in open)
         {
             var p = Deserialize(c);
-            if (p is { ChangeType: "AssignRole" } && p.RoleId == roleId)
+            // An unreadable ceremony naming the role may assign it anywhere: read it as an
+            // instance-wide assignment, so the change it could promote through stays gated.
+            if (p == null)
+                assignments.Add(new ScopedAssignment(null, null, null));
+            else if (p is { ChangeType: "AssignRole" } && p.RoleId == roleId)
                 assignments.Add(new ScopedAssignment(p.SpaceId, p.CertificateAuthorityId, p.GroupId));
         }
 
@@ -492,6 +498,10 @@ public class ControlledUserCeremonyService(
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// An open ceremony that names the user but whose parameters cannot be read counts as a
+    /// promotion (fail closed): it cannot be shown not to be one.
+    /// </remarks>
     public async Task<bool> HasOpenPromotionAsync(Guid userId)
     {
         var idText = userId.ToString();
@@ -501,8 +511,8 @@ public class ControlledUserCeremonyService(
                 && ((c.Status == "Pending" && c.ExpiresAt > now) || c.Status == "Approved")
                 && c.ParametersJson.Contains(idText))
             .ToListAsync();
-        return open.Select(Deserialize).Any(p => p != null && IsPromotion(p.ChangeType)
-            && (p.TargetUserId == userId || p.CredentialSnapshots?.Any(s => s.UserId == userId) == true));
+        return open.Select(Deserialize).Any(p => p == null || (IsPromotion(p.ChangeType)
+            && (p.TargetUserId == userId || p.CredentialSnapshots?.Any(s => s.UserId == userId) == true)));
     }
 
     /// <summary>

@@ -35,4 +35,11 @@ public class AcmeAccountEntity
     /// </summary>
     [MaxLength(255)]
     public string? CaLabel { get; set; }
+
+    /// <summary>
+    /// The CA this account is bound to: the one its new-account request addressed, by label or
+    /// as the default CA. Every request the account signs is refused at any other CA. Null only
+    /// for an account the upgrade could not bind, which no CA accepts.
+    /// </summary>
+    public Guid? CertificateAuthorityId { get; set; }
 }

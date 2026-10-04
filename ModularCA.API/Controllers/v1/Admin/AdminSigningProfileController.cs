@@ -55,12 +55,15 @@ public class AdminSigningProfileController(
     /// <summary>
     /// Null when the caller may make CA certificate <paramref name="issuerId"/> a profile's issuer:
     /// its CA is inside the caller's ca.manage fence (else 404) and the caller holds ca.manage on
-    /// it (else 403). No issuer needs no check.
+    /// it (else 403). No issuer makes the profile unbound, which applies instance-wide, so it needs
+    /// ca.manage at system scope (else 403), as creating an unbound profile does.
     /// </summary>
     private async Task<IActionResult?> AuthorizeIssuerAsync(Guid userId, Guid? issuerId)
     {
         if (issuerId is not Guid id)
-            return null;
+            return await _authService.HasScopeCapabilityAsync(userId, null, Capabilities.CaManage)
+                ? null
+                : StatusCode(403, new { error = "An unbound signing profile applies instance-wide and needs ca.manage at system scope." });
         var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.CertificateId == id).Select(c => new { c.Id, c.SpaceId }).FirstOrDefaultAsync();
         if (ca == null || !SpaceFence.From(HttpContext, Capabilities.CaManage).Allows(ca.SpaceId))
@@ -123,8 +126,8 @@ public class AdminSigningProfileController(
     /// <summary>
     /// Updates an existing signing profile and replaces its allowed cert profile links
     /// and inheritance configuration. A profile outside the caller's fence is not found, and a new
-    /// issuer is checked by <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the
-    /// current one.
+    /// issuer, or none (unbinding, which needs system scope), is checked by
+    /// <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the current one.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]

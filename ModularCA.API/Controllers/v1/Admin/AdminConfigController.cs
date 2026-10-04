@@ -21,10 +21,15 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for viewing and modifying runtime configuration.
 /// Changes are applied to the in-memory config and persisted to config.yaml.
 /// Some changes (logging, HTTPS, scheduler) require a restart to take full effect.
+/// Every endpoint needs a system administrator, and every write a step-up token
+/// (<see cref="StepUpOps.UpdateConfig"/>): the sections govern authentication, token binding,
+/// network trust, audit, alerting and integration keys, which a system operator must not be able
+/// to weaken or read. The notification page's operational summary is served by
+/// <c>GET /api/v1/admin/notifications/delivery</c> instead.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/config")]
-[Authorize(Policy = "SystemOperator")]
+[Authorize(Policy = "SystemAdmin")]
 [NodeRole(ProcessRole.Control)]
 public class AdminConfigController(
     SystemConfig config,
@@ -53,7 +58,8 @@ public class AdminConfigController(
     /// Get the full current configuration (secrets redacted). Response includes
     /// both yaml-backed <c>Security</c> (middleware knobs) and DB-backed
     /// <c>SecurityPolicy</c> (session/MFA/OCSP policy) + <c>LdapPublisherPolicy</c>
-    /// so clients see the complete picture in one call.
+    /// so clients see the complete picture in one call. Needs a system administrator, like
+    /// <c>GET /api/v1/admin/security-policy</c>, whose row it carries.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetConfig()
@@ -148,8 +154,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the logging configuration. Min level changes take effect immediately via
     /// the Serilog LoggingLevelSwitch. File path, retention, and size changes require a restart.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("logging")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateLogging([FromBody] LoggingUpdateRequest update)
     {
         // ICF-09: bounds validation. Only for values that were actually sent — null means the
@@ -206,8 +214,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the HTTP configuration (port, CORS, Swagger, trusted proxies).
     /// Requires a restart to take full effect.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("http")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateHttp([FromBody] HttpConfig update)
     {
         // ICF-09: bounds validation — port numbers
@@ -235,8 +245,10 @@ public class AdminConfigController(
     /// <c>PollIntervalSeconds</c> are no longer accepted — the scheduler is always
     /// on and polls every 30 seconds; multi-replica safety is handled by the
     /// leader-election lease.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("scheduler")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateScheduler([FromBody] SchedulerConfig update)
     {
         if (update.LeaseTtlSeconds >= 15) _config.Scheduler.LeaseTtlSeconds = update.LeaseTtlSeconds;
@@ -256,14 +268,17 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Updates the token configuration (refresh token lifetime).
+    /// Updates the token configuration (refresh token lifetime). <c>RefreshTokenDays</c> must be
+    /// between 1 and <see cref="TokenConfig.MaxRefreshTokenDays"/> (400 otherwise).
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("tokens")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateTokens([FromBody] TokenConfig update)
     {
         // ICF-09: bounds validation
-        if (update.RefreshTokenDays < 1)
-            return BadRequest(new { error = "RefreshTokenDays must be >= 1." });
+        if (update.RefreshTokenDays < 1 || update.RefreshTokenDays > TokenConfig.MaxRefreshTokenDays)
+            return BadRequest(new { error = $"RefreshTokenDays must be between 1 and {TokenConfig.MaxRefreshTokenDays}." });
 
         if (update.RefreshTokenDays > 0) _config.Tokens.RefreshTokenDays = update.RefreshTokenDays;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
@@ -388,8 +403,10 @@ public class AdminConfigController(
     /// while a password is stored, or the OAuth2 token URL while a client secret is stored, needs that
     /// secret re-entered (400), so a stored secret is never delivered to a server the caller just
     /// chose or sent in the clear.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("email")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateEmail([FromBody] EmailConfigUpdateRequest update)
     {
         var smtpChanged = (!string.IsNullOrEmpty(update.SmtpHost) && !string.Equals(update.SmtpHost, _config.Email.SmtpHost, StringComparison.OrdinalIgnoreCase))
@@ -425,7 +442,11 @@ public class AdminConfigController(
         return Ok(new { message = "Email config updated", enabled = _config.Email.Enabled });
     }
 
+    /// <summary>
+    /// Updates the metrics scrape path. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
     [HttpPut("metrics")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateMetrics([FromBody] MetricsConfig update)
     {
         // Activation is controlled by the Metrics.Enabled feature flag (admin UI
@@ -438,7 +459,12 @@ public class AdminConfigController(
         return Ok(new { message = "Metrics config updated", config = _config.Metrics });
     }
 
+    /// <summary>
+    /// Updates the SSH CA tool and key storage paths. Requires step-up MFA
+    /// (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
     [HttpPut("ssh-ca")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateSshCa([FromBody] SshCaConfig update)
     {
         if (!string.IsNullOrEmpty(update.SshKeygenPath)) _config.SshCa.SshKeygenPath = update.SshKeygenPath;
@@ -506,7 +532,6 @@ public class AdminConfigController(
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPost("restart")]
-    [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.Restart)]
     public async Task<IActionResult> Restart()
     {
@@ -650,8 +675,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the automatic certificate renewal configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("auto-renewal")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAutoRenewal([FromBody] AutoRenewalUpdateRequest request)
     {
         _config.AutoRenewal.Enabled = request.Enabled;
@@ -666,8 +693,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the certificate compliance scan configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("compliance-scan")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateComplianceScan([FromBody] ComplianceScanUpdateRequest request)
     {
         _config.ComplianceScan.Enabled = request.Enabled;
@@ -683,8 +712,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the certificate expiry notification configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("cert-expiry-notifications")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertExpiryNotifications([FromBody] CertExpiryNotificationUpdateRequest request)
     {
         _config.CertExpiryNotification.Enabled = request.Enabled;
@@ -697,8 +728,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the ACME protocol policy configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("acme-policies")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAcmePolicies([FromBody] AcmePoliciesUpdateRequest request)
     {
         // A malformed terms-of-service URL is worse than none: it gets advertised in the ACME
@@ -722,8 +755,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the security alert configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("alert")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAlert([FromBody] AlertUpdateRequest request)
     {
         _config.Alert.Enabled = request.Enabled;
@@ -736,8 +771,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the webhook notification configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("webhook")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateWebhook([FromBody] WebhookUpdateRequest request)
     {
         _config.Webhook.Enabled = request.Enabled;
@@ -750,8 +787,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the network audit (request logging) configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("network-audit")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateNetworkAudit([FromBody] NetworkAuditUpdateRequest request)
     {
         _config.NetworkAudit.Enabled = request.Enabled;
@@ -764,8 +803,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the GitOps-style policy synchronization configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("policy-sync")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdatePolicySync([FromBody] PolicySyncUpdateRequest request)
     {
         _config.PolicySync.Enabled = request.Enabled;
@@ -779,8 +820,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the Kubernetes cert-manager integration configuration.
     /// Requires a restart to take full effect.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("cert-manager")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertManager([FromBody] CertManagerUpdateRequest request)
     {
         _config.CertManager.Enabled = request.Enabled;
@@ -796,8 +839,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the infrastructure integration API configuration.
     /// Requires a restart to take full effect.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("integration-api")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateIntegrationApi([FromBody] IntegrationApiUpdateRequest request)
     {
         _config.IntegrationApi.Enabled = request.Enabled;

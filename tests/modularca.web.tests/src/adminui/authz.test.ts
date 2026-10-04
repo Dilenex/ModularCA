@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Capabilities } from '@shared/generated';
-import { can, canAnywhere, canAtSpace, canInSpace, canUseAdminConsole, consoleCas, instanceCas, NO_CAPABILITIES, spacesOf, type EffectiveCapabilities } from '@adminui/authz';
+import { can, canAnywhere, canAtSpace, canInSpace, canSpaceWide, canUseAdminConsole, consoleCas, instanceCas, NO_CAPABILITIES, spacesOf, type EffectiveCapabilities } from '@adminui/authz';
+import { CA_AUDIT, CA_MANAGE, CA_MANAGE_SPACE, GROUP_MANAGE, SYSTEM_OPERATOR } from '@adminui/gates';
+import { gateAllows } from '@adminui/scope';
 
 /**
  * The capability checks the console gates on, over the `capabilities` payload of
@@ -43,6 +45,19 @@ describe('canAnywhere', () => {
         expect(canAnywhere(operatorOnA, Capabilities.SystemManage)).toBe(false);
         expect(canAnywhere(systemAuditor, Capabilities.AuditView)).toBe(true);
         expect(canAnywhere(undefined, Capabilities.AuditView)).toBe(false);
+    });
+
+    it('does not count a space-wide grant over a space with no CA, as the CA-scoped list endpoints do not', () => {
+        const emptySpaceAdmin: EffectiveCapabilities = {
+            system: [Capabilities.CertView],
+            cas: [],
+            spaces: [{ id: 't9', name: 'Empty', slug: 'empty', capabilities: [Capabilities.CaManage, Capabilities.GroupManage] }],
+        };
+        expect(canAnywhere(emptySpaceAdmin, Capabilities.CaManage)).toBe(false);
+        expect(canAnywhere(emptySpaceAdmin, Capabilities.GroupManage)).toBe(false);
+        expect(canAnywhere(emptySpaceAdmin, Capabilities.CertView)).toBe(true);
+        expect(canSpaceWide(emptySpaceAdmin, Capabilities.CaManage)).toBe(true);
+        expect(canSpaceWide(emptySpaceAdmin, Capabilities.SystemManage)).toBe(false);
     });
 });
 
@@ -126,5 +141,45 @@ describe('instance CAs (no space)', () => {
         expect(instanceCas(auditor).map(c => c.id)).toEqual(['sys']);
         expect(can(auditor, Capabilities.AuditView, 'sys')).toBe(true);
         expect(canInSpace(auditor, Capabilities.CertView, 't1')).toBe(true);
+    });
+});
+
+/**
+ * Page gates match what the server answers the page's calls. The CA-scoped list endpoints need
+ * the capability on at least one CA, so a space administrator whose space has no CA yet sees only
+ * the pages that work without one (Authorities, to create it, and Ceremonies), and a
+ * system-operator page is not offered to a CA administrator.
+ */
+describe('page gates', () => {
+    const emptySpace = { kind: 'space' as const, spaceId: 't9', slug: 'empty', name: 'Empty' };
+    const emptySpaceAdmin: EffectiveCapabilities = {
+        system: [],
+        cas: [],
+        spaces: [{ id: 't9', name: 'Empty', slug: 'empty', capabilities: [Capabilities.CaManage, Capabilities.GroupManage, Capabilities.CertView] }],
+    };
+
+    it('offers a space administrator with no CA yet only the pages that work without one', () => {
+        expect(gateAllows(emptySpaceAdmin, CA_MANAGE_SPACE, emptySpace)).toBe(true);
+        expect(gateAllows(emptySpaceAdmin, CA_MANAGE, emptySpace)).toBe(false);
+        expect(gateAllows(emptySpaceAdmin, GROUP_MANAGE, emptySpace)).toBe(false);
+        expect(gateAllows(emptySpaceAdmin, CA_AUDIT, emptySpace)).toBe(false);
+        expect(gateAllows(emptySpaceAdmin, CA_MANAGE_SPACE, { kind: 'all' })).toBe(true);
+        expect(gateAllows(emptySpaceAdmin, GROUP_MANAGE, { kind: 'all' })).toBe(false);
+    });
+
+    it('offers the same pages once the space has a CA', () => {
+        const withCa: EffectiveCapabilities = {
+            ...emptySpaceAdmin,
+            cas: [{ ...caA, id: 'c9', spaceId: 't9', spaceSlug: 'empty', capabilities: [Capabilities.CaManage, Capabilities.GroupManage, Capabilities.CertView] }],
+        };
+        expect(gateAllows(withCa, CA_MANAGE, emptySpace)).toBe(true);
+        expect(gateAllows(withCa, GROUP_MANAGE, emptySpace)).toBe(true);
+        expect(gateAllows(withCa, GROUP_MANAGE, { kind: 'all' })).toBe(true);
+    });
+
+    it('keeps a system-operator page to system-scoped ca.manage', () => {
+        const caAdmin: EffectiveCapabilities = { system: [], cas: [{ ...caA, capabilities: [Capabilities.CaManage] }] };
+        expect(gateAllows(caAdmin, SYSTEM_OPERATOR, { kind: 'all' })).toBe(false);
+        expect(gateAllows({ system: [Capabilities.CaManage], cas: [] }, SYSTEM_OPERATOR, { kind: 'all' })).toBe(true);
     });
 });

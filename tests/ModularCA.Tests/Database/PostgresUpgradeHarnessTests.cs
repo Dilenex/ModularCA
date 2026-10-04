@@ -73,6 +73,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.0 S6 migration that renames tenant to space, without its timestamp.</summary>
     public const string RenameTenantToSpace = "RenameTenantToSpace";
 
+    /// <summary>The 0.4.0 migration that binds each ACME account to a CA, without its timestamp.</summary>
+    public const string BindAcmeAccountsToCa = "BindAcmeAccountsToCa";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -128,6 +131,18 @@ public class PostgresUpgradeHarnessTests
     private static readonly Guid SecondProfile = Guid.Parse("00000000-0000-0000-0000-00000000e00b");
     private static readonly Guid AcmeCeremony = Guid.Parse("00000000-0000-0000-0000-00000000f00b");
     private static readonly Guid SecondCeremony = Guid.Parse("00000000-0000-0000-0000-00000000f00c");
+    private static readonly Guid MixedCaseCa = Guid.Parse("00000000-0000-0000-0000-00000000b005");
+    private static readonly Guid ZetaDefaultCa = Guid.Parse("00000000-0000-0000-0000-00000000b006");
+    private static readonly Guid RetiredDefaultCa = Guid.Parse("00000000-0000-0000-0000-00000000b007");
+    private static readonly Guid DisabledDefaultCa = Guid.Parse("00000000-0000-0000-0000-00000000b008");
+    private static readonly Guid ReservedDefaultCa = Guid.Parse("00000000-0000-0000-0000-00000000b009");
+    private static readonly Guid SshDefaultCa = Guid.Parse("00000000-0000-0000-0000-00000000b00a");
+    private static readonly Guid MixedCaseAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac01");
+    private static readonly Guid PaddedAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac02");
+    private static readonly Guid RetiredAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac03");
+    private static readonly Guid GoneAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac04");
+    private static readonly Guid LabelLessAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac05");
+    private static readonly Guid BlankLabelAccount = Guid.Parse("00000000-0000-0000-0000-00000000ac06");
 
     /// <summary>The seeded organisation tenant.</summary>
     internal static Guid OrgTenantId => OrgTenant;
@@ -381,7 +396,7 @@ public class PostgresUpgradeHarnessTests
                 Assert.False(result.Passed);
                 Assert.False(result.Stopped);
                 Assert.Null(result.Migration);
-                Assert.Equal(3, result.Rehearsed.Count);
+                Assert.Equal(result.Pending.Where(id => id != rename), result.Rehearsed);
                 var refusal = Assert.Single(result.Refusals);
                 Assert.Equal((rename, "P2", false), (refusal.Migration, refusal.Check, refusal.AlsoFound));
                 Assert.Contains((string)taken[2], refusal.Message);
@@ -541,8 +556,9 @@ public class PostgresUpgradeHarnessTests
 
     /// <summary>
     /// A clean 0.3.x database: the dry run passes and leaves it unchanged, the audit database's
-    /// dry run finds nothing pending, <c>--upgrade-check</c> exits 0 still changing nothing, and
-    /// the control role's start then applies every migration.
+    /// dry run passes, <c>--upgrade-check</c> exits 0 still changing nothing, refuses an integration
+    /// key scoped to the system tenant (but not one scoped to the instance), and the control role's
+    /// start then applies every migration.
     /// </summary>
     [RequiresEnvironmentFact(ServerVariable)]
     public async Task A_clean_030_database_passes_the_dry_run_unchanged_then_the_control_role_upgrades_it()
@@ -557,7 +573,7 @@ public class PostgresUpgradeHarnessTests
         {
             var appConnection = WithDatabase(server, appName);
             var auditConnection = WithDatabase(server, auditName);
-            int pending;
+            int pending, auditPending;
             List<string> before;
             await using (var app = CreateApp(appConnection))
             {
@@ -581,7 +597,9 @@ public class PostgresUpgradeHarnessTests
                 await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
                 var result = await SchemaVersionGate.DryRunPendingAsync(audit);
                 Assert.True(result.Passed, result.Error?.ToString());
-                Assert.Empty(result.Pending);
+                Assert.Equal(audit.Database.GetMigrations().Skip(1), result.Rehearsed);
+                auditPending = result.Rehearsed.Count;
+                Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
             }
             await AssertNoLockHeldAsync(appConnection);
 
@@ -593,10 +611,31 @@ public class PostgresUpgradeHarnessTests
             var output = new StringWriter();
             Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
             var report = output.ToString();
-            Assert.Contains($"UPGRADE CHECK: PASS ({pending} pending migration(s) would apply cleanly). Nothing was changed.", report);
-            Assert.Contains("current: nothing to apply.", report);
+            Assert.Contains($"UPGRADE CHECK: PASS ({pending + auditPending} pending migration(s) would apply cleanly). Nothing was changed.", report);
+            Assert.Contains($"would apply {auditPending} migration(s) cleanly.", report);
             Assert.DoesNotContain("REFUSED", report);
             Assert.Contains($"dry run: passed; {pending} migration(s) ran in one transaction and were rolled back.", report);
+
+            // An integration key scoped to the system tenant is refused, read-only, with its remedy;
+            // one scoped to the instance or an organisation is not.
+            output = new StringWriter();
+            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
+            report = output.ToString();
+            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to the system tenant). Nothing was changed.", report);
+            Assert.Contains("Set IntegrationApi.SpaceId to 'instance'", report);
+            Assert.DoesNotContain("CertManager.SpaceId (named", report);
+            output = new StringWriter();
+            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
+            Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
+
+            // Before the fold, a GUID that names no tenant at all is refused too.
+            output = new StringWriter();
+            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                [("CertManager.SpaceId", Guid.NewGuid().ToString())]));
+            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: CertManager.SpaceId scoped to no existing space). Nothing was changed.", output.ToString());
+
             await using (var app = CreateApp(appConnection))
             {
                 await AssertNothingAppliedAsync(app);
@@ -607,6 +646,28 @@ public class PostgresUpgradeHarnessTests
             await using (var app = CreateApp(appConnection))
                 Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(await SchemaVersionGate.ReadAsync(app), appliesMigrations: true));
             await AssertNoLockHeldAsync(appConnection);
+
+            // After the fold, as an enrollment host checks once the control host has upgraded: the
+            // system tenant is gone, so its id, like any id naming no space, is refused read-only
+            // with the remedy; the instance and an existing space pass.
+            List<string> folded;
+            await using (var app = CreateApp(appConnection))
+                folded = await FingerprintAsync(app);
+            output = new StringWriter();
+            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
+            report = output.ToString();
+            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to no existing space). Nothing was changed.", report);
+            Assert.Contains($"IntegrationApi.SpaceId (named IntegrationApi.TenantId before 0.4.0) is {SystemTenant}, which names no existing space", report);
+            Assert.Contains("set IntegrationApi.SpaceId to 'instance'", report);
+            Assert.Contains("otherwise set it to an existing space's id", report);
+            Assert.DoesNotContain("CertManager.SpaceId (named", report);
+            output = new StringWriter();
+            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
+            Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
+            await using (var app = CreateApp(appConnection))
+                Assert.Equal(folded, await FingerprintAsync(app));
         }
         finally
         {
@@ -723,8 +784,8 @@ public class PostgresUpgradeHarnessTests
     }
 
     /// <summary>
-    /// The audit context's dry run on an empty database rehearses the history table and the
-    /// baseline, and leaves the database empty.
+    /// The audit context's dry run on an empty database rehearses the history table, the baseline
+    /// and every migration after it, and leaves the database empty.
     /// </summary>
     [RequiresEnvironmentFact(ServerVariable)]
     public async Task The_audit_dry_run_rehearses_its_baseline_on_an_empty_database_and_leaves_it_empty()
@@ -738,7 +799,8 @@ public class PostgresUpgradeHarnessTests
             var result = await SchemaVersionGate.DryRunPendingAsync(audit);
 
             Assert.True(result.Passed, result.Error?.ToString());
-            Assert.Equal([AuditBaseline], result.Rehearsed);
+            Assert.Equal(audit.Database.GetMigrations(), result.Rehearsed);
+            Assert.Equal(AuditBaseline, result.Rehearsed[0]);
             Assert.Equal(DatabasePresence.Empty, (await SchemaVersionGate.ReadAsync(audit)).Presence);
             Assert.Equal(0, await ScalarAsync(audit, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace"));
         }
@@ -1187,6 +1249,49 @@ public class PostgresUpgradeHarnessTests
         var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
         foreach (var fragment in expected.Split('|'))
             Assert.True(raised.MessageText.Contains(fragment, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
+    }
+
+    /// <summary>
+    /// The <c>BindAcmeAccountsToCa</c> backfill, seeded at the stage before it with
+    /// <see cref="SeedAcmeAccountsSql"/>: a label binds to the CA with that label ignoring case
+    /// and surrounding blanks, a soft-deleted CA's included; a label naming no CA leaves the
+    /// account unbound; a label-less or blank account binds to the CA
+    /// <c>CaResolverService.DefaultCandidates</c> puts first, passing over deleted, disabled,
+    /// <c>system-</c> and SSH CAs marked default and breaking the tie between two defaults by name.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_acme_account_backfill_binds_by_label_ignoring_case_and_label_less_accounts_to_the_default()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+            await ExecAsync(app, Seed030Sql + SeedFoldSql);
+            await MigrateThroughAsync(app, RenameTenantToSpace);
+
+            await ExecAsync(app, SeedAcmeAccountsSql);
+            await MigrateThroughAsync(app, BindAcmeAccountsToCa);
+
+            async Task<string> BoundTo(Guid account) => await TextAsync(app,
+                $"SELECT coalesce(\"CertificateAuthorityId\"::text, '') FROM \"AcmeAccounts\" WHERE \"Id\" = '{account}'");
+            Assert.Equal(MixedCaseCa.ToString(), await BoundTo(MixedCaseAccount));
+            Assert.Equal(RootCa.ToString(), await BoundTo(PaddedAccount));
+            Assert.Equal(RetiredDefaultCa.ToString(), await BoundTo(RetiredAccount));
+            Assert.Equal("", await BoundTo(GoneAccount));
+            Assert.Equal(RootCa.ToString(), await BoundTo(LabelLessAccount));
+            Assert.Equal(RootCa.ToString(), await BoundTo(BlankLabelAccount));
+            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"AcmeAccounts\""));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
     }
 
     [RequiresEnvironmentFact(ServerVariable)]
@@ -1705,6 +1810,34 @@ public class PostgresUpgradeHarnessTests
 
         INSERT INTO "SignerAudit" ("Id","At","Operation","Caller","Purpose","Outcome","CaId","TenantId","EffectiveScope")
         VALUES (gen_random_uuid(),now(),'Sign','control','Certificate','allowed','{{RootCa}}','{{OrgTenant}}','tenant');
+        """;
+
+    /// <summary>
+    /// ACME accounts and the CAs they name, at the names of the stage before
+    /// <c>BindAcmeAccountsToCa</c>. Beside the root CA (default, "Acme Root CA"): a CA labelled
+    /// <c>mixed-case</c>; a second default named to sort after the root; and defaults named to sort
+    /// before it that the label-less resolution must pass over: soft-deleted (labelled
+    /// <c>retired</c>), disabled, <c>system-</c> labelled and SSH. Accounts label <c>Mixed-CASE</c>,
+    /// <c> acme-root </c>, <c>retired</c>, <c>gone</c> (no CA), nothing, and blanks. Run after
+    /// <see cref="SeedFoldSql"/>.
+    /// </summary>
+    internal static string SeedAcmeAccountsSql => $"""
+
+        INSERT INTO "CertificateAuthorities" ("Id","Name","Label","IsDefault","Type","IsEnabled","KeyStorageType","IsSshCa","SpaceId","IsDeleted")
+        VALUES ('{MixedCaseCa}','Mixed Case CA','mixed-case',false,'Root',true,'Software',false,'{OrgTenant}',false),
+               ('{ZetaDefaultCa}','Zeta Default CA','zeta',true,'Root',true,'Software',false,'{OrgTenant}',false),
+               ('{RetiredDefaultCa}','Aaa Retired CA','retired',true,'Root',true,'Software',false,'{OrgTenant}',true),
+               ('{DisabledDefaultCa}','Aab Disabled CA','disabled',true,'Root',false,'Software',false,'{OrgTenant}',false),
+               ('{ReservedDefaultCa}','Aac Reserved CA','system-reserved',true,'Root',true,'Software',false,NULL,false),
+               ('{SshDefaultCa}','Aad SSH CA','aad-ssh',true,'SSH',true,'Software',true,NULL,false);
+
+        INSERT INTO "AcmeAccounts" ("Id","JwkJson","JwkThumbprint","ContactsJson","Status","TermsOfServiceAgreed","CreatedAt","CaLabel")
+        VALUES ('{MixedCaseAccount}','jwk','thumb-mixed','[]','Valid',true,now(),'Mixed-CASE'),
+               ('{PaddedAccount}','jwk','thumb-padded','[]','Valid',true,now(),' acme-root '),
+               ('{RetiredAccount}','jwk','thumb-retired','[]','Valid',true,now(),'retired'),
+               ('{GoneAccount}','jwk','thumb-gone','[]','Valid',true,now(),'gone'),
+               ('{LabelLessAccount}','jwk','thumb-label-less','[]','Valid',true,now(),NULL),
+               ('{BlankLabelAccount}','jwk','thumb-blank','[]','Valid',true,now(),'   ');
         """;
 
     /// <summary>The one security policy row bootstrap seeds, at the entity's defaults.</summary>

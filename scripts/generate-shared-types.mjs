@@ -593,7 +593,8 @@ function mapType(csharp, known, context) {
 const TYPE_DECL_RE =
     /(?:^|\n)\s*public\s+((?:sealed\s+|abstract\s+|partial\s+|static\s+|readonly\s+)*)(record\s+class|record\s+struct|record|class|struct)\s+(\w+)\s*(\([^)]*\))?\s*(?::\s*([^{;]+))?\s*(\{|;)/g;
 
-const PROP_RE = /public\s+(required\s+)?([A-Za-z0-9_<>,\[\]\?\. ]+?)\s+(\w+)\s*\{\s*get\s*;/g;
+// The getter may be auto (`get;`), expression-bodied (`get => _x;`) or a block (`get { … }`).
+const PROP_RE = /public\s+(required\s+)?([A-Za-z0-9_<>,\[\]\?\. ]+?)\s+(\w+)\s*\{\s*get\s*(?:;|=>|\{)/g;
 
 function collectModels(files) {
     const types = [];

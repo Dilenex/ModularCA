@@ -113,12 +113,12 @@ const X509TemplatesTab: React.FC = () => {
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
 
-    const { caId: scopeCaId, scope } = useScope();
+    const { caId: scopeCaId, spaceId: scopeSpaceId, caQuery, scope } = useScope();
 
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>(`/api/v1/admin/templates${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
+        apiGet<any>(`/api/v1/admin/templates${caQuery()}`)
             .then((data) => setTemplates(extractList(data)))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
@@ -128,7 +128,7 @@ const X509TemplatesTab: React.FC = () => {
     useEffect(() => {
         load();
         if (scopeCaId) setForm((f) => ({ ...f, caId: f.caId || scopeCaId }));
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
@@ -362,7 +362,7 @@ const X509TemplatesTab: React.FC = () => {
                 {error && <InlineNotice notice={error} />}
                 {!loading && !error && templates.length === 0 && (
                     <div className="p-4 text-sm text-gray-600 text-center">
-                        {scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                        {scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
                     </div>
                 )}
                 {!loading && !error && templates.length > 0 && (
@@ -370,7 +370,7 @@ const X509TemplatesTab: React.FC = () => {
                         tableId="templates-x509"
                         title="Templates"
                         rows={templates}
-                        empty={scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
+                        empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
                         sort={{ key: 'name', dir: 'asc' }}
                         {...recordTableProps(record)}
                     />

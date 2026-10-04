@@ -26,6 +26,25 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
         return Ok(prefs);
     }
 
+    /// <summary>
+    /// The outbound email settings the notification page shows: whether sending is on, the SMTP
+    /// server, TLS, sender and admin recipients. No credential or token is returned. The full
+    /// configuration, alerting included, is <c>GET /api/v1/admin/config</c> (system admin).
+    /// </summary>
+    [HttpGet("delivery")]
+    public IActionResult GetDelivery() => Ok(new
+    {
+        Email = new
+        {
+            config.Email.Enabled,
+            config.Email.SmtpHost,
+            config.Email.SmtpPort,
+            config.Email.UseTls,
+            config.Email.FromAddress,
+            config.Email.AdminRecipients,
+        },
+    });
+
     [HttpPut("{eventType}")]
     public async Task<IActionResult> UpdatePreference(string eventType, [FromBody] UpdateNotificationRequest request)
     {

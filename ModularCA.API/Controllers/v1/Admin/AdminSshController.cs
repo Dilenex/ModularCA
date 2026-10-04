@@ -57,7 +57,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
     /// <summary>
     /// Generates a new SSH CA key pair using ssh-keygen. SSH CAs are instance CAs: if the
-    /// instance requires key ceremonies, initiates a ceremony instead. The derived label is
+    /// instance requires key ceremonies, initiates a ceremony instead. A non-null
+    /// <c>spaceId</c> is 400, since an SSH CA cannot belong to a space. The derived label is
     /// checked first, ceremony or not: a control character in the name or key type, or an invalid
     /// or reserved label, is 400; a label or name another CA has (or takes while this one is saved)
     /// is 409.
@@ -73,6 +74,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.CreateSshCa))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
+
+        if (request.SpaceId != null)
+            return BadRequest(new { error = "SSH CAs are instance CAs and cannot belong to a space. Omit spaceId." });
 
         if (ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.Name)
             || ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.KeyType))
@@ -93,11 +97,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             return Conflict(new { error = ex.Message, code = ex.Code });
         }
 
-        // SSH CA keys are ALWAYS instance CAs (see SshCaService.GenerateKeyPairAsync, which ignores
-        // request.SpaceId entirely). The ceremony requirement is therefore the instance's — the
-        // scope the key actually lands in — NOT request.SpaceId's. Keying the gate off
-        // request.SpaceId once allowed an SSH CA to be created directly, bypassing the ceremony,
-        // whenever the request omitted a ceremony-requiring space.
+        // SSH CA keys are ALWAYS instance CAs (see SshCaService.GenerateKeyPairAsync), so the
+        // ceremony requirement is the instance's. Keying the gate off request.SpaceId once allowed
+        // an SSH CA to be created directly, bypassing the ceremony, whenever the request omitted a
+        // ceremony-requiring space.
         var sshPolicy = await new EffectivePolicyResolver(db).ResolveAsync(null);
         if (sshPolicy.RequireKeyCeremony)
         {
@@ -480,7 +483,8 @@ public class GenerateSshCaKeyRequest
     public bool? IsHostCa { get; set; }
     public int? MaxValidityHours { get; set; }
     /// <summary>
-    /// Optional space ID. If the space requires key ceremonies, a ceremony will be initiated instead of immediate creation.
+    /// Must be null or omitted: SSH CAs are instance CAs, and a space id is refused with 400. The
+    /// instance's key-ceremony requirement decides whether a ceremony is initiated.
     /// </summary>
     public Guid? SpaceId { get; set; }
 }

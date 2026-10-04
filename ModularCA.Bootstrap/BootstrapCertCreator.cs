@@ -227,6 +227,7 @@ public static class BootstrapCertCreator
     /// <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> naming both, rather
     /// than failing on the unique index, as does a label derived from the CA's name that
     /// <see cref="EnsureRootLabelUsable"/> refuses. An explicit <paramref name="label"/> may be reserved.
+    /// A CA created as the default clears the default on every other CA.
     /// </summary>
     public static void CreateCertificateAuthority(ModularCADbContext db, CertificateEntity caCertificateEntity,
         string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? spaceId = null)
@@ -258,6 +259,9 @@ public static class BootstrapCertCreator
             ParentCaId = parentCaId,
             SpaceId = spaceId,
         };
+        if (isDefault)
+            foreach (var other in db.CertificateAuthorities.Where(c => c.IsDefault).ToList())
+                other.IsDefault = false;
         db.CertificateAuthorities.Add(caEntity);
         db.SaveChanges();
         Console.WriteLine($"✓ Certificate Authority '{caEntity.Name}' added (Type={caType}, Label={caEntity.Label}, IsDefault={caEntity.IsDefault}).");

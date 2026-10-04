@@ -69,10 +69,20 @@ export function can(caps: EffectiveCapabilities | null | undefined, capability: 
     return !!ca && ca.capabilities.includes(capability);
 }
 
-/** Whether `capability` is held at system scope or on any CA at all. */
+/**
+ * Whether `capability` is held at system scope or on any CA. This is what the server's CA-scoped
+ * list endpoints ask of a route that names no CA, so a space-wide grant over a space with no CA
+ * yet does not count here; see `canSpaceWide` for the pages that work without one.
+ */
 export function canAnywhere(caps: EffectiveCapabilities | null | undefined, capability: Capability): boolean {
     if (!caps) return false;
     return caps.system.includes(capability) || caps.cas.some(c => c.capabilities.includes(capability));
+}
+
+/** Whether `capability` is held space-wide on any space, whether or not the space has a CA yet. */
+export function canSpaceWide(caps: EffectiveCapabilities | null | undefined, capability: Capability): boolean {
+    if (!caps) return false;
+    return (caps.spaces ?? []).some(s => s.capabilities.includes(capability));
 }
 
 /** The capabilities a Requester holds: the self-service pair. */
@@ -121,6 +131,15 @@ export function canInSpace(caps: EffectiveCapabilities | null | undefined, capab
     if (!caps) return false;
     if (caps.spaces?.some(s => s.id === spaceId && s.capabilities.includes(capability))) return true;
     return caps.cas.some(c => c.spaceId === spaceId && c.capabilities.includes(capability));
+}
+
+/**
+ * Whether `capability` is held at system scope or on a CA of the space: what a CA-scoped list
+ * endpoint needs, which a space-wide grant over a space with no CA does not meet.
+ */
+export function canOnCaInSpace(caps: EffectiveCapabilities | null | undefined, capability: Capability, spaceId: string): boolean {
+    if (!caps) return false;
+    return caps.system.includes(capability) || caps.cas.some(c => c.spaceId === spaceId && c.capabilities.includes(capability));
 }
 
 /**

@@ -252,7 +252,7 @@ internal static class Program
                 await verification.CheckRowCountsAsync(auditConn, _audit, ct);
             }
 
-            await using (var auditDb = DestinationBuilder.AuditContext(options.AuditInstance(builder.AuditPassword)))
+            await using (var auditDb = DestinationBuilder.BaselineAuditContext(options.AuditInstance(builder.AuditPassword)))
             await using (var auditSource = new MySqlConnection(
                 options.SourceConnectionString(options.SourceAuditDatabase)))
             {

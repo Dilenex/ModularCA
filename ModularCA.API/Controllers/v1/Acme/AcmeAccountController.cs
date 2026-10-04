@@ -5,11 +5,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
 using ModularCA.Database;
+using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Acme;
 using ModularCA.Shared.Errors;
 using ModularCA.API.Startup;
 
@@ -59,7 +61,12 @@ public class AcmeAccountController(
     /// The existing-account fast path rejects deactivated accounts and,
     /// when EAB is required, still runs EAB validation before returning an
     /// existing account. The Location header echoes the
-    /// CA label from the route and the account record stores the label.
+    /// CA label from the route and the account record stores the label. A new account is bound
+    /// to the CA the route addresses (the default CA on the label-less routes), whose EAB policy
+    /// applies; an existing key addresses the CA its account is bound to (see
+    /// <see cref="AcmeJwsActionFilter"/>). An existing account the upgrade left unbound is bound
+    /// here to the route's CA, under that CA's EAB policy as a new account would be. A CA that
+    /// does not serve ACME (<see cref="AcmeCaPolicy.RefusalAsync"/>) is refused.
     /// </summary>
     [HttpPost("new-account")]
     [AcmeJws(AllowNewAccount = true)]
@@ -74,10 +81,15 @@ public class AcmeAccountController(
         var baseUrl = GetBaseUrl();
         var labelPrefix = LabelPrefix();
 
+        if (HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] is not CertificateAuthorityEntity addressedCa)
+            return AcmeError(404, "urn:ietf:params:acme:error:malformed", "No enabled CA serves this ACME directory.");
+        if (await AcmeCaPolicy.RefusalAsync(_db, addressedCa) is { } notServed)
+            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized", notServed);
+
         // Global setting OR the addressed CA's own AcmeRequireEab. The per-CA flag was stored
         // and shown and read by nothing, so an operator who required EAB on one CA and left the
         // global switch off got anonymous account creation anyway.
-        var eabRequired = await EabRequiredAsync(HttpContext.Request.RouteValues["caLabel"] as string);
+        var eabRequired = await EabRequiredAsync(addressedCa.Id);
 
         // Check if account exists AND verify its status before
         // returning the fast path body. Deactivated accounts must be rejected
@@ -110,6 +122,17 @@ public class AcmeAccountController(
                 {
                     return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
                         "Account is deactivated.");
+                }
+
+                if (await _accountService.GetBoundCaIdAsync(existing.Id) == null
+                    && await _accountService.BindAsync(existing.Id, addressedCa.Id, addressedCa.Label))
+                {
+                    if (eabRequired && payload.ExternalAccountBinding.HasValue)
+                        await MarkEabKeyUsedAsync(payload.ExternalAccountBinding.Value, existing.Id);
+                    await _protocolAudit.LogAcmeAsync("AccountBound", existing.Id, null,
+                        subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+                        sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                        caLabel: addressedCa.Label, certificateAuthorityId: addressedCa.Id, spaceId: addressedCa.SpaceId);
                 }
 
                 Response.Headers["Location"] = $"{baseUrl}{labelPrefix}/account/{existing.Id}";
@@ -152,14 +175,14 @@ public class AcmeAccountController(
 
         // Persist the CA label the account was created under.
         var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-        var account = await _accountService.CreateAsync(jwkJson, thumbprint, payload.Contact, payload.TermsOfServiceAgreed, caLabel);
+        var account = await _accountService.CreateAsync(jwkJson, thumbprint, payload.Contact, payload.TermsOfServiceAgreed, addressedCa.Id, caLabel);
 
         // Surface account registration on the ACME audit tab so operators can see new
         // enrollments, not just issuance/revocation.
         await _protocolAudit.LogAcmeAsync("AccountRegistered", account.Id, null,
             subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            caLabel: caLabel);
+            caLabel: addressedCa.Label, certificateAuthorityId: addressedCa.Id, spaceId: addressedCa.SpaceId);
 
         // Mark EAB key as used if present
         if (eabRequired && payload.ExternalAccountBinding.HasValue)
@@ -173,7 +196,8 @@ public class AcmeAccountController(
     }
 
     /// <summary>
-    /// Get or update an existing account (RFC 8555 §7.3.2).
+    /// Get or update an existing account (RFC 8555 §7.3.2). A deactivation is audited under the
+    /// CA the account is bound to.
     /// </summary>
     [HttpPost("account/{id:guid}")]
     [AcmeJws]
@@ -207,7 +231,7 @@ public class AcmeAccountController(
             // Capture the account key thumbprint, CA label, and source IP so responders
             // can correlate the deactivation with later new-account attempts reusing the
             // same key material.
-            var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
+            var ca = HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as CertificateAuthorityEntity;
             await _audit.LogAsync(
                 AuditActionType.AcmeAccountDeactivated,
                 actorUserId: null,
@@ -219,9 +243,11 @@ public class AcmeAccountController(
                 {
                     AccountId = id,
                     JwkThumbprint = jws.JwkThumbprint,
-                    CaLabel = caLabel,
+                    CaLabel = ca?.Label,
                     Status = deactivated.Status,
-                });
+                },
+                certificateAuthorityId: ca?.Id,
+                spaceId: ca?.SpaceId);
 
             return Ok(deactivated);
         }
@@ -561,20 +587,14 @@ public class AcmeAccountController(
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
-    /// Whether external account binding is required for accounts under the given CA.
+    /// Whether external account binding is required for accounts under CA <paramref name="caId"/>,
+    /// the CA the request addresses as <see cref="ICaResolverService.ResolveCaEntityAsync"/>
+    /// resolves it, so the policy checked is that of the CA that issues.
     /// </summary>
-    private async Task<bool> EabRequiredAsync(string? caLabel)
+    private async Task<bool> EabRequiredAsync(Guid caId)
     {
         if (_config.Acme.ExternalAccountRequired)
             return true;
-
-        var cas = _db.CertificateAuthorities.AsNoTracking().Where(c => c.IsEnabled);
-        cas = string.IsNullOrWhiteSpace(caLabel)
-            ? cas.OrderByDescending(c => c.IsDefault)
-            : cas.Where(c => c.Label == caLabel);
-        var caId = await cas.Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
-        if (caId == null)
-            return false;
 
         return await _db.CaProtocolConfigs.AsNoTracking()
             .Where(c => c.CaId == caId && c.Protocol == "ACME")

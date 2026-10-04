@@ -4,7 +4,7 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { Link, useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa, getToken, forceRefresh, API_BASE } from '../api/client';
+import { apiGet, apiPost, apiPutWithMfa, apiPostWithMfa, getToken, forceRefresh, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -12,12 +12,17 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import ConfirmModal from '../components/ConfirmModal';
+import { ceremonyLink } from './ceremonyLinks';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+
+/** Mirrors PasswordPolicyBounds on the server. */
+const PASSWORD_MIN_LENGTH_FLOOR = 8;
+const PASSWORD_HISTORY_MAX = 24;
 
 const TABS = ['General', 'Security', 'Certificates', 'Integrations', 'Logging', 'Features'] as const;
 type Tab = typeof TABS[number];
@@ -418,29 +423,31 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const handleSavePolicy = async () => {
         setPolicySaving(true);
         try {
-            await apiPut('/api/v1/admin/password-policy', policy);
+            await apiPutWithMfa('/api/v1/admin/password-policy', policy, requireStepUp, StepUpOps.UpdateConfig);
             snap('policy', policy);
             showToast('success', 'Password policy updated');
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to save policy');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save policy');
         } finally {
             setPolicySaving(false);
         }
     };
     const updatePolicyField = (key: string, value: any) => setPolicy({ ...policy, [key]: value });
 
-    /* Cross-field checks the backend does not make. MaxLength 0 means "no cap", so the
-       comparisons only apply when a cap is set. A policy no password can satisfy locks every
-       user out at their next change. */
+    /* The bounds the server enforces (AdminPasswordPolicyController), checked before saving.
+       MaxLength 0 means "no cap", so the comparisons only apply when a cap is set. A policy no
+       password can satisfy locks every user out at their next change. */
     const policyNum = (k: string) => (policy && typeof policy[k] === 'number' ? policy[k] : 0);
     const policyMinsTotal = policyNum('minUppercase') + policyNum('minLowercase') + policyNum('minDigits') + policyNum('minSpecial');
     const policyProblems: string[] = [];
+    if (policy && policyNum('minLength') < PASSWORD_MIN_LENGTH_FLOOR)
+        policyProblems.push(`Minimum length must be at least ${PASSWORD_MIN_LENGTH_FLOOR}.`);
     if (policy && policyNum('maxLength') > 0 && policyNum('minLength') > policyNum('maxLength'))
         policyProblems.push(`Minimum length (${policyNum('minLength')}) is greater than maximum length (${policyNum('maxLength')}); no password can satisfy both.`);
     if (policy && policyNum('maxLength') > 0 && policyMinsTotal > policyNum('maxLength'))
         policyProblems.push(`The character-class minimums add up to ${policyMinsTotal}, more than the maximum length (${policyNum('maxLength')}).`);
-    if (policy && policyNum('minLength') === 0 && policyMinsTotal === 0)
-        policyProblems.push('Minimum length is 0 and no character counts are required; an empty password would pass.');
+    if (policy && policyNum('historyCount') > PASSWORD_HISTORY_MAX)
+        policyProblems.push(`Password history can remember at most ${PASSWORD_HISTORY_MAX} passwords.`);
 
     /* --- Security Policy (DB) helpers --- */
     const handleSaveSecurityPolicy = async () => {
@@ -455,7 +462,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             // 202 + ceremonyId: a non-super change to the instance's key-ceremony policy waits for
             // an InstancePolicyChange ceremony; everything else was saved. Reload to show which.
             if (result?.ceremonyId) {
-                showToast('info', 'Instance policy change ceremony started. Approve at /admin/ceremonies/' + result.ceremonyId);
+                showToast('info', `Instance policy change ceremony started. Approve it at ${ceremonyLink(result.ceremonyId)}`);
                 loadSecurityPolicy();
             } else {
                 snap('securityPolicy', securityPolicy);
@@ -744,7 +751,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 {/* Refresh Token Lifetime — tokens (live) */}
                                 <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Refresh Token Lifetime</h4><LiveTag /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigNumber label="Refresh Token Lifetime (days)" value={config.tokens.refreshTokenDays} onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
+                                    <ConfigNumber label="Refresh Token Lifetime (days, 1-30)" value={config.tokens.refreshTokenDays} onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
                                         hint="Days a session can be renewed without logging in again. A stolen refresh token stays usable for the same period, subject to the bindings below and the session caps in Security Policy." />
                                 </div>
                                 <SaveButton saving={saving === 'tokens'} onClick={() => saveSection('tokens', config.tokens, 'tokens')} label="Save Lifetime" />
@@ -828,8 +835,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Approval &amp; mTLS</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigToggle label="Allow System Super Self-Approval" checked={securityPolicy.allowSystemSuperSelfApproval ?? false} onChange={(v) => updateSecurityPolicyField('allowSystemSuperSelfApproval', v)}
+                                                disabled={!user?.isSuper}
                                                 hintTone={securityPolicy.allowSystemSuperSelfApproval ? 'warn' : 'muted'}
-                                                hint="Members of system-super may approve certificate requests they submitted themselves. Keeps a single-operator install working, and removes the two-person check for those accounts." />
+                                                hint={`Members of system-super may approve certificate requests they submitted themselves. Keeps a single-operator install working, and removes the two-person check for those accounts.${user?.isSuper ? '' : ' Only a system super-administrator can change this.'}`} />
                                             <ConfigToggle label="Require mTLS OCSP Check" checked={securityPolicy.requireMtlsOcspCheck ?? false} onChange={(v) => updateSecurityPolicyField('requireMtlsOcspCheck', v)}
                                                 hint="Client certificates presented for mTLS login are checked for revocation against the issuing CA. Off means a revoked certificate still logs in until it expires." />
                                         </div>
@@ -871,7 +879,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             The initiator is always excluded, so the effective minimum is 1 other approver.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                            <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1}
+                                            <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1} disabled={!user?.isSuper}
                                                 hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Spaces and CAs may set a lower figure, never a higher one." />
                                         </div>
                                         <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Instance CA Policy</h4>

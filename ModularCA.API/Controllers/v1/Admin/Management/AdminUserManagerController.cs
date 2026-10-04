@@ -36,11 +36,13 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         ISecurityAlertService alertService,
         IValidator<CreateUserRequest> createValidator,
         IValidator<UpdateUserRequest> updateValidator,
-        IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+        IControlledUserCeremonyService controlledUserSvc,
+        ICaGroupAuthorizationService groupAuth) : ControllerBase
     {
         private readonly ModularCADbContext _dbContext = dbContext;
         private readonly IUserManagementService _userService = userService;
         private readonly IControlledUserCeremonyService _controlledUserSvc = controlledUserSvc;
+        private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
         private readonly ICurrentUserService _currentUser = currentUser;
         private readonly IAuditService _audit = auditService;
         private readonly IDistributedCache _cache = cache;
@@ -179,9 +181,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Creates a new user account. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
-        /// Requested groups pass the membership tier gate; a group that confers a controlled tier is
-        /// refused (403) unless the caller is system-super. No groups requested means no groups.
+        /// Creates a new user account. Requires ca.manage on some CA and step-up MFA verification via X-MFA-Token header.
+        /// Each requested group needs the right on that group's own scope
+        /// (<see cref="AuthorizeGroupAssignmentAsync"/>, 403 otherwise), and a group that confers a
+        /// controlled tier is refused (403) unless the caller is system-super. No groups requested means no groups.
         /// </summary>
         [HttpPost]
         [Authorize]
@@ -553,22 +556,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Tiered authorization for membership writes.
-        /// <list type="number">
-        /// <item><b>Self-assignment always refused</b> — prevents bypass loops where a user
-        /// grants themselves into a higher tier.</item>
-        /// <item><b>system-super</b> members: may modify any group (system or CA-scoped).</item>
-        /// <item><b>system-admin</b> members (system group, Administrator template): may
-        /// modify any space CA-scoped group. Cannot touch system groups — that
-        /// requires system-super.</item>
-        /// <item><b>CA-scoped admins</b> (org_&lt;ca&gt;_admin): may modify only groups whose
-        /// <c>CertificateAuthorityId</c> equals the CA they themselves admin. Cross-CA
-        /// promotion is refused — Alice, admin of CA-A, cannot add Bob to the admin group
-        /// of CA-B even though both groups are "non-system".</item>
-        /// </list>
-        /// Matches the industry norm (EJBCA per-CA access rules, ADCS per-CA Certificate
-        /// Manager scope, OpenXPKI per-realm admins): within-CA delegation works, cross-CA
-        /// and system-tier require explicit elevation.
+        /// Authorization for membership writes: self-assignment is always refused (it would let a
+        /// user grant themselves into a higher tier), then <see cref="AuthorizeGroupAssignmentAsync"/>
+        /// requires the right on the target group's own scope.
         /// </summary>
         private async Task<IActionResult?> AuthorizeUserGroupChangeAsync(Guid groupId, Guid targetUserId)
         {
@@ -580,16 +570,16 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// The tier check itself, without the self-modification guard — that guard is meaningless
-        /// when the target user does not exist yet.
+        /// The scope check itself, without the self-modification guard, which is meaningless when
+        /// the target user does not exist yet; account creation runs it for every requested group.
+        /// The caller needs the right on the target group's own scope, read badge-aware from every
+        /// grant source (<see cref="GroupAssignmentAccess"/>): system-super for a system group,
+        /// <c>group.manage</c> on a CA group's CA or across a space-wide group's space, and a system
+        /// administrator for any other instance group. 404 for a missing group, 403 otherwise.
         /// <para>
-        /// Extracted so account creation can run the same gate. <c>CreateUser</c> assigns
-        /// <c>GroupIds</c> at creation time and previously validated only that each group
-        /// <em>existed</em>, while every other membership-write path (add, remove, and both bulk
-        /// endpoints) called <see cref="AuthorizeUserGroupChangeAsync"/>. That made creation the
-        /// one way to obtain a membership the caller is not entitled to grant: a CA-scoped
-        /// operator could create an account directly in a system-tier group with a password of
-        /// their choosing, then authenticate as it.
+        /// Membership of an unrelated group never counts. Before this, any system group (a system
+        /// auditor's included) read as system admin, so an auditor who operated one CA could create
+        /// an account with a password of their choosing in another space's groups, then sign in as it.
         /// </para>
         /// </summary>
         private async Task<IActionResult?> AuthorizeGroupAssignmentAsync(Guid groupId)
@@ -599,43 +589,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             var group = await _dbContext.CaGroups.FindAsync(groupId);
             if (group == null) return NotFound(new { error = "Group not found" });
 
-            // Resolve the caller's relevant memberships once.
-            var callerId = _currentUser.User.Id;
-            var callerGroups = await _dbContext.CaGroupMembers
-                .Where(m => m.UserId == callerId)
-                .Include(m => m.Group)
-                .Select(m => new { m.Group!.Name, m.Group.IsSystemGroup, m.Group.IsSystemTierSuper, m.Group.CertificateAuthorityId, m.Group.TemplateName })
-                .ToListAsync();
-
-            // Tier checks read structural flags rather than literal group names so a
-            // future bootstrap rename doesn't silently bypass the gate.
-            var isSuper = callerGroups.Any(g => g.IsSystemTierSuper);
-            if (isSuper) return null; // global override
-
-            // System groups are only writable by system-super.
-            if (group.IsSystemGroup)
-                return StatusCode(403, new { error = "Modifying system group memberships requires system-super. system-admin/CaAdmin cannot grant system-tier access." });
-
-            // system-admin members (Administrator template on a system group) retain
-            // authority over ANY space CA-scoped group. Everyone else must be an admin
-            // on the specific CA that owns the target group. system-admin tier = any system
-            // group that is NOT the super tier.
-            var isSystemAdmin = callerGroups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper);
-            if (isSystemAdmin) return null;
-
-            var targetCaId = group.CertificateAuthorityId;
-            if (targetCaId == null)
-                return StatusCode(403, new { error = "This group is not CA-scoped and requires system-admin or system-super to modify." });
-
-            // CA-scoped admins: caller must be in an Administrator-template group for the
-            // same CA as the target. This is the within-CA delegation path.
-            var isAdminOnTargetCa = callerGroups.Any(g =>
-                g.CertificateAuthorityId == targetCaId
-                && string.Equals(g.TemplateName, "Administrator", StringComparison.OrdinalIgnoreCase));
-            if (!isAdminOnTargetCa)
-                return StatusCode(403, new { error = "Cross-CA group modification is not permitted. You can only manage memberships for groups on CAs where you are an admin." });
-
-            return null;
+            var refusal = await GroupAssignmentAccess.RefusalAsync(_groupAuth, _controlledUserSvc, _currentUser.User.Id, group);
+            return refusal == null ? null : StatusCode(403, new { error = refusal });
         }
 
         /// <summary>

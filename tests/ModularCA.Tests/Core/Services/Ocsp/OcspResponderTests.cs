@@ -38,14 +38,21 @@ public class OcspResponderTests
     /// <summary>
     /// Seeds the rows the responder needs: a CertificateAuthorities row whose Certificate's
     /// SubjectDN matches the signer, plus one Certificates row per certificate under test.
+    /// <paramref name="seedFirst"/> stores rows before the CA's, so they come first in a scan.
     /// </summary>
     private static (ModularCA.Database.ModularCADbContext Db, OcspResponderService Service) Build(
         TestCaMaterial ca,
         Action<ModularCA.Database.ModularCADbContext, Guid> seedCertificates,
-        SecurityPolicyEntity? policy = null)
+        SecurityPolicyEntity? policy = null,
+        Action<ModularCA.Database.ModularCADbContext>? seedFirst = null)
     {
         var databaseName = $"ocsp-{Guid.NewGuid():N}";
         var db = InMemoryDbContextFactory.Create(databaseName);
+        if (seedFirst != null)
+        {
+            seedFirst(db);
+            db.SaveChanges();
+        }
 
         var caCertId = Guid.NewGuid();
         db.Certificates.Add(new CertificateEntity
@@ -161,6 +168,47 @@ public class OcspResponderTests
             var status = await StatusForAsync(service, ca, IntermediateSerial);
             var revoked = Assert.IsType<RevokedStatus>(status);
             Assert.Equal(revokedAt, revoked.RevocationTime.ToUniversalTime());
+        }
+    }
+
+    /// <summary>
+    /// Two CAs can share a subject DN: a rename changes a CA's name, not its CN. After matching
+    /// the signer by issuer key hash, the responder found the CA row by subject DN, so here it
+    /// found the other, disabled CA, stored first, and refused to answer for this one. It now
+    /// finds the CA whose certificate the signer is.
+    /// </summary>
+    [Fact]
+    public async Task The_ca_is_found_by_its_certificate_not_by_a_shared_subject_dn()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var twin = TestCaMaterial.CreateCa(ca.SubjectDn);
+        var (db, service) = Build(ca,
+            (d, caId) => d.Certificates.Add(Row(ca, caId, LeafSerial, "CN=leaf.example.com", isCa: false)),
+            seedFirst: d =>
+            {
+                var twinCertId = Guid.NewGuid();
+                d.Certificates.Add(new CertificateEntity
+                {
+                    CertificateId = twinCertId,
+                    SerialNumber = CertificateUtil.FormatSerialNumber(twin.Certificate.SerialNumber),
+                    SubjectDN = twin.SubjectDn,
+                    Issuer = twin.SubjectDn + ", OU=Other Root",
+                    IsCA = true,
+                    Pem = CertificateUtil.ConvertDerToPem(twin.Certificate.GetEncoded(), "CERTIFICATE"),
+                    RawCertificate = twin.Certificate.GetEncoded(),
+                    NotBefore = twin.Certificate.NotBefore,
+                    NotAfter = twin.Certificate.NotAfter,
+                });
+                d.CertificateAuthorities.Add(new CertificateAuthorityEntity
+                {
+                    Id = Guid.NewGuid(), Name = "renamed-twin", Label = "twin", IsEnabled = false, CertificateId = twinCertId,
+                });
+            });
+
+        using (db)
+        {
+            var status = await StatusForAsync(service, ca, LeafSerial);
+            Assert.Null(status);   // good, answered by test-ca
         }
     }
 

@@ -908,8 +908,10 @@ public class AdminCertificateController(
 
     /// <summary>
     /// Performs impact analysis on a certificate, returning the certificate details,
-    /// all certificates signed by it (if it is a CA), all tags, dependent services
-    /// (from tags with key "service"), and whether revoking it would affect other active certificates.
+    /// the certificates signed by it (if it is a CA) that the caller may view, all tags, dependent
+    /// services (from tags with key "service"), and whether revoking it would affect other active
+    /// certificates. Signed certificates are found by their issuer link to this certificate; a
+    /// legacy row without one by issuer DN, only when no other CA's certificate shares the DN.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to analyze.</param>
     /// <returns>An impact analysis report for the certificate.</returns>
@@ -948,16 +950,24 @@ public class AdminCertificateController(
 
         if (cert.IsCA)
         {
-            // Certs issued by this CA share the same Issuer (SubjectDN of the CA cert)
+            // Issued under this certificate by its issuer link. A legacy row without one matches by
+            // issuer DN only when no other CA's certificate carries the DN: two CAs in different
+            // spaces can share one. Each row is still checked against the caller's own access.
+            var legacyIssuerDn = await IssuerChainResolver.UnambiguousIssuerDnAsync(_dbContext, cert.CertificateId);
             var issuedCerts = await _dbContext.Certificates
                 .AsNoTracking()
-                .Where(c => c.Issuer == cert.SubjectDN && c.CertificateId != cert.CertificateId)
+                .Where(c => c.CertificateId != cert.CertificateId
+                    && (c.IssuerCertificateId == cert.CertificateId
+                        || (c.IssuerCertificateId == null && legacyIssuerDn != null && c.Issuer == legacyIssuerDn)))
                 .OrderByDescending(c => c.NotBefore)
                 .ToListAsync();
 
+            var userId = _currentUser.User.Id;
             var now = DateTime.UtcNow;
             foreach (var ic in issuedCerts)
             {
+                if (!_certificateAccessEvaluator.CanViewCertificate(userId, ic.CertificateId))
+                    continue;
                 var isActive = !ic.Revoked && ic.NotAfter >= now;
                 if (isActive) activeSignedCount++;
 

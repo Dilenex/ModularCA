@@ -29,8 +29,9 @@ describe('the /tenants redirects', () => {
 
 /**
  * The Create Space dialog: what a space is (and is not) before every create, and the licence
- * recommendation from the fifth space on, said in advance from the count and confirmed from the
- * server's answer. Creation is never refused.
+ * recommendation from the fifth space on. Only the server knows the licence and no endpoint
+ * reports it, so the dialog says it in advance only when the server's last create said it.
+ * Creation is never refused.
  */
 describe('the Create Space dialog', () => {
     it('says what a space shares and that a separate customer is a separate instance', () => {
@@ -38,12 +39,18 @@ describe('the Create Space dialog', () => {
             'Spaces delegate administration within one organisation. They share sign-in, backups, the audit trail and instance administrators. For a separate customer, create a separate instance.');
     });
 
-    it('recommends a licence from the fifth space on, and not before', () => {
+    it('repeats the server\'s last recommendation from the fifth space on, and not before', () => {
         expect(SPACES_WITHOUT_LICENCE).toBe(4);
         expect(LICENCE_RECOMMENDATION).toBe('A licence is recommended for more than four spaces.');
-        for (const existing of [0, 1, 2, 3]) expect(recommendationBeforeCreate(existing)).toBeNull();
-        expect(recommendationBeforeCreate(4)).toBe(LICENCE_RECOMMENDATION);
-        expect(recommendationBeforeCreate(9)).toBe(LICENCE_RECOMMENDATION);
+        for (const existing of [0, 1, 2, 3]) expect(recommendationBeforeCreate(existing, LICENCE_RECOMMENDATION)).toBeNull();
+        expect(recommendationBeforeCreate(4, LICENCE_RECOMMENDATION)).toBe(LICENCE_RECOMMENDATION);
+        expect(recommendationBeforeCreate(9, LICENCE_RECOMMENDATION)).toBe(LICENCE_RECOMMENDATION);
+    });
+
+    it('says nothing in advance when the server returned no recommendation (a licence carries multi-tenancy) or has not answered yet', () => {
+        expect(recommendationBeforeCreate(4, null)).toBeNull();
+        expect(recommendationBeforeCreate(12, null)).toBeNull();
+        expect(recommendationBeforeCreate(5, recommendationFromResponse({ id: 'x', name: 'Sixth', recommendation: null }))).toBeNull();
     });
 
     it('shows the recommendation the server returned, and nothing when it returned none', () => {

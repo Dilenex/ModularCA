@@ -12,7 +12,9 @@
 # On an upgrade (an existing config/db.yaml) the NEW build's --upgrade-check runs first, as the
 # service account against the installed config: it dry-runs every pending migration and rolls
 # back. If it does not pass, nothing in /opt/modularca is changed and the stopped units are
-# started again on the installed build.
+# started again on the installed build. If the script dies after stopping the units and before it
+# finishes, it says the install is incomplete; it starts the units again only when nothing in
+# /opt/modularca was replaced yet, and otherwise leaves them stopped and says how to recover.
 #
 #   sudo ./install.sh [--skip-upgrade-check]
 #
@@ -26,6 +28,11 @@ STAGE_PARENT=${APP_DIR%/*}
 SKIP_UPGRADE_CHECK=0
 STAGE=
 RESTART=()
+STOPPED=0          # the units were stopped (or found stopped) for this run
+STARTED=0          # start_units has run
+TOUCHED=0          # something in $APP_DIR was replaced
+DONE=0             # the install finished
+FAILED_LINE=
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -59,6 +66,7 @@ parse_args() {
 # both databases and applies migrations before it reports ready.
 start_units() {
     local unit
+    STARTED=1
     for unit in ${RESTART[@]+"${RESTART[@]}"}; do
         note "starting $unit"
         systemctl start --no-block "$unit" || warn "could not start $unit; start it with: systemctl start $unit"
@@ -70,6 +78,53 @@ remove_stage() {
         rm -rf -- "$STAGE"
     fi
     STAGE=
+}
+
+# Every part of the archive the install copies or installs, checked before any unit is stopped
+# and before anything in $APP_DIR is touched. The systemd unit is one of them: an archive built
+# from a tree without deploy/ would otherwise install a build that is never registered with systemd.
+precheck_archive() {
+    local item
+    for item in ModularCA.API ModularCA.Keystore.Unlocker modularca-migrate wwwroot share/sql/adopt-ownership.sql \
+                deploy/modularca.service; do
+        [[ -e "$SRC/$item" ]] || die "missing from archive: $item; nothing was changed"
+    done
+}
+
+# ERR trap: remembers where the script failed, for the EXIT trap's message.
+on_err() { FAILED_LINE=$1; }
+
+# EXIT trap: removes the staged copy and, when the script dies after stopping the units and before
+# it finished (and nothing has started them again), says the install is incomplete. Before anything
+# in $APP_DIR was replaced it starts the stopped units again on the installed build; after, it
+# leaves them stopped, since they would run a partly copied build, and says how to recover. Runs
+# without errexit, so one failing step cannot cut the report short. The exit status is kept.
+on_exit() {
+    local rc=$? line=$FAILED_LINE units
+    set +e
+    trap - ERR
+    units=${RESTART[*]+"${RESTART[*]}"}
+    remove_stage
+    if [[ $STOPPED -eq 1 && $DONE -eq 0 && $STARTED -eq 0 ]]; then
+        printf '\n\033[31mThe install is INCOMPLETE:\033[0m it stopped with status %s%s.\n' "$rc" "${line:+ at line $line}" >&2
+        if [[ -n $units ]]; then
+            printf 'It had stopped %s.\n' "$units" >&2
+        else
+            printf 'No ModularCA unit was running, so none was stopped.\n' >&2
+        fi
+        if [[ $TOUCHED -eq 1 ]]; then
+            printf '%s may hold a partly copied build, so nothing was started on it.\n' "$APP_DIR" >&2
+            printf 'Restore %s from your backup, or fix the cause and run install.sh again.\n' "$APP_DIR" >&2
+            if [[ -n $units ]]; then
+                printf 'Either way, then start them yourself (a re-run finds them stopped and leaves them so), node first:\n' >&2
+                printf '  systemctl start %s\n' "$units" >&2
+            fi
+        else
+            printf 'Nothing in %s was changed.\n' "$APP_DIR" >&2
+            start_units
+        fi
+    fi
+    return "$rc"
 }
 
 # True when the service account can run the new build where it was unpacked.
@@ -150,10 +205,13 @@ if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
 fi
 
 parse_args "$@"
-trap remove_stage EXIT
+set -E
+trap 'on_err $LINENO' ERR
+trap on_exit EXIT
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo ./install.sh)"
 [[ -f "$SRC/ModularCA.API" ]] || die "ModularCA.API not found next to this script — run it from inside the extracted archive"
+precheck_archive
 
 # ── Service account ────────────────────────────────────────────────────────────
 if ! getent group "$SERVICE_GROUP" >/dev/null; then
@@ -174,6 +232,9 @@ for unit in modularca.service modularca-signer.service; do
         RESTART+=("$unit")
     fi
 done
+# From here until the install finishes, a failure is reported as incomplete (on_exit): before the
+# payload is touched it starts these units again; after, it leaves them stopped.
+STOPPED=1
 if [[ ${#RESTART[@]} -gt 0 ]]; then
     note "stopping ${RESTART[*]}"
     systemctl stop "${RESTART[@]}"
@@ -184,17 +245,16 @@ upgrade_check
 
 # ── Payload ────────────────────────────────────────────────────────────────────
 note "installing to $APP_DIR"
+TOUCHED=1
 mkdir -p "$APP_DIR"
 
 # Binaries and static assets are replaced. config/ and keystores/ are NOT in this list: they
-# hold the install's identity and secrets, and an upgrade must never touch them.
+# hold the install's identity and secrets, and an upgrade must never touch them. Every part
+# copied below was checked present by precheck_archive before anything was stopped.
 #
 # Note the copy below MERGES rather than replaces, so a file the new build no longer ships
 # survives on disk. That is handled for wwwroot (removed first, below). Stale runtime
 # assemblies in the app directory are a known remaining gap.
-for item in ModularCA.API ModularCA.Keystore.Unlocker wwwroot; do
-    [[ -e "$SRC/$item" ]] || die "missing from archive: $item"
-done
 
 # wwwroot is removed before the copy rather than merged into.
 #
@@ -217,7 +277,6 @@ mkdir -p "$APP_DIR/config" "$APP_DIR/keystores" "$APP_DIR/logs"
 
 # The schema-ownership repair SQL is run as the PostgreSQL superuser, so it goes root-owned under
 # /usr/share and never into $APP_DIR, which the service account owns and can rewrite.
-[[ -f "$SRC/share/sql/adopt-ownership.sql" ]] || die "missing from archive: share/sql/adopt-ownership.sql"
 install -d -o root -g root -m 0755 /usr/share/modularca /usr/share/modularca/sql
 install -o root -g root -m 0644 "$SRC/share/sql/adopt-ownership.sql" /usr/share/modularca/sql/adopt-ownership.sql
 
@@ -252,19 +311,7 @@ find "$APP_DIR/keystores" -type f -exec chmod 0600 {} \; 2>/dev/null || true
 chmod 0750 "$APP_DIR/logs"
 
 # ── systemd ────────────────────────────────────────────────────────────────────
-# A missing unit used to fall through this block in silence: the installer printed its success
-# banner and the service was never registered. The archive is built from a source tree where
-# deploy/ was gitignored, so this was reachable from an ordinary clean clone — an install that
-# reports success and did not do the thing. Fail loudly instead.
-if [[ ! -f "$SRC/deploy/modularca.service" ]]; then
-    echo "ERROR: $SRC/deploy/modularca.service is missing from this distribution." >&2
-    echo "       Without it the systemd unit cannot be installed and modularca will not start" >&2
-    echo "       at boot. This usually means the archive was built from a tree with no deploy/" >&2
-    echo "       directory. Rebuild with scripts/build-linux-dist.sh from a complete checkout," >&2
-    echo "       or install the unit by hand before starting the service." >&2
-    exit 1
-fi
-
+# The unit was checked present by precheck_archive, before anything was stopped or replaced.
 if [[ -f "$UNIT" ]] && ! cmp -s "$SRC/deploy/modularca.service" "$UNIT"; then
     note "unit file differs from the packaged one; leaving yours in place at $UNIT"
     note "  packaged copy: $SRC/deploy/modularca.service"
@@ -281,9 +328,10 @@ note "privileged ports are handled by AmbientCapabilities=CAP_NET_BIND_SERVICE i
 
 # The node checks both databases and applies migrations before it reports ready, which can take
 # longer than an installer should sit waiting. The signer is ordered after it.
+DONE=1
 start_units
 
-cat <<'DONE'
+cat <<'NEXT_STEPS'
 
 Installed.
 
@@ -305,4 +353,4 @@ ownership repair run as postgres.
 Verify:
   systemctl status modularca
   journalctl -u modularca -f
-DONE
+NEXT_STEPS

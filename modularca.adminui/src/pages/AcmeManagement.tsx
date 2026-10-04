@@ -265,7 +265,7 @@ const EabKeyManagementSection: React.FC = () => {
 
 /* ─── ACME Accounts Section ─── */
 const AcmeEndpointsSection: React.FC = () => {
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, spaceId: scopeSpaceId, inScope } = useScope();
     const [cas, setCas] = useState<any[]>([]);
     const [selectedCa, setSelectedCa] = useState<string>('');
     const [directory, setDirectory] = useState<any>(null);
@@ -285,17 +285,17 @@ const AcmeEndpointsSection: React.FC = () => {
                 };
                 flatten(Array.isArray(data) ? data : []);
                 // Hide the System Signing CA — it never serves enrollment protocols.
-                // Under a CA scope, only that CA; it never serves protocols for another one.
+                // Under a CA or space scope, only the CAs it covers.
                 const visible = flat
                     .filter(ca => (ca.label || '').toLowerCase() !== 'system-signing-ca')
-                    .filter(ca => !scopeCaId || (ca.id || ca.caId) === scopeCaId);
+                    .filter(ca => inScope(ca.id || ca.caId));
                 setCas(visible);
                 if (visible.length > 0) setSelectedCa(visible[0].label || '');
                 else setSelectedCa('');
             })
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (!selectedCa) return;

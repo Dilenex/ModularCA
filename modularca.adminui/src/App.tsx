@@ -15,7 +15,7 @@ import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
 import { legacySpacePath } from './legacyPaths';
-import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
+import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
 import LoginPage from './pages/Login';
@@ -212,7 +212,7 @@ const App: React.FC = () => {
                                                             <Route path="/certificates/:serial" element={<ProtectedRoute {...CERT_VIEW}><CertificateDetail /></ProtectedRoute>} />
 
                                                             {/* CA Management */}
-                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE}><CaManagement /></ProtectedRoute>} />
+                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE_SPACE}><CaManagement /></ProtectedRoute>} />
                                                             <Route path="/authorities/manage/:id" element={<ProtectedRoute {...CA_MANAGE}><CaDetail /></ProtectedRoute>} />
                                                             <Route path="/authorities/protocols" element={<ProtectedRoute {...CA_MANAGE}><ProtocolConfig /></ProtectedRoute>} />
                                                             <Route path="/authorities/windows" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
@@ -249,7 +249,8 @@ const App: React.FC = () => {
                                                             <Route path="/roles" element={<ProtectedRoute {...SYSTEM_ADMIN}><RoleManagement /></ProtectedRoute>} />
                                                             <Route path="/roles/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><RoleDetail /></ProtectedRoute>} />
                                                             <Route path="/enrollment" element={<ProtectedRoute {...TOKEN_MANAGE}><EnrollmentManagement /></ProtectedRoute>} />
-                                                            <Route path="/ceremonies" element={<ProtectedRoute {...CA_MANAGE}><Ceremonies /></ProtectedRoute>} />
+                                                            <Route path="/ceremonies" element={<ProtectedRoute {...CA_MANAGE_SPACE}><Ceremonies /></ProtectedRoute>} />
+                                                            <Route path="/ceremonies/:id" element={<ProtectedRoute {...CA_MANAGE_SPACE}><Ceremonies /></ProtectedRoute>} />
                                                             {/* Quotas merged into Spaces & Quotas — redirect the old path. */}
                                                             <Route path="/quotas" element={<Navigate to="/spaces" replace />} />
 
@@ -262,7 +263,7 @@ const App: React.FC = () => {
                                                             {/* Monitoring */}
                                                             <Route path="/audit" element={<ProtectedRoute {...CA_AUDIT}><AuditLogs /></ProtectedRoute>} />
                                                             <Route path="/audit/:type/:id" element={<ProtectedRoute {...CA_AUDIT}><AuditLogDetail /></ProtectedRoute>} />
-                                                            <Route path="/notifications" element={<ProtectedRoute {...CA_MANAGE}><NotificationManagement /></ProtectedRoute>} />
+                                                            <Route path="/notifications" element={<ProtectedRoute {...SYSTEM_OPERATOR}><NotificationManagement /></ProtectedRoute>} />
 
                                                             {/* My Account */}
                                                             <Route path="/account" element={<AccountDetail />} />

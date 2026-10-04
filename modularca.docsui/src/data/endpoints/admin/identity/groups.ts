@@ -46,8 +46,9 @@ export const adminGroups: ApiEndpoint[] = [
         requestBody: [
             { name: 'name', type: 'string', required: true, description: 'Lowercase dashed group name (spaces are auto-replaced with dashes)' },
             { name: 'displayName', type: 'string', required: false, description: 'Human-friendly display name (defaults to name if omitted)' },
-            { name: 'certificateAuthorityId', type: 'guid', required: false, description: 'CA this group is scoped to. Null for space-wide or system groups. When set, spaceId is derived from the CA.' },
-            { name: 'spaceId', type: 'guid', required: false, description: 'Space this group belongs to. Required when certificateAuthorityId is null. Ignored when certificateAuthorityId is provided.' },
+            { name: 'certificateAuthorityId', type: 'guid', required: false, description: 'CA this group is scoped to. Null for space-wide or instance groups. When set, spaceId is derived from the CA.' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Space a space-wide group belongs to. Ignored when certificateAuthorityId is provided.' },
+            { name: 'scope', type: 'string', required: false, description: '"instance" for an instance (system) group, sent with neither certificateAuthorityId nor spaceId. Omit it otherwise.' },
             { name: 'templateName', type: 'string', required: false, description: 'Built-in role template to seed capabilities from (Administrator, Operator, Auditor, or Requester)' },
             { name: 'requiredQuorum', type: 'int', required: false, description: 'Number of admin approvals required for critical operations (defaults to 1)' },
         ],
@@ -55,7 +56,7 @@ export const adminGroups: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created group with id, name, displayName, templateName, certificateAuthorityId, isSystemGroup, requiredQuorum, and createdAt.',
-        notes: 'Auto-generated groups are created during CA creation and cannot be created via this endpoint. If templateName is provided, capability grants and role assignment are seeded from the template.',
+        notes: 'The body must name the group\'s scope: certificateAuthorityId, spaceId, or scope "instance". A body that names none, sends scope "instance" with a CA or space, or sends any other scope returns 400. Auto-generated groups are created during CA creation and cannot be created via this endpoint. If templateName is provided, capability grants and role assignment are seeded from the template.',
     },
     {
         method: 'PUT',

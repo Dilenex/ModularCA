@@ -324,8 +324,9 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Update CA properties. Runtime fields (Name, Label, IsDefault, IsEnabled) take effect immediately.
         /// A new label must match the label pattern and carry no reserved prefix (400); a label or
         /// name another CA of the instance has, soft-deleted CAs included, is a conflict (409), as is
-        /// a new label for a CA that has issued any certificate (<see cref="IssuerChainResolver.HasIssuedAsync"/>),
-        /// since the label is in those certificates' CRL, OCSP and AIA URLs.
+        /// a new label while anything references the current one: issued certificates, ACME accounts
+        /// or orders, or protocol audit records (<see cref="CaLabelRules.EnsureLabelChangeableAsync"/>,
+        /// 409 <see cref="ErrorCodes.CaLabelLocked"/> naming them). A label once used is fixed for good.
         /// Making a CA the default clears the default on every other CA of the instance.
         /// Requires step-up MFA verification.
         /// </summary>
@@ -353,13 +354,15 @@ namespace ModularCA.API.Controllers.v1.Admin
                 {
                     return BadRequest(new { error = ex.Message });
                 }
-                if (await IssuerChainResolver.HasIssuedAsync(_db, id))
-                    return Conflict(new
-                    {
-                        error = "This CA has issued certificates, and its label is part of the CRL, OCSP and AIA URLs in them, "
-                              + "so it cannot be changed. Its name can.",
-                        code = ErrorCodes.CaLabelLocked,
-                    });
+                try
+                {
+                    // The audit database is optional, so it is resolved here rather than injected.
+                    await CaLabelRules.EnsureLabelChangeableAsync(_db, HttpContext.RequestServices.GetService<AuditDbContext>(), id, ca.Label);
+                }
+                catch (ResourceConflictException ex)
+                {
+                    return Conflict(new { error = ex.Message, code = ex.Code });
+                }
             }
             try
             {

@@ -225,7 +225,11 @@ that nothing is renamed only to be deleted.
     fold copies only the system tenant's values and each organisation keeps its own, and several
     spaces per instance is the model. P2's number is left unused.
   - New audit records go to the instance chain. Each per-tenant chain is sealed once at control
-    start, with its final hash anchored in the instance chain.
+    start, with its final hash anchored in the instance chain. A record still names its space, in
+    `AuditLogs.SpaceId` (the audit migration `AuditRecordSpace`), which the space filter matches;
+    it is hashed only when set, so every earlier record verifies unchanged. Retention never
+    prunes a retired chain past its seal, and anchors the seal again once it has pruned the
+    instance chain's succession record, so the chain stays `Sealed`.
   - Instance policy changes by anyone but a system-super go through an `InstancePolicyChange`
     ceremony. The licence counts organisations only.
 - **S4.** Remove the isolation-only query filters and fences, and make CA labels and names
@@ -289,15 +293,18 @@ that nothing is renamed only to be deleted.
     group names. Down refuses.
   - Reading stored parameters fails closed: a leftover legacy key throws, because a null space
     means instance scope.
-  - The audit database is unchanged. Its `TenantId` is the space on the protocol audit tables and
-    the retired chain on `AuditLogs`; the hash, and every persisted string it depends on, are
+  - The audit database keeps its names. Its `TenantId` is the space on the protocol audit tables and
+    the retired chain on `AuditLogs` (whose own space is `SpaceId`); the hash, and every persisted string it depends on, are
     pinned by a golden vector. New events are `Space*`, and search treats the old and new names as
     one.
   - The admin API says space with no alias, and request bodies where no space means the instance
     refuse unknown members, so a stale `tenantId` is a 400. The console moved to `/spaces`, with
     redirects from `/tenants` and `?tenant=` until 0.5.
   - `IntegrationApi.SpaceId` and `CertManager.SpaceId` replace the `TenantId` keys, which are
-    still read, with a warning; both set and different refuses to start. An LDAP mapping to an
+    still read, with a warning; both set and different refuses to start. `instance` scopes a key
+    to the instance's CAs, as distinct from unset (every space and the instance). A key scoped to
+    the system tenant is refused by `--upgrade-check`, and one naming no existing space is named
+    in a warning at every start. An LDAP mapping to an
     `org-<slug>-*` group resolves to its `space-<slug>-*` group with a warning.
   - The space gate is a soft cap (the guardrails above): `AllowMultipleOrganizations` and
     `MCA-CFG-017` are retired, and from the fifth space a licence is recommended.

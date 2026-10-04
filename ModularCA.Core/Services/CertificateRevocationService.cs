@@ -210,8 +210,9 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Resolves the issuing CA's certificate ID for the supplied cert. Prefers the direct
         /// <see cref="CertificateEntity.IssuerCertificateId"/> FK; falls back to the signing
-        /// profile linkage when the FK is null (legacy rows); last resort is matching by issuer
-        /// DN string.
+        /// profile's issuer when the FK is null (legacy rows); last resort is the CA certificates
+        /// with the issuer DN: one is taken as it is, and several (a renewed CA's old and new
+        /// certificates share the DN) are narrowed by key (<see cref="ResolveByKeyAsync"/>).
         /// </summary>
         private async Task<Guid?> ResolveIssuerCaIdAsync(CertificateEntity cert)
         {
@@ -220,24 +221,84 @@ namespace ModularCA.Core.Services
 
             if (cert.SigningProfileId != null)
             {
-                var profileLink = await _db.CaProtocolConfigs
+                var issuerId = await _db.SigningProfiles
                     .AsNoTracking()
-                    .Include(pc => pc.Ca)
-                    .FirstOrDefaultAsync(pc => pc.SigningProfileId == cert.SigningProfileId);
-                if (profileLink?.Ca?.CertificateId != null)
-                    return profileLink.Ca.CertificateId;
+                    .Where(sp => sp.Id == cert.SigningProfileId)
+                    .Select(sp => sp.IssuerId)
+                    .FirstOrDefaultAsync();
+                if (issuerId != null)
+                    return issuerId;
             }
 
             if (!string.IsNullOrWhiteSpace(cert.Issuer))
             {
-                var caCert = await _db.Certificates
+                var caCerts = await _db.Certificates
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.IsCA && c.SubjectDN == cert.Issuer);
-                if (caCert != null)
-                    return caCert.CertificateId;
+                    .Where(c => c.IsCA && c.SubjectDN == cert.Issuer)
+                    .Select(c => new { c.CertificateId, c.Pem })
+                    .ToListAsync();
+                if (caCerts.Count == 1)
+                    return caCerts[0].CertificateId;
+                if (caCerts.Count > 1)
+                    return await ResolveByKeyAsync(cert, caCerts.Select(c => (c.CertificateId, c.Pem)).ToList());
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Picks the issuer of <paramref name="cert"/> among CA certificates sharing its issuer DN:
+        /// those whose key verifies its signature. One such certificate is the issuer. Several
+        /// (a CA renewed on the same key) must all belong to one CA
+        /// (<see cref="IssuerChainResolver.OwnerOf(ModularCADbContext, Guid)"/>), whose current
+        /// certificate is preferred when it carries that key, since its CRL covers every same-key
+        /// certificate; otherwise the newest of them. Null when no candidate signed it, the signers
+        /// belong to different CAs, or the certificate cannot be parsed.
+        /// </summary>
+        private async Task<Guid?> ResolveByKeyAsync(CertificateEntity cert, List<(Guid Id, string Pem)> candidates)
+        {
+            Org.BouncyCastle.X509.X509Certificate leaf;
+            try
+            {
+                leaf = cert.RawCertificate is { Length: > 0 } raw
+                    ? new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(raw)
+                    : ModularCA.Shared.Utils.CertificateUtil.ParseFromPem(cert.Pem);
+            }
+            catch
+            {
+                return null;
+            }
+
+            var signers = new List<(Guid Id, DateTime NotBefore)>();
+            foreach (var (id, pem) in candidates)
+            {
+                try
+                {
+                    var issuer = ModularCA.Shared.Utils.CertificateUtil.ParseFromPem(pem);
+                    leaf.Verify(issuer.GetPublicKey());
+                    signers.Add((id, issuer.NotBefore));
+                }
+                catch
+                {
+                    // Not this key, or not a parsable certificate.
+                }
+            }
+            if (signers.Count == 0)
+                return null;
+            if (signers.Count == 1)
+                return signers[0].Id;
+
+            var owners = signers.Select(s => IssuerChainResolver.OwnerOf(_db, s.Id)?.CaId).Distinct().ToList();
+            if (owners.Count != 1 || owners[0] is not Guid caId)
+                return null;
+
+            var currentId = await _db.CertificateAuthorities.AsNoTracking()
+                .Where(ca => ca.Id == caId)
+                .Select(ca => ca.CertificateId)
+                .FirstOrDefaultAsync();
+            if (currentId is Guid current && signers.Any(s => s.Id == current))
+                return current;
+            return signers.OrderByDescending(s => s.NotBefore).First().Id;
         }
 
         /// <summary>

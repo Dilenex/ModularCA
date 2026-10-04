@@ -319,6 +319,9 @@ namespace ModularCA.Database.Migrations.Audit
                         .HasMaxLength(45)
                         .HasColumnType("character varying(45)");
 
+                    b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("Success")
                         .HasColumnType("boolean");
 

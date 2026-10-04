@@ -50,7 +50,8 @@ public class AdminAuditController : ControllerBase
 
     /// <summary>
     /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA,
-    /// target, and space (its CAs, the space itself and its groups, or records stamped with it before 0.4.0).
+    /// target, and space (records stamped with the space, its CAs, the space itself and its groups, or
+    /// records of its retired chain from before 0.4.0). Each entry carries its <c>SpaceId</c>.
     /// System admins/auditors see all logs. CA-scoped auditors only see logs for their assigned CAs.
     /// The pre-0.4.0 <c>tenantId</c> query key is refused (400) rather than ignored.
     /// </summary>
@@ -83,8 +84,8 @@ public class AdminAuditController : ControllerBase
         if (!string.IsNullOrWhiteSpace(targetEntityId))
             query = query.Where(a => a.TargetEntityId == targetEntityId);
 
-        // The console's space scope: rows stamped with that space (records before 0.4.0), or
-        // (new records carry no space) about one of its CAs, the space itself, or one of its
+        // The console's space scope: rows stamped with that space, rows of its retired chain
+        // (records before 0.4.0), or rows about one of its CAs, the space itself, or one of its
         // groups. A group deleted outright is no longer known to be the space's.
         if (spaceId.HasValue)
         {
@@ -98,7 +99,8 @@ public class AdminAuditController : ControllerBase
                     .ToListAsync())
                 .Select(id => id.ToString()).ToList();
             var spaceKey = spaceId.Value.ToString();
-            query = query.Where(a => a.TenantId == spaceId.Value
+            query = query.Where(a => a.SpaceId == spaceId.Value
+                || a.TenantId == spaceId.Value
                 || (a.CertificateAuthorityId != null && spaceCaIds.Contains(a.CertificateAuthorityId.Value))
                 || ((a.TargetEntityType == SpaceTarget || a.TargetEntityType == RetiredSpaceTarget) && a.TargetEntityId == spaceKey)
                 || (a.TargetEntityType == "CaGroup" && a.TargetEntityId != null && spaceGroupIds.Contains(a.TargetEntityId)));
@@ -161,7 +163,8 @@ public class AdminAuditController : ControllerBase
                 a.Success,
                 a.ErrorMessage,
                 a.SourceIp,
-                a.DetailsJson
+                a.DetailsJson,
+                a.SpaceId,
             })
             .ToListAsync();
 
@@ -213,7 +216,8 @@ public class AdminAuditController : ControllerBase
     /// An audit row as the API names it. The audit database keeps its pre-0.4.0 <c>TenantId</c>
     /// column: on a protocol or network row it is the CA's space (<c>spaceId</c>, the default
     /// <paramref name="name"/>), on an <c>AuditLogs</c> row the retired chain the record belongs to
-    /// (<c>chainId</c>). Serialized with the API's own JSON options.
+    /// (<c>chainId</c>), beside which the row's own <c>spaceId</c> is kept. Serialized with the
+    /// API's own JSON options.
     /// </summary>
     private System.Text.Json.Nodes.JsonObject Present<T>(T row, string name = "spaceId")
     {
@@ -548,6 +552,8 @@ public class AdminAuditController : ControllerBase
     /// stopped at <paramref name="limit"/> before the end of the chain reports
     /// <c>PartiallyChecked</c> and the count it did not examine, never <c>Valid</c>.
     /// The pre-0.4.0 <c>tenantId</c> query key is refused (400) rather than read as the instance chain.
+    /// A <paramref name="chainId"/> naming no chain that ever existed (no record of it, and no
+    /// succession record naming it) is 404, never an empty chain reported <c>Valid</c>.
     /// </summary>
     [HttpGet("verify")]
     [Authorize(Policy = "SystemAdmin")]
@@ -560,8 +566,10 @@ public class AdminAuditController : ControllerBase
             return BadRequest(new { error = "Audit database is not configured." });
         if (_hashChain == null)
             return BadRequest(new { error = "Hash chain service is not available." });
+        if (chainId is Guid retired && !(await _hashChain.ListRetiredChainsAsync(_auditDb)).Contains(retired))
+            return NotFound(new { error = $"No audit chain {retired} exists: it has no records and no succession record names it." });
 
-        return Ok(await VerifyChainAsync(chainId, Math.Min(limit, 100000)));
+        return Ok(await VerifyChainAsync(chainId, Math.Min(limit, 100000), listedAsRetired: chainId != null));
     }
 
     /// <summary>

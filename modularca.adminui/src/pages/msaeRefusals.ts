@@ -37,9 +37,28 @@ export interface MsaeFailureExplanation {
     link?: { label: string; path: string };
 }
 
-/** The realm page of the space the CA belongs to, where realm bindings and their keys live. */
-function realmLink(row: MsaeAuditRow): MsaeFailureExplanation['link'] | undefined {
-    return row.spaceId ? { label: 'Open realm bindings', path: `/spaces/${row.spaceId}?tab=kerberos` } : undefined;
+/** What the viewer may open; the realm pages are system-admin only. */
+export interface MsaeLinkAccess {
+    canOpenRealms: boolean;
+}
+
+/** The anchor of the realm section on a space's page. */
+export const SPACE_REALMS_ANCHOR = 'kerberos-realms';
+
+/** The anchor of the instance's realm section under Spaces & Quotas › Instance. */
+export const INSTANCE_REALMS_ANCHOR = 'instance-kerberos-realms';
+
+/**
+ * Where the realm bindings of the CA's scope live: the space's page for a space CA, the instance
+ * section of Spaces & Quotas for an instance CA (no space).
+ */
+export function realmBindingsPath(spaceId: string | null | undefined): string {
+    return spaceId ? `/spaces/${spaceId}#${SPACE_REALMS_ANCHOR}` : `/spaces#${INSTANCE_REALMS_ANCHOR}`;
+}
+
+/** The realm bindings link, or none when the viewer cannot open the page it points at. */
+function realmLink(row: MsaeAuditRow, access: MsaeLinkAccess): MsaeFailureExplanation['link'] | undefined {
+    return access.canOpenRealms ? { label: 'Open realm bindings', path: realmBindingsPath(row.spaceId) } : undefined;
 }
 
 /**
@@ -73,7 +92,7 @@ function parseKvno(detail: string): { ticket: number | null; tried: number[] } {
     return { ticket, tried };
 }
 
-function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): MsaeFailureExplanation | null {
+function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow, access: MsaeLinkAccess): MsaeFailureExplanation | null {
     const realm = row.realm ? `realm ${row.realm}` : 'its realm';
     switch (refusal) {
         case 'WrongSpace':
@@ -82,14 +101,14 @@ function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): Ms
                 title: 'Ticket from another space’s forest',
                 explanation: `The ticket is valid, but ${realm} is bound to a different space than the one that owns CA ${row.caLabel || 'this CA'}. A binding grants a forest access to one space’s CAs only.`,
                 fix: 'Point the client at a CA in the space its forest is bound to, or bind the forest’s realm on this space as well.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'UnknownRealm':
             return {
                 title: 'Realm not bound',
                 explanation: `The ticket names ${realm}, and no enabled binding on this space carries that realm: either the realm was never bound or its binding is disabled.`,
                 fix: 'Bind the realm on the space that owns the CA, or enable the existing binding, and import the service account’s key.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'Invalid': {
             const { ticket, tried } = parseKvno(detail);
@@ -104,7 +123,7 @@ function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): Ms
                 fix: stale
                     ? `The ticket’s key version (${ticket}) is newer than every stored version, so the account’s password changed after the key was imported. Import a key for the new password (version ${ticket}) on the realm binding.`
                     : 'Re-import the service account key from the current password or a fresh keytab, and confirm the account name and realm match the binding.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         }
         case 'NtlmOffered':
@@ -112,43 +131,43 @@ function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): Ms
                 title: 'Client fell back to NTLM',
                 explanation: 'The client sent an NTLM token instead of a Kerberos ticket, which means it could not obtain a ticket for the name it computed for the CA host. Windows canonicalises the host name before asking its KDC, so a hosts-file alias or a CNAME turns the request into one for a name that has no SPN.',
                 fix: 'Reach the CA by the host name that carries the SPN (an A record, not a CNAME or hosts-file alias), and register that SPN on the service account. NTLM is never accepted.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'Malformed':
-            if (/NTLMSSP/i.test(detail)) return explainKerberos('NtlmOffered', detail, row);
+            if (/NTLMSSP/i.test(detail)) return explainKerberos('NtlmOffered', detail, row, access);
             return {
                 title: 'Token was not SPNEGO',
                 explanation: `The Authorization header did not carry a parseable SPNEGO token${detail ? ` (${detail})` : ''}. A proxy that rewrites headers, or a client that is not Windows autoenrollment, can produce this.`,
                 fix: 'Confirm the client reaches the CA directly over HTTPS and that nothing between them alters the Authorization header.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'WrongServicePrincipal':
             return {
                 title: 'Ticket for a different SPN',
                 explanation: `The ticket was issued for a service principal other than the one the binding for ${realm} expects. The client asked its KDC for a name that does not match the binding, usually because the CA is reached by a different host name than the one the binding names.`,
                 fix: 'Make the binding’s service principal match the host name clients use, or point clients at the host name the binding names.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'PrincipalKindNotAllowed':
             return {
                 title: 'Principal kind not allowed',
                 explanation: `The ticket authenticated, but the binding for ${realm} does not allow this kind of principal: machine accounts or user accounts are switched off on it.`,
                 fix: 'Allow the principal kind on the binding (machines for computer templates, users for user templates), or stop targeting that kind with autoenrollment policy.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         case 'ForeignClientRealm':
             return {
                 title: 'Cross-realm ticket',
                 explanation: `The client belongs to a realm other than ${realm}, the one that issued the ticket. Cross-realm (trust-referred) tickets are not supported.`,
                 fix: 'Bind the client’s own realm on the space and let it authenticate against that binding directly.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
         default:
             return {
                 title: `Kerberos refusal: ${refusal}`,
                 explanation: `The Kerberos ticket was refused with reason ${refusal}${detail ? ` (${detail})` : ''}.`,
                 fix: 'Check the realm binding for the ticket’s realm and the server log for the full detail.',
-                link: realmLink(row),
+                link: realmLink(row, access),
             };
     }
 }
@@ -157,15 +176,15 @@ function explainKerberos(refusal: string, detail: string, row: MsaeAuditRow): Ms
  * Explains a failed MSAE audit row, or returns null when the row succeeded or its message matches
  * nothing this module knows. The message patterns follow what MsaeController and
  * MsaeEnrollmentService write; when a detail is appended after a Kerberos refusal name it is read
- * for the key versions.
+ * for the key versions. A realm link is offered only when `access` says the viewer can open it.
  */
-export function explainMsaeFailure(row: MsaeAuditRow | null | undefined): MsaeFailureExplanation | null {
+export function explainMsaeFailure(row: MsaeAuditRow | null | undefined, access: MsaeLinkAccess = { canOpenRealms: false }): MsaeFailureExplanation | null {
     if (!row) return null;
     const message = (row.errorMessage || '').trim();
     if (!message) return null;
 
     const krb = /^Kerberos token refused:\s*([A-Za-z]+)\s*[:;,(-]?\s*(.*)$/s.exec(message);
-    if (krb) return explainKerberos(krb[1], (krb[2] || '').replace(/\)$/, '').trim(), row);
+    if (krb) return explainKerberos(krb[1], (krb[2] || '').replace(/\)$/, '').trim(), row, access);
 
     if (/^No credential presented/i.test(message)) {
         return {

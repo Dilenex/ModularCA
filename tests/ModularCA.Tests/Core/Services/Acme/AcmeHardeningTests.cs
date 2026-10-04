@@ -60,13 +60,12 @@ public class AcmeHardeningTests
     // ---- finalize must not be able to switch CAs ----
 
     /// <summary>
-    /// Mirrors the guard in AcmeOrderService.FinalizeOrder: the order's CA is authoritative and
-    /// a route label may only confirm it.
+    /// Mirrors the guard in AcmeOrderService.FinalizeAsync: the order must have been placed at
+    /// the CA the request addresses, which is the account's bound CA on every route. The
+    /// behaviour itself is pinned in <see cref="AcmeFinalizeTests"/>.
     /// </summary>
-    private static bool FinalizeAllowed(string? routeLabel, string? orderLabel) =>
-        string.IsNullOrWhiteSpace(routeLabel)
-        || string.IsNullOrWhiteSpace(orderLabel)
-        || string.Equals(routeLabel, orderLabel, StringComparison.OrdinalIgnoreCase);
+    private static bool FinalizeAllowed(string? addressedLabel, string? orderLabel) =>
+        string.Equals(addressedLabel, orderLabel, StringComparison.OrdinalIgnoreCase);
 
     [Fact]
     public void An_order_cannot_be_finalized_against_a_different_ca()
@@ -74,21 +73,21 @@ public class AcmeHardeningTests
         // The escalation: validate under a CA whose AcmeAllowPrivateAddressValidation is on,
         // then finalize against production. Ownership was checked by account id, which says
         // nothing about which CA may sign.
-        Assert.False(FinalizeAllowed(routeLabel: "prod", orderLabel: "lab"));
+        Assert.False(FinalizeAllowed(addressedLabel: "prod", orderLabel: "lab"));
     }
 
     [Fact]
     public void Finalizing_against_the_orders_own_ca_is_permitted()
     {
-        Assert.True(FinalizeAllowed(routeLabel: "prod", orderLabel: "prod"));
-        Assert.True(FinalizeAllowed(routeLabel: "PROD", orderLabel: "prod"));
+        Assert.True(FinalizeAllowed(addressedLabel: "prod", orderLabel: "prod"));
+        Assert.True(FinalizeAllowed(addressedLabel: "PROD", orderLabel: "prod"));
     }
 
     [Fact]
-    public void A_route_with_no_label_falls_back_to_the_orders_ca()
+    public void An_order_that_names_no_ca_is_not_finalized_at_a_labelled_one()
     {
-        // The unlabelled /api/v1/acme route still has to work; it inherits the order's CA
-        // rather than the protocol default.
-        Assert.True(FinalizeAllowed(routeLabel: null, orderLabel: "prod"));
+        // The label-less routes address the account's CA, so there is no route label to fall
+        // back from; an order placed before orders recorded their CA is not finalized elsewhere.
+        Assert.False(FinalizeAllowed(addressedLabel: "prod", orderLabel: null));
     }
 }

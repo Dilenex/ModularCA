@@ -15,8 +15,8 @@ export const adminSsh: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/ssh/ca-keys',
-        summary: 'Generate a new SSH CA key pair. If the target space requires key ceremonies, initiates a ceremony instead.',
-        auth: 'Authorize (CaOperator)',
+        summary: 'Generate a new SSH CA key pair. SSH CAs are instance CAs: if the instance requires key ceremonies, initiates a ceremony instead.',
+        auth: 'Authorize (SystemOperator)',
         category: 'Admin SSH',
         requestBody: [
             { name: 'name', type: 'string', required: true, description: 'Name for the SSH CA key' },
@@ -25,7 +25,7 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'isUserCa', type: 'bool', required: false, description: 'Allow user certificate signing (default: true)' },
             { name: 'isHostCa', type: 'bool', required: false, description: 'Allow host certificate signing (default: false)' },
             { name: 'maxValidityHours', type: 'int', required: false, description: 'Maximum certificate validity in hours (default: 24)' },
-            { name: 'spaceId', type: 'guid', required: false, description: 'Space ID. If the space requires key ceremonies, a ceremony is initiated instead of immediate creation' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Must be null or omitted. SSH CAs are instance CAs; a space ID is refused with 400' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },

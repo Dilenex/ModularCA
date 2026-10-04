@@ -13,6 +13,8 @@ import { SavedViews } from '@shared/components/SavedViews';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { Link } from 'react-router-dom';
 import { explainMsaeFailure, type MsaeAuditRow } from './msaeRefusals';
+import { useAuth } from '../context/AuthContext';
+import { Capabilities } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -120,7 +122,9 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
  * row is not a refusal this console can explain, so callers can place it unconditionally.
  */
 export const MsaeWhyNotice: React.FC<{ log: MsaeAuditRow; className?: string }> = ({ log, className = '' }) => {
-    const why = explainMsaeFailure(log);
+    const { can } = useAuth();
+    // The realm pages are system-admin only (SYSTEM_ADMIN in gates.ts).
+    const why = explainMsaeFailure(log, { canOpenRealms: can(Capabilities.SystemManage) });
     if (!why) return null;
     return (
         <div className={`space-y-2 ${className}`}>

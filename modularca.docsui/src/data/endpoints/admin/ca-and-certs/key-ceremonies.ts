@@ -58,7 +58,7 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Approval status with currentApprovals, requiredApprovals, and status. Message indicates if quorum is reached.',
-        notes: 'The initiator cannot approve their own ceremony. Returns 403 for self-approval attempts. A controlled-user ceremony returns 403 with the reason when the caller holds no tier that covers it, or when it is a promotion and the caller, not being system-super, reset the password or MFA of an account it promotes in the 30 days before it was opened or since.',
+        notes: 'The initiator cannot approve their own ceremony. Returns 403 for self-approval attempts. A controlled-user ceremony returns 403 with the reason when the caller holds no tier that covers it, or when it is a promotion and the caller, not being system-super, reset the password or MFA of an account it promotes in the 30 days before it was opened or since. A SpacePolicyChange ceremony can be approved only by an administrator of its space, and an InstancePolicyChange only by a system administrator; an operator of that scope gets 403.',
     },
     {
         method: 'POST',

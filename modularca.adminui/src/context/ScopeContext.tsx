@@ -1,10 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import type { Capability } from '@shared/generated';
 import { useAuth } from './AuthContext';
-import { can, canAnywhere, canInSpace, consoleCas, spacesOf, type CaCapabilities, type SpaceOption } from '../authz';
+import { consoleCas, spacesOf, type CaCapabilities, type SpaceOption } from '../authz';
 import {
-    ALL_SCOPE, MINE_SCOPE, canScopeToAll, defaultScope, parseScope, readStoredScope, rewriteLegacyScope, sameScope, scopeCaId, withScope, type Scope,
+    ALL_SCOPE, MINE_SCOPE, canScopeToAll, defaultScope, gateAllows, parseScope, readStoredScope, rewriteLegacyScope, sameScope, scopeCaId, withScope, type Scope,
 } from '../scope';
 import type { Gate } from '../gates';
 import { PORTAL } from '../portal';
@@ -127,17 +126,7 @@ export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         };
     }, [loading, fromUrl, usual, username, searchParams, setSearchParams]);
 
-    const allows = useCallback((gate: Gate | undefined): boolean => {
-        if (!gate) return true;
-        const capability: Capability = gate.requires;
-        if (!gate.scoped) return can(capabilities, capability);
-        switch (scope.kind) {
-            case 'ca': return can(capabilities, capability, scope.caId);
-            case 'space': return canInSpace(capabilities, capability, scope.spaceId);
-            case 'all': return canAnywhere(capabilities, capability);
-            case 'mine': return false;
-        }
-    }, [capabilities, scope]);
+    const allows = useCallback((gate: Gate | undefined): boolean => gateAllows(capabilities, gate, scope), [capabilities, scope]);
 
     const caId = scopeCaId(scope);
     const spaceId = scope.kind === 'space' ? scope.spaceId : null;

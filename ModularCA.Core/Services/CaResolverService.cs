@@ -108,7 +108,14 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
     }
 
     /// <inheritdoc />
-    public async Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel)
+    public Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel) => FindAddressedCaAsync(db, caLabel);
+
+    /// <summary>
+    /// The enabled CA a protocol request addresses: the one with <paramref name="caLabel"/>, or,
+    /// with no label, the first of <see cref="DefaultCandidates"/>. Static so that paths holding
+    /// only a context (the ACME EAB and challenge-type policy) resolve exactly as issuance does.
+    /// </summary>
+    public static async Task<CertificateAuthorityEntity?> FindAddressedCaAsync(ModularCADbContext db, string? caLabel)
     {
         if (!string.IsNullOrWhiteSpace(caLabel))
         {
@@ -117,11 +124,17 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
                 .FirstOrDefaultAsync(c => c.Label == caLabel && c.IsEnabled);
         }
 
-        // Try default CA first, then any enabled CA
-        return await db.CertificateAuthorities
-            .AsNoTracking()
-            .Where(c => c.IsEnabled && !c.IsSshCa && (c.Label == null || !c.Label.StartsWith("system-")))
-            .OrderByDescending(c => c.IsDefault)
-            .FirstOrDefaultAsync();
+        return await DefaultCandidates(db.CertificateAuthorities.AsNoTracking()).FirstOrDefaultAsync();
     }
+
+    /// <summary>
+    /// The CAs a request that names no CA may resolve to, best first: enabled X.509 CAs without a
+    /// reserved <c>system-</c> label, the default first, then by name and id, so that several
+    /// defaults, or none, resolve to the same CA every time. Every label-less resolver uses this.
+    /// </summary>
+    public static IOrderedQueryable<CertificateAuthorityEntity> DefaultCandidates(IQueryable<CertificateAuthorityEntity> cas)
+        => cas.Where(c => c.IsEnabled && !c.IsSshCa && (c.Label == null || !c.Label.StartsWith("system-")))
+            .OrderByDescending(c => c.IsDefault)
+            .ThenBy(c => c.Name)
+            .ThenBy(c => c.Id);
 }

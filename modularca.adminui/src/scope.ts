@@ -1,4 +1,5 @@
-import { consoleCas, spacesOf, type EffectiveCapabilities } from './authz';
+import { can, canAnywhere, canInSpace, canOnCaInSpace, canSpaceWide, consoleCas, spacesOf, type EffectiveCapabilities } from './authz';
+import type { Gate } from './gates';
 
 /**
  * The console's CA scope: what the scoped tables list and what the scoped nav entries are
@@ -158,4 +159,23 @@ export function sameScope(a: Scope, b: Scope): boolean {
     if (a.kind === 'ca' && b.kind === 'ca') return a.caId === b.caId;
     if (a.kind === 'space' && b.kind === 'space') return a.spaceId === b.spaceId;
     return true;
+}
+
+/**
+ * Whether `gate` admits the caller under `scope`, as the server would answer the page's calls.
+ * An unscoped gate is checked at system scope, a scoped one on the selected CA. Across a space or
+ * all CAs a scoped gate needs the capability on a CA there or at system scope, since the CA-scoped
+ * list endpoints refuse a route naming no CA otherwise; a `spaceWide` gate also admits a
+ * space-wide grant over a space with no CA yet.
+ */
+export function gateAllows(caps: EffectiveCapabilities, gate: Gate | undefined, scope: Scope): boolean {
+    if (!gate) return true;
+    const capability = gate.requires;
+    if (!gate.scoped) return can(caps, capability);
+    switch (scope.kind) {
+        case 'ca': return can(caps, capability, scope.caId);
+        case 'space': return gate.spaceWide ? canInSpace(caps, capability, scope.spaceId) : canOnCaInSpace(caps, capability, scope.spaceId);
+        case 'all': return canAnywhere(caps, capability) || (!!gate.spaceWide && canSpaceWide(caps, capability));
+        case 'mine': return false;
+    }
 }

@@ -226,30 +226,38 @@ public class CertManagerController : ControllerBase
     }
 
     /// <summary>
-    /// AUTH-06: verifies that the signing profile's issuing CA belongs to the configured
-    /// space. Returns null if the check passes (or no space restriction is configured),
-    /// or an <see cref="IActionResult"/> to short-circuit the action if the space does not match.
+    /// AUTH-06: verifies that the signing profile's issuing CA is inside the configured space
+    /// scope (<see cref="CertManagerConfig.SpaceScope"/>). Returns null if the check passes (or no
+    /// space restriction is configured), or an <see cref="IActionResult"/> to short-circuit the
+    /// action: 403 when the CA is outside the scope, or when the profile names no issuer or its CA
+    /// cannot be resolved, since an unestablished space is not a matching one.
     /// </summary>
     private async Task<IActionResult?> VerifySigningProfileSpaceAsync(SigningProfileEntity signingProfile)
     {
-        var spaceId = _config.CertManager.SpaceId;
-        if (spaceId == null)
+        var scope = _config.CertManager.SpaceScope();
+        if (!scope.IsRestricted)
             return null;
 
-        if (signingProfile.IssuerId == null)
-            return null;
-
-        var ca = await _db.CertificateAuthorities
-            .AsNoTracking()
-            .FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
+        var ca = signingProfile.IssuerId == null
+            ? null
+            : await _db.CertificateAuthorities
+                .AsNoTracking()
+                .FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
 
         if (ca == null)
-            return null;
-
-        if (ca.SpaceId != spaceId.Value)
         {
-            _logger.LogWarning("AUTH-06: cert-manager space isolation violation — API key space {ConfiguredSpace} attempted to use CA {CaId} belonging to space {CaSpace}",
-                spaceId.Value, ca.Id, ca.SpaceId);
+            _logger.LogWarning("AUTH-06: cert-manager request refused — signing profile {SigningProfileId} resolves to no CA, so its space cannot be established for a key scoped to {ConfiguredSpace}",
+                signingProfile.Id, scope.ToString());
+            return new ObjectResult(new { error = "Access denied: the target's issuing CA could not be determined." })
+            {
+                StatusCode = 403
+            };
+        }
+
+        if (!scope.Allows(ca.SpaceId))
+        {
+            _logger.LogWarning("AUTH-06: cert-manager space isolation violation — API key scoped to {ConfiguredSpace} attempted to use CA {CaId} belonging to space {CaSpace}",
+                scope.ToString(), ca.Id, ca.SpaceId?.ToString() ?? "instance");
             return new ObjectResult(new { error = "Access denied: the target CA does not belong to the configured space." })
             {
                 StatusCode = 403

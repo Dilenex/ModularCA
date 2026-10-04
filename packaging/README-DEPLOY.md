@@ -59,6 +59,12 @@ be reached). If it passes, it replaces binaries and `wwwroot`, leaves `config/` 
 alone, and starts again the units that were running. Database migrations are applied by the
 service when it starts. A fresh install (no `config/db.yaml`) has nothing to check.
 
+If `install.sh` fails partway, it says the install is INCOMPLETE. Before it began replacing files
+it starts the stopped units again on the installed build. Once it has begun, it leaves them
+stopped, since `/opt/modularca` may hold a partly copied build: restore `/opt/modularca` from your
+backup, or fix the cause and run `install.sh` again, then start the units it names yourself (a
+re-run finds them stopped and leaves them stopped).
+
 `sudo ./install.sh --skip-upgrade-check` installs without the check, with a warning. Use it only in
 an emergency, such as a database you cannot reach from this host during the install. The service
 still dry-runs every pending migration when it starts and applies nothing if one refuses, but it
@@ -280,15 +286,40 @@ you run now, and can be run before the tarball is even copied to the host. An in
        sudo grep -nE '^\s*(TenantId|AllowMultipleOrganizations)\s*:' /opt/modularca/config/config.yaml
        sudo grep -n 'org-' /opt/modularca/config/config.yaml
 
-   Leave a `TenantId` under `IntegrationApi` or `CertManager` as it is until after the upgrade:
-   the build you run now ignores `SpaceId`, so renaming it first would leave that API key
-   unscoped. 0.4.0 reads it as `SpaceId`. Note the `org-<slug>-*` names in
-   `LdapAuth.GroupToRoleMappings` for step 7.
+   Leave a `TenantId` under `IntegrationApi` or `CertManager` that names an organisation tenant
+   as it is until after the upgrade: the build you run now ignores `SpaceId`, so renaming it first
+   would leave that API key unscoped. 0.4.0 reads it as `SpaceId`, and the organisation keeps its
+   id as a space.
+
+   A `TenantId` that names the **system tenant** is different. 0.4.0 folds the system tenant into
+   the instance and deletes it, so its id names nothing and the key would reach no CA: every
+   request it makes would fail, with no error at start. `--upgrade-check` refuses while one is
+   configured, naming the key. The system tenant's id is what this prints (in the same psql
+   session):
+
+   ```sql
+   SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant";
+   ```
+
+   For such a key, replace `TenantId: <id>` with `SpaceId: instance` in step 3, once the units are
+   stopped. From 0.4.0, `SpaceId` takes a space's id (that space's CAs), `instance` (the instance's
+   CAs, which the system tenant's CAs become) or nothing (every space and the instance); any other
+   value reaches no CA. Do not set both keys: differing values stop the service. Do not make the
+   change earlier: the build you run now ignores `SpaceId`, so while it runs that key is unscoped.
+   If the upgrade is refused and the previous build is started again, the key stays unscoped until
+   the upgrade succeeds; set that section's `Enabled: false` meanwhile if that matters.
+
+   Note the `org-<slug>-*` names in `LdapAuth.GroupToRoleMappings` for step 7. A mapping to an
+   `org-system-*` group must be removed or repointed before upgrading (see "The `org-system-*`
+   groups are empty" under "What changes").
 
 3. **Stop every unit, on every host**: control, enrollment and validation, ingress, and the signer.
 
        sudo systemctl stop modularca modularca-signer
        systemctl is-active modularca modularca-signer     # both inactive
+
+   Then, on each host whose `config.yaml` scopes an integration key to the system tenant, replace
+   that `TenantId` with `SpaceId: instance` (step 2).
 
 4. **Install on the control host and start the control role alone.** `install.sh` first runs the
    new build's `--upgrade-check`, which dry-runs all four migrations; if any refuse, it lists every
@@ -322,13 +353,19 @@ you run now, and can be run before the tarball is even copied to the host. An in
 
    The instance chain reports `Integrity` `Valid` (or `PartiallyVerifiable` for records written
    before the hash was versioned) and `BreakCount` 0. Each retired chain reports `Sealed` true and
-   `TailState` `Sealed` (or `Pruned`). Under Spaces, each space is listed, and its groups are named
-   `space-<slug>-*`.
+   `TailState` `Sealed`; nothing else is acceptable. Audit retention never deletes a seal, and it
+   carries each succession record forward before pruning the instance chain, so `TailMissing` or
+   `TailAltered` means the retired chain was tampered with: stop and investigate before going on.
+   `Unsealed` means the control role has not sealed the retired chains yet; check its start log.
+   Under Spaces, each space is listed, and its groups are named `space-<slug>-*`.
 
 7. **Tidy the configuration**, on every host, then restart that host's units. Rename
    `IntegrationApi.TenantId` and `CertManager.TenantId` to `SpaceId`, delete
    `Features.AllowMultipleOrganizations` and `Ingress.RouteRefreshSeconds`, and change each
-   `org-<slug>-*` group mapping to its `space-<slug>-*` name. On the control host, saving the
+   mapping to an organisation's `org-<slug>-*` group to its `space-<slug>-*` name. There is no
+   `space-system-*` group, and the slug `system` is reserved, so no space can have one: a mapping
+   to an `org-system-*` group was removed or repointed before the upgrade (step 2), and one still
+   there maps to nothing. On the control host, saving the
    settings in the console writes `SpaceId` and drops the retired key, and a super's save of the
    LDAP settings rewrites the group mappings. The warnings stop once nothing is left. Then delete
    `config/tenant-tls/`.
@@ -365,12 +402,27 @@ you run now, and can be run before the tarball is even copied to the host. An in
   applies nothing on a refusal. `postinst` does not run `--upgrade-check` either: it would hold the
   migrations' locks for a second full rehearsal inside dpkg, moments before the service's own,
   and could change nothing. To check before installing, unpack the package and run the check from
-  the unpacked copy:
+  the unpacked copy. **Stop the `modularca` units first, on this host and on every other host that
+  shares the database** (step 3): the dry run takes `ACCESS EXCLUSIVE` locks on tables every unit
+  uses, and holds them until it rolls back, so running units stall behind it, or hold locks it
+  then waits on. `install.sh` stops its own host's units before its check for the same reason;
+  the other hosts are yours to stop.
 
+      sudo systemctl stop modularca modularca-signer      # here and on every host sharing the database
       d=$(sudo mktemp -d /opt/.modularca-deb-check.XXXXXX) && sudo dpkg-deb -x modularca_<version>_amd64.deb "$d"
       sudo chmod -R go+rX "$d" && sudo chmod 0755 "$d/opt/modularca/ModularCA.API"
       sudo -u modularca "$d/opt/modularca/ModularCA.API" --upgrade-check --config-dir /opt/modularca/config
       sudo rm -rf "$d"
+
+  If the check passes, install the package. It starts only the units it found running (on the
+  upgrade from 0.3.x, `modularca` whenever it is enabled, above), and you stopped them for the
+  check, so afterwards start each unit you stopped by hand that is not running, here and on every
+  other host, the node before the signer:
+
+      sudo systemctl start modularca
+      sudo systemctl start modularca-signer      # where this host runs it
+
+  If it refuses, start the units again on the installed build, fix what it names, and check again.
 - **Tenant hostnames are gone.** 0.4.0 serves only the instance's own names, under its web TLS
   certificate. Its first migration, `RetireTenantHostnames`, drops the `TenantHostnames` table and
   refuses (status 3, nothing applied) while the table has any row (check a); the journal says how
@@ -396,10 +448,47 @@ you run now, and can be run before the tarball is even copied to the host. An in
   - **No open ceremony names the system tenant.** Execute or cancel every Pending or Approved
     ceremony on a system CA (the system signing CA, an SSH CA) or on the System tenant's policy,
     and every controlled-user ceremony on those. The migration never rewrites a ceremony.
+
+    0.3.x cancels only a Pending ceremony, and only for its initiator. An **Approved** ceremony
+    that can no longer be executed (its target is gone, or executing it fails) therefore keeps
+    check e refusing, with no way out in the console. Find those with this read-only query, in a
+    `psql` session on the application database (`SET default_transaction_read_only = on;` first,
+    as in step 2):
+
+    ```sql
+    SELECT "Id", "OperationType", "TargetEntityId", "InitiatedByUsername", "CreatedAt", "CurrentApprovals"
+      FROM "KeyCeremonies"
+     WHERE "Status" = 'Approved' AND ("TenantId" = (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant")
+        OR strpos(lower("ParametersJson"), (SELECT "Id" FROM "Tenants" WHERE "IsSystemTenant")::text) > 0);
+    ```
+
+    Try to execute each one first. For one that cannot be executed, and only then, mark it
+    Cancelled by hand. **Take the dumps of step 1 first**, stop every unit (step 3), and change
+    one ceremony at a time, by id, in a session that is not read-only:
+
+    ```sql
+    BEGIN;
+    UPDATE "KeyCeremonies" SET "Status" = 'Cancelled' WHERE "Id" = '<ceremony id>' AND "Status" = 'Approved';
+    -- expect UPDATE 1; anything else: ROLLBACK;
+    COMMIT;
+    ```
+
+    `Cancelled` is the status 0.3.x gives a cancelled ceremony, and nothing else changes. Unlike a
+    cancel in the console, this writes no `KeyCeremonyCancelled` audit record: note who did it,
+    when and why in your change record.
   - **The `org-system-*` groups are empty.** Move each member of `org-system-admin`,
     `org-system-operator`, `org-system-auditor` and `org-system-user` to the system group that
     fits (`system-admin`, `system-operator`, `system-auditor`) or to a CA's group, and edit any
     access badge that names one of them. Their grants and roles are deleted with them.
+
+    With LDAP login on, check `LdapAuth.GroupToRoleMappings` first (step 2's `grep -n 'org-'`). A
+    0.3.x mapping from a directory group to an `org-system-*` group adds its members back at their
+    next login, so check h keeps refusing however often the group is emptied. Remove each such
+    mapping, or point it at the `system-*` group or CA group the members were moved to, in
+    `config.yaml` on every host or in the console's LDAP settings, and only then empty the
+    groups. If the `org-system-*` mappings are the only ones, repoint them rather than remove
+    them: with no mapping left, 0.3.x matches directory group names to ModularCA group names
+    directly, which changes who gets which group at the next login. There is no `space-system-*` group to rename such a mapping to after the upgrade.
   - **Nothing on the system tenant would become instance-wide.** Remove capability grants and
     role assignments given to users directly across the whole System tenant (grants on one of
     its CAs are fine), service identities scoped to the whole System tenant (scope them to a CA),
@@ -463,9 +552,16 @@ you run now, and can be run before the tarball is even copied to the host. An in
   no other group name is guessed.
 - **Configuration keys say space.** `IntegrationApi.TenantId` and `CertManager.TenantId` are
   `IntegrationApi.SpaceId` and `CertManager.SpaceId`. The old key is read as the new one, with a
-  warning naming the file, so an integration API key keeps its scope. When both are set and
-  differ, the process refuses to start (status 3) and names the file and both keys; keep the one
-  with the intended value. `Features.AllowMultipleOrganizations` is retired and ignored, with a
+  warning naming the file, so an integration API key scoped to an organisation keeps its scope:
+  the organisation is a space with the same id. A key scoped to the system tenant does not, since
+  that tenant is deleted: set it to `instance`, which scopes the key to the instance's CAs, where
+  the system tenant's CAs go (step 2). `--upgrade-check`, and so `install.sh`, refuses while one is
+  configured, naming the key; the `.deb` has no such check, so run it by hand (above). `SpaceId`
+  takes a space's id, `instance`, or nothing for every space and the instance; any other value
+  reaches no CA. Each 0.4.0 process that serves the integration endpoints warns at every start,
+  naming the key, when a configured `SpaceId` names no existing space or is not a value it reads.
+  When both keys are set and differ, the process refuses to start (status 3) and names the file
+  and both keys; keep the one with the intended value. `Features.AllowMultipleOrganizations` is retired and ignored, with a
   warning while it is present: creating a space always succeeds, and past four spaces the console
   recommends a licence.
 

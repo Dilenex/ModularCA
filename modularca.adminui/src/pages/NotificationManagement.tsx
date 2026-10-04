@@ -7,6 +7,8 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { inputClass as inputCls, labelClass } from '@shared/components/forms';
+import { Capabilities } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -20,6 +22,8 @@ const validateEmails = (value: string): string | null => {
 interface AlertConfig { enabled: boolean; minimumSeverity: string; cooldownMinutes: number; }
 
 const NotificationManagement: React.FC = () => {
+    const { can } = useAuth();
+    const isSystemAdmin = can(Capabilities.SystemManage);
     const [prefs, setPrefs] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -54,7 +58,8 @@ const NotificationManagement: React.FC = () => {
             // goes through the camelCase naming policy: `alert`, not `Alert`. Reading the
             // PascalCase name made both guards below always false, so the alert panel showed
             // "not available" and the SMTP panel never rendered at all.
-            const config = await apiGet<any>('/api/v1/admin/config');
+            // The full config is system-admin only; anyone else gets the email summary.
+            const config = await apiGet<any>(isSystemAdmin ? '/api/v1/admin/config' : '/api/v1/admin/notifications/delivery');
             if (config.alert) {
                 setAlertConfig({
                     enabled: config.alert.enabled ?? true,
@@ -67,7 +72,7 @@ const NotificationManagement: React.FC = () => {
         setAlertConfigLoading(false);
     };
 
-    useEffect(() => { loadPrefs(); loadConfig(); }, []);
+    useEffect(() => { loadPrefs(); loadConfig(); }, [isSystemAdmin]);
 
     const bulkSetEnabled = async (rows: any[], enabled: boolean) => {
         const targets = rows.filter((p) => p.enabled !== enabled);
@@ -211,7 +216,11 @@ const NotificationManagement: React.FC = () => {
                         <p className="text-xs text-gray-600 mt-2">Alert settings are managed through the system configuration (Settings page).</p>
                     </div>
                 )}
-                {!alertConfigLoading && !alertConfig && <div className="p-4 text-sm text-gray-600 text-center">Alert configuration not available.</div>}
+                {!alertConfigLoading && !alertConfig && (
+                    <div className="p-4 text-sm text-gray-600 text-center">
+                        {isSystemAdmin ? 'Alert configuration not available.' : 'Alert settings are visible to system administrators.'}
+                    </div>
+                )}
             </div>
 
             {/* Email Configuration (read-only summary) */}

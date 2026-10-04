@@ -177,9 +177,11 @@ public class AdminGroupController(
 
     /// <summary>
     /// Creates a custom (non-auto-generated) group. Auto-generated groups are created during CA creation.
-    /// If a <c>CertificateAuthorityId</c> is supplied, verify that the
-    /// caller has access to the CA's space before writing. With neither a CA nor a space the
-    /// group is an instance group (<c>IsSystemGroup</c>, no space).
+    /// The body names the group's scope explicitly: a <c>CertificateAuthorityId</c> (the caller
+    /// must have access to the CA's space), a <c>SpaceId</c> for a space-wide group, or scope
+    /// "instance" for an instance group (<c>IsSystemGroup</c>, no space). Naming none, scope
+    /// "instance" together with a CA or space, or an unknown scope is a 400, so an omitted space
+    /// can no longer make a system group by accident.
     /// </summary>
     [HttpPost]
     [Authorize(Policy = "SystemAdmin")]
@@ -190,6 +192,8 @@ public class AdminGroupController(
 
         if (string.IsNullOrWhiteSpace(request.Name))
             return BadRequest(new { error = "Group name is required" });
+        if (ScopeError(request) is string scopeError)
+            return BadRequest(new { error = scopeError });
 
         var normalizedName = request.Name.Trim().ToLowerInvariant().Replace(' ', '-');
 
@@ -205,9 +209,9 @@ public class AdminGroupController(
                 return BadRequest(new { error = $"Template role '{request.TemplateName}' not found. Available templates: Administrator, Operator, Auditor, Requester." });
         }
 
-        // Resolve SpaceId: from CA when CA-scoped, from request when space-wide. With neither,
-        // the group is an instance group, which is a system group: a non-system group with no
-        // space and no CA would confer nothing (and must never be read as system scope).
+        // Resolve SpaceId: from CA when CA-scoped, from request when space-wide. Scope "instance"
+        // makes an instance group, which is a system group: a non-system group with no space and
+        // no CA would confer nothing (and must never be read as system scope).
         Guid? spaceId;
         bool isSystemGroup = false;
 
@@ -273,6 +277,25 @@ public class AdminGroupController(
             group.RequiredQuorum,
             group.CreatedAt
         });
+    }
+
+    /// <summary>
+    /// Why a group-creation request's scope is not explicit, or null when it is: a CA or a space
+    /// with no scope, or scope "instance" with neither. A missing space alone never makes an
+    /// instance group.
+    /// </summary>
+    private static string? ScopeError(CreateGroupRequest request)
+    {
+        const string instanceScope = ModularCA.Shared.Models.KeyCeremonyParameters.InstanceScope;
+        var instance = string.Equals(request.Scope?.Trim(), instanceScope, StringComparison.OrdinalIgnoreCase);
+        var scoped = request.CertificateAuthorityId != null || request.SpaceId != null;
+        if (!string.IsNullOrWhiteSpace(request.Scope) && !instance)
+            return $"Unknown scope '{request.Scope}'. Send scope \"{instanceScope}\" for an instance group, or a certificateAuthorityId or spaceId.";
+        if (instance && scoped)
+            return $"The request names scope \"{instanceScope}\" and a CA or space; a group belongs to one scope.";
+        if (!instance && !scoped)
+            return $"Name the group's scope: a certificateAuthorityId for a CA group, a spaceId for a space-wide group, or scope \"{instanceScope}\" for an instance group.";
+        return null;
     }
 
     /// <summary>
@@ -382,15 +405,11 @@ public class AdminGroupController(
     }
 
     /// <summary>
-    /// Tiered authorization for membership writes.
-    /// <list type="number">
-    /// <item>Self-assignment refused unconditionally.</item>
-    /// <item><c>system-super</c> members: may modify any group.</item>
-    /// <item><c>system-admin</c> members: may modify any space CA-scoped group.
-    /// Cannot touch system groups.</item>
-    /// <item>CA-scoped admins: may only modify groups on the same CA they administer
-    /// (within-CA delegation). Cross-CA promotion is refused.</item>
-    /// </list>
+    /// Authorization for membership writes. Self-assignment is refused unconditionally; otherwise
+    /// the caller needs the right on the group's own scope, read badge-aware from every grant
+    /// source (<see cref="GroupAssignmentAccess"/>): system-super for a system group,
+    /// <c>group.manage</c> on a CA group's CA or across a space-wide group's space, and a system
+    /// administrator for any other instance group (403 otherwise).
     /// </summary>
     private async Task<IActionResult?> AuthorizeGroupMembershipChangeAsync(Shared.Entities.CaGroupEntity group, Guid targetUserId)
     {
@@ -400,34 +419,8 @@ public class AdminGroupController(
         if (targetUserId == _currentUser.User.Id)
             return BadRequest(new { error = "You cannot modify your own group membership. Ask a system-super admin to do it." });
 
-        var callerId = _currentUser.User.Id;
-        var callerGroups = await _db.CaGroupMembers
-            .Where(m => m.UserId == callerId)
-            .Include(m => m.Group)
-            .Select(m => new { m.Group!.Name, m.Group.IsSystemGroup, m.Group.IsSystemTierSuper, m.Group.CertificateAuthorityId, m.Group.TemplateName })
-            .ToListAsync();
-
-        // Tier checks read structural flags rather than literal group names so a future
-        // bootstrap rename of "system-super"/"system-admin" doesn't silently bypass the gate.
-        if (callerGroups.Any(g => g.IsSystemTierSuper)) return null; // global override
-
-        if (group.IsSystemGroup)
-            return StatusCode(403, new { error = "Modifying system group memberships requires system-super. system-admin cannot grant system-tier access." });
-
-        // system-admin tier = any system group that is NOT the super tier.
-        if (callerGroups.Any(g => g.IsSystemGroup && !g.IsSystemTierSuper)) return null; // instance-wide CA management
-
-        var targetCaId = group.CertificateAuthorityId;
-        if (targetCaId == null)
-            return StatusCode(403, new { error = "This group is not CA-scoped and requires system-admin or system-super to modify." });
-
-        var isAdminOnTargetCa = callerGroups.Any(g =>
-            g.CertificateAuthorityId == targetCaId
-            && string.Equals(g.TemplateName, "Administrator", StringComparison.OrdinalIgnoreCase));
-        if (!isAdminOnTargetCa)
-            return StatusCode(403, new { error = "Cross-CA group modification is not permitted. You can only manage memberships for groups on CAs where you are an admin." });
-
-        return null;
+        var refusal = await GroupAssignmentAccess.RefusalAsync(_groupAuth, _controlledUserSvc, _currentUser.User.Id, group);
+        return refusal == null ? null : StatusCode(403, new { error = refusal });
     }
 
     /// <summary>
@@ -762,8 +755,10 @@ public class AdminGroupController(
 }
 
 /// <summary>
-/// Request body for creating a new group. An unknown member (a pre-0.4.0 <c>tenantId</c>) is
-/// refused with 400, never read as no space.
+/// Request body for creating a new group. It names the group's scope explicitly: a
+/// <see cref="CertificateAuthorityId"/>, a <see cref="SpaceId"/>, or <see cref="Scope"/>
+/// "instance"; anything else is refused with 400.
+/// An unknown member (a pre-0.4.0 <c>tenantId</c>) is refused with 400, never read as no space.
 /// </summary>
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class CreateGroupRequest
@@ -774,14 +769,21 @@ public class CreateGroupRequest
     /// <summary>Human-friendly display name.</summary>
     public string? DisplayName { get; set; }
 
-    /// <summary>CA this group is scoped to. Null for space-wide or system groups.</summary>
+    /// <summary>CA this group is scoped to. Null for space-wide or instance groups.</summary>
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
-    /// Space this group belongs to. Required when CertificateAuthorityId is null.
-    /// Ignored when CertificateAuthorityId is provided (resolved from the CA's space).
+    /// Space this group belongs to, for a space-wide group. Ignored when CertificateAuthorityId
+    /// is provided (resolved from the CA's space).
     /// </summary>
     public Guid? SpaceId { get; set; }
+
+    /// <summary>
+    /// "instance" for an instance (system) group, with neither CertificateAuthorityId nor
+    /// SpaceId; omitted otherwise.
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(20)]
+    public string? Scope { get; set; }
 
     /// <summary>Template name used to seed initial capability grants (e.g. "Administrator", "Operator", "Auditor", "Requester").</summary>
     public string? TemplateName { get; set; }

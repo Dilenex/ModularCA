@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Acme;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -27,39 +28,17 @@ public class AcmeDirectoryController(IAcmeNonceService nonceService, SystemConfi
     private readonly ModularCADbContext _db = db;
 
     /// <summary>
-    /// Reserved CA labels that never serve enrollment protocols. The System Signing
-    /// CA is an internal identity used to sign system artifacts (keystore entries,
-    /// step-up tokens) and must not be exposed to ACME/EST/SCEP/CMP clients even
-    /// when a protocol config row is seeded against it by mistake.
-    /// </summary>
-    private static readonly HashSet<string> ReservedSystemLabels = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "system-signing-ca",
-    };
-
-    /// <summary>
-    /// Resolves a CA label into a live, ACME-enabled CA entity. Returns <c>null</c>
-    /// when the label is reserved, the CA doesn't exist, is disabled/SSH, or has
-    /// no enabled ACME protocol config. Explicit opt-in: a missing
-    /// <see cref="CaProtocolConfigEntity"/> row is treated as "not enabled" so CAs
-    /// seeded without a protocol config (e.g. the System Signing CA) never leak
-    /// an ACME directory.
+    /// Resolves a CA label into a live, ACME-enabled CA entity. Returns <c>null</c> when the CA
+    /// doesn't exist or does not serve ACME (<see cref="AcmeCaPolicy.RefusalAsync"/>: disabled,
+    /// SSH, a reserved <c>system-</c> label, or no enabled ACME protocol config), the same check
+    /// new-account and new-order make.
     /// </summary>
     private async Task<CertificateAuthorityEntity?> ResolveAcmeCaAsync(string label)
     {
-        if (ReservedSystemLabels.Contains(label))
-            return null;
-
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.Label == label && c.IsEnabled);
-        if (ca == null || ca.IsSshCa)
-            return null;
-
-        var protocolConfig = await _db.CaProtocolConfigs
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.CaId == ca.Id && c.Protocol == "ACME");
-        if (protocolConfig == null || !protocolConfig.IsEnabled)
+        if (ca == null || await AcmeCaPolicy.RefusalAsync(_db, ca) != null)
             return null;
 
         return ca;

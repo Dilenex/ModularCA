@@ -6,6 +6,71 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Review of 0.4.0: what changes for operators
+
+With the tenant filters gone, every check that relied on them was reviewed twice. The fixes
+below close cross-scope gaps; several change behaviour an operator or a client can see.
+
+- **Creating accounts in another space's groups is refused.** Assigning a group checked whether
+  the caller belonged to *any* system group, `system-auditor` included, and read memberships past
+  the worn badge. A system auditor who operated one CA could create an account with a password of
+  their choosing in another space's Operator group. Assignment now needs `group.manage` at the
+  target group's own scope (its CA, its space, or the instance), read through the badge; system
+  groups still need a super. System operators and auditors no longer count as administrators of
+  CA groups.
+- **ACME accounts belong to the CA they registered at.** An account registered at a CA without
+  EAB could order and finalize at one that requires it. Each account is now bound to its CA
+  (migration `BindAcmeAccountsToCa`, backfilled by label, ignoring case; label-less accounts to the
+  default CA). On label-less routes an account keeps using its own CA, so changing the default no
+  longer breaks existing clients; only new registrations go to the default. Order, authorization,
+  challenge, finalize and certificate URLs are under `/acme/{ca-label}/`. Finalize is refused for
+  an order placed at another CA. An account the upgrade could not bind recovers by posting
+  new-account with its key, subject to that CA's EAB policy. New-account and new-order refuse a CA
+  that does not serve ACME.
+- **Enrollment tokens work only where they were minted for.** A SCEP challenge password or QR
+  token was accepted at any CA. A token bound to a CA now works only there, one bound to a space
+  only at that space's CAs, and one bound to neither only at instance CAs. Tokens take their CA
+  from the signing profile's issuer. Tokens that do not match where they are used must be minted
+  again.
+- **CAs are found by key and certificate, not subject name.** OCSP, CRL generation and export,
+  LDAP publishing, revocation, the certificate impact view, integration chains and compliance
+  reports matched a CA by its subject DN, which two CAs can share once one is renamed. The impact
+  view could list another space's certificates. Each now follows the issuer link or the CA's key.
+- **Security settings need a system administrator.** System operators could read the lockout
+  thresholds and change token binding, `BehindReverseProxy`, the IP allowlist, mTLS, network
+  audit, alerts, webhooks, integration keys and the password policy, some without step-up.
+  `/admin/security-policy`, `/admin/config` and `/admin/password-policy` now need a system
+  administrator, and every write needs step-up. `RefreshTokenDays` is limited to 1–30. A password
+  policy below 8 characters, with minimums above the maximum, or with a history above 24 is
+  refused; a dictionary must be a file in `config/password-dictionaries`. Operators see the email
+  delivery summary at `GET /admin/notifications/delivery`. Changing
+  `AllowSystemSuperSelfApproval` needs a system super.
+- **Unbinding a profile from its CA needs instance scope.** A space operator could unbind a
+  request or signing profile and so offer it to every space.
+- **Policy ceremonies are approved and rejected by admins.** A space policy change needs a space
+  admin, an instance policy change a system admin; operators can no longer approve or veto them.
+- **Audit records keep their space** (migration `AuditRecordSpace`). Kerberos realm, service
+  identity and failed CA-creation records carried no space and were missed by the space filter.
+  The space is hashed only when set, so existing records verify unchanged.
+- **Sealed audit chains stay sealed through retention.** Retention could prune a retired chain's
+  seal, or the succession record that anchors it, after which a deleted or altered seal read as
+  healthy. Successions are now carried forward with their original seal hash, retention never
+  prunes a retired chain past its anchored seal, and a missing seal reports `TailMissing`. Upgrade
+  step 6 accepts only `Sealed`.
+- **Integration keys can be scoped to instance CAs.** `IntegrationApi.SpaceId` and
+  `CertManager.SpaceId` accept `instance`. A key naming the old system tenant, or a space that
+  does not exist, matched nothing silently; it is now named at startup, and `--upgrade-check`
+  refuses it on every host.
+- **A CA label is fixed once anything references it** (issued certificates, ACME accounts or
+  orders, protocol audit), so a freed label can no longer inherit another CA's history.
+- **Smaller changes.** Several CAs marked default resolve deterministically and are named at
+  startup; the label-less timestamp endpoint again needs a CA marked default. Unreadable ceremony
+  parameters block rather than pass. A super's badges need a super. An instance group must be
+  requested with `scope: "instance"`; an SSH CA naming a space is refused. Verifying an unknown
+  audit chain returns 404. The OpenAPI document is valid again. `install.sh` checks the whole
+  archive before stopping anything, restarts the units if it fails before touching the install,
+  and leaves them stopped with instructions if it fails after.
+
 ### Fixed
 
 - **A system admin can no longer seize another approver's account.** An admin could reset the

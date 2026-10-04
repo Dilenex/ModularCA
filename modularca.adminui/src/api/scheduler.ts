@@ -214,31 +214,6 @@ export function deleteCrlSchedule(taskId: string, stepUp: StepUpFn): Promise<voi
     );
 }
 
-/// <summary>Edits an existing LDAP publisher via the existing admin endpoint.</summary>
-export function updateLdapPublisher(
-    id: string,
-    body: { host?: string; port?: number; baseDn?: string; updateInterval?: string; enabled?: boolean; publishCACert?: boolean; publishCRL?: boolean; publishDelta?: boolean; publishUserCerts?: boolean },
-    stepUp: StepUpFn,
-): Promise<void> {
-    return apiPutWithMfa<void>(
-        `/api/v1/admin/ldap-publishers/${encodeURIComponent(id)}`,
-        body,
-        stepUp,
-        StepUpOps.UpdateLdapPublisher,
-        id,
-    );
-}
-
-/// <summary>Deletes an LDAP publisher via the existing admin endpoint.</summary>
-export function deleteLdapPublisher(id: string, stepUp: StepUpFn): Promise<void> {
-    return apiDeleteWithMfa(
-        `/api/v1/admin/ldap-publishers/${encodeURIComponent(id)}`,
-        stepUp,
-        StepUpOps.DeleteLdapPublisher,
-        id,
-    );
-}
-
 /// <summary>Toggles the enabled state of a registered system job. Calls the new
 /// scheduler endpoint that flips the corresponding SystemConfig boolean
 /// (e.g. Backup.CreateOnSchedule) — a feature-flag toggle would not have worked

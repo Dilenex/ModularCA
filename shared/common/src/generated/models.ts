@@ -909,6 +909,7 @@ export interface KeyCeremonyParameters {
     keyAlgorithm: string;
     keySize: number;
     validityYears: number;
+    spaceId?: string | null;
     scope?: string | null;
     parentCaId?: string | null;
     label?: string | null;
@@ -1144,6 +1145,7 @@ export interface RevokeCaCeremonyParameters {
     certificateId: string;
     serialNumber: string;
     reason: string;
+    spaceId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Revocation/RevokeCertificateRequest.cs`. */
@@ -1411,10 +1413,12 @@ export interface SigningProfileDto {
 export interface SourceCodeConfig {
     url: string;
     license: string;
+    effectiveUrl: string;
 }
 
 /** From `ModularCA.Shared/Models/SpacePolicyChangeCeremonyParameters.cs`. */
 export interface SpacePolicyChangeCeremonyParameters {
+    spaceId?: string | null;
     currentRequireKeyCeremony: boolean;
     currentCeremonyRequiredApprovals: number;
     proposedRequireKeyCeremony?: boolean | null;
@@ -1439,6 +1443,7 @@ export interface SshKeyCeremonyParameters {
     isUserCa: boolean;
     isHostCa: boolean;
     maxValidityHours: number;
+    spaceId?: string | null;
     sshCaKeyId?: string | null;
 }
 

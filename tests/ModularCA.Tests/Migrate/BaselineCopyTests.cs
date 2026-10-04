@@ -59,6 +59,21 @@ public class BaselineCopyTests
         Assert.Equal(AuditPlanDigest, Digest(ModelIntrospection.AuditCopyTables()));
     }
 
+    /// <summary>
+    /// The audit chain is verified at the baseline stage, before the later audit migrations add
+    /// their columns, through <see cref="BaselineAuditDbContext"/>: it must map exactly the
+    /// baseline's tables and columns, or its first query names a column that is not there yet.
+    /// </summary>
+    [Fact]
+    public void The_baseline_stage_audit_context_maps_exactly_the_audit_baseline()
+    {
+        using var db = new BaselineAuditDbContext(new DbContextOptionsBuilder<AuditDbContext>().UseNpgsql("Host=model-only").Options);
+        var model = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>(db).Model;
+
+        Assert.Equal(Digest(ModelIntrospection.AuditCopyTables()), Digest(ModelIntrospection.Tables(model)));
+        Assert.NotEqual(Digest(ModelIntrospection.AuditCopyTables()), Digest(ModelIntrospection.Tables(ModelIntrospection.AuditModel())));
+    }
+
     [Fact]
     public void The_case_sweep_reads_the_baseline_keys()
     {

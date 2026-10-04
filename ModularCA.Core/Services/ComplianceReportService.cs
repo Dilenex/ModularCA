@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -55,18 +56,22 @@ public class ComplianceReportService : IComplianceReportService
         // Build the base query for all certificates, optionally filtered by CA
         var certQuery = _db.Certificates.AsNoTracking().AsQueryable();
 
-        string? caIssuerDn = null;
+        // By the CA's own certificates, never its subject DN alone: a CA in another space can share
+        // the DN. A legacy row without an issuer link matches by DN only when the DN is this CA's
+        // alone. A CA that cannot be resolved reports nothing rather than everything.
         if (request.CaId.HasValue)
         {
-            var ca = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .Include(c => c.Certificate)
-                .FirstOrDefaultAsync(c => c.Id == request.CaId.Value);
-
-            if (ca?.Certificate != null)
+            var caCertIds = await IssuerChainResolver.CaCertificateIdsAsync(_db, request.CaId.Value);
+            if (caCertIds.Count == 0)
             {
-                caIssuerDn = ca.Certificate.SubjectDN;
-                certQuery = certQuery.Where(c => c.Issuer == caIssuerDn);
+                certQuery = certQuery.Where(c => false);
+            }
+            else
+            {
+                var legacyIssuerDn = await IssuerChainResolver.UnambiguousIssuerDnAsync(_db, caCertIds[0]);
+                certQuery = certQuery.Where(c =>
+                    (c.IssuerCertificateId != null && caCertIds.Contains(c.IssuerCertificateId.Value))
+                    || (c.IssuerCertificateId == null && legacyIssuerDn != null && c.Issuer == legacyIssuerDn));
             }
         }
 

@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { Link } from 'react-router-dom';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { Drawer } from '@shared/components/Drawer';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { CEREMONIES_PATH, ceremonyPath } from './ceremonyLinks';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -248,6 +251,15 @@ const Ceremonies: React.FC = () => {
     const [filterStatus, setFilterStatus] = useState<'mine' | 'pending' | 'all'>('mine');
     const [filterType, setFilterType] = useState<'all' | Family>('all');
 
+    // `/ceremonies/:id` opens that ceremony's drawer; closing it returns to `/ceremonies`.
+    const { id: openId } = useParams<{ id?: string }>();
+    const navigate = useNavigate();
+    const location = useLocation();
+    const [linked, setLinked] = useState<any | null>(null);
+    const [linkedError, setLinkedError] = useState<NoticeInput | null>(null);
+    const openRow = (c: any) => navigate({ pathname: ceremonyPath(c.id), search: location.search });
+    const closeDrawer = () => navigate({ pathname: CEREMONIES_PATH, search: location.search });
+
     const fetchCeremonies = useCallback(async () => {
         try {
             const data = await apiGet<any>('/api/v1/admin/ceremonies');
@@ -372,6 +384,26 @@ const Ceremonies: React.FC = () => {
         return true;
     });
     const mineCount = ceremonies.filter(needsMyAction).length;
+
+    const listed = openId ? ceremonies.find((c) => c.id === openId) ?? null : null;
+    const opened = listed ?? linked;
+
+    // A linked ceremony missing from the list (not loaded yet, or not returned) is fetched by id.
+    useEffect(() => {
+        setLinked(null);
+        setLinkedError(null);
+        if (!openId || loading || listed) return;
+        let cancelled = false;
+        apiGet<any>(`/api/v1/admin/ceremonies/${encodeURIComponent(openId)}`)
+            .then((d) => { if (!cancelled) setLinked(d); })
+            .catch((err) => { if (!cancelled) setLinkedError(errorNotice(err, 'Failed to load the ceremony')); });
+        return () => { cancelled = true; };
+    }, [openId, loading, !!listed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Widen the filters once when the linked ceremony is listed but filtered out, so it can be selected to act on.
+    useEffect(() => {
+        if (listed && !filtered.some((c) => c.id === listed.id)) { setFilterStatus('all'); setFilterType('all'); }
+    }, [listed?.id]); // eslint-disable-line react-hooks/exhaustive-deps
     const pendingCount = ceremonies.filter((c) => c.status === 'Pending').length;
 
     const segBtn = (active: boolean) =>
@@ -449,9 +481,16 @@ const Ceremonies: React.FC = () => {
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="ceremonies"
-                renderDrawer={(c) => <CeremonyDrawer ceremony={c} />}
-                drawerTitle={(c) => splitDescription(c).text}
+                onRowClick={openRow}
             />
+
+            <Drawer open={!!openId} onClose={closeDrawer} title={opened ? splitDescription(opened).text : 'Ceremony'}>
+                {opened
+                    ? <CeremonyDrawer ceremony={opened} />
+                    : linkedError
+                        ? <InlineNotice notice={linkedError} />
+                        : <div className="text-xs text-gray-500">Loading…</div>}
+            </Drawer>
 
             <ConfirmModal
                 isOpen={!!confirmAction}

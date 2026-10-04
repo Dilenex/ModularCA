@@ -44,6 +44,49 @@ public class CrlExportNewEntriesTests
         NotAfter = DateTime.UtcNow.AddYears(9),
     };
 
+    /// <summary>
+    /// The CRL configuration of <paramref name="ca"/>, created on first use: every CRL row belongs
+    /// to one, and the job finds a CA's CRLs through it.
+    /// </summary>
+    private static Guid ConfigFor(ModularCADbContext db, CertificateEntity ca)
+    {
+        var existing = db.CrlConfigurations.Local.FirstOrDefault(c => c.CaCertificateId == ca.CertificateId);
+        if (existing != null) return existing.TaskId;
+        var config = new CrlConfigurationEntity { CaCertificateId = ca.CertificateId, IssuerDN = ca.SubjectDN, UpdateInterval = "0 */6 * * *" };
+        db.CrlConfigurations.Add(config);
+        return config.TaskId;
+    }
+
+    /// <summary>
+    /// Another CA with the same subject DN (a rename changes the name, not the CN) published a
+    /// newer CRL. That is not this CA's CRL, so this CA's revocation since its own CRL is still
+    /// new. The latest CRL used to be found by issuer DN, so the other CA's CRL hid it.
+    /// </summary>
+    [Fact]
+    public async Task Another_cas_crl_under_the_same_subject_dn_does_not_count()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var ca = MakeCa("CN=Test CA, O=Acme");
+        var twin = MakeCa("CN=Test CA, O=Acme");
+        db.Certificates.AddRange(ca, twin);
+        db.Crls.AddRange(
+            new CrlEntity { IssuerName = ca.SubjectDN, TaskId = ConfigFor(db, ca), CrlNumber = 1, GeneratedAt = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc) },
+            new CrlEntity { IssuerName = twin.SubjectDN, TaskId = ConfigFor(db, twin), CrlNumber = 2, GeneratedAt = new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc) });
+        db.Certificates.Add(new CertificateEntity
+        {
+            CertificateId = Guid.NewGuid(),
+            SerialNumber = Guid.NewGuid().ToString("N"),
+            SubjectDN = "CN=client.example.com",
+            Issuer = ca.SubjectDN,
+            IssuerCertificateId = ca.CertificateId,
+            Revoked = true,
+            RevocationDate = new DateTime(2026, 4, 10, 9, 0, 0, DateTimeKind.Utc),
+        });
+        await db.SaveChangesAsync();
+
+        Assert.True(await MakeJob(db).CheckNewCrlEntries(ca));
+    }
+
     [Fact]
     public async Task Returns_True_When_No_Crl_Exists_Yet()
     {
@@ -69,6 +112,7 @@ public class CrlExportNewEntriesTests
         db.Crls.Add(new CrlEntity
         {
             IssuerName = ca.SubjectDN,
+            TaskId = ConfigFor(db, ca),
             CrlNumber = 1,
             GeneratedAt = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
         });
@@ -98,6 +142,7 @@ public class CrlExportNewEntriesTests
         db.Crls.Add(new CrlEntity
         {
             IssuerName = ca.SubjectDN,
+            TaskId = ConfigFor(db, ca),
             CrlNumber = 5,
             GeneratedAt = new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc),
         });
@@ -126,6 +171,7 @@ public class CrlExportNewEntriesTests
         db.Crls.Add(new CrlEntity
         {
             IssuerName = ca.SubjectDN,
+            TaskId = ConfigFor(db, ca),
             CrlNumber = 1,
             GeneratedAt = DateTime.UtcNow.AddDays(-1),
         });
@@ -147,9 +193,9 @@ public class CrlExportNewEntriesTests
         db.Certificates.Add(ca);
         // Insert in non-monotonic order to flush out OrderByDescending bugs.
         db.Crls.AddRange(
-            new CrlEntity { IssuerName = ca.SubjectDN, CrlNumber = 5, GeneratedAt = new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc) },
-            new CrlEntity { IssuerName = ca.SubjectDN, CrlNumber = 1, GeneratedAt = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc) },
-            new CrlEntity { IssuerName = ca.SubjectDN, CrlNumber = 3, GeneratedAt = new DateTime(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc) });
+            new CrlEntity { IssuerName = ca.SubjectDN, TaskId = ConfigFor(db, ca), CrlNumber = 5, GeneratedAt = new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc) },
+            new CrlEntity { IssuerName = ca.SubjectDN, TaskId = ConfigFor(db, ca), CrlNumber = 1, GeneratedAt = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc) },
+            new CrlEntity { IssuerName = ca.SubjectDN, TaskId = ConfigFor(db, ca), CrlNumber = 3, GeneratedAt = new DateTime(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc) });
         db.Certificates.Add(new CertificateEntity
         {
             CertificateId = Guid.NewGuid(),

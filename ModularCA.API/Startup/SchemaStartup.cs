@@ -56,7 +56,7 @@ public enum UpgradeReadiness
 /// this.
 /// </para>
 /// </remarks>
-public static class SchemaStartup
+public static partial class SchemaStartup
 {
     /// <summary>
     /// The exit code when the operator must act: a schema this build does not match, a
@@ -273,33 +273,55 @@ public static class SchemaStartup
     /// database's schema, ownership and dry-run result, every refusal the dry run found listed
     /// with its message, then a one-line verdict. Applies nothing. Returns
     /// <see cref="UpgradeCheckExitCode"/> of the findings.
+    /// <para>
+    /// With <paramref name="scopes"/>, the integration keys' configured <c>SpaceId</c> values, it
+    /// also refuses a key fenced to a scope the pending migrations delete, or to a space that does
+    /// not exist, as on a host checked after another one already upgraded the database
+    /// (<see cref="FoldedScopeFindingAsync"/>), read-only.
+    /// </para>
     /// </summary>
     /// <param name="targets">The databases the control role checks, the application database first.</param>
     /// <param name="config">The migration time budgets the dry run runs under.</param>
     /// <param name="output">Where the report goes; the console when null.</param>
+    /// <param name="scopes">The integration keys whose <c>SpaceId</c> is set, by config key name; none when null.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<int> UpgradeCheckAsync(
-        IReadOnlyList<SchemaTarget> targets, SchemaConfig? config, TextWriter? output = null, CancellationToken ct = default)
+        IReadOnlyList<SchemaTarget> targets, SchemaConfig? config, TextWriter? output = null,
+        IReadOnlyList<(string Key, string Value)>? scopes = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(targets);
         config ??= new SchemaConfig();
         output ??= Console.Out;
         var findings = new List<UpgradeFinding>();
+        Observation? application = null;
         foreach (var target in targets)
         {
             var instance = target.Instance;
             output.WriteLine($"{target.Name}: database '{instance.Database}' on {instance.Host}:{instance.Port} as '{instance.Username}'");
-            var finding = await AssessUpgradeAsync(await ObserveAsync(target, appliesMigrations: true, ct), config, output, ct);
-            output.WriteLine($"  {finding.Readiness switch
-            {
-                UpgradeReadiness.Clean => "ok",
-                UpgradeReadiness.Refused => "REFUSED",
-                _ => "UNREACHABLE",
-            }}: {finding.Detail.ReplaceLineEndings(Environment.NewLine + "    ")}");
-            findings.Add(finding);
+            var observed = await ObserveAsync(target, appliesMigrations: true, ct);
+            if (target.Kind == DatabaseKind.Application)
+                application = observed;
+            Report(output, await AssessUpgradeAsync(observed, config, output, ct), findings);
+        }
+        if (scopes is { Count: > 0 } && application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
+        {
+            output.WriteLine("configuration: integration key scopes");
+            Report(output, await FoldedScopeFindingAsync(application.Target, scopes, ct), findings);
         }
         output.WriteLine(UpgradeCheckVerdict(findings));
         return UpgradeCheckExitCode(findings.Select(f => f.Readiness));
+    }
+
+    /// <summary>Prints <paramref name="finding"/>'s readiness and detail, and adds it to <paramref name="findings"/>.</summary>
+    private static void Report(TextWriter output, UpgradeFinding finding, List<UpgradeFinding> findings)
+    {
+        output.WriteLine($"  {finding.Readiness switch
+        {
+            UpgradeReadiness.Clean => "ok",
+            UpgradeReadiness.Refused => "REFUSED",
+            _ => "UNREACHABLE",
+        }}: {finding.Detail.ReplaceLineEndings(Environment.NewLine + "    ")}");
+        findings.Add(finding);
     }
 
     /// <summary>

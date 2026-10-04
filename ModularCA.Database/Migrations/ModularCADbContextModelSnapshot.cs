@@ -97,6 +97,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<Guid?>("CertificateAuthorityId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ContactsJson")
                         .IsRequired()
                         .HasColumnType("text");
@@ -122,6 +125,8 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("boolean");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CertificateAuthorityId");
 
                     b.HasIndex("JwkThumbprint")
                         .IsUnique();
@@ -3665,6 +3670,14 @@ namespace ModularCA.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("Badge");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.AcmeAccountEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CertificateAuthorityId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.AcmeAuthorizationEntity", b =>

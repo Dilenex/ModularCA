@@ -14,13 +14,28 @@ import { Capabilities, type Capability } from '@shared/generated';
 export interface Gate {
     requires: Capability;
     scoped?: boolean;
+    /**
+     * For a scoped gate: whether a space-wide grant over a space with no CA yet also admits. Most
+     * CA-scoped pages list through endpoints that need the capability on at least one CA, so
+     * only a page that works before the space has a CA sets this.
+     */
+    spaceWide?: boolean;
 }
 
 /** Installation-wide administration: settings, backup, spaces, roles, schedules, TLS. */
 export const SYSTEM_ADMIN: Gate = { requires: Capabilities.SystemManage };
 
-/** Managing a CA within the scope: authorities, profiles, distribution, ceremonies, protocols. */
+/** Running CAs across the installation (SystemOperator on the server): notification delivery. */
+export const SYSTEM_OPERATOR: Gate = { requires: Capabilities.CaManage };
+
+/** Managing a CA within the scope: profiles, distribution, protocols. */
 export const CA_MANAGE: Gate = { requires: Capabilities.CaManage, scoped: true };
+
+/**
+ * Creating a space's CAs and deciding its ceremonies: the authorities list and ceremonies, which
+ * a space administrator needs before the space has its first CA.
+ */
+export const CA_MANAGE_SPACE: Gate = { requires: Capabilities.CaManage, scoped: true, spaceWide: true };
 
 /** Reading the audit trail within the scope. */
 export const CA_AUDIT: Gate = { requires: Capabilities.AuditView, scoped: true };

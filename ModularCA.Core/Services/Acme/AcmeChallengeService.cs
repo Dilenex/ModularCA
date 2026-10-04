@@ -69,16 +69,25 @@ public class AcmeChallengeService(
         }
     }
 
+    /// <summary>The challenge object, its URL under the path of its order's CA.</summary>
     public async Task<AcmeChallengeDto?> GetByIdAsync(Guid challengeId, string baseUrl)
     {
-        var entity = await _db.AcmeChallenges.FindAsync(challengeId);
+        var entity = await _db.AcmeChallenges
+            .Include(c => c.Authorization)
+                .ThenInclude(a => a!.Order)
+            .FirstOrDefaultAsync(c => c.Id == challengeId);
         return entity == null ? null : MapToDto(entity, baseUrl);
     }
 
+    /// <summary>
+    /// Marks a pending challenge processing and validates it in the background; returns the
+    /// challenge object, its URL under the path of its order's CA.
+    /// </summary>
     public async Task<AcmeChallengeDto> RespondAsync(Guid challengeId, string accountThumbprint, string baseUrl)
     {
         var entity = await _db.AcmeChallenges
             .Include(c => c.Authorization)
+                .ThenInclude(a => a!.Order)
             .Where(c => c.Id == challengeId)
             .FirstOrDefaultAsync()
             ?? throw new InvalidOperationException("Challenge not found.");
@@ -366,11 +375,14 @@ public class AcmeChallengeService(
     /// <summary>
     /// Records a challenge validation outcome on the ACME audit tab so operators see
     /// every validation attempt — success or failure with its reason — not just issuance.
-    /// The failure detail is pulled from the challenge's stored problem document.
+    /// The failure detail is pulled from the challenge's stored problem document. The row is
+    /// stamped with the label, id and space of the CA the order's account is bound to.
     /// </summary>
     private async Task LogChallengeOutcomeAsync(AcmeChallengeEntity entity, string operation)
     {
         var success = entity.Status == nameof(AcmeChallengeStatus.Valid);
+        var accountId = entity.Authorization?.Order?.AccountId;
+        var ca = accountId is Guid id ? await AcmeCaPolicy.BoundCaAsync(_db, id) : null;
         await _protocolAudit.LogAcmeAsync(
             operation,
             entity.Authorization?.Order?.AccountId,
@@ -382,7 +394,9 @@ public class AcmeChallengeService(
             sourceIp: null,
             success: success,
             errorMessage: success ? null : DeserializeError(entity.ErrorJson)?.Detail,
-            caLabel: entity.Authorization?.Order?.CaLabel);
+            caLabel: ca?.Label ?? entity.Authorization?.Order?.CaLabel,
+            certificateAuthorityId: ca?.Id,
+            spaceId: ca?.SpaceId);
     }
 
     /// <summary>
@@ -768,11 +782,16 @@ public class AcmeChallengeService(
         return challenge?.Authorization?.Order?.AccountId;
     }
 
+    /// <summary>
+    /// The challenge object. Its URL is under the path of the order's CA
+    /// (<see cref="AcmeCaPolicy.PathPrefix"/>), so <see cref="AcmeChallengeEntity.Authorization"/>
+    /// and its order must be loaded.
+    /// </summary>
     private static AcmeChallengeDto MapToDto(AcmeChallengeEntity entity, string baseUrl) => new()
     {
         Id = entity.Id,
         Type = entity.Type,
-        Url = $"{baseUrl}/api/v1/acme/challenge/{entity.Id}",
+        Url = $"{baseUrl}{AcmeCaPolicy.PathPrefix(entity.Authorization?.Order?.CaLabel)}/challenge/{entity.Id}",
         Token = entity.Token,
         Status = entity.Status.ToLowerInvariant(),
         ValidatedAt = entity.ValidatedAt,

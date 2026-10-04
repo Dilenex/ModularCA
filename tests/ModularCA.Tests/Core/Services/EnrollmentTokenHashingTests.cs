@@ -1,3 +1,4 @@
+using ModularCA.Shared.Entities;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +21,9 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class EnrollmentTokenHashingTests
 {
+    /// <summary>An instance CA, where a token bound to no CA and no space is valid.</summary>
+    private static readonly CertificateAuthorityEntity InstanceCa = new() { Id = Guid.NewGuid(), Name = "instance" };
+
     private static string Sha256Hex(string s) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
 
@@ -62,7 +66,7 @@ public class EnrollmentTokenHashingTests
         // run, and what is under test here is the hashed lookup, not the decrement.
         var issued = await service.GenerateTokenAsync(Guid.NewGuid(), TimeSpan.FromHours(1), maxUses: 0);
 
-        var (ok, error) = await service.ValidateAndConsumeAsync(issued, "CN=host.example.com", "SCEP");
+        var (ok, error) = await service.ValidateAndConsumeAsync(issued, "CN=host.example.com", "SCEP", InstanceCa);
 
         Assert.True(ok, error);
         Assert.NotNull(await service.GetByTokenAsync(issued));
@@ -88,7 +92,7 @@ public class EnrollmentTokenHashingTests
 
         Assert.Null(await service.GetByTokenAsync(issued));
 
-        var (ok, error) = await service.ValidateAndConsumeAsync(issued, "CN=x", "SCEP");
+        var (ok, error) = await service.ValidateAndConsumeAsync(issued, "CN=x", "SCEP", InstanceCa);
         Assert.False(ok);
         Assert.Contains("maximum number of times", error!, StringComparison.OrdinalIgnoreCase);
     }
@@ -100,7 +104,7 @@ public class EnrollmentTokenHashingTests
         var service = new EnrollmentTokenService(db);
         await service.GenerateTokenAsync(Guid.NewGuid(), TimeSpan.FromHours(1), maxUses: 0);
 
-        var (ok, error) = await service.ValidateAndConsumeAsync("not-a-token", "CN=x", "SCEP");
+        var (ok, error) = await service.ValidateAndConsumeAsync("not-a-token", "CN=x", "SCEP", InstanceCa);
 
         Assert.False(ok);
         Assert.Contains("Invalid", error!, StringComparison.OrdinalIgnoreCase);
@@ -118,7 +122,7 @@ public class EnrollmentTokenHashingTests
 
         var stored = (await db.EnrollmentTokens.AsNoTracking().SingleAsync()).Token;
 
-        var (ok, _) = await service.ValidateAndConsumeAsync(stored, "CN=x", "SCEP");
+        var (ok, _) = await service.ValidateAndConsumeAsync(stored, "CN=x", "SCEP", InstanceCa);
 
         Assert.False(ok);
         Assert.Null(await service.GetByTokenAsync(stored));

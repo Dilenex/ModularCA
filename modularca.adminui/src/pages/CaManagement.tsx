@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
+import { isApiError } from '@shared-auth/api/problem';
 import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { useAuth } from '../context/AuthContext';
-import { can, canAtSpace, spacesOf } from '../authz';
+import { can, canAtSpace, consoleCas, spacesOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -16,9 +17,7 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
-
-/** The space selector's value for an instance CA (no space); sent as scope "instance". */
-const INSTANCE_SCOPE = '__instance__';
+import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
 
 /** The CA list's space column was keyed 'tenant' before 0.4.0; a stored layout carries over. Remove in 0.5. */
 const RENAMED_CA_COLUMNS = { tenant: 'space' };
@@ -65,8 +64,11 @@ const CaManagement: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
-    // Space state
-    const [spaces, setSpaces] = useState<any[]>([]);
+    // Space state. `adminSpaces` is null until the system-admin space list answers, and stays
+    // null when it is forbidden; the choices then come from the caller's own capabilities.
+    const [adminSpaces, setAdminSpaces] = useState<any[] | null>(null);
+    const [spacesError, setSpacesError] = useState<NoticeInput | null>(null);
+    const [instanceCeremony, setInstanceCeremony] = useState<boolean | null>(null);
     const [formSpace, setFormSpace] = useState('');
 
     // Create CA form state
@@ -148,13 +150,14 @@ const CaManagement: React.FC = () => {
     /** System-scoped ca.manage may create in any space and under any parent, as the server allows. */
     const managesAllSpaces = isSystemAdmin || can(capabilities, Capabilities.CaManage);
     /**
-     * The spaces the caller may create a CA in. The space list endpoint is system-only, so a
-     * space administrator's choices come from their own capabilities instead.
+     * The spaces the caller may create a CA in. The space list endpoint is system-admin only, so
+     * a system operator's and a space administrator's choices come from their capabilities.
      */
-    const creatableSpaces: Array<{ id: string; name: string }> = managesAllSpaces
-        ? spaces.filter(t => t.isEnabled)
+    const creatableSpaces: Array<{ id: string; name: string }> = adminSpaces
+        ? adminSpaces.filter(t => t.isEnabled)
         : spacesOf(capabilities).filter(t => canAtSpace(capabilities, Capabilities.CaManage, t.id));
-    const canCreateCa = isSystemAdmin || creatableSpaces.length > 0;
+    const canCreateCa = managesAllSpaces || creatableSpaces.length > 0;
+    const targetCeremony = ceremonyRequiredFor(formSpace, { instance: instanceCeremony, spaces: adminSpaces ?? [] });
 
     /** The subtree rooted at the scoped CA, so a single-CA scope shows that CA and what it issued. */
     const subtreeOf = (list: any[], id: string): any | null => {
@@ -184,16 +187,30 @@ const CaManagement: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
-                setError(errorNotice(err, 'Failed to load authorities'));
+                // A space administrator whose space has no CA yet is refused the list (it needs a
+                // CA to be scoped to); there is nothing to list, and the create panel still works.
+                if (isApiError(err) && err.status === 403 && consoleCas(capabilities).length === 0) setAuthorities([]);
+                else setError(errorNotice(err, 'Failed to load authorities'));
                 setLoading(false);
             });
     };
 
     useEffect(() => {
         if (!managesAllSpaces) return;
+        let cancelled = false;
+        setSpacesError(null);
         apiGet<any>('/api/v1/admin/spaces')
-            .then(data => setSpaces(Array.isArray(data) ? data : data.items || []))
-            .catch(() => {});
+            .then(data => { if (!cancelled) setAdminSpaces(Array.isArray(data) ? data : data.items || []); })
+            .catch((err) => {
+                if (cancelled) return;
+                setAdminSpaces(null);
+                if (!(isApiError(err) && err.status === 403)) setSpacesError(errorNotice(err, 'Failed to load spaces'));
+            });
+        // The instance's ceremony policy only labels the button; unknown falls back to a hint.
+        apiGet<any>('/api/v1/admin/security-policy')
+            .then(p => { if (!cancelled) setInstanceCeremony(typeof p?.requireKeyCeremony === 'boolean' ? p.requireKeyCeremony : null); })
+            .catch(() => { if (!cancelled) setInstanceCeremony(null); });
+        return () => { cancelled = true; };
     }, [managesAllSpaces]);
 
     // A space administrator of one space has nothing to choose; a system administrator picks.
@@ -337,7 +354,9 @@ const CaManagement: React.FC = () => {
                 rowKey={caKey}
                 loading={loading}
                 error={error}
-                empty={scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
+                empty={consoleCas(capabilities).length === 0 && canCreateCa
+                    ? 'No certificate authorities yet. Create the first one under Create Certificate Authority below.'
+                    : scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
                 columns={caColumns}
                 selectable
                 exportFileName="certificate-authorities"
@@ -358,6 +377,7 @@ const CaManagement: React.FC = () => {
                 </button>
                 {createExpanded && (
                     <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                        {spacesError && <InlineNotice notice={spacesError} />}
                         {/* Space Selector */}
                         <div>
                             <label className={labelClass}>Space *</label>
@@ -561,18 +581,15 @@ const CaManagement: React.FC = () => {
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-4 flex-wrap">
                             <button
                                 onClick={handleCreateCa}
                                 disabled={createLoading || !formCN.trim() || !formSpace}
                                 className="px-6 py-2 text-sm font-semibold bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
-                                {createLoading
-                                    ? (spaces.find(t => t.id === formSpace)?.requireKeyCeremony ? 'Starting Ceremony...' : 'Creating...')
-                                    : spaces.find(t => t.id === formSpace)?.requireKeyCeremony
-                                        ? `Start ${formCaType === 'root' ? 'Root' : 'Intermediate'} CA Ceremony`
-                                        : `Create ${formCaType === 'root' ? 'Root' : 'Intermediate'} CA`}
+                                {createCaButtonLabel(formCaType, targetCeremony, createLoading)}
                             </button>
+                            {formSpace && targetCeremony === null && <FieldHint>{CEREMONY_UNKNOWN_HINT}</FieldHint>}
                         </div>
 
                         {createError && (

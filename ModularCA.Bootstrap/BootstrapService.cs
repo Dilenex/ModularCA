@@ -474,6 +474,8 @@ public class BootstrapService
             var nonSystemCa = dbContext.CertificateAuthorities
                 .Where(ca => ca.Label != "system-signing-ca")
                 .OrderByDescending(ca => ca.IsDefault)
+                .ThenBy(ca => ca.Name)
+                .ThenBy(ca => ca.Id)
                 .FirstOrDefault()
                 ?? throw new InvalidOperationException(
                     "No non-system CA found — cannot resolve a Web TLS signing profile.");

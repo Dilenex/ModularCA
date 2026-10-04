@@ -9,9 +9,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { Capabilities, StepUpOps } from '@shared/generated';
-import { FieldHint } from '@shared/components/forms';
 import { useAuth } from '../context/AuthContext';
-import { can, spacesOf } from '../authz';
+import { FieldHint } from '@shared/components/forms';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -31,16 +30,16 @@ function downloadText(content: string, filename: string) {
 /* ─── SSH CA Keys Section ─── */
 const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = ({ refreshTrigger, onRefresh }) => {
     const { showToast } = useToast();
+    // Generating an SSH CA key is SystemOperator on the server: ca.manage at system scope.
+    const { can } = useAuth();
+    const canGenerate = can(Capabilities.CaManage);
     const { requireStepUp } = useStepUp();
-    const { capabilities } = useAuth();
-    const isSystemAdmin = can(capabilities, Capabilities.SystemManage);
     const [keys, setKeys] = useState<any[]>([]);
-    const [spaces, setSpaces] = useState<any[]>([]);
     const [pendingCeremonies, setPendingCeremonies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [generating, setGenerating] = useState(false);
-    const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
+    const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
     const [showGenForm, setShowGenForm] = useState(false);
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string; confirmLabel: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
@@ -52,12 +51,10 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
         Promise.all([
             apiGet<any>('/api/v1/admin/ssh/ca-keys'),
-            isSystemAdmin ? apiGet<any>('/api/v1/admin/spaces').catch(() => null) : Promise.resolve(null),
             apiGet<any>('/api/v1/admin/ceremonies?status=Pending').catch(() => []),
-        ]).then(([keyData, spaceData, ceremonyData]) => {
+        ]).then(([keyData, ceremonyData]) => {
                 if (cancelled) return;
                 setKeys(Array.isArray(keyData) ? keyData : (keyData.items || keyData.keys || []));
-                setSpaces(!spaceData ? spacesOf(capabilities) : Array.isArray(spaceData) ? spaceData : (spaceData.items || spaceData.spaces || []));
                 const allCeremonies = Array.isArray(ceremonyData) ? ceremonyData : (ceremonyData.items || []);
                 setPendingCeremonies(allCeremonies.filter((c: any) =>
                     c.operationType === 'CreateSshCa' || c.operationType === 'DeleteSshCa'));
@@ -71,7 +68,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             });
 
         return () => { cancelled = true; };
-    }, [refreshTrigger, isSystemAdmin, capabilities]);
+    }, [refreshTrigger]);
 
     // A key that is neither a user nor a host CA is useless and the server would accept it anyway.
     const caRoleMissing = !genForm.isUserCa && !genForm.isHostCa;
@@ -88,16 +85,15 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 isUserCa: genForm.isUserCa,
                 isHostCa: genForm.isHostCa,
                 maxValidityHours: parseInt(genForm.maxValidityHours) || 720,
-                spaceId: genForm.spaceId || undefined,
             }, requireStepUp, StepUpOps.CreateSshCa);
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'Key ceremony created for approval.');
                 setShowGenForm(false);
-                setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
+                setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
                 return;
             }
             setShowGenForm(false);
-            setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720', spaceId: '' });
+            setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
             onRefresh();
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled')
@@ -192,17 +188,18 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900 dark:text-white">SSH CA Keys</h2>
-                <button
+                {canGenerate && <button
                     onClick={() => setShowGenForm(!showGenForm)}
                     className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors"
                 >
                     {showGenForm ? 'Cancel' : 'Generate CA Key'}
-                </button>
+                </button>}
             </div>
 
-            {showGenForm && (
+            {canGenerate && showGenForm && (
                 <form onSubmit={handleGenerate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Generate New SSH CA Key</h3>
+                    <FieldHint>SSH CAs belong to the instance, not to a space.</FieldHint>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
                             <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Name</label>
@@ -269,19 +266,6 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                                 onChange={(e) => setGenForm({ ...genForm, maxValidityHours: e.target.value.replace(/\D/g, '') })}
                                 className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
                             />
-                        </div>
-                        <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Space</label>
-                            <select
-                                value={genForm.spaceId}
-                                onChange={(e) => setGenForm({ ...genForm, spaceId: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
-                            >
-                                <option value="">Select space...</option>
-                                {spaces.map((t: any) => (
-                                    <option key={t.id} value={t.id}>{t.name || t.id}</option>
-                                ))}
-                            </select>
                         </div>
                     </div>
                     <div>

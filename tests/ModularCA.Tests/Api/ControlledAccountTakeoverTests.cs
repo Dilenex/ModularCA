@@ -115,7 +115,9 @@ public sealed class ControlledAccountTakeoverTests
             => New(Ns + "Management.AdminUserManagerController", actor,
                 W.Db, Users, new CurrentUserStub(actor), AuditSink, Cache, Alerts, null,
                 Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Validation.Users.UpdateUserRequestValidator")),
-                Controlled(badgeGroups));
+                Controlled(badgeGroups),
+                new CaGroupAuthorizationService(W.Db, NullLogger<CaGroupAuthorizationService>.Instance, badges:
+                    badgeGroups.Length == 0 ? null : new FixedBadge(new AccessBadgeFilter(Guid.NewGuid(), "badge", badgeGroups, [], []))));
 
         public object CeremonyController(Guid actor, params Guid[] badgeGroups)
             => New(Ns + "AdminKeyCeremonyController", actor,

@@ -104,7 +104,10 @@ public sealed class ControlledUserBypassEndpointTests
             w.Db, new ModularCA.Auth.Services.UserManagementService(w.Db, Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Services.UserManagementService>.Instance,
                 new ModularCA.Shared.Models.Config.SystemConfig(), null!, new ControlledUserBypassGuardTests.AllowAllPasswords()),
             new CurrentUserStub(actor), new RecordingAuditService(), cache, new RecordingAlertService(),
-            null, updateValidator, w.Controlled);
+            null, updateValidator, w.Controlled, GroupAuth(w));
+
+    private static ModularCA.Auth.Authorization.CaGroupAuthorizationService GroupAuth(ControlledUserWorld w)
+        => new(w.Db, Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Auth.Authorization.CaGroupAuthorizationService>.Instance);
 
     [Fact]
     public async Task A_system_admin_cannot_reset_a_supers_password_or_mfa()
@@ -253,7 +256,7 @@ public sealed class ControlledUserBypassEndpointTests
         var validator = Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.Validation.Users.CreateUserRequestValidator"));
         return New(Ns + "Management.AdminUserManagerController", actor,
             w.Db, users, new CurrentUserStub(actor), new RecordingAuditService(), cache, new RecordingAlertService(),
-            validator, null, w.Controlled);
+            validator, null, w.Controlled, GroupAuth(w));
     }
 
     private static string SeedCreateStepUp(IDistributedCache cache, Guid actor)

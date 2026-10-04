@@ -11,6 +11,11 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { labelClass as labelCls } from '@shared/components/forms';
 import type { ValidityCeilingBehavior } from '@shared/generated';
 import { SPACE_INTERSTITIAL, recommendationBeforeCreate, recommendationFromResponse } from './spaceCreation';
+import { INSTANCE_REALMS_ANCHOR } from './msaeRefusals';
+import { useScrollToHash } from '../hooks/useScrollToHash';
+
+/** The recommendation the server returned for the last space created in this page load. */
+let lastServerRecommendation: string | null = null;
 
 /* ── shared helpers (re-used by SpaceDetail) ─────────────────────────────── */
 export function formatDate(d: string | null) {
@@ -149,6 +154,7 @@ const SpacesAndQuotas: React.FC = () => {
     const [creating, setCreating] = useState(false);
     // The licence recommendation the server returned for the space just created.
     const [createdRecommendation, setCreatedRecommendation] = useState<string | null>(null);
+    const [serverRecommendation, setServerRecommendation] = useState<string | null>(lastServerRecommendation);
 
     const load = useCallback(() => {
         setLoading(true);
@@ -164,8 +170,9 @@ const SpacesAndQuotas: React.FC = () => {
     }, []);
 
     useEffect(() => { load(); }, [load]);
+    useScrollToHash(!!instance);
 
-    const recommendation = recommendationBeforeCreate(spaces.length);
+    const recommendation = recommendationBeforeCreate(spaces.length, serverRecommendation);
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -177,7 +184,10 @@ const SpacesAndQuotas: React.FC = () => {
                 maxValidityDays: createForm.maxValidityDays,
                 validityCeilingBehavior: createForm.validityCeilingBehavior,
             });
-            setCreatedRecommendation(recommendationFromResponse(created));
+            const said = recommendationFromResponse(created);
+            lastServerRecommendation = said;
+            setServerRecommendation(said);
+            setCreatedRecommendation(said);
             showToast('success', `Space '${createForm.name}' created`);
             setShowCreate(false);
             setCreateForm({ name: '', description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' });
@@ -316,7 +326,7 @@ const SpacesAndQuotas: React.FC = () => {
                     {instance.certificateAuthorities.length === 0 ? (
                         <div className="px-4 py-2 text-xs text-gray-500">No instance CAs.</div>
                     ) : instance.certificateAuthorities.map((ca) => <CaQuotaRow key={ca.id} ca={ca} readOnly />)}
-                    <div className="px-4 py-3 border-t border-gray-300 dark:border-gray-700">
+                    <div id={INSTANCE_REALMS_ANCHOR} className="scroll-mt-4 px-4 py-3 border-t border-gray-300 dark:border-gray-700">
                         <KerberosRealmsPanel spaceId={null} spaceName="Instance" caLabels={instance.certificateAuthorities.filter((c) => !c.isSshCa && c.label).map((c) => c.label!)} />
                     </div>
                 </div>

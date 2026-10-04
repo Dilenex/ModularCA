@@ -1,4 +1,4 @@
-import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, CERT_VIEW, CERT_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from './gates';
+import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, CERT_VIEW, CERT_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from './gates';
 import { PORTAL } from './portal';
 
 /**
@@ -48,7 +48,7 @@ export const adminNavSections: NavSection[] = [
     {
         title: 'CA Management',
         items: [
-            { name: 'Authorities', path: '/authorities/manage', icon: '⚿', gate: CA_MANAGE, keywords: ['ca', 'certificate authority', 'root', 'intermediate'] },
+            { name: 'Authorities', path: '/authorities/manage', icon: '⚿', gate: CA_MANAGE_SPACE, keywords: ['ca', 'certificate authority', 'root', 'intermediate'] },
             { name: 'Profiles', path: '/profiles', icon: '☰', gate: CA_MANAGE, keywords: ['signing profile', 'cert profile', 'request profile'] },
             // Templates are consumed by Windows autoenrollment (MSAE): the policy service offers
             // them to clients and the enrollment service issues from the one a CSR names.
@@ -77,11 +77,11 @@ export const adminNavSections: NavSection[] = [
             // (promote/demote/delete of privileged users), so it lives with governance/oversight
             // here rather than CA Management; its quorum config is in Settings, also Administration.
             // Placed at the top of this group as it's used more often than the rest.
-            { name: 'Ceremonies', path: '/ceremonies', icon: '☸', gate: CA_MANAGE, keywords: ['quorum', 'approvals', 'key ceremony'] },
+            { name: 'Ceremonies', path: '/ceremonies', icon: '☸', gate: CA_MANAGE_SPACE, keywords: ['quorum', 'approvals', 'key ceremony'] },
             { name: 'Spaces & Quotas', path: '/spaces', icon: '☖', gate: SYSTEM_ADMIN, keywords: ['space', 'quota', 'delegation'] },
             { name: 'Settings', path: '/settings', icon: '⚙', gate: SYSTEM_ADMIN, keywords: ['configuration', 'security policy', 'password policy', 'feature flags'] },
             { name: 'Audit Logs', path: '/audit', icon: '≣', gate: CA_AUDIT, keywords: ['audit trail', 'events', 'history'] },
-            { name: 'Notifications', path: '/notifications', icon: '♪', gate: CA_MANAGE, keywords: ['email', 'webhooks', 'alerts'] },
+            { name: 'Notifications', path: '/notifications', icon: '♪', gate: SYSTEM_OPERATOR, keywords: ['email', 'webhooks', 'alerts'] },
             { name: 'Whitelists', path: '/whitelists', icon: '⛨', gate: SYSTEM_ADMIN, keywords: ['allow list', 'ip', 'network'] },
             { name: 'Backup & Restore', path: '/backup', icon: '⬇', gate: SYSTEM_ADMIN, keywords: ['disaster recovery', 'export'] },
             { name: 'Schedules', path: '/schedules', icon: '⧖', gate: SYSTEM_ADMIN, keywords: ['jobs', 'scheduler', 'cron'] },

@@ -452,11 +452,57 @@ public class OcspResponderService : IOcspService
     }
 
     /// <summary>
+    /// The CA whose certificate is <paramref name="signerCert"/>, the signer whose key hash the
+    /// request named: the CA row whose current certificate it is, else the CA a superseded
+    /// certificate belonged to (<see cref="IssuerChainResolver.OwnerOf(ModularCADbContext, CertificateEntity)"/>).
+    /// Found by serial number and confirmed byte for byte, never by subject DN, which two CAs can
+    /// share (a rename changes the name, not the CN). Null when no CA, or more than one, owns it.
+    /// </summary>
+    private async Task<CertificateAuthorityEntity?> FindCaForSignerAsync(X509Certificate signerCert, CancellationToken ct)
+    {
+        var serial = CertificateUtil.FormatSerialNumber(signerCert.SerialNumber);
+        var der = signerCert.GetEncoded();
+        var rows = await _db.Certificates.AsNoTracking()
+            .Where(c => c.IsCA && c.SerialNumber == serial)
+            .ToListAsync(ct);
+        var matches = rows.Where(c => SameCertificate(c, der)).ToList();
+        if (matches.Count != 1)
+            return null;
+        var certRow = matches[0];
+
+        var current = await _db.CertificateAuthorities.AsNoTracking()
+            .Include(ca => ca.Certificate)
+            .Where(ca => ca.CertificateId == certRow.CertificateId)
+            .Take(2)
+            .ToListAsync(ct);
+        if (current.Count > 0)
+            return current.Count == 1 ? current[0] : null;
+
+        var owner = IssuerChainResolver.OwnerOf(_db, certRow);
+        return owner == null ? null : await _db.CertificateAuthorities.AsNoTracking()
+            .Include(ca => ca.Certificate)
+            .FirstOrDefaultAsync(ca => ca.Id == owner.CaId, ct);
+    }
+
+    /// <summary>Whether <paramref name="row"/> holds exactly the certificate <paramref name="der"/>.</summary>
+    private static bool SameCertificate(CertificateEntity row, byte[] der)
+    {
+        if (row.RawCertificate is { Length: > 0 } raw)
+            return raw.AsSpan().SequenceEqual(der);
+        if (string.IsNullOrWhiteSpace(row.Pem))
+            return false;
+        try { return CertificateUtil.ParseFromPem(row.Pem).GetEncoded().AsSpan().SequenceEqual(der); }
+        catch { return false; }
+    }
+
+    /// <summary>
     /// Resolves the signing CA for an
     /// OCSP request. Enforces validity, revocation, and enabled-state checks
     /// on the issuing CA + its certificate; honours the per-route
     /// <paramref name="caLabel"/>; falls back to CA-direct signing only when
-    /// <see cref="SecurityPolicyEntity.AllowCaDirectSigning"/> is on.
+    /// <see cref="SecurityPolicyEntity.AllowCaDirectSigning"/> is on. The CA is the one owning the
+    /// signer certificate the request's issuer key and name hashes matched
+    /// (<see cref="FindCaForSignerAsync"/>), not one found by subject DN.
     /// </summary>
     private async Task<ResolveResult> ResolveSigningCaAsync(CertificateID certId, string? caLabel, CancellationToken ct)
     {
@@ -502,10 +548,7 @@ public class OcspResponderService : IOcspService
 
             // Load the CA entity and verify it's enabled + its
             // own cert is not revoked.
-            var caEntity = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .Include(ca => ca.Certificate)
-                .FirstOrDefaultAsync(ca => ca.Certificate != null && ca.Certificate.SubjectDN == caCert.SubjectDN.ToString(), ct);
+            var caEntity = await FindCaForSignerAsync(caCert, ct);
 
             if (caEntity == null)
             {

@@ -29,7 +29,8 @@ public interface IControlledUserCeremonyService
     /// <summary>
     /// The tiers that <paramref name="capabilities"/> on role <paramref name="roleId"/> confer through
     /// the role's current assignments and pending/approved <c>AssignRole</c> ceremonies (empty when the
-    /// role is unassigned or none of them is controlled).
+    /// role is unassigned or none of them is controlled). An open ceremony naming the role whose
+    /// parameters cannot be read counts as an instance-wide assignment.
     /// </summary>
     Task<IReadOnlyList<ControlledTier>> TiersConferredByRoleAsync(Guid roleId, IEnumerable<string> capabilities);
 
@@ -165,7 +166,8 @@ public interface IControlledUserCeremonyService
     /// <summary>
     /// True when a promotion (grant, role assignment or group membership) of
     /// <paramref name="userId"/> is pending or approved but not yet executed, including a role
-    /// assigned to a group they belong to. Their credentials must not be reset meanwhile.
+    /// assigned to a group they belong to. Their credentials must not be reset meanwhile. An open
+    /// ceremony naming the user whose parameters cannot be read counts as a promotion.
     /// </summary>
     Task<bool> HasOpenPromotionAsync(Guid userId);
 

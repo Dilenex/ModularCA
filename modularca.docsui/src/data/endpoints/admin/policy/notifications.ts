@@ -3,6 +3,17 @@ import type { ApiEndpoint } from '../../types';
 export const adminNotifications: ApiEndpoint[] = [
     {
         method: 'GET',
+        path: '/api/v1/admin/notifications/delivery',
+        summary: 'The outbound email settings the notification page shows (enabled, SMTP host and port, TLS, sender, admin recipients). No credentials are returned.',
+        auth: 'Authorize (SystemOperator)',
+        category: 'Admin Notifications',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'An object with an email section.',
+    },
+    {
+        method: 'GET',
         path: '/api/v1/admin/notifications',
         summary: 'List all notification preference configurations, ordered by event type.',
         auth: 'Authorize (SystemOperator)',

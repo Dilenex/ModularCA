@@ -149,16 +149,70 @@ public class CaNamingTests
         }
     }
 
+    /// <summary>
+    /// A label may change only while nothing references it: not an ACME account bound to the CA
+    /// or registered under the label, an ACME order placed under it or by such an account, or a
+    /// protocol audit record naming it (any case). Each is a 409 <see cref="ErrorCodes.CaLabelLocked"/>
+    /// naming the reference, and the label stays. Before, only issued certificates locked it, so
+    /// a label ACME clients and the audit trail still named could be changed and then taken by
+    /// another CA.
+    /// </summary>
+    [Theory]
+    [InlineData("none", 200, null)]
+    [InlineData("acme-account", 409, "ACME accounts")]
+    [InlineData("acme-account-by-label", 409, "ACME accounts")]
+    [InlineData("acme-order", 409, "ACME orders")]
+    [InlineData("audit-est", 409, "protocol audit records (EST)")]
+    [InlineData("audit-acme", 409, "protocol audit records (ACME)")]
+    [InlineData("audit-other-ca", 200, null)]
+    public async Task A_referenced_label_is_fixed(string reference, int expected, string? named)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        using var audit = NewAuditDb();
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Target CA", Label = "target" };
+        db.CertificateAuthorities.Add(ca);
+        var account = new AcmeAccountEntity { JwkJson = "{}", JwkThumbprint = "t" };
+        switch (reference)
+        {
+            case "acme-account": account.CertificateAuthorityId = ca.Id; db.AcmeAccounts.Add(account); break;
+            case "acme-account-by-label": account.CaLabel = "target"; db.AcmeAccounts.Add(account); break;
+            case "acme-order": db.AcmeOrders.Add(new AcmeOrderEntity { AccountId = Guid.NewGuid(), CaLabel = "Target" }); break;
+            case "audit-est": audit.AuditEst.Add(new AuditEstEntity { Operation = "simpleenroll", CaLabel = "TARGET" }); break;
+            case "audit-acme": audit.AuditAcme.Add(new AuditAcmeEntity { Operation = "OrderCreated", CaLabel = "target" }); break;
+            case "audit-other-ca": audit.AuditScep.Add(new AuditScepEntity { Operation = "PKIOperation", CaLabel = "targets" }); break;
+        }
+        db.SaveChanges();
+        audit.SaveChanges();
+
+        var result = await UpdateCaAsync(db, ca.Id, "relabelled", null, audit);
+
+        Assert.Equal(expected, Status(result));
+        Assert.Equal(expected == 200 ? "relabelled" : "target", db.CertificateAuthorities.Single(c => c.Id == ca.Id).Label);
+        if (named != null)
+        {
+            var body = System.Text.Json.JsonSerializer.Serialize(((ObjectResult)result).Value);
+            Assert.Contains(named, body);
+            Assert.Contains(ErrorCodes.CaLabelLocked, body);
+        }
+    }
+
+    private static AuditDbContext NewAuditDb()
+        => new(new DbContextOptionsBuilder<AuditDbContext>().UseInMemoryDatabase($"audit-{Guid.NewGuid():N}").Options);
+
     private static int Status(IActionResult result) => result switch { ObjectResult o => o.StatusCode ?? 200, StatusCodeResult s => s.StatusCode, _ => 0 };
 
-    /// <summary>Invokes the real <c>AdminCaController.UpdateCa</c> on <paramref name="caId"/> as a fresh operator.</summary>
-    private static async Task<IActionResult> UpdateCaAsync(ModularCADbContext db, Guid caId, string? label, string? name)
+    /// <summary>
+    /// Invokes the real <c>AdminCaController.UpdateCa</c> on <paramref name="caId"/> as a fresh
+    /// operator, with <paramref name="auditDb"/> as the audit database (an empty one when null).
+    /// </summary>
+    private static async Task<IActionResult> UpdateCaAsync(ModularCADbContext db, Guid caId, string? label, string? name, AuditDbContext? auditDb = null)
     {
         var user = new UserEntity { Id = Guid.NewGuid(), Username = $"op-{Guid.NewGuid():N}", Email = "op@x" };
         db.Users.Add(user);
         db.SaveChanges();
         var services = new SpaceIsolationMatrixTests.Resolver(db);
         services.Add(typeof(ModularCA.Auth.Interfaces.ICurrentUserService), new CurrentUser(db, user.Id));
+        services.Add(typeof(AuditDbContext), auditDb ?? NewAuditDb());
         var type = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminCaController");
         var controller = ActivatorUtilities.CreateInstance(services, type);
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", user.Id.ToString())], "test")), RequestServices = services };

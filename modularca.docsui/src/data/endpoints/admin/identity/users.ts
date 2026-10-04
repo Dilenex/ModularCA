@@ -72,7 +72,7 @@ export const adminUsers: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Success message with the created user\'s ID.',
-        notes: 'Username and email are shape-validated and NFC-normalized before creation.',
+        notes: 'Username and email are shape-validated and NFC-normalized before creation. Each group in groupIds needs the right on that group\'s own scope, or the request is refused (403) before the account is created: group.manage on a CA group\'s CA or across a space-wide group\'s space, a system administrator for an instance group, and system-super for a system group.',
     },
     {
         method: 'PUT',
@@ -149,7 +149,7 @@ export const adminUsers: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Confirmation of group membership.',
-        notes: 'Invalidates the user\'s cached security stamp so the new group permissions take effect immediately. A membership conferring a controlled tier, added by a non-super, opens a controlled-user ceremony (202) whose description leads with any password or MFA reset of the user in the last 30 days; 409 when the caller made such a reset.',
+        notes: 'Needs the right on the group\'s own scope (403 otherwise): group.manage on a CA group\'s CA or across a space-wide group\'s space, a system administrator for an instance group, and system-super for a system group. Invalidates the user\'s cached security stamp so the new group permissions take effect immediately. A membership conferring a controlled tier, added by a non-super, opens a controlled-user ceremony (202) whose description leads with any password or MFA reset of the user in the last 30 days; 409 when the caller made such a reset.',
     },
     {
         method: 'DELETE',

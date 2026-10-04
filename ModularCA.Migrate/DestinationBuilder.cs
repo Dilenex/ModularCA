@@ -336,6 +336,17 @@ public sealed class DestinationBuilder
             .Options);
 
     /// <summary>
+    /// Opens an audit context mapped to the audit baseline, for the checks made at the baseline
+    /// stage (<see cref="BaselineAuditDbContext"/>), before the later audit migrations add their columns.
+    /// </summary>
+    /// <param name="instance">The account and database to connect as.</param>
+    /// <returns>A context the caller owns and must dispose.</returns>
+    public static AuditDbContext BaselineAuditContext(Shared.Models.Config.DbInstance instance) =>
+        new BaselineAuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(PostgresConnection.Build(instance))
+            .Options);
+
+    /// <summary>
     /// Drops whatever was created. Safe precisely because preflight refused unless none of it
     /// existed: everything named here was made by this run.
     /// </summary>
@@ -402,5 +413,20 @@ public sealed class DestinationBuilder
         {
             say($"  (!) cleanup step failed, continuing: {ex.Message}");
         }
+    }
+}
+
+/// <summary>
+/// The audit context as the audit baseline maps it: the current model without the columns later
+/// audit migrations add (<see cref="Shared.Entities.AuditLogEntity.SpaceId"/>), which the copy has
+/// not reached when it is verified. Its own type, so EF caches its model apart from the current one.
+/// </summary>
+public sealed class BaselineAuditDbContext(DbContextOptions<AuditDbContext> options) : AuditDbContext(options)
+{
+    /// <summary>Builds the current audit model, then leaves out what the baseline lacks.</summary>
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Shared.Entities.AuditLogEntity>().Ignore(a => a.SpaceId);
     }
 }

@@ -1525,33 +1525,7 @@ builder.Services.AddControllers(options =>
 }).AddJsonOptions(opts => ModularCA.API.Json.ApiJsonOptions.Apply(opts.JsonSerializerOptions));
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
-    {
-        Title = "ModularCA API",
-        Version = "0.1.0-rc1",
-        Description = "Enterprise Certificate Authority — REST API for certificate lifecycle management, PKI protocols, and administration.",
-        Contact = new Microsoft.OpenApi.OpenApiContact { Name = "ModularCA" }
-    });
-
-    // JWT Bearer auth in Swagger UI
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer {token}'",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
-        Scheme = "Bearer"
-    });
-    // Security requirement applied globally — Swagger UI shows the lock icon on all endpoints
-
-    // Include XML comments from the API project
-    var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
-    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-    if (File.Exists(xmlPath))
-        c.IncludeXmlComments(xmlPath);
-});
+builder.Services.AddSwaggerGen(ModularCA.API.Startup.ApiSwagger.Configure);
 
 builder.Services.AddScoped<ICertProfileService, CertProfileService>();
 builder.Services.AddScoped<IProfileResolutionService, ProfileResolutionService>();
@@ -2745,6 +2719,26 @@ if (!isSetupMode && controlActive)
     }
 }
 
+// Several CAs can be marked default after the 0.4.0 fold into one instance. Name them at each start.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var defaultScope = app.Services.CreateScope();
+        var defaultDb = defaultScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var defaultWarning = await ModularCA.Core.Services.DefaultCaCheck.WarningAsync(defaultDb);
+        if (defaultWarning is not null)
+        {
+            Log.Warning("{DefaultCaWarning}", defaultWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {defaultWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Default CA check skipped: {ex.Message}");
+    }
+}
+
 // 0.4.0 S5: ca.manage at instance scope became a controlled tier. Name the accounts that hold it
 // outside the system-operator group, so the change is visible after an upgrade. Likewise the
 // Kerberos realms whose enrollment identity is not a service identity of the realm's scope.
@@ -2770,6 +2764,26 @@ if (!isSetupMode && controlActive)
     catch (Exception ex)
     {
         Console.WriteLine($"[STARTUP] Instance operator holder check skipped: {ex.Message}");
+    }
+}
+
+// An integration key fenced to a space that no longer exists reaches no CA and fails every request
+// without saying why. Name it where the integration runs.
+if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Enrollment))
+{
+    try
+    {
+        using var scopeCheckScope = app.Services.CreateScope();
+        var scopeCheckDb = scopeCheckScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        foreach (var scopeWarning in await ModularCA.Core.Services.IntegrationScopeCheck.WarningsAsync(scopeCheckDb, config))
+        {
+            Log.Warning("{IntegrationScopeWarning}", scopeWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {scopeWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Integration key scope check skipped: {ex.Message}");
     }
 }
 

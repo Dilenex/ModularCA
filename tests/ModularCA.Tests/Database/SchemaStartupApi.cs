@@ -73,17 +73,20 @@ internal static class SchemaStartupApi
         return await (Task<int>)method.Invoke(null, [array, ct])!;
     }
 
-    /// <summary>Calls <c>SchemaStartup.UpgradeCheckAsync</c>, the <c>--upgrade-check</c> verb, writing its report to <paramref name="output"/>.</summary>
+    /// <summary>
+    /// Calls <c>SchemaStartup.UpgradeCheckAsync</c>, the <c>--upgrade-check</c> verb, writing its report to
+    /// <paramref name="output"/>, with the integration keys' configured <paramref name="scopes"/> when given.
+    /// </summary>
     public static async Task<int> UpgradeCheckAsync(
         IReadOnlyList<(string Name, DatabaseKind Kind, DbInstance Instance)> targets, SchemaConfig config, TextWriter output,
-        CancellationToken ct = default)
+        IReadOnlyList<(string Key, string Value)>? scopes = null, CancellationToken ct = default)
     {
         var targetType = ApiAssembly.TypeNamed(Namespace + "SchemaTarget");
         var array = Array.CreateInstance(targetType, targets.Count);
         for (var i = 0; i < targets.Count; i++)
             array.SetValue(Activator.CreateInstance(targetType, targets[i].Name, targets[i].Kind, targets[i].Instance), i);
         var method = Startup.GetMethod("UpgradeCheckAsync", BindingFlags.Public | BindingFlags.Static)!;
-        return await (Task<int>)method.Invoke(null, [array, config, output, ct])!;
+        return await (Task<int>)method.Invoke(null, [array, config, output, scopes, ct])!;
     }
 
     /// <summary>Calls <c>SchemaStartup.UpgradeCheckExitCode</c> with <c>UpgradeReadiness</c> values named by <paramref name="readiness"/>.</summary>

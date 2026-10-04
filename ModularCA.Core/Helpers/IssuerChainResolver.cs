@@ -240,12 +240,36 @@ public static class IssuerChainResolver
     /// </summary>
     public static async Task<bool> HasIssuedAsync(ModularCADbContext db, Guid caId)
     {
+        var owned = await CaCertificateIdsAsync(db, caId);
+        if (owned.Count == 0)
+            return false;
+
+        var subject = await db.Certificates.AsNoTracking()
+            .Where(c => c.CertificateId == owned[0])
+            .Select(c => c.SubjectDN)
+            .FirstOrDefaultAsync();
+        if (string.IsNullOrEmpty(subject))
+            subject = null;
+        return await db.Certificates.AsNoTracking()
+            .AnyAsync(c => !owned.Contains(c.CertificateId)
+                && ((c.IssuerCertificateId != null && owned.Contains(c.IssuerCertificateId.Value))
+                    || (c.IssuerCertificateId == null && subject != null && c.Issuer == subject)));
+    }
+
+    /// <summary>
+    /// The CA certificates CA <paramref name="caId"/> signs under: its current certificate first,
+    /// then every superseded CA certificate with the same subject that
+    /// <see cref="OwnerOf(ModularCADbContext, Guid)"/> assigns to it. Empty for an unknown CA or one
+    /// without an X.509 certificate.
+    /// </summary>
+    public static async Task<List<Guid>> CaCertificateIdsAsync(ModularCADbContext db, Guid caId, CancellationToken ct = default)
+    {
         var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == caId)
             .Select(c => new { c.CertificateId, Subject = c.Certificate == null ? null : c.Certificate.SubjectDN })
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(ct);
         if (ca?.CertificateId is not Guid currentId)
-            return false;
+            return [];
 
         var owned = new List<Guid> { currentId };
         if (!string.IsNullOrEmpty(ca.Subject))
@@ -253,14 +277,36 @@ public static class IssuerChainResolver
             var siblings = await db.Certificates.AsNoTracking()
                 .Where(c => c.IsCA && c.SubjectDN == ca.Subject && c.CertificateId != currentId)
                 .Select(c => c.CertificateId)
-                .ToListAsync();
+                .ToListAsync(ct);
             owned.AddRange(siblings.Where(id => OwnerOf(db, id)?.CaId == caId));
         }
-        var subject = string.IsNullOrEmpty(ca.Subject) ? null : ca.Subject;
-        return await db.Certificates.AsNoTracking()
-            .AnyAsync(c => !owned.Contains(c.CertificateId)
-                && ((c.IssuerCertificateId != null && owned.Contains(c.IssuerCertificateId.Value))
-                    || (c.IssuerCertificateId == null && subject != null && c.Issuer == subject)));
+        return owned;
+    }
+
+    /// <summary>
+    /// The issuer DN by which a legacy certificate row (one with no <c>IssuerCertificateId</c>)
+    /// may be taken as issued under CA certificate <paramref name="caCertificateId"/>: its subject
+    /// DN, when every other CA certificate carrying that subject belongs to the same CA. Null when
+    /// one belongs to another CA or to none, since the DN alone cannot tell them apart, and for an
+    /// unknown certificate or an empty subject.
+    /// </summary>
+    public static async Task<string?> UnambiguousIssuerDnAsync(ModularCADbContext db, Guid caCertificateId, CancellationToken ct = default)
+    {
+        var subject = await db.Certificates.AsNoTracking()
+            .Where(c => c.CertificateId == caCertificateId)
+            .Select(c => c.SubjectDN)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrEmpty(subject))
+            return null;
+
+        var others = await db.Certificates.AsNoTracking()
+            .Where(c => c.IsCA && c.SubjectDN == subject && c.CertificateId != caCertificateId)
+            .Select(c => c.CertificateId)
+            .ToListAsync(ct);
+        if (others.Count == 0)
+            return subject;
+        var owner = OwnerOf(db, caCertificateId);
+        return owner != null && others.All(id => OwnerOf(db, id)?.CaId == owner.CaId) ? subject : null;
     }
 
     /// <summary>

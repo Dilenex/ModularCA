@@ -28,7 +28,10 @@ public static class CaBindingAccess
     /// Checks binding a row of <paramref name="ownerSpaceId"/> (null for the instance) to
     /// <paramref name="caId"/>: the CA must exist inside <paramref name="fence"/>, the user must
     /// hold <paramref name="capability"/> on it, and it must belong to the row's own scope. With
-    /// no CA, the row is unbound, which needs <paramref name="capability"/> across its scope.
+    /// no CA, the row is unbound, which needs <paramref name="capability"/> across the scope it
+    /// keeps once unbound: a row with a space of its own stays in it, but a row whose only scope
+    /// is its CA becomes instance-wide, so its caller must pass null for
+    /// <paramref name="ownerSpaceId"/> and the check needs system scope.
     /// </summary>
     public static async Task<Verdict> CheckAsync(ICaGroupAuthorizationService auth, ModularCADbContext db, SpaceFence fence,
         Guid userId, Guid? caId, Guid? ownerSpaceId, string capability)

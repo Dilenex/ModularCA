@@ -67,12 +67,11 @@ public class AcmeOrderService(
     private readonly ICaaCheckService _caaCheckService = caaCheckService;
 
     /// <summary>
-    /// Creates a new ACME order. The caller can pass the
-    /// <paramref name="caLabel"/> resolved from the route so finalize can select
-    /// the same CA the client originally targeted. The label is persisted on the
-    /// order row.
+    /// Creates a new ACME order at <paramref name="ca"/>, the CA the account is bound to. The
+    /// CA's label is persisted on the order row, so finalize issues from the same CA, and the
+    /// order's challenges follow that CA's challenge-type policy.
     /// </summary>
-    public async Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, string? caLabel = null)
+    public async Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, CertificateAuthorityEntity ca)
     {
         // Deduplicate identifiers before creating authorizations. ACME clients may repeat
         // a name in the order (e.g. the same domain passed twice, or a CN that is also a
@@ -96,7 +95,7 @@ public class AcmeOrderService(
             NotAfter = request.NotAfter,
             ExpiresAt = DateTime.UtcNow.AddHours(24),
             CreatedAt = DateTime.UtcNow,
-            CaLabel = string.IsNullOrWhiteSpace(caLabel) ? null : caLabel
+            CaLabel = string.IsNullOrWhiteSpace(ca.Label) ? null : ca.Label
         };
 
         _db.AcmeOrders.Add(order);
@@ -104,7 +103,7 @@ public class AcmeOrderService(
 
         // The per-CA AcmeAllowedChallengeTypes setting was stored and never read; every
         // authorization offered http-01 and dns-01 regardless. Resolved once per order.
-        var allowedChallengeTypes = await GetAllowedChallengeTypesAsync(order.CaLabel);
+        var allowedChallengeTypes = await GetAllowedChallengeTypesAsync(ca.Id);
 
         // Previously this loop called SaveChangesAsync twice per identifier,
         // producing 2N round-trips on ACME order creation with N SANs. Now we stage every
@@ -151,11 +150,12 @@ public class AcmeOrderService(
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The CA label is taken from the order's stored value, which is authoritative;
-    /// <paramref name="caLabel"/> from the route may only confirm it. The label is handed to the
-    /// pipeline, which resolves the CA, refuses a CA that is gone or has ACME switched off, and
-    /// reads that CA's ACME profiles — the work <see cref="ICaResolverService"/> used to be asked
-    /// for here.
+    /// <paramref name="addressedCa"/> is the CA the request addresses, which is the CA the
+    /// account is bound to. An order placed at any other CA is refused, on every route,
+    /// label-less ones included. The CA's label is handed to the pipeline, which resolves the CA,
+    /// refuses a CA that is gone or has ACME switched off, and reads that CA's ACME profiles;
+    /// a label that would resolve to a different CA (a CA without a label that is not the
+    /// default) is refused rather than issued from elsewhere.
     /// </para>
     /// <para>
     /// Every refusal below reaches the client as one RFC 8555 problem document, because that is
@@ -165,8 +165,9 @@ public class AcmeOrderService(
     /// client reads instead.
     /// </para>
     /// </remarks>
-    public async Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, string? caLabel = null)
+    public async Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, CertificateAuthorityEntity addressedCa)
     {
+        ArgumentNullException.ThrowIfNull(addressedCa);
         var order = await _db.AcmeOrders.FindAsync(orderId)
             ?? throw new InvalidOperationException("Order not found.");
 
@@ -183,23 +184,21 @@ public class AcmeOrderService(
             var csrPem = CertificateUtil.ConvertDerToPem(csrDer, "CERTIFICATE REQUEST");
             var parsedCsr = CertificateUtil.ParseCsr(csrPem);
 
-            // The ORDER's CA is authoritative. The route label may only confirm it.
-            //
-            // This used to prefer the route-supplied label over the order's, so a client could
-            // create and validate an order under one CA and then finalize it against another:
-            // POST /acme/lab/new-order (where AcmeAllowPrivateAddressValidation is on), then
-            // POST /acme/prod/order/{id}/finalize, and the production CA signs an authorization
-            // that was only ever permitted under the lab CA's relaxed policy. Ownership was
-            // checked by account id alone, which does not constrain which CA acts.
-            if (!string.IsNullOrWhiteSpace(caLabel)
-                && !string.IsNullOrWhiteSpace(order.CaLabel)
-                && !string.Equals(caLabel, order.CaLabel, StringComparison.OrdinalIgnoreCase))
+            // The order must have been placed at the CA that finalizes it, so an authorization
+            // validated under one CA's policy (say a lab CA allowing private addresses) is never
+            // signed by another. This used to be skipped on the label-less routes.
+            if (!string.Equals(order.CaLabel, addressedCa.Label, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Order belongs to CA '{order.CaLabel}' and cannot be finalized against CA '{caLabel}'.");
+                    $"Order belongs to CA '{order.CaLabel ?? "(no label)"}' and cannot be finalized at CA '{addressedCa.Label ?? addressedCa.Name}'.");
+            }
+            if ((await CaResolverService.FindAddressedCaAsync(_db, addressedCa.Label))?.Id != addressedCa.Id)
+            {
+                throw new InvalidOperationException(
+                    $"CA '{addressedCa.Label ?? addressedCa.Name}' cannot be addressed by its label, so its orders cannot be finalized.");
             }
 
-            var effectiveCaLabel = !string.IsNullOrWhiteSpace(order.CaLabel) ? order.CaLabel : caLabel;
+            var effectiveCaLabel = addressedCa.Label;
 
             // Validate that the CSR identifiers match the order identifiers
             var orderIdentifiers = JsonSerializer.Deserialize<List<AcmeIdentifier>>(order.IdentifiersJson) ?? [];
@@ -240,7 +239,7 @@ public class AcmeOrderService(
                     KeySize = parsedCsr.KeySize,
                     SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
                 },
-                Audit = record => WriteAcmeAuditAsync(record, order, effectiveCaLabel),
+                Audit = record => WriteAcmeAuditAsync(record, order, addressedCa),
             };
 
             var outcome = await _pipeline.SubmitAsync(submission);
@@ -312,8 +311,8 @@ public class AcmeOrderService(
     /// </remarks>
     /// <param name="record">The shared fields; see <see cref="EnrollmentAuditRecord"/>.</param>
     /// <param name="order">The order being finalized, which names the account and the identifiers.</param>
-    /// <param name="caLabel">The CA label as the order carries it, which may be null for the default CA.</param>
-    private async Task WriteAcmeAuditAsync(EnrollmentAuditRecord record, AcmeOrderEntity order, string? caLabel)
+    /// <param name="ca">The CA the order is finalized at, the account's bound CA, whose label, id and space the row carries.</param>
+    private async Task WriteAcmeAuditAsync(EnrollmentAuditRecord record, AcmeOrderEntity order, CertificateAuthorityEntity ca)
     {
         if (record.Event == EnrollmentAuditEvent.Issued)
         {
@@ -326,7 +325,7 @@ public class AcmeOrderService(
             await _protocolAudit.LogAcmeAsync("CertificateIssued", order.AccountId, order.Id,
                 record.Subject, record.SerialNumber,
                 order.IdentifiersJson, null, null,
-                caLabel: caLabel,
+                caLabel: ca.Label, certificateAuthorityId: ca.Id, spaceId: ca.SpaceId,
                 signingProfileId: profiles?.SigningProfileId,
                 certProfileId: profiles?.CertProfileId);
             return;
@@ -341,7 +340,8 @@ public class AcmeOrderService(
 
         await _protocolAudit.LogAcmeAsync("FinalizeRefused", order.AccountId, order.Id,
             record.Subject, null, order.IdentifiersJson, null, null,
-            success: false, errorMessage: reason, caLabel: caLabel);
+            success: false, errorMessage: reason,
+            caLabel: ca.Label, certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
     }
 
     /// <summary>
@@ -578,6 +578,12 @@ public class AcmeOrderService(
         }
     }
 
+    /// <summary>
+    /// The order object (RFC 8555 §7.1.3). Its authorization, finalize and certificate URLs are
+    /// under the path of the CA the order was placed at (<see cref="AcmeCaPolicy.PathPrefix"/>),
+    /// which is the account's bound CA, so they keep working whichever route the client used and
+    /// whatever the default CA becomes.
+    /// </summary>
     private async Task<AcmeOrderDto> BuildOrderDto(AcmeOrderEntity order, string baseUrl)
     {
         var identifiers = JsonSerializer.Deserialize<List<AcmeIdentifier>>(order.IdentifiersJson) ?? [];
@@ -587,6 +593,7 @@ public class AcmeOrderService(
             .Select(a => a.Id)
             .ToListAsync();
 
+        var acmeBase = baseUrl + AcmeCaPolicy.PathPrefix(order.CaLabel);
         var dto = new AcmeOrderDto
         {
             Id = order.Id,
@@ -595,12 +602,12 @@ public class AcmeOrderService(
             NotBefore = order.NotBefore,
             NotAfter = order.NotAfter,
             ExpiresAt = order.ExpiresAt,
-            Authorizations = authzIds.Select(id => $"{baseUrl}/api/v1/acme/authz/{id}").ToList(),
-            Finalize = $"{baseUrl}/api/v1/acme/order/{order.Id}/finalize"
+            Authorizations = authzIds.Select(id => $"{acmeBase}/authz/{id}").ToList(),
+            Finalize = $"{acmeBase}/order/{order.Id}/finalize"
         };
 
         if (order.Status == nameof(AcmeOrderStatus.Valid) && order.CertificateId != null)
-            dto.Certificate = $"{baseUrl}/api/v1/acme/cert/{order.Id}";
+            dto.Certificate = $"{acmeBase}/cert/{order.Id}";
 
         return dto;
     }
@@ -617,18 +624,11 @@ public class AcmeOrderService(
     }
 
     /// <summary>
-    /// Reads the challenge types the addressed CA permits, or null for no restriction.
+    /// Reads the challenge types CA <paramref name="caId"/>, the order's CA, permits, or null for
+    /// no restriction.
     /// </summary>
-    private async Task<IReadOnlyCollection<string>?> GetAllowedChallengeTypesAsync(string? caLabel)
+    private async Task<IReadOnlyCollection<string>?> GetAllowedChallengeTypesAsync(Guid caId)
     {
-        var cas = _db.CertificateAuthorities.AsNoTracking().Where(c => c.IsEnabled);
-        cas = string.IsNullOrWhiteSpace(caLabel)
-            ? cas.OrderByDescending(c => c.IsDefault)
-            : cas.Where(c => c.Label == caLabel);
-        var caId = await cas.Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
-        if (caId == null)
-            return null;
-
         var raw = await _db.CaProtocolConfigs.AsNoTracking()
             .Where(c => c.CaId == caId && c.Protocol == "ACME")
             .Select(c => c.AcmeAllowedChallengeTypes)

@@ -515,8 +515,15 @@ public class ModularCADbContext : DbContext
         });
 
         // ACME Protocol
-        modelBuilder.Entity<AcmeAccountEntity>()
-            .HasIndex(a => a.JwkThumbprint).IsUnique();
+        modelBuilder.Entity<AcmeAccountEntity>(entity =>
+        {
+            entity.HasIndex(a => a.JwkThumbprint).IsUnique();
+            entity.HasIndex(a => a.CertificateAuthorityId);
+            entity.HasOne<CertificateAuthorityEntity>()
+                  .WithMany()
+                  .HasForeignKey(a => a.CertificateAuthorityId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
 
         modelBuilder.Entity<AcmeOrderEntity>(entity =>
         {

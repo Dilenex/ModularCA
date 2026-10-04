@@ -122,8 +122,10 @@ public class AdminRequestProfileController(
     /// <summary>
     /// Updates an existing request profile by ID with new rules, constraints,
     /// and optional inheritance configuration. A profile outside the caller's fence is not found;
-    /// moving it to another CA, or unbinding it, needs cert.revoke on the new CA (or across the
-    /// scope) and a CA of the profile's current scope (<see cref="CaBindingAccess"/>).
+    /// moving it to another CA needs cert.revoke on the new CA and a CA of the profile's current
+    /// scope (<see cref="CaBindingAccess"/>). A request profile has no scope of its own beyond its
+    /// CA, so unbinding it makes it instance-wide and needs cert.revoke at system scope, as
+    /// creating an unbound one does (403 otherwise).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -141,7 +143,8 @@ public class AdminRequestProfileController(
             return NotFound(new { message = "Request profile not found" });
         if (current.CertificateAuthorityId != request.CertificateAuthorityId)
         {
-            var ownerSpace = current.CertificateAuthorityId is Guid oldCa
+            // Unbound, the profile applies instance-wide, so the scope it lands in is the instance.
+            var ownerSpace = current.CertificateAuthorityId is Guid oldCa && request.CertificateAuthorityId != null
                 ? await db.CertificateAuthorities.AsNoTracking().Where(c => c.Id == oldCa).Select(c => c.SpaceId).FirstOrDefaultAsync()
                 : null;
             if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, SpaceFence.From(HttpContext, Capabilities.CertRevoke),

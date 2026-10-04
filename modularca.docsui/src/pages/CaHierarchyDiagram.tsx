@@ -26,7 +26,7 @@ export default function CaHierarchyDiagram() {
                 |                                 |
     +-----------+----------+         +-----------+----------+
     |  System Signing CA   |         |  Intermediate CA     |
-    |  (Infrastructure)    |         |  (Organization)      |
+    |  (Infrastructure)    |         |  (Space)             |
     +----------+-----------+         +----------+-----------+
                |                                |
     +----------+----------+          +----------+----------+

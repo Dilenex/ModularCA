@@ -31,8 +31,8 @@ public sealed class LegacyConfigKeyTests : IDisposable
     {
         var config = Load($"IntegrationApi:\n  Enabled: true\n  TenantId: {Space}\nCertManager:\n  TenantId: {Space}\n");
 
-        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceId);
-        Assert.Equal(Guid.Parse(Space), config.CertManager.SpaceId);
+        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceScope().SpaceId);
+        Assert.Equal(Guid.Parse(Space), config.CertManager.SpaceScope().SpaceId);
         Assert.True(config.IntegrationApi.Enabled);
         Assert.Equal(2, _warnings.Count);
         Assert.Contains(_warnings, w => w.Contains("IntegrationApi.TenantId") && w.Contains(_path) && w.Contains("IntegrationApi.SpaceId"));
@@ -55,7 +55,7 @@ public sealed class LegacyConfigKeyTests : IDisposable
     {
         var config = Load($"CertManager:\n  TenantId: {Space.ToUpperInvariant()}\n  SpaceId: {Space}\n");
 
-        Assert.Equal(Guid.Parse(Space), config.CertManager.SpaceId);
+        Assert.Equal(Guid.Parse(Space), config.CertManager.SpaceScope().SpaceId);
         Assert.Single(_warnings);
     }
 
@@ -64,7 +64,7 @@ public sealed class LegacyConfigKeyTests : IDisposable
     {
         var config = Load($"IntegrationApi:\n  SpaceId:\n  TenantId: {Space}\n");
 
-        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceId);
+        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceScope().SpaceId);
     }
 
     [Fact]
@@ -72,8 +72,40 @@ public sealed class LegacyConfigKeyTests : IDisposable
     {
         var config = Load($"IntegrationApi:\n  SpaceId: {Space}\n");
 
-        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceId);
+        Assert.Equal(Guid.Parse(Space), config.IntegrationApi.SpaceScope().SpaceId);
         Assert.Empty(_warnings);
+    }
+
+    [Theory]
+    [InlineData("IntegrationApi:\n  SpaceId: instance\n")]
+    [InlineData("IntegrationApi:\n  TenantId: instance\n")]
+    [InlineData("IntegrationApi:\n  SpaceId: Instance\n")]
+    public void Instance_scopes_a_key_to_the_instance_CAs_under_either_key(string yaml)
+    {
+        var scope = Load(yaml).IntegrationApi.SpaceScope();
+
+        Assert.Equal(IntegrationScopeKind.Instance, scope.Kind);
+        Assert.True(scope.Allows(null));
+        Assert.False(scope.Allows(Guid.Parse(Space)));
+    }
+
+    [Fact]
+    public void Unset_reaches_every_CA_a_space_id_its_space_and_anything_else_nothing()
+    {
+        var everything = IntegrationSpaceScope.Parse(null);
+        Assert.False(everything.IsRestricted);
+        Assert.True(everything.Allows(null) && everything.Allows(Guid.Parse(Space)));
+
+        var space = IntegrationSpaceScope.Parse(Space.ToUpperInvariant());
+        Assert.Equal((IntegrationScopeKind.Space, (Guid?)Guid.Parse(Space)), (space.Kind, space.SpaceId));
+        Assert.True(space.Allows(Guid.Parse(Space)));
+        Assert.False(space.Allows(null));
+        Assert.False(space.Allows(Guid.Parse(Other)));
+
+        var typo = IntegrationSpaceScope.Parse("instanse");
+        Assert.Equal(IntegrationScopeKind.Invalid, typo.Kind);
+        Assert.True(typo.IsRestricted);
+        Assert.False(typo.Allows(null) || typo.Allows(Guid.Parse(Space)));
     }
 
     [Fact]
@@ -100,7 +132,7 @@ public sealed class LegacyConfigKeyTests : IDisposable
         Assert.Contains($"SpaceId: {Space}", yaml);
         _warnings.Clear();
         File.WriteAllText(_path, yaml);
-        Assert.Equal(Guid.Parse(Space), YamlConfigLoader.Load(_path, _warnings.Add).IntegrationApi.SpaceId);
+        Assert.Equal(Guid.Parse(Space), YamlConfigLoader.Load(_path, _warnings.Add).IntegrationApi.SpaceScope().SpaceId);
         Assert.Empty(_warnings);
     }
 }

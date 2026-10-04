@@ -41,25 +41,20 @@ public class AdminEnrollmentTokenController(
     /// Resolves the CA + space for a signing profile (or cert/request
     /// profile as a secondary path). Returns null if no CA can be resolved — the caller
     /// should treat null as "system-wide target" and require SystemOperator policy.
+    /// A signing profile names its CA by its issuer, the CA <c>RequireCaCapability</c> authorized
+    /// against; a protocol configuration that happens to name the profile does not.
     /// </summary>
     private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromProfilesAsync(
         Guid? signingProfileId, Guid? certProfileId, Guid? requestProfileId)
     {
         if (signingProfileId.HasValue)
         {
-            var config = await db.CaProtocolConfigs
-                .Include(p => p.Ca)
-                .AsNoTracking()
-                .FirstOrDefaultAsync(p => p.SigningProfileId == signingProfileId.Value);
-            if (config?.Ca != null)
-                return (config.Ca.Id, config.Ca.SpaceId);
-
-            // Fall back: the signing profile is directly attached to a CA via IssuerId.
             var sp = await db.SigningProfiles.AsNoTracking().FirstOrDefaultAsync(s => s.Id == signingProfileId.Value);
             if (sp?.IssuerId != null)
             {
                 var ca = await db.CertificateAuthorities
                     .AsNoTracking()
+                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(c => c.CertificateId == sp.IssuerId);
                 if (ca != null)
                     return (ca.Id, ca.SpaceId);

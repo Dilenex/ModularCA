@@ -22,12 +22,19 @@ public interface IEnrollmentTokenService
         string? subjectRestriction = null, string? sanRestriction = null, string? protocol = null,
         Guid? requestProfileId = null, Guid? certProfileId = null, Guid? signingProfileId = null,
         Guid? certificateAuthorityId = null, Guid? spaceId = null);
+    /// <summary>
+    /// Validates a presented enrollment token for an enrollment at <paramref name="ca"/>, the CA
+    /// that will issue, and consumes one use when every check passes, including the token's
+    /// scope (<see cref="EnrollmentTokenService.ScopeRefusal"/>).
+    /// </summary>
+    /// <param name="ca">The CA the enrollment addresses: its id and its space.</param>
     /// <param name="sans">
     /// SAN entries in <c>CertificateUtil.ParseCsr</c>'s <c>TYPE:value</c> form. Optional so
     /// callers that have not parsed them yet keep compiling; when supplied, the token's
     /// SANRestriction is enforced against them.
     /// </param>
-    Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null);
+    Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol,
+        CertificateAuthorityEntity ca, IEnumerable<string>? sans = null);
     /// <summary>
     /// Retrieves a valid (non-revoked, non-expired, uses remaining) enrollment token by its token string.
     /// Returns null if the token is invalid or exhausted.
@@ -170,10 +177,13 @@ public class EnrollmentTokenService : IEnrollmentTokenService
 
     /// <summary>
     /// Validates a presented plaintext enrollment token against the stored hash and, if every
-    /// restriction holds, consumes one use of it.
+    /// restriction holds, consumes one use of it. The token must be scoped to <paramref name="ca"/>,
+    /// the CA that will issue (<see cref="ScopeRefusal"/>).
     /// </summary>
-    public async Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null)
+    public async Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol,
+        CertificateAuthorityEntity ca, IEnumerable<string>? sans = null)
     {
+        ArgumentNullException.ThrowIfNull(ca);
         if (string.IsNullOrEmpty(token))
             return (false, "Invalid enrollment token");
         var hashed = HashEnrollmentToken(token);
@@ -189,6 +199,9 @@ public class EnrollmentTokenService : IEnrollmentTokenService
 
         if (entity.MaxUses > 0 && entity.UsesRemaining <= 0)
             return (false, "Enrollment token has been used the maximum number of times");
+
+        if (ScopeRefusal(entity, ca.Id, ca.SpaceId) is string scopeRefusal)
+            return (false, scopeRefusal);
 
         // Protocol restriction
         if (!string.IsNullOrWhiteSpace(entity.Protocol) &&
@@ -212,6 +225,21 @@ public class EnrollmentTokenService : IEnrollmentTokenService
             return (false, "Enrollment token has been used the maximum number of times");
 
         return (true, null);
+    }
+
+    /// <summary>
+    /// Why <paramref name="token"/> may not be used at the CA <paramref name="caId"/> in space
+    /// <paramref name="caSpaceId"/>, or null when it may: a token bound to a CA works at that CA
+    /// only; a token bound only to a space works at that space's CAs only; a token bound to
+    /// neither is an instance token and works at instance CAs (no space) only, never inside a space.
+    /// </summary>
+    public static string? ScopeRefusal(EnrollmentTokenEntity token, Guid caId, Guid? caSpaceId)
+    {
+        if (token.CertificateAuthorityId != null)
+            return token.CertificateAuthorityId == caId ? null : "Enrollment token is not valid at this CA";
+        if (token.SpaceId != null)
+            return token.SpaceId == caSpaceId ? null : "Enrollment token is not valid at this CA's space";
+        return caSpaceId == null ? null : "Enrollment token is an instance token and is not valid at a space's CA";
     }
 
     /// <summary>

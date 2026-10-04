@@ -51,7 +51,8 @@ internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
         Guid? certificateAuthorityId = null, Guid? spaceId = null)
         => throw new NotSupportedException("Test stub: token generation not expected on this path.");
 
-    public Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol, IEnumerable<string>? sans = null)
+    public Task<(bool IsValid, string? Error)> ValidateAndConsumeAsync(string token, string? subject, string? protocol,
+        CertificateAuthorityEntity ca, IEnumerable<string>? sans = null)
         => Task.FromResult((false, (string?)"Test stub: no enrollment tokens configured."));
 
     public Task<EnrollmentTokenEntity?> GetByTokenAsync(string token) => Task.FromResult<EnrollmentTokenEntity?>(null);

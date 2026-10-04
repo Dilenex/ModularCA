@@ -16,6 +16,10 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
 {
     private readonly ModularCADbContext _db = db;
 
+    /// <summary>
+    /// The authorization object, its challenge URLs under the path of its order's CA
+    /// (<see cref="AcmeCaPolicy.PathPrefix"/>).
+    /// </summary>
     public async Task<AcmeAuthorizationDto?> GetByIdAsync(Guid authzId, string baseUrl)
     {
         var entity = await _db.AcmeAuthorizations.FindAsync(authzId);
@@ -25,9 +29,13 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             .Where(c => c.AuthorizationId == authzId)
             .ToListAsync();
 
-        return MapToDto(entity, challenges, baseUrl);
+        return MapToDto(entity, challenges, baseUrl + AcmeCaPolicy.PathPrefix(await OrderCaLabelAsync(entity.OrderId)));
     }
 
+    /// <summary>
+    /// The authorizations of an order, their challenge URLs under the path of the order's CA
+    /// (<see cref="AcmeCaPolicy.PathPrefix"/>).
+    /// </summary>
     public async Task<List<AcmeAuthorizationDto>> GetByOrderIdAsync(Guid orderId, string baseUrl)
     {
         var authzs = await _db.AcmeAuthorizations
@@ -39,8 +47,13 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             .Where(c => authzIds.Contains(c.AuthorizationId))
             .ToListAsync();
 
-        return authzs.Select(a => MapToDto(a, challenges.Where(c => c.AuthorizationId == a.Id).ToList(), baseUrl)).ToList();
+        var acmeBase = baseUrl + AcmeCaPolicy.PathPrefix(await OrderCaLabelAsync(orderId));
+        return authzs.Select(a => MapToDto(a, challenges.Where(c => c.AuthorizationId == a.Id).ToList(), acmeBase)).ToList();
     }
+
+    /// <summary>The CA label order <paramref name="orderId"/> was placed under.</summary>
+    private Task<string?> OrderCaLabelAsync(Guid orderId)
+        => _db.AcmeOrders.AsNoTracking().Where(o => o.Id == orderId).Select(o => o.CaLabel).FirstOrDefaultAsync();
 
     public async Task DeactivateAsync(Guid authzId)
     {
@@ -235,7 +248,7 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
     private static AcmeAuthorizationDto MapToDto(
         AcmeAuthorizationEntity entity,
         List<AcmeChallengeEntity> challenges,
-        string baseUrl) => new()
+        string acmeBase) => new()
         {
             Id = entity.Id,
             Identifier = new AcmeIdentifier { Type = entity.IdentifierType, Value = entity.IdentifierValue },
@@ -246,7 +259,7 @@ public class AcmeAuthorizationService(ModularCADbContext db) : IAcmeAuthorizatio
             {
                 Id = c.Id,
                 Type = c.Type,
-                Url = $"{baseUrl}/api/v1/acme/challenge/{c.Id}",
+                Url = $"{acmeBase}/challenge/{c.Id}",
                 Token = c.Token,
                 Status = c.Status.ToLowerInvariant(),
                 ValidatedAt = c.ValidatedAt,

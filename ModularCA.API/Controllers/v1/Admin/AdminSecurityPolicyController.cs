@@ -17,11 +17,13 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for managing the runtime-tunable security policy — session
 /// lockout, MFA TTLs, OCSP responder posture, and login banner. Mutations require
 /// step-up MFA via the <c>X-MFA-Token</c> header. Changes take effect on the
-/// next request scope (cache invalidated on PUT).
+/// next request scope (cache invalidated on PUT). Reading and writing both need a system
+/// administrator: these settings govern authentication for every account, and the lockout
+/// thresholds would help an operator tune a password-spraying run.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/security-policy")]
-[Authorize(Policy = "SystemOperator")]
+[Authorize(Policy = "SystemAdmin")]
 [NodeRole(ProcessRole.Control)]
 public class AdminSecurityPolicyController(
     ModularCADbContext db,
@@ -33,7 +35,7 @@ public class AdminSecurityPolicyController(
     ModularCA.Core.Services.ISpacePolicyChangeService policyChanges,
     IDistributedCache cache) : ControllerBase
 {
-    /// <summary>Returns the current security policy row.</summary>
+    /// <summary>Returns the current security policy row. Needs a system administrator.</summary>
     [HttpGet]
     public async Task<IActionResult> Get()
     {
@@ -44,7 +46,9 @@ public class AdminSecurityPolicyController(
     }
 
     /// <summary>
-    /// Applies a partial update to the security policy. Null fields are left untouched.
+    /// Applies a partial update to the security policy. Needs a system administrator; a change to
+    /// <c>UserQuorum</c> or <c>AllowSystemSuperSelfApproval</c> needs a system-super (403 otherwise,
+    /// nothing saved). Null fields are left untouched.
     /// TTL knobs are clamped to their documented ranges. The instance CA policy fields
     /// (<c>RequireKeyCeremony</c>, <c>CeremonyRequiredApprovals</c>, <c>MaxValidityDays</c>,
     /// <c>ValidityCeilingBehavior</c>) need a system admin; a change to the first two by anyone
@@ -87,6 +91,9 @@ public class AdminSecurityPolicyController(
         if (request.UserQuorum is int requestedQuorum && requestedQuorum >= 1 && requestedQuorum != policy.UserQuorum
             && (currentUser.User == null || !await controlledUserSvc.IsSuperAsync(currentUser.User.Id)))
             return StatusCode(403, new { error = "Only a system super-administrator can change the System controlled-user approval quorum." });
+        if (request.AllowSystemSuperSelfApproval is bool selfApproval && selfApproval != policy.AllowSystemSuperSelfApproval
+            && (currentUser.User == null || !await controlledUserSvc.IsSuperAsync(currentUser.User.Id)))
+            return StatusCode(403, new { error = "Only a system super-administrator can change whether system-supers may approve their own requests." });
 
         bool? proposedRequire = request.RequireKeyCeremony is bool rkc && rkc != policy.RequireKeyCeremony ? rkc : null;
         int? proposedApprovals = request.CeremonyRequiredApprovals is int cra && Math.Max(1, cra) != policy.CeremonyRequiredApprovals

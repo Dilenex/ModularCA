@@ -9,8 +9,9 @@ namespace ModularCA.API.Startup;
 /// the installed databases cleanly, run as the service user before the build is installed.
 /// Reads <c>db.yaml</c> (the runtime roles, as the control role uses them) and the <c>Schema</c>
 /// budgets in <c>config.yaml</c> from the config directory, then runs
-/// <see cref="SchemaStartup.UpgradeCheckAsync"/>. Applies nothing: its only write is a dry run
-/// it rolls back.
+/// <see cref="SchemaStartup.UpgradeCheckAsync"/> with the integration keys' configured space
+/// scopes, so a key fenced to a scope the upgrade deletes is refused too. Applies nothing: its only write is
+/// a dry run it rolls back.
 /// </summary>
 public static class UpgradeCheckCommand
 {
@@ -59,6 +60,7 @@ public static class UpgradeCheckCommand
         var targets = new List<SchemaTarget> { new("application", DatabaseKind.Application, config.DB.App) };
         if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
             targets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
-        return await SchemaStartup.UpgradeCheckAsync(targets, config.Schema);
+        return await SchemaStartup.UpgradeCheckAsync(targets, config.Schema,
+            scopes: ModularCA.Core.Services.IntegrationScopeCheck.Configured(config));
     }
 }
