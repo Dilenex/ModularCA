@@ -6,6 +6,18 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Setup asks whether ACME clients are on a private network
+
+- **Ticking ACME in the wizard asks "Will ACME clients be on a private network?"** The default
+  is No. HTTP-01 validation refuses private addresses unless a per-CA switch is on, and that
+  switch was only on the console's protocol settings page, so the first ACME request on a home
+  or office network failed until the administrator found it. "Yes" turns the switch on for the
+  root CA the wizard creates, and is audited. Unattended bootstrap takes
+  `Acme.AllowPrivateAddressValidation` in `bootstrap.yaml`; without the key it is off.
+  `POST /api/v1/setup/initialize` takes `features.acmeAllowPrivateAddressValidation`, which is
+  optional. Neither is read unless ACME is on.
+- **The Setup UI guide said ACME starts on.** It starts off.
+
 ### Containers: a compose quick start, and an image that can back itself up
 
 - **`deploy/compose` runs ModularCA and PostgreSQL on one host.** `docker compose up -d`, read

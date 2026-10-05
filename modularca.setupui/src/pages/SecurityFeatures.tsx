@@ -4,6 +4,7 @@ export interface SecurityData {
     enableCrl: boolean;
     enableOcsp: boolean;
     enableAcme: boolean;
+    acmeAllowPrivateAddressValidation: boolean;
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;
@@ -38,6 +39,19 @@ const featureToggles: FeatureToggle[] = [
     { key: 'enableMsae', acronym: 'MSAE', description: 'Windows autoenrollment - Certificate Enrollment Web Service (MS-WSTEP) for Group Policy and certreq clients' },
 ];
 
+const acmeNetworkChoices: { value: boolean; title: string; description: string }[] = [
+    {
+        value: false,
+        title: 'No, they have public addresses',
+        description: 'HTTP-01 validation refuses private, loopback and link-local addresses.',
+    },
+    {
+        value: true,
+        title: 'Yes, on a private network',
+        description: "HTTP-01 validation may reach private addresses such as 10.x, 172.16-31.x and 192.168.x, and looks names up in this host's hosts file as well as DNS. An internal CA needs this.",
+    },
+];
+
 /// <summary>
 /// Security and features configuration step for the setup wizard.
 /// Includes protocol toggles, backup settings, WebAuthn configuration, and security parameters.
@@ -56,23 +70,61 @@ const SecurityFeatures: React.FC<SecurityFeaturesProps> = ({ data, onChange }) =
             <div className="space-y-3">
                 <h3 className="text-lg font-semibold text-ink">Protocols</h3>
                 {featureToggles.map(feature => (
-                    <label
-                        key={feature.key}
-                        className="flex items-start gap-3 p-3 bg-ground border border-line rounded-lg cursor-pointer hover:bg-hover transition-colors"
-                    >
-                        <div className="pt-0.5">
-                            <input
-                                type="checkbox"
-                                checked={data[feature.key] as boolean}
-                                onChange={e => onChange({ ...data, [feature.key]: e.target.checked })}
-                                className="w-4 h-4 text-accent-ink bg-raised border-line-strong rounded focus:ring-accent"
-                            />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium text-ink">{feature.acronym}</span>
-                            <p className="text-xs text-ink-muted mt-0.5">{feature.description}</p>
-                        </div>
-                    </label>
+                    <React.Fragment key={feature.key}>
+                        <label
+                            className="flex items-start gap-3 p-3 bg-ground border border-line rounded-lg cursor-pointer hover:bg-hover transition-colors"
+                        >
+                            <div className="pt-0.5">
+                                <input
+                                    type="checkbox"
+                                    checked={data[feature.key] as boolean}
+                                    onChange={e => onChange({ ...data, [feature.key]: e.target.checked })}
+                                    className="w-4 h-4 text-accent-ink bg-raised border-line-strong rounded focus:ring-accent"
+                                />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <span className="text-sm font-medium text-ink">{feature.acronym}</span>
+                                <p className="text-xs text-ink-muted mt-0.5">{feature.description}</p>
+                            </div>
+                        </label>
+                        {feature.key === 'enableAcme' && data.enableAcme && (
+                            <fieldset className="ml-7 p-3 bg-ground border border-line rounded-lg">
+                                <legend className="px-1 text-sm font-medium text-ink">
+                                    Will ACME clients be on a private network?
+                                </legend>
+                                <div className="space-y-2">
+                                    {acmeNetworkChoices.map(choice => (
+                                        <label key={String(choice.value)} className="flex items-start gap-3 cursor-pointer">
+                                            <div className="pt-0.5">
+                                                <input
+                                                    type="radio"
+                                                    name="acmeAllowPrivateAddressValidation"
+                                                    checked={data.acmeAllowPrivateAddressValidation === choice.value}
+                                                    onChange={() => onChange({ ...data, acmeAllowPrivateAddressValidation: choice.value })}
+                                                    className="w-4 h-4 text-accent-ink bg-raised border-line-strong focus:ring-accent"
+                                                />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <span className="text-sm font-medium text-ink">{choice.title}</span>
+                                                <p className="text-xs text-ink-muted mt-0.5">{choice.description}</p>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                                {data.acmeAllowPrivateAddressValidation && (
+                                    <p className="text-xs text-warn mt-3">
+                                        With this on, whoever can request a certificate can make this server
+                                        fetch from addresses inside your network. Leave it off for a CA that
+                                        validates public names.
+                                    </p>
+                                )}
+                                <p className="text-xs text-ink-muted mt-3">
+                                    This applies to the root CA created here. Change it later, per CA, in
+                                    the console under the CA&apos;s protocol settings.
+                                </p>
+                            </fieldset>
+                        )}
+                    </React.Fragment>
                 ))}
             </div>
 

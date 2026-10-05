@@ -106,6 +106,14 @@ public class SetupFeatures
     public bool Ocsp { get; set; } = true;
     [System.Text.Json.Serialization.JsonPropertyName("enableAcme")]
     public bool Acme { get; set; } = false;
+    /// <summary>
+    /// The answer to "Will ACME clients be on a private network?", asked when ACME is on. True
+    /// lets the first CA's http-01 validator fetch challenges from private, loopback and
+    /// link-local addresses and resolve names through this host's hosts file; false, the
+    /// default, refuses them. Ignored when <see cref="Acme"/> is false.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("acmeAllowPrivateAddressValidation")]
+    public bool AcmeAllowPrivateAddressValidation { get; set; } = false;
     [System.Text.Json.Serialization.JsonPropertyName("enableEst")]
     public bool Est { get; set; } = false;
     [System.Text.Json.Serialization.JsonPropertyName("enableScep")]

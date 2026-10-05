@@ -47,6 +47,19 @@ Administration:
   # Leave the key out and key ceremonies start on.
   MultipleAdministrators: true
 
+Acme:
+  # Will ACME clients be on a private network? Only read when Features.ACME is true.
+  #   true  - the first CA's http-01 validation may fetch challenges from private, loopback and
+  #           link-local addresses, and resolves names through this host's hosts file as well as
+  #           DNS. An internal CA needs this, or every http-01 request for a private address is
+  #           refused.
+  #   false - those addresses are refused. Keep this for a CA that validates public names: with
+  #           it on, whoever can request a certificate can make this server fetch from addresses
+  #           inside your network.
+  # Leave the key out and it is false. Change it later per CA in the console, under the CA's
+  # protocol settings.
+  AllowPrivateAddressValidation: false
+
 HttpsApi:
   CN: "ModularCA API"
   SANs:

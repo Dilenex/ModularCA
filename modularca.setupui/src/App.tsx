@@ -130,6 +130,7 @@ const initialData: WizardData = {
         // Matches SetupFeatures.Acme, which defaults to false on purpose: a first-run install
         // must not expose anonymous ACME enrollment because the wizard pre-ticked a box.
         enableAcme: false,
+        acmeAllowPrivateAddressValidation: false,
         enableEst: false,
         enableScep: false,
         enableCmp: false,

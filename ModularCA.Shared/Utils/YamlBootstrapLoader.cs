@@ -30,6 +30,19 @@ namespace ModularCA.Shared.Utils
             public HttpsApiConfig HttpsApi { get; set; } = new();
             public FeaturesConfig Features { get; set; } = new();
             public AdministrationConfig Administration { get; set; } = new();
+            public AcmeBootstrapConfig Acme { get; set; } = new();
+        }
+
+        /// <summary>ACME settings applied to the first CA at bootstrap.</summary>
+        public class AcmeBootstrapConfig
+        {
+            /// <summary>
+            /// Whether the first CA's http-01 validator may fetch challenges from private, loopback
+            /// and link-local addresses, and resolve names through this host's hosts file. An
+            /// internal CA needs it; false (the default, and the key being absent) refuses them.
+            /// It changes nothing unless <see cref="FeaturesConfig.ACME"/> is on.
+            /// </summary>
+            public bool AllowPrivateAddressValidation { get; set; }
         }
 
         /// <summary>Who will administer the instance, which decides whether key ceremonies start on.</summary>

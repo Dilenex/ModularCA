@@ -16,6 +16,7 @@ namespace ModularCA.Tests.Bootstrap;
 /// ceremonies off for the instance policy and the first space, "several" starts them on, and an
 /// unattended bootstrap whose bootstrap.yaml does not say keeps them on. The answer is audited.
 /// </summary>
+[Collection(BootstrapAuditLogCollection.Name)]
 public class BootstrapAdministratorChoiceTests : IDisposable
 {
     private readonly string _logs = Path.Combine(Path.GetTempPath(), $"mca-bootstrap-audit-{Guid.NewGuid():N}");

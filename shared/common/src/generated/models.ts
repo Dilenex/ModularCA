@@ -1325,6 +1325,7 @@ export interface SetupFeatures {
     enableCrl: boolean;
     enableOcsp: boolean;
     enableAcme: boolean;
+    acmeAllowPrivateAddressValidation: boolean;
     enableEst: boolean;
     enableScep: boolean;
     enableCmp: boolean;

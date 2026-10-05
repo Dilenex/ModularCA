@@ -215,11 +215,23 @@ export default function SetupUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><strong>CRL:</strong> Certificate Revocation Lists (default: on)</li>
                     <li><strong>OCSP:</strong> Online Certificate Status Protocol responder (default: on)</li>
-                    <li><strong>ACME:</strong> Automatic Certificate Management Environment (default: on)</li>
+                    <li><strong>ACME:</strong> Automatic Certificate Management Environment (default: off)</li>
                     <li><strong>EST:</strong> Enrollment over Secure Transport (default: off)</li>
                     <li><strong>SCEP:</strong> Simple Certificate Enrollment Protocol (default: off)</li>
                     <li><strong>CMP:</strong> Certificate Management Protocol (default: off)</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Ticking ACME asks one more question: <strong>Will ACME clients be on a private
+                    network?</strong> The default is <em>No</em>, and HTTP-01 validation then refuses
+                    private, loopback and link-local addresses. Choose <em>Yes</em> for an internal CA,
+                    whose servers have addresses such as 10.x or 192.168.x: validation may then reach
+                    those addresses, and looks names up in this host&apos;s hosts file as well as DNS.
+                    Leave it on <em>No</em> for a CA that validates public names, because with it on
+                    whoever can request a certificate can make this server fetch from addresses inside
+                    your network. The answer applies to the root CA the wizard creates and is written
+                    to the audit log when it is <em>Yes</em>. Change it later, per CA, in the console
+                    under the CA&apos;s protocol settings.
+                </p>
                 <h3 className="text-lg font-semibold text-ink mb-2">Backup</h3>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><strong>Enable Automatic Backups:</strong> Toggle automatic backup scheduling (default: on)</li>

@@ -38,6 +38,8 @@ public class BootstrapService
     /// certificate cannot carry is refused first (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
     /// <c>Admin.MultipleAdministrators</c> decides whether key ceremonies start on
     /// (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
+    /// <c>Features.AcmeAllowPrivateAddressValidation</c> lets the first CA's http-01 validator
+    /// reach private addresses when ACME is on.
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves
     /// <see cref="IWhitelistService"/> after seeding and calls <c>ReloadAsync</c> so the live
     /// singleton snapshot picks up the freshly-seeded rows before the wizard returns.
@@ -399,7 +401,8 @@ public class BootstrapService
 
             // === Seed request profiles and per-CA protocol configs ===
             var requestProfiles = BootstrapProfileSeeder.SeedDefaultRequestProfiles(dbContext);
-            BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles);
+            BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles,
+                request.Features.Acme && request.Features.AcmeAllowPrivateAddressValidation);
             // System CA: every protocol hardcoded disabled. Belt-and-suspenders alongside
             // ReservedCaLabelGuardMiddleware; even if the guard is lifted, the DB row says "off".
             BootstrapProfileSeeder.SeedSystemCaProtocolConfigs(dbContext, sysCertCaEntity);

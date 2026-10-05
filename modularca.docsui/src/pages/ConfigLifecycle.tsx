@@ -300,7 +300,14 @@ Administration:
   #   true  - key ceremonies start on.
   #   false - key ceremonies start off for the instance and the first space.
   # Omitted, key ceremonies start on.
-  MultipleAdministrators: true`}</pre>
+  MultipleAdministrators: true
+
+Acme:
+  # Will ACME clients be on a private network? Only read when Features.ACME is true.
+  #   true  - http-01 validation may reach private addresses.
+  #   false - http-01 validation refuses them.
+  # Omitted, it is false.
+  AllowPrivateAddressValidation: false`}</pre>
                 </div>
                 <p className="text-ink leading-relaxed mb-3">
                     <code>Administration.MultipleAdministrators</code> is the unattended form of the setup
@@ -312,6 +319,18 @@ Administration:
                     The choice is written to the audit log. Turn the requirement on later in the console,
                     under Settings for the instance and on the space&apos;s page for a space, once a second
                     administrator exists.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>Acme.AllowPrivateAddressValidation</code> is the unattended form of the
+                    wizard&apos;s question &ldquo;Will ACME clients be on a private network?&rdquo;, and is
+                    read only when <code>Features.ACME</code> is <code>true</code>. <code>true</code> lets
+                    the first CA&apos;s http-01 validation fetch challenges from private, loopback and
+                    link-local addresses and look names up in the host&apos;s hosts file as well as DNS,
+                    which an internal CA needs. <code>false</code>, or leaving the key out, refuses those
+                    addresses: keep that for a CA that validates public names, because with it on whoever
+                    can request a certificate can make the server fetch from addresses inside your
+                    network. <code>true</code> is written to the audit log. Change it later, per CA, in the
+                    console under the CA&apos;s protocol settings.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Written once during setup, never modified</li>

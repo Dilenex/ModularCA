@@ -492,10 +492,14 @@ public static class BootstrapProfileSeeder
     /// <summary>
     /// Seeds per-CA protocol configuration records (ACME, EST, SCEP, CMP, MSAE, OCSP)
     /// so the multi-CA routing infrastructure works out of the box after bootstrap.
+    /// <paramref name="acmeAllowPrivateAddressValidation"/> is the setup answer for a CA whose
+    /// ACME clients sit on a private network: true lets its http-01 validator reach private
+    /// addresses, and is written to the bootstrap audit log.
     /// </summary>
     public static void SeedProtocolConfigs(ModularCADbContext db, CertificateAuthorityEntity ca,
         SigningProfileEntity signingProfile, CertProfileEntity certProfile,
-        Dictionary<string, RequestProfileEntity>? requestProfiles = null)
+        Dictionary<string, RequestProfileEntity>? requestProfiles = null,
+        bool acmeAllowPrivateAddressValidation = false)
     {
         var protocols = new[] { "ACME", "EST", "SCEP", "CMP", "MSAE", "OCSP" };
         foreach (var protocol in protocols)
@@ -522,12 +526,27 @@ public static class BootstrapProfileSeeder
                 IsEnabled = true,
                 SigningProfileId = signingProfile.Id,
                 CertProfileId = certProfile.Id,
-                RequestProfileId = requestProfileId
+                RequestProfileId = requestProfileId,
+                AcmeAllowPrivateAddressValidation = protocol == "ACME" && acmeAllowPrivateAddressValidation
             };
             db.CaProtocolConfigs.Add(config);
         }
         db.SaveChanges();
         Console.WriteLine($"✓ Protocol configs seeded for CA '{ca.Name}' (ACME, EST, SCEP, CMP, MSAE, OCSP).");
+
+        if (acmeAllowPrivateAddressValidation)
+        {
+            BootstrapAuditLog.LogSetupDecision(
+                ModularCA.Shared.Enums.AuditActionType.ProtocolConfigUpdated, "ProtocolConfig", $"{ca.Id}/ACME",
+                new
+                {
+                    SetupChoice = "AcmeAllowPrivateAddressValidation",
+                    AcmeAllowPrivateAddressValidation = true,
+                    CaId = ca.Id,
+                    CaName = ca.Name,
+                });
+            Console.WriteLine($"✓ ACME http-01 validation may reach private addresses for CA '{ca.Name}'.");
+        }
     }
 
     /// <summary>

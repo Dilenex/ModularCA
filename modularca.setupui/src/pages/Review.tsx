@@ -117,6 +117,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 enableCrl: security.enableCrl,
                 enableOcsp: security.enableOcsp,
                 enableAcme: security.enableAcme,
+                acmeAllowPrivateAddressValidation: security.enableAcme && security.acmeAllowPrivateAddressValidation,
                 enableEst: security.enableEst,
                 enableScep: security.enableScep,
                 enableCmp: security.enableCmp,
@@ -298,6 +299,14 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
             {/* Security & Features */}
             <SummaryCard title="Security &amp; Features">
                 <SummaryRow label="Enabled Protocols" value={enabledFeatures.length > 0 ? enabledFeatures.join(', ') : 'None'} />
+                {security.enableAcme && (
+                    <SummaryRow
+                        label="ACME Clients"
+                        value={security.acmeAllowPrivateAddressValidation
+                            ? 'Private network: HTTP-01 may reach private addresses'
+                            : 'Public addresses: HTTP-01 refuses private addresses'}
+                    />
+                )}
                 <SummaryRow label="Max Failed Logins" value={String(security.maxFailedLoginAttempts)} />
                 <SummaryRow label="Lockout Duration" value={`${security.lockoutMinutes} min`} />
                 <SummaryRow label="JWT Lifetime" value={`${security.jwtExpirationMinutes} min`} />

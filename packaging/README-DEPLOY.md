@@ -992,6 +992,14 @@ Things to know:
   `--build-arg PG_MAJOR=17`.
 - **The database connection is encrypted but not verified.** It never leaves the private network
   compose creates. Give PostgreSQL its own certificate if you move it to another host.
+- **ACME clients on a private network need one switch turned on.** http-01 validation refuses
+  private addresses by default, and a request for one fails with "Refusing to validate challenge
+  against private address". The wizard asks when you tick ACME: answer "Yes, on a private
+  network". Unattended, set `Acme.AllowPrivateAddressValidation: true` in `bootstrap.yaml`.
+  Afterwards, and for any CA created later, open the CA's protocol settings in the console
+  (`/admin/authorities/protocols`), choose ACME, and turn on "Allow Private Address Validation
+  (HTTP-01)". Leave it off for a CA that validates names on the public internet: with it on,
+  whoever can request a certificate can make the server fetch from addresses inside your network.
 - **To install unattended**, put a `bootstrap.yaml` and a `setup-database.yaml` in the `config`
   volume before the first start (each has an `.example` under `config/`). The container then
   bootstraps without the wizard and prints the first administrator's password once, in its log.

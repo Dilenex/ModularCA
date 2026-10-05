@@ -310,6 +310,8 @@ public class BootstrapModularCA
     /// only then is the configuration written. No migration ever runs as SqlRoot.
     /// <c>Administration.MultipleAdministrators</c> in bootstrap.yaml decides whether key
     /// ceremonies start on (<see cref="ApplyAdministratorChoice"/>); absent, they do.
+    /// <c>Acme.AllowPrivateAddressValidation</c> lets the first CA's http-01 validator reach
+    /// private addresses when ACME is on; absent, it does not.
     /// Returns 0 on success, 1 on a refusal, a failure or an abort. A refusal (a SqlRoot that is
     /// not a superuser, or whose login PostgreSQL rejects, among them), a runtime role's refused
     /// login and any other database error are printed as a message, never as a stack trace.
@@ -675,7 +677,8 @@ public class BootstrapModularCA
 
         // === Seed request profiles and per-CA protocol configs ===
         var requestProfiles = BootstrapProfileSeeder.SeedDefaultRequestProfiles(dbContext);
-        BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles);
+        BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles,
+            features.ACME && (bootstrapConfig.Acme?.AllowPrivateAddressValidation ?? false));
         // System CA: every protocol hardcoded disabled. Belt-and-suspenders alongside
         // ReservedCaLabelGuardMiddleware; even if the guard is lifted, the DB row says "off".
         BootstrapProfileSeeder.SeedSystemCaProtocolConfigs(dbContext, sysCertCaEntity);
