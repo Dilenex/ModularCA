@@ -242,7 +242,10 @@ public class CsrService : ICsrService
     /// <summary>
     /// Builds the PKCS#10 request for <paramref name="publicKey"/> with the cert profile's
     /// extensions and the SANs, signs it with <paramref name="csrSigner"/>, and stores it
-    /// approved. Shared by the key-generating and signer-backed generators.
+    /// approved. Shared by the key-generating and signer-backed generators. Each SAN is a
+    /// <c>TYPE:value</c> entry of any type issuance encodes (DNS, IP, EMAIL, URI, UPN); an entry
+    /// with no type or another type throws <see cref="InvalidOperationException"/> before anything
+    /// is stored.
     /// </summary>
     private async Task<Guid> StoreInfrastructureCsrAsync(
         string subjectDn, string keyAlgorithm, string keySizeStr, string signatureAlgorithm,
@@ -267,28 +270,18 @@ public class CsrService : ICsrService
             extGen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new DerSequence(ekuDerOids));
         }
 
-        // Add SANs if provided (e.g. for Web TLS certs)
+        // Add SANs if provided (Web TLS certs, renewals). Every type issuance can encode is built
+        // (SanGeneralNames.Parse); an entry with no TYPE: prefix or an unknown type is refused rather
+        // than dropped, which used to lose EMAIL, URI and UPN names from every renewal.
         var sanList = new List<string>();
         if (sans != null && sans.Count > 0)
         {
             var sanNames = new List<Org.BouncyCastle.Asn1.X509.GeneralName>();
             foreach (var entry in sans)
             {
-                var colonIdx = entry.IndexOf(':');
-                if (colonIdx < 0) continue;
-                var prefix = entry[..colonIdx].Trim().ToUpperInvariant();
-                var value = entry[(colonIdx + 1)..].Trim();
-                switch (prefix)
-                {
-                    case "DNS":
-                        sanNames.Add(new Org.BouncyCastle.Asn1.X509.GeneralName(Org.BouncyCastle.Asn1.X509.GeneralName.DnsName, value));
-                        sanList.Add($"DNS:{value}");
-                        break;
-                    case "IP":
-                        sanNames.Add(new Org.BouncyCastle.Asn1.X509.GeneralName(Org.BouncyCastle.Asn1.X509.GeneralName.IPAddress, value));
-                        sanList.Add($"IP:{value}");
-                        break;
-                }
+                if (string.IsNullOrWhiteSpace(entry)) continue;
+                sanNames.Add(SanGeneralNames.Parse(entry, out var type, out var value));
+                sanList.Add($"{type}:{value}");
             }
             if (sanNames.Count > 0)
             {
@@ -423,7 +416,7 @@ public class CsrService : ICsrService
         if (subjectOverrides != null && subjectOverrides.Count > 0)
             entity.SubjectOverrides = JsonSerializer.Serialize(subjectOverrides);
         if (sanOverrides != null && sanOverrides.Count > 0)
-            entity.SanOverrides = JsonSerializer.Serialize(sanOverrides);
+            entity.SanOverrides = Helpers.SanOverrideJson.Serialize(sanOverrides);
 
         _dbContext.CertificateRequests.Add(entity);
         await _dbContext.SaveChangesAsync();

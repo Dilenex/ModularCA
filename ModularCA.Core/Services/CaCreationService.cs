@@ -1506,6 +1506,7 @@ public class CaCreationService(
     /// since at CA creation the CA's row is not committed yet. Links the issued certificate to
     /// the CA entity and returns it with its row id and the pending key's reference, for the
     /// caller to commit once its rows are committed. The pending key is retired if issuance fails.
+    /// The subject is "{CA CN} {certType}", within the CA's own DN constraints (<see cref="InfrastructureSubject"/>).
     /// </summary>
     private async Task<(X509Certificate cert, Guid certificateId, KeyRef key)> IssueInfrastructureCertAsync(
         X509Certificate caCert,
@@ -1532,7 +1533,7 @@ public class CaCreationService(
                 break;
             }
         }
-        var subjectDn = $"CN={parentCn} {certType}";
+        var subjectDn = InfrastructureSubject(caCert, $"{parentCn} {certType}");
 
         // Look up the infrastructure cert profile
         var certProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Name == certProfileName)
@@ -1585,6 +1586,37 @@ public class CaCreationService(
         {
             await RetireQuietlyAsync(keyContext, generated.Key);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// The subject of an infrastructure certificate (TSA, OCSP responder, CMP signer) of
+    /// <paramref name="caCert"/>: <c>CN=</c><paramref name="commonName"/>, unless the CA's own
+    /// name constraints permit DN subtrees and that subject is in none of them. Then it is the
+    /// first permitted DN subtree with the CN appended, since a DN subtree matches a subject that
+    /// begins with its RDNs (RFC 5280 §4.2.1.10); without that, a CA constrained to a DN subtree
+    /// could not issue its own TSA certificate and its creation rolled back.
+    /// </summary>
+    internal static string InfrastructureSubject(X509Certificate caCert, string commonName)
+    {
+        var plain = new X509Name(new List<Org.BouncyCastle.Asn1.DerObjectIdentifier> { X509Name.CN }, new List<string> { commonName });
+        var constraints = NameConstraintEnforcer.Read(caCert);
+        var dnSubtrees = constraints?.Permitted.Where(s => s.Base.TagNo == GeneralName.DirectoryName).ToList();
+        if (constraints == null || dnSubtrees is not { Count: > 0 })
+            return plain.ToString();
+        try
+        {
+            NameConstraintEnforcer.Enforce([constraints], plain, []);
+            return plain.ToString();
+        }
+        catch (CertificatePolicyViolationException)
+        {
+            var prefix = X509Name.GetInstance(dnSubtrees[0].Base.Name);
+            var oids = prefix.GetOidList().ToList();
+            var values = prefix.GetValueList().ToList();
+            oids.Add(X509Name.CN);
+            values.Add(commonName);
+            return new X509Name(oids, values).ToString();
         }
     }
 

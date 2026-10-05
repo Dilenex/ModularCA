@@ -54,6 +54,16 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
+    /// 403 when the profile is unbound (no issuer) and the caller lacks ca.manage at system scope,
+    /// the capability creating one needs; null otherwise. An unbound profile applies
+    /// instance-wide, so a space-scoped caller may read it but not change or delete it.
+    /// </summary>
+    private async Task<IActionResult?> UnboundRefusalAsync(Guid userId, Guid? issuerId)
+        => issuerId != null || await _authService.HasScopeCapabilityAsync(userId, null, Capabilities.CaManage)
+            ? null
+            : StatusCode(403, new { error = "An unbound signing profile applies instance-wide; changing it needs ca.manage at system scope." });
+
+    /// <summary>
     /// Null when the caller may make CA certificate <paramref name="issuerId"/> a profile's issuer:
     /// its CA is inside the caller's ca.manage fence (else 404) and the caller holds ca.manage on
     /// it (else 403). No issuer makes the profile unbound, which applies instance-wide, so it needs
@@ -208,7 +218,8 @@ public class AdminSigningProfileController(
     /// name constraints (<see cref="NameConstraintsError"/>) and certificate policies
     /// (<see cref="CertificatePoliciesError"/>) are refused with 400, as are allowed cert profiles
     /// the resulting issuer could not issue under, or newly linked ones the caller cannot see
-    /// (<see cref="CertProfileLinksErrorAsync"/>).
+    /// (<see cref="CertProfileLinksErrorAsync"/>). An unbound profile needs ca.manage at system scope
+    /// (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -223,6 +234,8 @@ public class AdminSigningProfileController(
         var current = await service.GetByIdAsync(id);
         if (current == null || !await InFenceAsync(current.IssuerId, Capabilities.CaManage))
             return NotFound(new { message = "Profile not found" });
+        if (await UnboundRefusalAsync(currentUser.User.Id, current.IssuerId) is { } unbound)
+            return unbound;
         if (current.IssuerId != r.IssuerId && await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
             return refused;
         if (await CertProfileLinksErrorAsync(r.IssuerId, r.AllowedCertProfileIds, current.AllowedCertProfileIds) is { } badLinks)
@@ -243,7 +256,9 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
-    /// Deletes a signing profile and its associated cert profile links.
+    /// Deletes a signing profile and its associated cert profile links. A profile outside the
+    /// caller's ca.manage <see cref="SpaceFence"/> is not found (404), as on update, and an unbound
+    /// one needs ca.manage at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpDelete("{id}")]
@@ -254,6 +269,12 @@ public class AdminSigningProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
+
+        var current = await service.GetByIdAsync(id);
+        if (current == null || !await InFenceAsync(current.IssuerId, Capabilities.CaManage))
+            return NotFound(new { message = "Profile not found" });
+        if (await UnboundRefusalAsync(currentUser.User.Id, current.IssuerId) is { } unbound)
+            return unbound;
 
         await service.DeleteAsync(id);
         await audit.LogAsync(AuditActionType.SigningProfileDeleted, currentUser.User?.Id, currentUser.User?.Username,
@@ -280,7 +301,8 @@ public class AdminSigningProfileController(
     /// <summary>
     /// Replaces the set of allowed cert profile IDs for the specified signing profile. A profile
     /// outside the caller's ca.manage <see cref="SpaceFence"/> is not found, and the links are
-    /// checked by <see cref="CertProfileLinksErrorAsync"/> as on create and update.
+    /// checked by <see cref="CertProfileLinksErrorAsync"/> as on create and update. An unbound profile
+    /// needs ca.manage at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}/allowed-cert-profiles")]
@@ -295,6 +317,8 @@ public class AdminSigningProfileController(
         var current = await service.GetByIdAsync(id);
         if (current == null || !await InFenceAsync(current.IssuerId, Capabilities.CaManage))
             return NotFound(new { message = "Profile not found" });
+        if (await UnboundRefusalAsync(currentUser.User.Id, current.IssuerId) is { } unbound)
+            return unbound;
         certProfileIds ??= [];
         if (await CertProfileLinksErrorAsync(current.IssuerId, certProfileIds, current.AllowedCertProfileIds) is { } badLinks)
             return badLinks;

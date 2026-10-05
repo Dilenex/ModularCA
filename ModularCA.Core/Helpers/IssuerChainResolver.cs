@@ -80,7 +80,23 @@ public static class IssuerChainResolver
     /// Returns the issuer certificates above <paramref name="cert"/>, nearest first. A self-signed
     /// root is included only when it is the direct issuer; an unresolvable parent or a cycle ends the walk.
     /// </summary>
-    public static async Task<List<CertificateEntity>> ResolveIssuerCertificatesAsync(ModularCADbContext db, CertificateEntity cert)
+    public static Task<List<CertificateEntity>> ResolveIssuerCertificatesAsync(ModularCADbContext db, CertificateEntity cert)
+        => ResolveAboveAsync(db, cert, includeRoot: false);
+
+    /// <summary>
+    /// Returns every CA certificate above <paramref name="cert"/>, nearest first, up to and
+    /// including the self-signed root however far up it is: the certification path whose name
+    /// constraints bind a certificate <paramref name="cert"/> issues. An unresolvable parent or a
+    /// cycle ends the walk.
+    /// </summary>
+    public static Task<List<CertificateEntity>> ResolveIssuerPathAsync(ModularCADbContext db, CertificateEntity cert)
+        => ResolveAboveAsync(db, cert, includeRoot: true);
+
+    /// <summary>
+    /// The issuer certificates above <paramref name="cert"/>, nearest first; the root is included
+    /// when it is the direct issuer, or always with <paramref name="includeRoot"/>.
+    /// </summary>
+    private static async Task<List<CertificateEntity>> ResolveAboveAsync(ModularCADbContext db, CertificateEntity cert, bool includeRoot)
     {
         Guid? firstId;
         if (cert.IssuerCertificateId is Guid linked)
@@ -93,10 +109,14 @@ public static class IssuerChainResolver
         if (firstId is not Guid id)
             return [];
         var first = await LoadHopAsync(db, id);
-        return first == null ? [] : await WalkAsync(db, cert, first);
+        return first == null ? [] : await WalkAsync(db, cert, first, includeRoot);
     }
 
-    private static async Task<List<CertificateEntity>> WalkAsync(ModularCADbContext db, CertificateEntity cert, Hop first)
+    /// <summary>
+    /// Walks up from <paramref name="first"/>, nearest first. A root ends the walk and is kept when
+    /// it is the first hop or <paramref name="includeRoot"/> is set.
+    /// </summary>
+    private static async Task<List<CertificateEntity>> WalkAsync(ModularCADbContext db, CertificateEntity cert, Hop first, bool includeRoot = false)
     {
         var chain = new List<CertificateEntity>();
         var visited = new HashSet<Guid> { cert.CertificateId };
@@ -107,7 +127,7 @@ public static class IssuerChainResolver
             var issuer = hop.Cert;
             if (IsRoot(issuer))
             {
-                if (chain.Count == 0)
+                if (chain.Count == 0 || includeRoot)
                     chain.Add(issuer);
                 break;
             }

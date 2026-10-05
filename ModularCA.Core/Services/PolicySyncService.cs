@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Models.RequestProfiles;
 using ModularCA.Shared.Utils;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -290,7 +291,8 @@ public class PolicySyncService : IPolicySyncService
     }
 
     /// <summary>
-    /// Parses and synchronizes request profile definitions from YAML content.
+    /// Parses and synchronizes request profile definitions from YAML content. An entry whose rules
+    /// fail <see cref="NormalizeRequestProfileRules"/> is reported in the result's errors and skipped.
     /// </summary>
     private async Task<PolicySyncResult> SyncRequestProfilesAsync(string yamlContent)
     {
@@ -325,6 +327,12 @@ public class PolicySyncService : IPolicySyncService
                 if (string.IsNullOrWhiteSpace(yamlProfile.Name))
                 {
                     result.Errors.Add("Request profile entry missing required 'name' field");
+                    continue;
+                }
+
+                if (NormalizeRequestProfileRules(yamlProfile) is string rulesError)
+                {
+                    result.Errors.Add($"Request profile '{yamlProfile.Name}': {rulesError}");
                     continue;
                 }
 
@@ -372,6 +380,37 @@ public class PolicySyncService : IPolicySyncService
 
         await _db.SaveChangesAsync();
         return result;
+    }
+
+    /// <summary>
+    /// Checks a YAML request profile's rule JSON as the admin API does
+    /// (<see cref="RequestProfileRules.Normalize"/>) and rewrites it in the stored form, so a
+    /// lower-case requirement, a camelCase property name or an unknown field or SAN type cannot be
+    /// synced into a profile that silently enforces nothing. Returns why it cannot be synced, or null.
+    /// </summary>
+    private static string? NormalizeRequestProfileRules(RequestProfileYamlEntry yaml)
+    {
+        var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        List<SubjectDnFieldRule>? dnRules = null;
+        SanRules? sanRules = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(yaml.SubjectDnRules))
+                dnRules = System.Text.Json.JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(yaml.SubjectDnRules, options) ?? [];
+            if (!string.IsNullOrWhiteSpace(yaml.SanRules))
+                sanRules = System.Text.Json.JsonSerializer.Deserialize<SanRules>(yaml.SanRules, options) ?? new SanRules();
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            return $"subjectDnRules must be a JSON array of rules and sanRules a JSON object: {ex.Message}";
+        }
+        if (RequestProfileRules.Normalize(dnRules, sanRules) is string error)
+            return error;
+        if (dnRules != null)
+            yaml.SubjectDnRules = System.Text.Json.JsonSerializer.Serialize(dnRules);
+        if (sanRules != null)
+            yaml.SanRules = System.Text.Json.JsonSerializer.Serialize(sanRules);
+        return null;
     }
 
     /// <summary>

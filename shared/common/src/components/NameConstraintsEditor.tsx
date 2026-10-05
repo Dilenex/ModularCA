@@ -2,8 +2,7 @@ import React from 'react';
 import { FieldHint } from './forms';
 import { TypedEntryListEditor, TypedEntryListView, type TypedEntry } from './TypedEntryListEditor';
 import {
-    NAME_CONSTRAINTS_CA_ONLY, NAME_CONSTRAINTS_HINT, NAME_CONSTRAINTS_NON_DNS_WARNING, NAME_CONSTRAINT_TYPES,
-    hasNonDnsConstraint, nameConstraintListFromStored, nameConstraintRowsFromStored,
+    NAME_CONSTRAINTS_CA_ONLY, NAME_CONSTRAINTS_HINT, NAME_CONSTRAINT_TYPES, nameConstraintListFromStored,
 } from '../generalNames';
 
 export interface NameConstraintsValue {
@@ -40,7 +39,6 @@ const SECTIONS = [
  */
 export const NameConstraintsEditor: React.FC<NameConstraintsEditorProps> = ({ permitted, excluded, onChange, idPrefix, disabled }) => {
     const values = { permitted, excluded };
-    const nonDns = hasNonDnsConstraint(permitted) || hasNonDnsConstraint(excluded);
     return (
         <div className="space-y-3">
             <FieldHint id={`${idPrefix}-hint`}>{NAME_CONSTRAINTS_HINT}</FieldHint>
@@ -65,7 +63,6 @@ export const NameConstraintsEditor: React.FC<NameConstraintsEditorProps> = ({ pe
                     </div>
                 ))}
             </div>
-            {nonDns && <FieldHint tone="warn">{NAME_CONSTRAINTS_NON_DNS_WARNING}</FieldHint>}
         </div>
     );
 };
@@ -88,9 +85,6 @@ export const NameConstraintsView: React.FC<{ permitted: unknown; excluded: unkno
                 <span className="block text-xs text-ink-muted mb-1">Excluded</span>
                 <TypedEntryListView entries={x} types={NAME_CONSTRAINT_TYPES} aria-label="Excluded names" />
             </div>
-            {(hasNonDnsConstraint(nameConstraintRowsFromStored(p)) || hasNonDnsConstraint(nameConstraintRowsFromStored(x))) && (
-                <FieldHint tone="warn">{NAME_CONSTRAINTS_NON_DNS_WARNING}</FieldHint>
-            )}
         </div>
     );
 };

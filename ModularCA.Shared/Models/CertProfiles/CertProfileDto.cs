@@ -65,6 +65,12 @@ public class CertProfileDto
     public Guid? CertificateAuthorityId { get; set; }
 
     /// <summary>
+    /// The space the profile belongs to; null for an instance profile. A profile with neither a
+    /// space nor a CA is instance-wide, and only a caller holding cert.revoke at system scope may change it.
+    /// </summary>
+    public Guid? SpaceId { get; set; }
+
+    /// <summary>
     /// ID of the parent profile this profile inherits from. Null means no inheritance.
     /// </summary>
     public Guid? InheritsFromId { get; set; }

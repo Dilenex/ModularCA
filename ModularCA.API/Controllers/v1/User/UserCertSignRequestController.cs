@@ -286,6 +286,7 @@ public class UserCertSignRequestController(
     /// caller-supplied, so matching goes through <see cref="ProfileRegex"/> under a bounded timeout.
     /// A pattern that times out or does not compile is reported as an error against the profile —
     /// never as "valid" — so a broken profile is visible here instead of previewing as a pass.
+    /// Requirements and per-type SAN rules are compared ignoring case (<see cref="RequestProfileRules"/>), as issuance compares them.
     /// </summary>
     [HttpPost("validate-against-profile")]
     [Authorize]
@@ -311,13 +312,13 @@ public class UserCertSignRequestController(
             var hasValue = request.Subject.TryGetValue(rule.Field, out var value) && !string.IsNullOrWhiteSpace(value);
             var result = new FieldValidationResult { Field = rule.Field };
 
-            if (rule.Requirement == "Forbidden")
+            if (RequestProfileRules.IsForbidden(rule.Requirement))
             {
                 result.Status = hasValue ? "error" : "valid";
                 result.Message = hasValue ? "This field is not allowed by the profile." : "Forbidden (correctly absent).";
                 if (hasValue) response.Valid = false;
             }
-            else if (rule.Requirement == "Required")
+            else if (RequestProfileRules.IsRequired(rule.Requirement))
             {
                 if (!hasValue) { result.Status = "error"; result.Message = "This field is required."; response.Valid = false; }
                 else { result = ValidateFieldValue(rule, value!); if (result.Status == "error") response.Valid = false; }
@@ -344,7 +345,7 @@ public class UserCertSignRequestController(
             {
                 sanResult.Status = "error"; sanResult.Message = $"SAN type '{san.Type}' is not allowed."; response.Valid = false;
             }
-            else if (sanRules.Rules.TryGetValue(san.Type, out var typeRule) && !string.IsNullOrWhiteSpace(typeRule.Regex))
+            else if (RequestProfileRules.TryGetSanRule(sanRules, san.Type, out var typeRule) && !string.IsNullOrWhiteSpace(typeRule.Regex))
             {
                 // Bounded, fail-closed match. A pattern that cannot be evaluated used to report
                 // "valid" so as not to penalise the user; that presented a broken profile as a
@@ -391,7 +392,7 @@ public class UserCertSignRequestController(
 
         foreach (var kvp in sanCountsByType)
         {
-            if (sanRules.Rules.TryGetValue(kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
+            if (RequestProfileRules.TryGetSanRule(sanRules, kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
             {
                 foreach (var sr in response.SanResults.Where(s => s.Type == kvp.Key).Reverse().Take(kvp.Value - typeRule.MaxCount))
                 { sr.Status = "error"; sr.Message = $"Exceeds max count of {typeRule.MaxCount} for {kvp.Key}."; response.Valid = false; }

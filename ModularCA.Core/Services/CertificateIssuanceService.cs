@@ -408,8 +408,9 @@ namespace ModularCA.Core.Services
                 validFrom, validTo, subjectDn.ToString(), ParseSanJson(effectiveSans),
                 effectiveCertProfile.SourceProfileId.ToString(), csrEntity.IsInfrastructureCert);
 
-            // Validate subject DN and SANs against issuing CA name constraints
-            ValidateNameConstraints(caMatch, subjectDn.ToString(), ParseSanJson(effectiveSans));
+            // Validate subject DN and SANs against the name constraints of every CA in the path
+            await ValidateNameConstraintsAsync(caMatch, refCACert, subjectDn, ParseSanJson(effectiveSans),
+                isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile, cancellationToken);
 
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
@@ -516,8 +517,14 @@ namespace ModularCA.Core.Services
         /// unregistered (see <see cref="IssuingCaGuard"/>), or when the CSR's certificate profile is
         /// no longer in that CA's scope (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>),
         /// so the predecessor is not auto-revoked
-        /// for a reissue that cannot happen. Otherwise revokes the previous certificate (if not
-        /// already revoked), validates constraints, builds a new certificate, and persists it.
+        /// for a reissue that cannot happen. Every other check that can refuse the reissue (revocation
+        /// reason, CSR, profiles, quota, validity, overrides, certificate policy, name constraints
+        /// across the chain, subject storability) also runs before anything changes. The new
+        /// certificate is then built, stored and linked, and only after that is the previous
+        /// certificate revoked as Superseded (when it is not already revoked or expired), so a
+        /// refused reissue leaves the predecessor in service. Should that final revocation fail,
+        /// the replacement stands, the predecessor is marked reissued, and the error says to revoke
+        /// it by hand.
         /// </summary>
         /// <param name="certId">Optional certificate ID to look up the original CSR.</param>
         /// <param name="certSN">Optional serial number to look up the original CSR.</param>
@@ -670,29 +677,18 @@ namespace ModularCA.Core.Services
             }
 
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
-            // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, do so now via
-            // ICertificateRevocationService — that path triggers CRL regeneration, audit logging,
-            // and notifications, none of which the previous inline mutation did. The check is
-            // idempotent: if the cert is already revoked with an allowed reason we just proceed.
-            //
-            // Treat both null and empty/whitespace RevocationReason as "not yet revoked" because
-            // bootstrap-seeded certs (e.g. the Web TLS cert) ship with an empty string instead of
-            // null, which historically made the inline shortcut skip and dropped the operator
-            // into the "Previous certificate must be revoked to allow reissue" error.
-            // "Expired" is no longer a stored revocation reason — natural
-            // expiry is detected via NotAfter < now instead. Keep "CessationOfOperation" for
-            // operational retirements and allow reissue when the cert is simply expired.
+            // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, it is revoked as
+            // Superseded through ICertificateRevocationService (CRL regeneration, audit,
+            // notifications), but only once the replacement has been issued and stored: every check
+            // that can refuse the reissue runs first, so a refused reissue never takes the
+            // predecessor out of service. An already-revoked predecessor must carry an allowed
+            // reason. "Expired" is no longer a stored revocation reason: natural expiry is detected
+            // via NotAfter < now, and an expired predecessor is not revoked. Bootstrap-seeded certs
+            // (e.g. the Web TLS cert) carry an empty reason while unrevoked, which reads as "not yet revoked".
             var allowedReissueReasons = new[] { "Superseded", "CessationOfOperation" };
             var isExpired = prevCert.NotAfter < DateTime.UtcNow;
-            if (!isExpired && (!prevCert.Revoked || string.IsNullOrWhiteSpace(prevCert.RevocationReason)))
-            {
-                await _revocation.RevokeCertificateAsync(prevCert.CertificateId, null, Shared.Enums.RevocationReason.Superseded);
-                // prevCert and the entity returned by ResolveCertificateEntityAsync inside the
-                // revocation service are the same tracked instance (shared scoped DbContext), so
-                // the mutation is already visible on this local reference — no Reload needed.
-            }
-
-            if (!isExpired && !allowedReissueReasons.Contains(prevCert.RevocationReason, StringComparer.OrdinalIgnoreCase))
+            var revokePredecessor = !isExpired && !prevCert.Revoked;
+            if (!isExpired && !revokePredecessor && !allowedReissueReasons.Contains(prevCert.RevocationReason, StringComparer.OrdinalIgnoreCase))
                 throw new ConfigurationValidationException($"Reissue is only allowed for revoked certificates with reasons:" +
                     $" {string.Join(", ", allowedReissueReasons)} (or naturally expired).\nIn the event of a key compromise, create a new CSR.", ErrorCodes.ReissueReasonNotPermitted);
 
@@ -866,7 +862,7 @@ namespace ModularCA.Core.Services
                 effectiveCertProfile.SourceProfileId.ToString(), csrEntity.IsInfrastructureCert);
 
             // Validate subject DN and SANs against issuing CA name constraints
-            ValidateNameConstraints(caMatch, reissueSubjectDn.ToString(), ParseSanJson(reissueEffectiveSans));
+            await ValidateNameConstraintsAsync(caMatch, refCACert, reissueSubjectDn, ParseSanJson(reissueEffectiveSans), isCaCertificate: false);
 
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
@@ -966,6 +962,26 @@ namespace ModularCA.Core.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to copy ACLs from previous certificate to reissued certificate {Serial}", certModel.SerialNumber);
+            }
+
+            // The replacement is issued, stored and linked; only now is the predecessor revoked. A
+            // failure here leaves both certificates valid, never neither: the predecessor is
+            // already marked reissued, so a retry cannot issue a second replacement.
+            if (revokePredecessor)
+            {
+                try
+                {
+                    await _revocation.RevokeCertificateAsync(prevCert.CertificateId, null, Shared.Enums.RevocationReason.Superseded);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Reissue issued {NewSerial} but could not revoke its predecessor {OldSerial}; revoke it (Superseded) manually.",
+                        certModel.SerialNumber, prevCert.SerialNumber);
+                    throw new InvalidOperationException(
+                        $"The replacement certificate {certModel.SerialNumber} was issued, but revoking its predecessor "
+                        + $"{prevCert.SerialNumber} failed: {ex.Message} Revoke the predecessor (reason Superseded) manually.", ex);
+                }
             }
 
             return new IssuanceResult(certPem, issuanceDiagnostics);
@@ -1166,10 +1182,12 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Returns the SAN overrides JSON when it is a JSON array of strings, otherwise falls back
-        /// to the original SANs from the CSR entity. An empty array is an override that replaces
-        /// the SANs with none; only an absent (null or blank) or malformed override keeps the
-        /// originals. The returned value is a JSON array string suitable for passing to
+        /// Returns the SAN overrides as a JSON array of <c>TYPE:value</c> strings when they can be
+        /// read (<see cref="SanOverrideJson.Read"/>: the stored string form, or the
+        /// <c>{Type, Value}</c> objects CSR upload stored before), otherwise the original SANs from
+        /// the CSR entity. An empty array is an override that replaces the SANs with none; only an
+        /// absent (null or blank) or malformed override keeps the originals. The returned value is
+        /// a JSON array string suitable for passing to
         /// <see cref="CertificateBuilderService.BuildCertificateAsync"/>.
         /// </summary>
         /// <param name="originalSansJson">The original SANs JSON array from the CSR, or null.</param>
@@ -1177,22 +1195,8 @@ namespace ModularCA.Core.Services
         /// <returns>The effective SANs JSON string.</returns>
         internal static string? ApplySanOverrides(string? originalSansJson, string? sanOverridesJson)
         {
-            if (string.IsNullOrWhiteSpace(sanOverridesJson))
-                return originalSansJson;
-
-            try
-            {
-                // Validate that the overrides are a well-formed JSON array
-                var overrides = JsonSerializer.Deserialize<List<string>>(sanOverridesJson, SafeJsonOptions.Default);
-                if (overrides != null)
-                    return sanOverridesJson;
-            }
-            catch
-            {
-                // Malformed SAN overrides — fall back to original
-            }
-
-            return originalSansJson;
+            var overrides = SanOverrideJson.Read(sanOverridesJson);
+            return overrides == null ? originalSansJson : JsonSerializer.Serialize(overrides);
         }
 
         /// <summary>
@@ -1496,179 +1500,69 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Validates that the certificate's subject DN and SANs comply with the issuing CA's
-        /// name constraints extension (RFC 5280 section 4.2.1.10). DNS name constraints are
-        /// enforced (block issuance on violation). Other constraint types (IP, Email, URI, DN)
-        /// are NOT implemented, and their presence now refuses issuance rather than proceeding
-        /// unconstrained — see the throw below for why a warning was the wrong response.
+        /// Validates the certificate's subject DN (when not empty), its subject emailAddress values
+        /// and every SAN against the NameConstraints extension (RFC 5280 §4.2.1.10) of every CA
+        /// certificate in its path: the issuing CA and each ancestor up to and including the root
+        /// (<see cref="IssuerChainResolver.ResolveIssuerPathAsync"/>), as path validation would.
+        /// All five subtree types are enforced (<see cref="NameConstraintEnforcer"/>); a violation
+        /// refuses issuance with <see cref="CertificatePolicyViolationException"/>
+        /// (<see cref="ErrorCodes.NameConstraintViolation"/>) naming the name, the CA and the
+        /// subtrees. A NameConstraints extension that cannot be parsed, or an ancestor certificate
+        /// that cannot be read, refuses every issuance under it. A self-issued CA certificate (a CA
+        /// certificate whose subject is its issuer's) is exempt, as RFC 5280 §6.1.3 (b) exempts a
+        /// self-issued intermediate; the constraints still bind every certificate issued under it.
         /// </summary>
         /// <param name="issuerCert">The issuing CA's X.509 certificate.</param>
+        /// <param name="issuerRow">The issuing CA certificate's row, from which the ancestors are walked.</param>
         /// <param name="subjectDn">The subject DN of the certificate being issued.</param>
         /// <param name="sans">The list of Subject Alternative Names (prefixed, e.g. "DNS:example.com").</param>
-        private void ValidateNameConstraints(X509Certificate issuerCert, string subjectDn, List<string> sans)
+        /// <param name="isCaCertificate">Whether the certificate being issued is a CA certificate.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        private async Task ValidateNameConstraintsAsync(X509Certificate issuerCert, CertificateEntity issuerRow,
+            X509Name subjectDn, List<string> sans, bool isCaCertificate, CancellationToken cancellationToken = default)
         {
-            var ncExt = issuerCert.GetExtensionValue(X509Extensions.NameConstraints);
-            if (ncExt == null) return; // No name constraints on issuer
+            if (isCaCertificate && subjectDn.Equivalent(issuerCert.SubjectDN, true))
+            {
+                _logger.LogInformation(
+                    "Self-issued CA certificate {Subject}: its names are exempt from the path's name constraints (RFC 5280 6.1.3).",
+                    subjectDn);
+                return;
+            }
 
-            NameConstraints nc;
+            var path = new List<X509Certificate> { issuerCert };
+            foreach (var ancestor in await IssuerChainResolver.ResolveIssuerPathAsync(_db, issuerRow))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (ancestor.CertificateId == issuerRow.CertificateId)
+                    continue;
+                try
+                {
+                    path.Add(CertificateUtil.ParseFromPem(ancestor.Pem));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Ancestor CA certificate {CaSubject} of {Issuer} cannot be read — refusing to issue.",
+                        ancestor.SubjectDN, issuerCert.SubjectDN);
+                    throw new InvalidOperationException(
+                        $"The ancestor CA certificate '{ancestor.SubjectDN}' cannot be read, so its name constraints cannot be "
+                        + "verified. Issuance is refused rather than proceeding unconstrained.", ex);
+                }
+            }
+
+            List<NameConstraintEnforcer.CaConstraints> constraints;
             try
             {
-                nc = NameConstraints.GetInstance(X509ExtensionUtilities.FromExtensionValue(ncExt));
+                constraints = NameConstraintEnforcer.Collect(path);
             }
-            catch (Exception ex)
+            catch (InvalidOperationException ex)
             {
-                // Fail closed. Skipping validation here meant an issuer whose NameConstraints
-                // extension could not be parsed enforced NOTHING — the one case where the CA is
-                // demonstrably in an unknown state was also the case that issued freely. A
-                // constraint we cannot read is a constraint we cannot prove the certificate
-                // satisfies.
-                _logger.LogError(ex,
-                    "Failed to parse NameConstraints from issuing CA {CaSubject} — refusing to issue.",
+                // Fail closed: a constraint that cannot be read is one no certificate can be shown to satisfy.
+                _logger.LogError(ex, "Failed to parse NameConstraints in the path of issuing CA {CaSubject} — refusing to issue.",
                     issuerCert.SubjectDN);
-                throw new InvalidOperationException(
-                    "The issuing CA carries a NameConstraints extension that cannot be parsed, so compliance "
-                    + "cannot be verified. Issuance is refused rather than proceeding unconstrained.", ex);
+                throw;
             }
 
-            var permitted = nc.PermittedSubtrees;
-            var excluded = nc.ExcludedSubtrees;
-
-            // Collect permitted and excluded DNS suffixes
-            var permittedDns = new List<string>();
-            var excludedDns = new List<string>();
-            bool hasNonDnsPermitted = false;
-            bool hasNonDnsExcluded = false;
-
-            if (permitted != null)
-            {
-                foreach (var element in permitted)
-                {
-                    var subtree = GeneralSubtree.GetInstance(element);
-                    var gn = subtree.Base;
-                    if (gn.TagNo == GeneralName.DnsName)
-                    {
-                        permittedDns.Add(gn.Name.ToString()!);
-                    }
-                    else
-                    {
-                        hasNonDnsPermitted = true;
-                    }
-                }
-            }
-
-            if (excluded != null)
-            {
-                foreach (var element in excluded)
-                {
-                    var subtree = GeneralSubtree.GetInstance(element);
-                    var gn = subtree.Base;
-                    if (gn.TagNo == GeneralName.DnsName)
-                    {
-                        excludedDns.Add(gn.Name.ToString()!);
-                    }
-                    else
-                    {
-                        hasNonDnsExcluded = true;
-                    }
-                }
-            }
-
-            // Non-DNS subtrees (IP, Email, URI, DirectoryName) are not implemented. They used to
-            // produce a warning and then let issuance proceed, which means a CA an operator
-            // deliberately constrained to, say, `permitted: email:@example.com` or
-            // `excluded: DN:O=Bank` issued outside those bounds with nothing but a log line — the
-            // constraint existed in the certificate, and relying parties enforce it, but this CA
-            // did not honour its own policy.
-            //
-            // Refuse instead. A name constraint this code cannot evaluate is one it cannot prove
-            // the certificate satisfies, and quietly issuing a non-compliant certificate from a
-            // constrained CA is a trust failure, not a warning.
-            //
-            // This is deliberately a hard stop rather than a configurable one: a switch to
-            // downgrade an unenforceable constraint back to a warning is the same fail-open with
-            // extra steps. Implementing RFC 5280 4.2.1.10 matching for these types is what lets
-            // such a CA issue again.
-            if (hasNonDnsPermitted || hasNonDnsExcluded)
-            {
-                var which = hasNonDnsPermitted && hasNonDnsExcluded ? "permitted and excluded"
-                          : hasNonDnsPermitted ? "permitted" : "excluded";
-                _logger.LogError(
-                    "Issuing CA {CaSubject} has non-DNS {Which} name constraints (IP, Email, URI, DirectoryName) "
-                    + "which are not implemented — refusing to issue rather than proceeding unconstrained.",
-                    issuerCert.SubjectDN, which);
-                throw new ConfigurationValidationException(
-                    $"The issuing CA carries non-DNS {which} name constraints (IP, Email, URI, or DirectoryName). "
-                    + "Enforcement of those types is not implemented, so compliance cannot be verified and "
-                    + "issuance is refused. Use DNS-only name constraints on this CA, or remove them.", ErrorCodes.NameConstraintTypeUnsupported);
-            }
-
-            // Validate DNS SANs against constraints
-            foreach (var san in sans)
-            {
-                if (!san.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var dnsName = san.Substring(4).ToLowerInvariant();
-
-                // Check permitted subtrees: if any DNS permitted subtrees exist, the name must match at least one
-                if (permittedDns.Count > 0)
-                {
-                    bool matchesPermitted = false;
-                    foreach (var p in permittedDns)
-                    {
-                        if (DnsNameMatchesConstraint(dnsName, p.ToLowerInvariant()))
-                        {
-                            matchesPermitted = true;
-                            break;
-                        }
-                    }
-
-                    if (!matchesPermitted)
-                    {
-                        throw new CertificatePolicyViolationException(
-                        [
-                            $"[NameConstraints] DNS name '{dnsName}' is not within the issuing CA's "
-                            + $"permitted name constraints [{string.Join(", ", permittedDns)}]."
-                        ], ErrorCodes.NameConstraintViolation);
-                    }
-                }
-
-                // Check excluded subtrees: the name must not match any exclusion
-                foreach (var e in excludedDns)
-                {
-                    if (DnsNameMatchesConstraint(dnsName, e.ToLowerInvariant()))
-                    {
-                        throw new CertificatePolicyViolationException(
-                        [
-                            $"[NameConstraints] DNS name '{dnsName}' falls within the issuing CA's "
-                            + $"excluded name constraints [{string.Join(", ", excludedDns)}]."
-                        ], ErrorCodes.NameConstraintViolation);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Checks whether a DNS name matches a name constraint per RFC 5280 section 4.2.1.10.
-        /// A constraint ".example.com" matches "host.example.com" but not "example.com" itself.
-        /// A constraint "example.com" matches "example.com" exactly and any subdomain (e.g. "host.example.com").
-        /// </summary>
-        /// <param name="dnsName">The DNS name to check (lowercase).</param>
-        /// <param name="constraint">The name constraint (lowercase).</param>
-        /// <returns>True if the DNS name falls within the constraint.</returns>
-        private static bool DnsNameMatchesConstraint(string dnsName, string constraint)
-        {
-            if (constraint.StartsWith("."))
-            {
-                // Constraint ".example.com" matches any subdomain but not the base domain
-                return dnsName.EndsWith(constraint, StringComparison.Ordinal);
-            }
-
-            // Constraint "example.com" matches exact or any subdomain
-            if (string.Equals(dnsName, constraint, StringComparison.Ordinal))
-                return true;
-
-            return dnsName.EndsWith("." + constraint, StringComparison.Ordinal);
+            NameConstraintEnforcer.Enforce(constraints, subjectDn, sans);
         }
 
         /// <summary>

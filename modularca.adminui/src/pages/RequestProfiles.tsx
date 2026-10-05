@@ -8,7 +8,9 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { isUnboundRequestProfile, mayChangeProfile } from './profiles/instanceWide';
 import { NewProfileButton } from './profiles/NewProfileButton';
 
 /* read-only drawer for a request profile row */
@@ -33,6 +35,8 @@ const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | 
 const RequestProfiles: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
+    const { can } = useAuth();
+    const systemCertRevoke = can(Capabilities.CertRevoke);
     const [profiles, setProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -92,7 +96,7 @@ const RequestProfiles: React.FC = () => {
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
-        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]) },
+        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => mayChangeProfile(isUnboundRequestProfile(p), systemCertRevoke) },
     ];
 
     return (

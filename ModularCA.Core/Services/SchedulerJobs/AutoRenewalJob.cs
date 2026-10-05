@@ -453,22 +453,14 @@ public class AutoRenewalJob : SingletonCronJob
 
     /// <summary>
     /// CLM-001: parses the JSON-encoded SAN list from a certificate entity into
-    /// the "TYPE:value" format expected by <see cref="ICsrService.GenerateInfrastructureCsrAsync"/>.
+    /// the "TYPE:value" format expected by <see cref="ICsrService.GenerateInfrastructureCsrAsync"/>,
+    /// repairing legacy otherName renderings into <c>UPN:</c> entries
+    /// (<see cref="UpnSanEncoding.DeserializeStoredSans"/>) so a UPN is carried to the renewal.
     /// Returns null when the JSON is empty or unparseable.
     /// </summary>
-    private static List<string>? ParseSansFromJson(string? sanJson)
+    internal static List<string>? ParseSansFromJson(string? sanJson)
     {
-        if (string.IsNullOrWhiteSpace(sanJson))
-            return null;
-
-        try
-        {
-            var sans = JsonSerializer.Deserialize<List<string>>(sanJson);
-            return sans is { Count: > 0 } ? sans : null;
-        }
-        catch
-        {
-            return null;
-        }
+        var sans = UpnSanEncoding.DeserializeStoredSans(sanJson);
+        return sans.Count > 0 ? sans : null;
     }
 }

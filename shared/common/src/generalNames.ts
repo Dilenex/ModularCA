@@ -175,9 +175,10 @@ const dnValueError = (field: string, value: string): string | null => {
 };
 
 /**
- * DN (directoryName) subtree, RFC 4514 style: `O=Acme,C=US`, every RDN `attribute=value`. The
- * server splits on every comma before parsing, so a comma inside a value (escaped or quoted) is
- * refused there and here.
+ * DN (directoryName) subtree: `C=US,O=Acme`, every RDN `attribute=value`. The server encodes the
+ * RDNs in the order written, and a subject is inside the subtree when its DN begins with them in
+ * that order (RFC 5280 §4.2.1.10). The server splits on every comma before parsing, so a comma
+ * inside a value (escaped or quoted) is refused there and here.
  */
 export const validateNcDn: Validator = (raw) => {
     const v = raw.trim();
@@ -208,22 +209,21 @@ export const NAME_CONSTRAINT_TYPES: readonly TypedEntryType[] = [
     { value: 'IP', label: 'IP', validate: validateNcIp, placeholder: '10.0.0.0/8', example: '10.0.0.0/8' },
     { value: 'EMAIL', label: 'Email', validate: validateNcEmail, placeholder: 'example.com, .example.com or admin@example.com', example: 'example.com' },
     { value: 'URI', label: 'URI', validate: validateNcUri, placeholder: 'host.example.com or .example.com', example: '.example.com' },
-    { value: 'DN', label: 'DN', validate: validateNcDn, placeholder: 'O=Example,C=US', example: 'O=Example,C=US' },
+    { value: 'DN', label: 'DN', validate: validateNcDn, placeholder: 'C=US,O=Example', example: 'C=US,O=Example' },
 ];
 
 /** The help text both name-constraint editors show. */
 export const NAME_CONSTRAINTS_HINT =
     'Each entry is a type and a value: DNS example.com (the host and its subdomains) or .example.com (subdomains only); '
-    + 'IP 10.0.0.0/8 or 10.0.0.0/255.0.0.0; Email admin@example.com, example.com or .example.com; '
-    + 'URI host.example.com or .example.com (the host, not a URL); DN O=Example,C=US. Wildcards are not supported. Leave both lists empty for no constraint.';
+    + 'IP 10.0.0.0/8 or 10.0.0.0/255.0.0.0; Email admin@example.com (that mailbox), example.com (any mailbox at that host) or .example.com (any mailbox in its subdomains); '
+    + 'URI host.example.com (that host only) or .example.com (hosts under it), the host and not a URL; '
+    + 'DN C=US,O=Example (subjects whose DN begins with these RDNs, in the order written). '
+    + 'Every type is enforced at issuance, against the subject, its email addresses and every SAN, for this CA and every CA above it. '
+    + 'Wildcards are not supported. Leave both lists empty for no constraint.';
 
 /** Constraints are written into CA certificates only; said next to both editors. */
 export const NAME_CONSTRAINTS_CA_ONLY =
     'Name constraints are written only into CA certificates. A leaf certificate issued through this profile never carries them.';
-
-/** Why a stored constraint list holds non-DNS entries this server will not issue under. */
-export const NAME_CONSTRAINTS_NON_DNS_WARNING =
-    'ModularCA enforces only DNS constraints when it issues. A CA run on this server whose certificate carries IP, Email, URI or DN constraints refuses to issue anything until they are removed.';
 
 /**
  * Reads a stored name-constraint field into a list: a JSON array (as a string or already parsed),
@@ -255,10 +255,6 @@ export const nameConstraintRowsToJson = (rows: readonly TypedEntry[]): string | 
 
 /** True when any row would be refused by the server. */
 export const nameConstraintRowsInvalid = (rows: readonly TypedEntry[]): boolean => hasTypedEntryProblems(rows, NAME_CONSTRAINT_TYPES);
-
-/** True when any row with a value is not DNS: the CA carrying it will not issue (see the warning). */
-export const hasNonDnsConstraint = (rows: readonly TypedEntry[]): boolean =>
-    rows.some((r) => r.value.trim() && ['IP', 'EMAIL', 'URI', 'DN'].includes(r.type.toUpperCase()));
 
 /**
  * Why one stored `TYPE:value` entry would be refused by the server's `NameConstraintRules`, or
@@ -350,7 +346,7 @@ export const SAN_TYPES: readonly TypedEntryType[] = [
 ];
 
 /**
- * The SAN types a server-generated infrastructure certificate (Web TLS, at setup and on reissue)
- * can carry: `CsrService` builds only DNS and IP names into that CSR.
+ * The SAN types the Web TLS certificate carries, at setup and on reissue and renewal: DNS and IP
+ * only, which the server's Web TLS paths require.
  */
 export const INFRA_SAN_TYPES: readonly TypedEntryType[] = [SAN_DNS, SAN_IP];

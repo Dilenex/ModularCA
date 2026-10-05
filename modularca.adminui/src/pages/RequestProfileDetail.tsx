@@ -10,7 +10,9 @@ import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { isUnboundRequestProfile, mayChangeProfile, INSTANCE_WIDE_READ_ONLY } from './profiles/instanceWide';
 import { SourceBorderedField as ReqSourceBorderedField, SubmitBlockedHint } from './profileHelpers';
 import { RequestProfileForm } from './profiles/RequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/requestProfile';
@@ -28,6 +30,7 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
+    const { can } = useAuth();
     const { showToast } = useToast();
 
     const [profile, setProfile] = useState<any | null>(null);
@@ -148,6 +151,8 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     );
 
     const p = profile ?? {};
+    // An instance-wide profile is read-only without CertRevoke at system scope, as the server requires.
+    const readOnly = !isNew && !mayChangeProfile(isUnboundRequestProfile(p), can(Capabilities.CertRevoke));
     const dnRules: any[] = p.subjectDnRules || [];
     const title = isNew ? 'New request profile' : p.name;
 
@@ -155,16 +160,16 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: REQUEST_TAB }, { label: 'Request Profiles', to: REQUEST_TAB }, { label: title }]}
             title={title}
-            subtitle={isNew ? undefined : (p.description || undefined)}
+            subtitle={isNew ? undefined : <>{p.description}{readOnly && <span className="block text-xs">{INSTANCE_WIDE_READ_ONLY}</span>}</>}
             backTo={REQUEST_TAB}
-            editable
+            editable={!readOnly}
             initialMode={isNew ? 'edit' : 'view'}
             modeToggle={!isNew}
             saveLabel={isNew ? 'Create' : 'Save'}
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Request Profile' : 'Edit Request Profile'}>

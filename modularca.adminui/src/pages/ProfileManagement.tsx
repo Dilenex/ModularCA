@@ -13,7 +13,9 @@ import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/compone
 import { canonicalizeUsages, parseListField, parseJsonArray, BadgeList, CeilingList, caRowId } from './profileHelpers';
 import { AlgorithmSummary, KeyPolicySummary } from './profiles/KeyPolicyEditor';
 import RequestProfilesTab from './RequestProfiles';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { isInstanceWideCertProfile, isUnboundSigningProfile, mayChangeProfile } from './profiles/instanceWide';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 import { NewProfileButton } from './profiles/NewProfileButton';
 import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profileRoutes';
@@ -28,6 +30,8 @@ const CertProfilesTab: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
     const { caQuery, caId: scopeCaId } = useScope();
+    const { can } = useAuth();
+    const systemCertRevoke = can(Capabilities.CertRevoke);
 
     const load = () => {
         setLoading(true);
@@ -83,7 +87,7 @@ const CertProfilesTab: React.FC = () => {
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
-        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]) },
+        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => mayChangeProfile(isInstanceWideCertProfile(p), systemCertRevoke) },
     ];
 
     const drawer = (p: any) => (
@@ -142,6 +146,8 @@ const CertProfilesTab: React.FC = () => {
 
 /* ─── Signing Profiles Tab ─── */
 const SigningProfilesTab: React.FC = () => {
+    const { can } = useAuth();
+    const systemCaManage = can(Capabilities.CaManage);
     // Extended key usages come from the OID catalog, not a hardcoded list — see useEkuCatalog.
     const ekuCatalog = useEkuCatalog();
     const { requireStepUp } = useStepUp();
@@ -215,7 +221,7 @@ const SigningProfilesTab: React.FC = () => {
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
-        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]) },
+        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => mayChangeProfile(isUnboundSigningProfile(p), systemCaManage) },
     ];
 
     const drawer = (p: any) => (

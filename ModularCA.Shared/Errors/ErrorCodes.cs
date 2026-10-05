@@ -89,7 +89,11 @@ public static class ErrorCodes
     /// <summary>The previous certificate's revocation reason does not permit reissue.</summary>
     public const string ReissueReasonNotPermitted = "MCA-CFG-010";
 
-    /// <summary>The issuing CA carries name-constraint types this CA cannot enforce.</summary>
+    /// <summary>
+    /// Retired in 0.4.0, never to be reused: the issuing CA carried IP, email, URI or DN name
+    /// constraints, which issuance could not enforce and refused. All five types are enforced now,
+    /// and a violation is <see cref="NameConstraintViolation"/>; see <see cref="Retired"/>.
+    /// </summary>
     public const string NameConstraintTypeUnsupported = "MCA-CFG-011";
 
     /// <summary>
@@ -245,7 +249,7 @@ public static class ErrorCodes
     /// Codes nothing raises any more. They stay in <see cref="All"/> so their numbers are never
     /// reused, and so a log line or runbook that names one still resolves.
     /// </summary>
-    public static IReadOnlyCollection<string> Retired { get; } = [MultipleOrganizationsDisabled];
+    public static IReadOnlyCollection<string> Retired { get; } = [NameConstraintTypeUnsupported, MultipleOrganizationsDisabled];
 
     /// <summary>
     /// Every code declared above, discovered by reflection so the list cannot drift from the

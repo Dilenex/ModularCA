@@ -423,6 +423,7 @@ export interface CertProfileDto {
     allowedKeySizes: string;
     allowedSignatureAlgorithms: string;
     certificateAuthorityId?: string | null;
+    spaceId?: string | null;
     inheritsFromId?: string | null;
     inheritanceEnabled: boolean;
 }

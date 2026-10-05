@@ -10,7 +10,9 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { isUnboundSigningProfile, mayChangeProfile, INSTANCE_WIDE_READ_ONLY } from './profiles/instanceWide';
 import { parseListField, CeilingList, canonicalizeUsages, SubmitBlockedHint } from './profileHelpers';
 import { AlgorithmSummary } from './profiles/KeyPolicyEditor';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
@@ -35,6 +37,7 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
+    const { can } = useAuth();
     const { showToast } = useToast();
 
     const [profile, setProfile] = useState<any | null>(null);
@@ -144,6 +147,8 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     );
 
     const p = profile ?? {};
+    // An instance-wide profile is read-only without CaManage at system scope, as the server requires.
+    const readOnly = !isNew && !mayChangeProfile(isUnboundSigningProfile(p), can(Capabilities.CaManage));
     const title = isNew ? 'New signing profile' : p.name;
 
     return (
@@ -151,16 +156,16 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
             breadcrumbs={[{ label: 'Profile Management', to: SIGNING_TAB }, { label: 'Signing Profiles', to: SIGNING_TAB }, { label: title }]}
             title={title}
             status={!isNew && p.isDefault ? <StatusBadge status="active" label="Default" /> : undefined}
-            subtitle={isNew ? undefined : authorityName(p.issuerId)}
+            subtitle={isNew ? undefined : <>{authorityName(p.issuerId)}{readOnly && <span className="block text-xs">{INSTANCE_WIDE_READ_ONLY}</span>}</>}
             backTo={SIGNING_TAB}
-            editable
+            editable={!readOnly}
             initialMode={isNew ? 'edit' : 'view'}
             modeToggle={!isNew}
             saveLabel={isNew ? 'Create' : 'Save'}
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Signing Profile' : 'Edit Signing Profile'}>

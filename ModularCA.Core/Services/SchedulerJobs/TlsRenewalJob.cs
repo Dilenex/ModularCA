@@ -167,9 +167,30 @@ public class TlsRenewalJob : SingletonCronJob
     }
 
     /// <summary>
+    /// The DNS and IP names in <paramref name="cert"/>'s SAN extension, as <c>TYPE:value</c>
+    /// entries, for a row whose stored SAN list is empty.
+    /// </summary>
+    private static List<string> SansOf(X509Certificate2 cert)
+    {
+        var sans = new List<string>();
+        foreach (var ext in cert.Extensions)
+        {
+            if (ext is X509SubjectAlternativeNameExtension sanExt)
+            {
+                sans.AddRange(sanExt.EnumerateDnsNames().Select(d => $"DNS:{d}"));
+                sans.AddRange(sanExt.EnumerateIPAddresses().Select(ip => $"IP:{ip}"));
+                break;
+            }
+        }
+        return sans;
+    }
+
+    /// <summary>
     /// Renews the Web TLS certificate through the standard CSR → profile validation →
     /// CertificateIssuanceService pipeline. Reuses the subject DN and SANs from the current
-    /// certificate. After issuance, validates the chain, exports to PFX, and hot-swaps.
+    /// certificate's row (DNS and IP only, as every Web TLS path requires; another type refuses
+    /// the renewal rather than being dropped). After issuance, validates the chain, exports to
+    /// PFX, and hot-swaps.
     /// </summary>
     private async Task RenewCertificateAsync(X509Certificate2 currentCert, CancellationToken cancellationToken)
     {
@@ -199,8 +220,14 @@ public class TlsRenewalJob : SingletonCronJob
 
         // Generate CSR through the infrastructure pipeline
         var subjectDn = dbCert.SubjectDN;
+        // The SANs were never passed here, so a renewed Web TLS certificate carried none and
+        // clients matching the host name against SANs refused it.
+        var sans = UpnSanEncoding.DeserializeStoredSans(dbCert.SubjectAlternativeNamesJson);
+        if (sans.Count == 0)
+            sans = SansOf(currentCert);
+        WebTlsProvisioningService.EnsureDnsOrIpSans(sans);
         var (csrId, keyPair) = await _csrService.GenerateInfrastructureCsrAsync(
-            subjectDn, "ECDSA", 256, certProfileId, dbCert.SigningProfileId.Value);
+            subjectDn, "ECDSA", 256, certProfileId, dbCert.SigningProfileId.Value, sans);
 
         // Issue through the standard pipeline — CA is in the keystore at renewal time
         // Named argument: the space validity-ceiling enforcement mode now sits ahead of the token,

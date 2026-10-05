@@ -142,7 +142,7 @@ public class ErrorCodeCatalogTests
     {
         // MCA-CFG-017 refused a second space in single-organisation mode, which 0.4.0 retired.
         // It stays declared so its number is never handed to a different failure.
-        Assert.Equal(["MCA-CFG-017"], ErrorCodes.Retired);
+        Assert.Equal(["MCA-CFG-011", "MCA-CFG-017"], ErrorCodes.Retired);
         Assert.All(ErrorCodes.Retired, code => Assert.Contains(code, ErrorCodes.All));
         Assert.Equal("MCA-CFG-017", ErrorCodes.MultipleOrganizationsDisabled);
     }

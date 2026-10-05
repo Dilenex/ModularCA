@@ -9,7 +9,9 @@ import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { isInstanceWideCertProfile, mayChangeProfile, INSTANCE_WIDE_READ_ONLY } from './profiles/instanceWide';
 import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, FieldSourceBadge, SourceBorderedField, SubmitBlockedHint } from './profileHelpers';
 import { useEkuCatalog, useKeyUsageCatalog } from '../hooks/useOidCatalog';
 import { CertProfileForm } from './profiles/CertProfileForm';
@@ -52,6 +54,7 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
+    const { can } = useAuth();
     const { showToast } = useToast();
 
     const [profile, setProfile] = useState<any | null>(null);
@@ -169,22 +172,24 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
     );
 
     const p = profile ?? {};
+    // An instance-wide profile is read-only without CertRevoke at system scope, as the server requires.
+    const readOnly = !isNew && !mayChangeProfile(isInstanceWideCertProfile(p), can(Capabilities.CertRevoke));
     const title = isNew ? 'New certificate profile' : p.name;
 
     return (
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: CERT_TAB }, { label: 'Certificate Profiles', to: CERT_TAB }, { label: title }]}
             title={title}
-            subtitle={isNew ? undefined : (p.isCaProfile ? 'CA Profile' : 'Leaf Profile')}
+            subtitle={isNew ? undefined : <>{p.isCaProfile ? 'CA Profile' : 'Leaf Profile'}{readOnly && <span className="block text-xs">{INSTANCE_WIDE_READ_ONLY}</span>}</>}
             backTo={CERT_TAB}
-            editable
+            editable={!readOnly}
             initialMode={isNew ? 'edit' : 'view'}
             modeToggle={!isNew}
             saveLabel={isNew ? 'Create' : 'Save'}
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Certificate Profile' : 'Edit Certificate Profile'}>

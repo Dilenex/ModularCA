@@ -32,6 +32,12 @@ public class WebTlsProvisioningService(
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
+    /// <summary>
+    /// In Pending mode, issues the Web TLS certificate from the pending subject and SANs (DNS and
+    /// IP only, <see cref="EnsureDnsOrIpSans"/>) under the signing profile
+    /// <see cref="ResolveSigningProfileAsync"/> picks, writes the PFX, switches the config to
+    /// SelfIssued and hot-swaps the certificate. A failure is logged and the temporary certificate stays.
+    /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
@@ -53,17 +59,15 @@ public class WebTlsProvisioningService(
             if (certProfile == null)
                 throw new InvalidOperationException("Web TLS Certificate Profile not found. Run bootstrap to seed profiles.");
 
-            var signingProfileLink = await db.AllowedCertProfileSigningProfiles
-                .Include(l => l.SigningProfile)
-                .FirstOrDefaultAsync(l => l.CertProfileId == certProfile.Id, cancellationToken);
-            if (signingProfileLink?.SigningProfile == null)
-                throw new InvalidOperationException("No signing profile linked to Web TLS Certificate Profile.");
-
-            var signingProfile = signingProfileLink.SigningProfile;
+            var signingProfile = await ResolveSigningProfileAsync(db, certProfile.Id, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    "No enabled instance CA (or CA of the instance's primary space) has a signing profile linked to the "
+                    + "Web TLS Certificate Profile.");
 
             // Build subject DN and SANs from pending config
             var subjectDn = config.Https.PendingSubjectDn ?? "CN=localhost";
             var sans = config.Https.PendingSans ?? new List<string> { "DNS:localhost", "IP:127.0.0.1" };
+            EnsureDnsOrIpSans(sans);
             var validityDays = config.Https.PendingValidityDays ?? 365;
             var keyAlgorithm = config.Https.PendingKeyAlgorithm ?? "ECDSA";
             var keySize = config.Https.PendingKeySize ?? 256;
@@ -180,6 +184,60 @@ public class WebTlsProvisioningService(
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// The signing profile the instance's Web TLS certificate is issued under: one linked to
+    /// <paramref name="webTlsCertProfileId"/> whose issuer is the current certificate of an
+    /// enabled, undeleted X.509 CA other than the system signing CA, and that CA is an instance CA
+    /// or a CA of the instance's primary space (the undeletable space bootstrap creates, which
+    /// holds the bootstrap root). A CA of any other space is never chosen: space signing profiles
+    /// are linked to instance-wide cert profiles, the Web TLS one included, and a delegated space
+    /// must not issue the instance's own TLS identity. Instance CAs come first, then the primary
+    /// space's; within each, the oldest signing profile, then the lowest id, so the choice does not
+    /// depend on row order. Null when there is none.
+    /// </summary>
+    internal static async Task<Shared.Entities.SigningProfileEntity?> ResolveSigningProfileAsync(
+        ModularCADbContext db, Guid webTlsCertProfileId, CancellationToken cancellationToken = default)
+    {
+        var candidates = await (
+            from link in db.AllowedCertProfileSigningProfiles
+            where link.CertProfileId == webTlsCertProfileId
+            join profile in db.SigningProfiles on link.SigningProfileId equals profile.Id
+            join ca in db.CertificateAuthorities on profile.IssuerId equals ca.CertificateId
+            where ca.IsEnabled && !ca.IsDeleted && !ca.IsSshCa
+                && (ca.Label == null || ca.Label.ToLower() != "system-signing-ca")
+                && (ca.SpaceId == null
+                    || db.Spaces.Any(s => s.Id == ca.SpaceId && !s.CanBeDeleted && !s.IsDeleted && s.IsEnabled))
+            select new { Profile = profile, Instance = ca.SpaceId == null })
+            .ToListAsync(cancellationToken);
+
+        return candidates
+            .OrderByDescending(c => c.Instance)
+            .ThenBy(c => c.Profile.CreatedAt)
+            .ThenBy(c => c.Profile.Id)
+            .Select(c => c.Profile)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Refuses a Web TLS SAN that is not <c>DNS:name</c> or <c>IP:address</c>: the Web TLS
+    /// certificate carries only those, as setup and the Web TLS reissue endpoint already require.
+    /// The infrastructure CSR builder itself takes every SAN type, so the restriction is kept here.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">An entry has another type, or none.</exception>
+    internal static void EnsureDnsOrIpSans(IEnumerable<string> sans)
+    {
+        foreach (var san in sans)
+        {
+            if (string.IsNullOrWhiteSpace(san))
+                continue;
+            var colon = san.IndexOf(':');
+            var type = colon > 0 ? san[..colon].Trim() : string.Empty;
+            if (!type.Equals("DNS", StringComparison.OrdinalIgnoreCase) && !type.Equals("IP", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Web TLS certificate SAN '{san}' is not supported; the Web TLS certificate carries only DNS:name and IP:address names.");
+        }
+    }
 
     /// <summary>
     /// Persists the in-memory <see cref="SystemConfig"/> to <c>config.yaml</c>. Uses

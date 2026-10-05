@@ -278,9 +278,9 @@ Built, all in `shared/common/src` so setupui can use them:
 - `generalNames.ts`: `NAME_CONSTRAINT_TYPES` and `validateNc*`, which mirror the server's new
   `NameConstraintRules`; `SAN_TYPES` (DNS, IP, Email with alias RFC822, URI, UPN) and
   `INFRA_SAN_TYPES` (DNS, IP) with `validateSan*`; the shared hint texts.
-- `components/NameConstraintsEditor.tsx`: Permitted and Excluded sections, the hint, the line that
-  constraints land only in CA certificates, and a warning when a non-DNS row is present (see
-  below). `NameConstraintsView` renders stored constraints read-only.
+- `components/NameConstraintsEditor.tsx`: Permitted and Excluded sections, the hint, and the line
+  that constraints land only in CA certificates. `NameConstraintsView` renders stored constraints
+  read-only.
 
 | # | Done | Note |
 |---|---|---|
@@ -325,9 +325,11 @@ Name-constraint forms (what the server actually did, checked against BouncyCastl
   after the approvals. Now an empty list means no subtree, and an invalid entry throws an
   `InvalidOperationException` naming it, rather than being dropped. A profile stored with a bad
   entry therefore fails CA-certificate issuance loudly instead of issuing a weaker constraint.
-- **Non-DNS constraints.** `CertificateIssuanceService.ValidateNameConstraints` refuses every
-  issuance from a CA whose certificate carries IP, Email, URI or DN constraints (enforcement is not
-  implemented). Both editors and the ceremony view now say so when such a row is present.
+- **Non-DNS constraints.** Issuance used to refuse everything from a CA whose certificate carried
+  IP, Email, URI or DN constraints (`MCA-CFG-011`, now retired). All five types are enforced now,
+  through BouncyCastle's `PkixNameConstraintValidator`, against the subject DN, its emailAddress
+  values and every SAN, for the issuing CA and every CA above it (`NameConstraintEnforcer`); a
+  violation is `MCA-POL-001`. The editors and the ceremony view no longer warn.
 - The cases both sides must agree on are in `tests/modularca.web.tests/src/common/name-constraint-cases.json`,
   read by `generalNames.test.ts` and `NameConstraintRulesTests`.
 

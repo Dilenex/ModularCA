@@ -219,8 +219,8 @@ public class AdminWebTlsController(
             return BadRequest(new { error = $"Signing profile {signingProfileId} not found." });
 
         var sans = request.Sans ?? new List<string>();
-        // CsrService builds only DNS and IP names into an infrastructure CSR and skipped anything
-        // else without a word, so a requested Email or URI name, or an unprefixed line, vanished.
+        // The Web TLS certificate carries DNS and IP names only; anything else, or an unprefixed
+        // line, is refused here rather than issued.
         foreach (var san in sans)
         {
             var colon = san?.IndexOf(':') ?? -1;

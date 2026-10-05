@@ -183,6 +183,7 @@ public class AdminCertSignRequestController(
     /// bounded timeout. A pattern that times out or does not compile yields "error" (never "valid")
     /// with a message pointing at the profile, so a broken profile surfaces as broken here instead
     /// of previewing as a pass and then behaving differently at issuance time.
+    /// Requirements and per-type SAN rules are compared ignoring case (<see cref="RequestProfileRules"/>), as issuance compares them.
     /// </summary>
     [HttpPost("validate-against-profile")]
     [Authorize]
@@ -209,7 +210,7 @@ public class AdminCertSignRequestController(
             var hasValue = request.Subject.TryGetValue(rule.Field, out var value) && !string.IsNullOrWhiteSpace(value);
             var result = new FieldValidationResult { Field = rule.Field };
 
-            if (rule.Requirement == "Forbidden")
+            if (RequestProfileRules.IsForbidden(rule.Requirement))
             {
                 if (hasValue)
                 {
@@ -223,7 +224,7 @@ public class AdminCertSignRequestController(
                     result.Message = "Forbidden (correctly absent).";
                 }
             }
-            else if (rule.Requirement == "Required")
+            else if (RequestProfileRules.IsRequired(rule.Requirement))
             {
                 if (!hasValue)
                 {
@@ -285,7 +286,7 @@ public class AdminCertSignRequestController(
             else
             {
                 // Check regex
-                if (sanRules.Rules.TryGetValue(san.Type, out var typeRule))
+                if (RequestProfileRules.TryGetSanRule(sanRules, san.Type, out var typeRule))
                 {
                     if (!string.IsNullOrWhiteSpace(typeRule.Regex))
                     {
@@ -359,7 +360,7 @@ public class AdminCertSignRequestController(
         // Check max counts
         foreach (var kvp in sanCountsByType)
         {
-            if (sanRules.Rules.TryGetValue(kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
+            if (RequestProfileRules.TryGetSanRule(sanRules, kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
             {
                 // Mark the last entries as errors
                 var overCount = kvp.Value - typeRule.MaxCount;

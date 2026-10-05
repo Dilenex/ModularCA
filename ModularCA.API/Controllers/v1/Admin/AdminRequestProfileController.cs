@@ -11,6 +11,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.RequestProfiles;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -50,6 +51,20 @@ public class AdminRequestProfileController(
         var ca = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == id).Select(c => new { c.SpaceId }).FirstOrDefaultAsync();
         return ca != null && fence.Allows(ca.SpaceId);
+    }
+
+    /// <summary>
+    /// 403 when the profile is unbound (no CA, so instance-wide) and the caller lacks cert.revoke at
+    /// system scope, the capability creating one needs; null otherwise.
+    /// </summary>
+    private async Task<IActionResult?> UnboundRefusalAsync(Guid? caId)
+    {
+        if (caId != null)
+            return null;
+        await currentUser.EnsureLoadedAsync();
+        return currentUser.User != null && await _authService.HasScopeCapabilityAsync(currentUser.User.Id, null, Capabilities.CertRevoke)
+            ? null
+            : StatusCode(403, new { error = "An unbound request profile applies instance-wide; changing it needs cert.revoke at system scope." });
     }
 
     /// <summary>
@@ -104,13 +119,17 @@ public class AdminRequestProfileController(
 
     /// <summary>
     /// Creates a new request profile with subject DN rules, SAN rules, enrollment constraints,
-    /// and optional inheritance configuration.
+    /// and optional inheritance configuration. A requirement, field or SAN type outside the rule
+    /// vocabulary is refused with 400 naming it and the allowed values; the rest are stored in
+    /// their canonical spelling (<see cref="RequestProfileRules.Normalize"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
     public async Task<IActionResult> Create([FromBody] CreateRequestProfileRequest request)
     {
+        if (RequestProfileRules.Normalize(request.SubjectDnRules, request.SanRules) is string rulesError)
+            return BadRequest(new { error = rulesError });
         var result = await requestProfileService.CreateAsync(request);
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync("RequestProfileCreated", currentUser.User?.Id, currentUser.User?.Username,
@@ -125,7 +144,9 @@ public class AdminRequestProfileController(
     /// moving it to another CA needs cert.revoke on the new CA and a CA of the profile's current
     /// scope (<see cref="CaBindingAccess"/>). A request profile has no scope of its own beyond its
     /// CA, so unbinding it makes it instance-wide and needs cert.revoke at system scope, as
-    /// creating an unbound one does (403 otherwise).
+    /// creating an unbound one does (403 otherwise). Rules are checked and canonicalised as on
+    /// create (<see cref="RequestProfileRules.Normalize"/>; 400 when one is outside the vocabulary).
+    /// An unbound profile needs cert.revoke at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -141,6 +162,8 @@ public class AdminRequestProfileController(
         var current = await requestProfileService.GetByIdAsync(id);
         if (current == null || !await InFenceAsync(current.CertificateAuthorityId, Capabilities.CertRevoke))
             return NotFound(new { message = "Request profile not found" });
+        if (await UnboundRefusalAsync(current.CertificateAuthorityId) is { } unbound)
+            return unbound;
         if (current.CertificateAuthorityId != request.CertificateAuthorityId)
         {
             // Unbound, the profile applies instance-wide, so the scope it lands in is the instance.
@@ -152,6 +175,9 @@ public class AdminRequestProfileController(
                 return refused;
         }
 
+        if (RequestProfileRules.Normalize(request.SubjectDnRules, request.SanRules) is string rulesError)
+            return BadRequest(new { error = rulesError });
+
         var result = await requestProfileService.UpdateAsync(id, request);
         await audit.LogAsync("RequestProfileUpdated", currentUser.User?.Id, currentUser.User?.Username,
             "RequestProfile", id.ToString(), request,
@@ -160,7 +186,9 @@ public class AdminRequestProfileController(
     }
 
     /// <summary>
-    /// Deletes a request profile by its GUID.
+    /// Deletes a request profile by its GUID. A profile outside the caller's cert.revoke
+    /// <see cref="SpaceFence"/> is not found (404), as on update, and an unbound one needs
+    /// cert.revoke at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpDelete("{id}")]
@@ -172,6 +200,12 @@ public class AdminRequestProfileController(
             return Unauthorized();
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
+
+        var current = await requestProfileService.GetByIdAsync(id);
+        if (current == null || !await InFenceAsync(current.CertificateAuthorityId, Capabilities.CertRevoke))
+            return NotFound(new { message = "Request profile not found" });
+        if (await UnboundRefusalAsync(current.CertificateAuthorityId) is { } unbound)
+            return unbound;
 
         var deleted = await requestProfileService.DeleteAsync(id);
         if (!deleted)

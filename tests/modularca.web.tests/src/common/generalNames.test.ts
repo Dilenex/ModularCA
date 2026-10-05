@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import cases from './name-constraint-cases.json';
 import {
-    INFRA_SAN_TYPES, NAME_CONSTRAINT_TYPES, SAN_TYPES, hasNonDnsConstraint, nameConstraintEntryError, nameConstraintListFromStored,
+    INFRA_SAN_TYPES, NAME_CONSTRAINT_TYPES, SAN_TYPES, nameConstraintEntryError, nameConstraintListFromStored,
     nameConstraintRowsFromStored, nameConstraintRowsInvalid, nameConstraintRowsToJson, nameConstraintRowsToList,
     validateNcEmail, validateNcIp, validateSanDns, validateSanIp, validateSanUpn, validateSanUri,
 } from '@shared/generalNames';
@@ -59,12 +59,6 @@ describe('name constraints: stored values', () => {
         expect(nameConstraintRowsToJson(rows)).toBe('["DNS:a.example","EMAIL:example.com"]');
         expect(nameConstraintRowsToList(rows)).toEqual(['DNS:a.example', 'EMAIL:example.com']);
         expect(nameConstraintRowsToJson([{ type: 'DNS', value: '' }])).toBeNull();
-    });
-
-    it('notices constraints other than DNS', () => {
-        expect(hasNonDnsConstraint([{ type: 'DNS', value: 'a.example' }])).toBe(false);
-        expect(hasNonDnsConstraint([{ type: 'IP', value: '10.0.0.0/8' }])).toBe(true);
-        expect(hasNonDnsConstraint([{ type: 'IP', value: '' }])).toBe(false);
     });
 });
 

@@ -155,6 +155,12 @@ namespace ModularCA.Core.Services
             return false;
         }
 
+        /// <summary>
+        /// Validates a subject DN and SANs against the effective request profile: each subject rule's
+        /// requirement (compared ignoring case, <see cref="RequestProfileRules"/>), fixed and default
+        /// values, pattern and length, then the SAN rules. Returns the subject with fixed and default
+        /// values applied.
+        /// </summary>
         public async Task<(bool IsValid, string? Error, string? ModifiedSubject)> ValidateAsync(
             Guid requestProfileId,
             string subjectDn,
@@ -173,16 +179,16 @@ namespace ModularCA.Core.Services
             {
                 var value = dnComponents.GetValueOrDefault(rule.Field.ToUpperInvariant());
 
-                switch (rule.Requirement)
+                // Compared ignoring case: a rule stored as "required" used to enforce nothing.
+                if (RequestProfileRules.IsRequired(rule.Requirement))
                 {
-                    case "Required":
-                        if (string.IsNullOrEmpty(value) && string.IsNullOrEmpty(rule.FixedValue) && string.IsNullOrEmpty(rule.DefaultValue))
-                            return (false, $"Subject field '{rule.Field}' is required", null);
-                        break;
-                    case "Forbidden":
-                        if (!string.IsNullOrEmpty(value))
-                            return (false, $"Subject field '{rule.Field}' is not allowed", null);
-                        break;
+                    if (string.IsNullOrEmpty(value) && string.IsNullOrEmpty(rule.FixedValue) && string.IsNullOrEmpty(rule.DefaultValue))
+                        return (false, $"Subject field '{rule.Field}' is required", null);
+                }
+                else if (RequestProfileRules.IsForbidden(rule.Requirement))
+                {
+                    if (!string.IsNullOrEmpty(value))
+                        return (false, $"Subject field '{rule.Field}' is not allowed", null);
                 }
 
                 // Apply fixed value
@@ -332,7 +338,8 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Validates a list of SANs against the SAN rules.
-        /// SANs are stored as "TYPE:value" (e.g., "DNS:example.com", "IP:1.2.3.4").
+        /// SANs are stored as "TYPE:value" (e.g., "DNS:example.com", "IP:1.2.3.4"). Per-type rules
+        /// are found whatever the case of their key (<see cref="RequestProfileRules.TryGetSanRule"/>).
         /// Returns an error string if validation fails, null if valid.
         /// Per-type patterns run through <see cref="ProfileRegex"/> so a pathological profile
         /// pattern cannot be turned into a denial of service by a crafted SAN value, and so a
@@ -366,7 +373,7 @@ namespace ModularCA.Core.Services
                 typeCounts[sanType] = count + 1;
 
                 // Apply per-type rules
-                if (rules.Rules != null && rules.Rules.TryGetValue(sanType, out var typeRule))
+                if (RequestProfileRules.TryGetSanRule(rules, sanType, out var typeRule))
                 {
                     // Regex validation
                     // Bounded, fail-closed match — see the subject-DN rule check in ValidateAsync.
@@ -380,7 +387,7 @@ namespace ModularCA.Core.Services
             {
                 foreach (var kvp in typeCounts)
                 {
-                    if (rules.Rules.TryGetValue(kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
+                    if (RequestProfileRules.TryGetSanRule(rules, kvp.Key, out var typeRule) && kvp.Value > typeRule.MaxCount)
                         return $"Too many SANs of type '{kvp.Key}': {kvp.Value} (max {typeRule.MaxCount})";
                 }
             }

@@ -144,7 +144,8 @@ public class AdminCertProfileController(
     /// <see cref="SpaceFence"/> is not found. Moving the profile to another CA, or unbinding it,
     /// needs cert.revoke on the new CA (or across the profile's scope) and a CA of the profile's
     /// own scope (<see cref="CaBindingAccess"/>). <c>CtLogIds</c> that are not a JSON array of
-    /// existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>).
+    /// existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>). An instance-wide
+    /// profile needs cert.revoke at system scope (403, <see cref="InstanceWideRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -163,6 +164,8 @@ public class AdminCertProfileController(
             .FirstOrDefaultAsync();
         if (current == null || !WriteFence.AllowsProfile(current.SpaceId, current.CertificateAuthorityId))
             return NotFound(new { message = "Profile not found" });
+        if (await InstanceWideRefusalAsync(current.SpaceId, current.CertificateAuthorityId) is { } instanceWide)
+            return instanceWide;
         if (current.CertificateAuthorityId != request.CertificateAuthorityId
             && CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, WriteFence, currentUser.User!.Id,
                 request.CertificateAuthorityId, current.SpaceId, Capabilities.CertRevoke)) is { } refused)
@@ -180,7 +183,9 @@ public class AdminCertProfileController(
     }
 
     /// <summary>
-    /// Deletes a certificate profile by its integer ID.
+    /// Deletes a certificate profile by its GUID. A profile outside the caller's cert.revoke
+    /// <see cref="SpaceFence"/> is not found (404), as on update, and an instance-wide one needs
+    /// cert.revoke at system scope (403, <see cref="InstanceWideRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpDelete("{id}")]
@@ -192,6 +197,15 @@ public class AdminCertProfileController(
             return Unauthorized();
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteCertProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
+
+        var current = await db.CertProfiles.AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
+            .FirstOrDefaultAsync();
+        if (current == null || !WriteFence.AllowsProfile(current.SpaceId, current.CertificateAuthorityId))
+            return NotFound(new { message = "Profile not found" });
+        if (await InstanceWideRefusalAsync(current.SpaceId, current.CertificateAuthorityId) is { } instanceWide)
+            return instanceWide;
 
         await certProfileService.DeleteAsync(id);
         await audit.LogAsync(AuditActionType.CertProfileDeleted, currentUser.User?.Id, currentUser.User?.Username,
@@ -262,6 +276,21 @@ public class AdminCertProfileController(
         return unknown.Count == 0
             ? null
             : $"CtLogIds names CT logs that do not exist: {string.Join(", ", unknown)}. Remove them, or pick logs from GET /api/v1/admin/ct-logs/options.";
+    }
+
+    /// <summary>
+    /// 403 when the profile is instance-wide (no space, no CA) and the caller lacks cert.revoke at
+    /// system scope, the capability creating one needs; null otherwise. An instance-wide profile
+    /// applies to every space's CAs, so a space-scoped caller may read and link it but not change it.
+    /// </summary>
+    private async Task<IActionResult?> InstanceWideRefusalAsync(Guid? spaceId, Guid? caId)
+    {
+        if (spaceId != null || caId != null)
+            return null;
+        await currentUser.EnsureLoadedAsync();
+        return currentUser.User != null && await _authService.HasScopeCapabilityAsync(currentUser.User.Id, null, Capabilities.CertRevoke)
+            ? null
+            : StatusCode(403, new { error = "An instance-wide certificate profile applies to every space; changing it needs cert.revoke at system scope." });
     }
 
     private SpaceFence ReadFence => SpaceFence.From(HttpContext, Capabilities.CertView);

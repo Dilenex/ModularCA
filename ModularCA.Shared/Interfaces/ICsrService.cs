@@ -11,7 +11,10 @@ namespace ModularCA.Shared.Interfaces
         /// <summary>
         /// Generates a CSR for an infrastructure certificate (TSA signer, OCSP responder).
         /// Does not encrypt the private key onto the CSR entity — the caller writes it to the
-        /// keystore. Sets Status="Approved" and IsInfrastructureCert=true.
+        /// keystore. Sets Status="Approved" and IsInfrastructureCert=true. <paramref name="sans"/>
+        /// are <c>TYPE:value</c> entries of any type issuance encodes (DNS, IP, EMAIL, URI, UPN);
+        /// any other entry throws <see cref="InvalidOperationException"/> rather than being dropped.
+        /// Callers that must restrict the types (the Web TLS paths) check them first.
         /// </summary>
         /// <returns>The CSR entity ID and the generated key pair (caller owns the private key).</returns>
         Task<(Guid csrId, AsymmetricCipherKeyPair keyPair)> GenerateInfrastructureCsrAsync(

@@ -250,6 +250,7 @@ namespace ModularCA.Core.Services
             AllowedKeySizes = profile.AllowedKeySizes,
             AllowedSignatureAlgorithms = profile.AllowedSignatureAlgorithms,
             CertificateAuthorityId = profile.CertificateAuthorityId,
+            SpaceId = profile.SpaceId,
             InheritsFromId = profile.InheritsFromId,
             InheritanceEnabled = profile.InheritanceEnabled
         };
