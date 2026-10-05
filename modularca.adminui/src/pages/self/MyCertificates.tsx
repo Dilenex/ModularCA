@@ -11,6 +11,13 @@ import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { inputClassNarrow as inputClass } from '@shared/components/forms';
 import { RevocationReasonHint } from '../CertificateDetail';
+import { capitalize, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from '../certLifecycle';
+
+/** "Replaced by <serial>", "Replaced" or "Not replaced". */
+function replacementText(cert: any): string {
+    if (!cert.replaced) return 'Not replaced';
+    return cert.replacedBySerial ? `Replaced by ${cert.replacedBySerial}` : 'Replaced';
+}
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in
 // sync with UserCertificateController.SelfRevokeAllowedReasons on the backend — CA-level reasons
@@ -39,10 +46,6 @@ function statusBadgeType(s: string): 'active' | 'disabled' | 'pending' {
     if (s === 'active') return 'active';
     if (s === 'revoked') return 'disabled';
     return 'pending';
-}
-
-function daysUntilExpiry(notAfter: string): number {
-    return Math.ceil((new Date(notAfter).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 }
 
 const MyCertificates: React.FC = () => {
@@ -243,12 +246,17 @@ const MyCertificates: React.FC = () => {
             key: 'expires', header: 'Expires', defaultWidth: 210, minWidth: 120, truncate: false,
             exportValue: (c) => formatDate(c.notAfter),
             render: (c) => {
-                const s = certStatus(c);
-                const days = daysUntilExpiry(c.notAfter);
+                const now = new Date();
+                const state = expiryState(c, now);
                 return (
-                    <span className="text-xs text-ink-muted flex items-center gap-2 whitespace-nowrap">
-                        {formatDate(c.notAfter)}
-                        {s === 'active' && days <= 30 && <span className="text-warn">{days}d left</span>}
+                    <span className="flex flex-col min-w-0">
+                        <span className="text-xs text-ink-muted whitespace-nowrap">{formatDate(c.notAfter)}</span>
+                        {(state === 'expired' || state === 'expiring') && (
+                            <span className="text-xs truncate">
+                                <span className={toneTextClass(lifecycleTone(c.notAfter, !!c.replaced, now))}>{capitalize(expiryPhrase(c.notAfter, now))}</span>
+                                <span className="text-ink-muted"> · {replacementText(c)}</span>
+                            </span>
+                        )}
                     </span>
                 );
             },
@@ -283,6 +291,14 @@ const MyCertificates: React.FC = () => {
                                 <span key={i} className="px-2 py-0.5 text-xs bg-sunken text-ink rounded">{san}</span>
                             ))}
                         </div>
+                    </div>
+                )}
+
+                {(expiryState(cert) === 'expired' || expiryState(cert) === 'expiring') && (
+                    <div className={`border rounded p-2 text-xs ${toneBannerClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>
+                        <span className={`font-semibold ${toneTextClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                        <span className="text-ink"> · {replacementText(cert)}</span>
+                        {!cert.replaced && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
                     </div>
                 )}
 

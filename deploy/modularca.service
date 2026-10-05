@@ -1,11 +1,11 @@
 # ModularCA — systemd unit stub
 #
 # Install:
-#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca
-#   sudo mkdir -p /opt/modularca && sudo cp -r dist/linux-x64/* /opt/modularca/
-#   sudo chown -R modularca:modularca /opt/modularca
-#   sudo cp deploy/modularca.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca
+#   sudo ./install.sh     (from the extracted archive; it creates the account), or install the .deb
+#   sudo systemctl enable --now modularca
+#
+# The program files in /opt/modularca belong to root; the service account owns only the runtime
+# directories listed in ReadWritePaths below. install.sh and the .deb's postinst set this up.
 #
 # Logs:  journalctl -u modularca -f
 #
@@ -40,8 +40,8 @@ Group=modularca
 WorkingDirectory=/opt/modularca
 ExecStart=/opt/modularca/ModularCA.API
 
-# Config, keystores and backups resolve relative to AppContext.BaseDirectory, i.e. the
-# install directory — so it must stay writable by this user. See ReadWritePaths below.
+# Config, keystores, logs and backups resolve relative to AppContext.BaseDirectory, i.e. the
+# install directory. See ReadWritePaths below.
 Environment=DOTNET_ENVIRONMENT=Production
 # Serilog writes structured JSON to stdout when running under systemd; journald captures it.
 Environment=DOTNET_CONSOLE_ANSI_COLOR=false
@@ -99,9 +99,12 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
-# ProtectSystem=strict makes the whole filesystem read-only, so every path the app
-# writes must be listed. Keystores, config and backups all live under the install dir.
-ReadWritePaths=/opt/modularca
+# ProtectSystem=strict makes the whole filesystem read-only, so every path the app writes must be
+# listed: the runtime directories, the list RUNTIME_DIRS keeps in install.sh and postinst. The
+# program files around them stay read-only. A Backup.OutputPath, AuditRetention.ArchivePath,
+# SshCa.KeyStoragePath or Logging.FilePath configured outside these needs its own entry in a
+# drop-in, and must be owned by this user.
+ReadWritePaths=/opt/modularca/config /opt/modularca/keystores /opt/modularca/logs /opt/modularca/backups
 
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0

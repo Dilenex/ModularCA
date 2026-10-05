@@ -5,15 +5,13 @@
 # loopback. It hosts no controller, console, scheduler or enrollment protocol. The node runs
 # modularca.service with --role node and Signer.Mode: Remote, and holds no key.
 #
-# Install (after the node is set up as a single process and its wizard has completed):
-#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
-#   sudo cp deploy/modularca-signer.service /etc/systemd/system/
-#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --init-identity
-#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --issue-node-identity /tmp/node-identity
-#   # set Signer.PinnedClientSpki (printed) and the node's Signer section (from /tmp/node-identity)
-#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca-signer
-#   sudo systemctl restart modularca
-# See README-DEPLOY.md, "Two units: the signer apart from the node", for the ownership changes.
+# install.sh installs this unit as /etc/systemd/system/modularca-signer.service and the .deb as
+# /lib/systemd/system/modularca-signer.service; neither enables it. Set up the split as
+# README-DEPLOY.md, "Two units: the signer apart from the node", describes (after the node is set
+# up as a single process and its wizard has completed): the signer's account, the ownership of
+# keystores/ and config/, the identity, then
+#   sudo systemctl enable --now modularca-signer
+# Upgrades leave the ownership the split set alone. The binaries this unit runs belong to root.
 #
 # Logs:  journalctl -u modularca-signer -f
 
@@ -78,7 +76,8 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
 # Only what the signer writes. config/ is read-only here: the identity commands run as this
-# user before the unit starts, and the unit itself changes no configuration.
+# user before the unit starts, and the unit itself changes no configuration. logs/ belongs to the
+# node's account, so on one host the signer's file logs are refused there and the journal has them.
 ReadWritePaths=/opt/modularca/keystores /opt/modularca/logs
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
 

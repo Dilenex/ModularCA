@@ -12,20 +12,43 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `ModularCA.Keystore.Unlocker` | Break-glass keystore CLI. Separate binary on purpose — it exists for when the service will not start, so it must not depend on the service's hosting or configuration. |
 | `wwwroot/` | The five built SPAs: admin, user, public, setup, docs. |
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
-| `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. |
+| `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. `install.sh` installs both units in `/etc/systemd/system/` (`modularca-signer.service` is not enabled); the rest are examples to apply by hand from the extracted archive. |
 | `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
 
 ## Permissions are set by the installer, not the archive
 
 This archive is **built on Windows**, so it carries no Unix permission bits and no executable
-flags. `install.sh` sets them explicitly:
+flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same):
 
-- `ModularCA.API` and `ModularCA.Keystore.Unlocker` → `0755`
-- `config/` and `keystores/` → `0700`, files `0600` — they hold database credentials, the
-  secondary keystore passphrase, and the CA private keys
-- everything under `/opt/modularca` owned by the `modularca` service account
+- **Program files belong to root.** `/opt/modularca` itself and everything the build ships into
+  it (binaries, libraries, `wwwroot/`) are `root:root`, directories and the three executables
+  (`ModularCA.API`, `ModularCA.Keystore.Unlocker`, `modularca-migrate`) `0755`, everything else
+  `0644`. No service account can replace a binary, which matters most on a split install, where the
+  signer runs the same binaries as the node.
+- **The service account owns only the runtime directories**, the four the service writes:
+  `config/` (`0700`; configuration, credentials, the web TLS certificate, the data-protection keys
+  in `config/dp-keys/`, SSH CA keys, backup keys), `keystores/` (`0700`; the CA private keys),
+  `logs/` (`0750`) and `backups/` (`0700`; scheduled backups and the audit archive). The unit's
+  `ReadWritePaths=` names the same four, and everything else under `/opt/modularca` is read-only
+  to the service.
+- **A runtime directory is set up once.** The installer creates one that is missing, owned by
+  `modularca` with the mode above, and hands over one still owned by root. After that it never
+  changes its ownership, its mode or anything in it, on any run; the service writes its secrets
+  there owner-only itself. On a split install the signer keeps `keystores/` and `keystore.yaml` across every
+  upgrade (see "Two units" below).
 - `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
   superuser, so it must not live where the service account can rewrite it.
+
+If you point `Backup.OutputPath`, `AuditRetention.ArchivePath`, `SshCa.KeyStoragePath` or
+`Logging.FilePath` at a directory outside these four, create it owned by `modularca` and add it to
+`ReadWritePaths=` in a drop-in (`/etc/systemd/system/modularca.service.d/paths.conf`). `install.sh`
+warns about any top-level entry in `/opt/modularca` that `modularca` owns and the build does not
+ship, and leaves it as it is. The command-line `--backup` writes its archive to `Backup.OutputPath`
+(`backups/` by default), as the console and the scheduler do; a path given on the command line
+must also lie inside `/opt/modularca`. A restore writes its pre-restore snapshot to the same
+directory:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --backup
 
 Extracting the tarball and running the binary directly, without the installer, gives you a
 non-executable apphost and world-readable secrets. Use the installer.
@@ -55,8 +78,9 @@ the **new** build's `--upgrade-check` (below) as the service account against the
 `config/`, before it replaces anything. If the check does not pass, it prints the check's report
 and "the upgrade would be refused; nothing was changed", starts again the units it stopped, on
 the build still installed, and exits with the check's status (3 refused, 75 a database could not
-be reached). If it passes, it replaces binaries and `wwwroot`, leaves `config/` and `keystores/`
-alone, and starts again the units that were running. Database migrations are applied by the
+be reached). If it passes, it replaces binaries and `wwwroot`, gives them to root, leaves the
+runtime directories (`config/`, `keystores/`, `logs/`, `backups/`) exactly as they are, ownership
+and modes included, and starts again the units that were running. Database migrations are applied by the
 service when it starts. A fresh install (no `config/db.yaml`) has nothing to check.
 
 If `install.sh` fails partway, it says the install is INCOMPLETE. Before it began replacing files
@@ -389,6 +413,13 @@ you run now, and can be run before the tarball is even copied to the host. An in
   Run the file from `/usr/share/modularca/sql`, or from the tarball's `share/sql` on a host
   without the install. Never run it from a copy under `/opt/modularca`, which the service account
   can rewrite.
+- **Program files are root's.** Before 0.4.0 the installer and `postinst` gave all of
+  `/opt/modularca` to `modularca`; from 0.4.0 they give the program files to root and leave the
+  service account only `config/`, `keystores/`, `logs/` and `backups/` (see "Permissions are set by
+  the installer"). The packaged unit's `ReadWritePaths=` is narrowed to those four. A tarball
+  install keeps an `/etc/systemd/system/modularca.service` that differs from the packaged one, so it
+  keeps `ReadWritePaths=/opt/modularca`, which still works; replace it with the packaged copy to
+  narrow it. A configured path outside the four needs a drop-in, as described there.
 - **The `.deb` upgrade from 0.3.x, once.** The 0.3.x package's `prerm` stops `modularca` and records
   nothing, and dpkg runs it before any script of the new package, so not even the new `preinst`
   can see whether the node was running. On this one upgrade `postinst` therefore starts `modularca`
@@ -569,6 +600,47 @@ The audit role owns the audit tables on every install. The audit trail is tamper
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
 `docs/architecture/postgresql-migration.md`.
 
+## Restoring a backup
+
+`--restore` puts back the databases, the keystores and `config/` from an archive; the console's
+Backup page does the same for an archive in `backups/`. From the command line, with the service
+stopped:
+
+    sudo systemctl stop modularca
+    sudo -u modularca /opt/modularca/ModularCA.API --restore /opt/modularca/backups/<archive>.enc
+    sudo systemctl start modularca
+
+Before it changes anything it writes the live `config/` and keystores to
+`backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in `config/`;
+delete it once the restored node is running and you no longer need to go back.
+
+**The databases are this host's.** A restore writes into the databases this host's own
+`config/db.yaml` names, with its credentials and any `MODULARCA__DB__*` overrides in the
+service's environment. No archive carries `db.yaml`, and the restore ignores a `DB:` section in
+the archived `config.yaml`: archives taken by earlier builds can have one, and it names the host
+the backup was taken on, which may still be running. The restored `config.yaml` is written
+without it. A host with no `db.yaml` is refused before anything changes.
+
+### Onto a new host
+
+An archive carries neither its own key nor the keystore passphrases, so keep these off the CA
+host when you set it up: `config/backup.key` (or the backup password, for a `StoredPassword`
+archive) and `config/keystore.yaml`.
+
+1. Install the build the archive was taken with. Where this host has a `config.yaml` (after the
+   wizard), the restore compares the archive's schema with the database's and refuses a
+   difference.
+2. Create the databases and `config/db.yaml`: complete the setup wizard as for a first install,
+   which creates both; or create the two roles and two databases yourself, each database owned by
+   its role, and write `config/db.yaml` from `config/db.yaml.example`, owned by `modularca`,
+   `0600`.
+3. Stop the service and put the old host's `config/keystore.yaml`, and for a `RandomKey` archive
+   its `config/backup.key`, in `config/`, owned by `modularca`, `0600`.
+4. Run the restore as above. For a `StoredPassword` archive, give `--password` or answer the
+   prompt.
+5. Start the service. At its first start it unwraps the Data Protection key ring and the SSH CA
+   keys the restore staged in `config/restore-pending/`.
+
 ## Firewall and ports
 
 The installer does not touch your firewall. Nothing in the package opens a port, so a fresh
@@ -631,28 +703,32 @@ and `config/keystore.yaml` exist.
 
        sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
        sudo systemctl stop modularca
-       sudo chown -R modularca-signer:modularca-signer /opt/modularca/keystores
-       sudo chown modularca-signer:modularca-signer /opt/modularca/config/keystore.yaml
-       sudo chmod 0700 /opt/modularca/keystores
-       sudo chmod 0640 /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
-       sudo chgrp modularca-signer /opt/modularca/config /opt/modularca/config/config.yaml /opt/modularca/config/db.yaml
-       sudo chmod 0750 /opt/modularca/config
+       cd /opt/modularca
+       sudo chown -R modularca-signer:modularca-signer keystores
+       sudo chmod 0700 keystores
+       sudo chown modularca-signer:modularca-signer config/keystore.yaml
+       sudo chmod 0600 config/keystore.yaml
+       sudo chgrp modularca-signer config config/config.yaml config/db.yaml
+       sudo chmod 0640 config/config.yaml config/db.yaml
+       sudo chmod 0770 config      # until step 2 is done: the signer writes its identity there
 
    Both units read `config/config.yaml` and `config/db.yaml`; only the signer reads
    `keystore.yaml`. The node no longer needs `keystore.yaml` or `keystores/` at all, and on two
    hosts they are simply not copied to the node.
 
 2. On the signer, create the identity CA and the signer's server certificate, then issue the
-   node its client certificate:
+   node its client certificate, and close `config/` to the signer's writes again:
 
        cd /opt/modularca
        sudo -u modularca-signer ./ModularCA.API --role signer --init-identity
        sudo -u modularca-signer ./ModularCA.API --role signer --issue-node-identity /tmp/node-identity
+       sudo chmod 0750 config
 
-   The first writes `config/signer-identity-ca.pfx` and `config/signer-server.pfx`
-   (owner-only). The second writes `/tmp/node-identity/signer-client.pfx` and
+   The first writes `config/signer-identity-ca.pfx` and `config/signer-server.pfx`, owned by
+   `modularca-signer`, owner-only. The second writes `/tmp/node-identity/signer-client.pfx` and
    `signer-pin.txt` and prints two things: the `PinnedClientSpki` for the signer, and the
-   `Signer:` section for the node.
+   `Signer:` section for the node. `--init-identity --force` later (a new identity CA) needs
+   `config/` at `0770` again for its run.
 
 3. Configure both sides in `config/config.yaml`. The signer side:
 
@@ -661,8 +737,10 @@ and `config/keystore.yaml` exist.
          ServerCertificate: "config/signer-server.pfx"
          PinnedClientSpki: "<printed by --issue-node-identity>"
 
-   The node side, after moving `/tmp/node-identity/signer-client.pfx` to
-   `/opt/modularca/config/` (owned by `modularca`, mode 0600):
+   The node side, after moving the node's certificate into place:
+
+       sudo install -o modularca -g modularca -m 0600 /tmp/node-identity/signer-client.pfx /opt/modularca/config/
+       sudo rm -rf /tmp/node-identity
 
        Signer:
          Mode: "Remote"
@@ -672,12 +750,14 @@ and `config/keystore.yaml` exist.
 
    On one host both sections live in the same file; each process reads the keys for its role.
 
-4. Point the node's unit at the node role, then start the node and the signer:
+4. Point the node's unit at the node role, then start the node and the signer. The signer's unit
+   is already installed, not enabled: `install.sh` puts it in `/etc/systemd/system/`, the `.deb` in
+   `/lib/systemd/system/` (its source is `deploy/modularca-signer.service` in the archive). Do not
+   copy it into `/etc/systemd/system/` on a `.deb` install; a copy there overrides the packaged one.
 
        sudo mkdir -p /etc/systemd/system/modularca.service.d
        printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role node\n' \
            | sudo tee /etc/systemd/system/modularca.service.d/role.conf
-       sudo cp /opt/modularca/deploy/modularca-signer.service /etc/systemd/system/
        sudo systemctl daemon-reload
        sudo systemctl start modularca
        sudo systemctl enable --now modularca-signer
@@ -692,8 +772,40 @@ and `config/keystore.yaml` exist.
 
 Backups taken by the node's scheduled job go through the signer and keep working. The
 command-line `--backup` and `--restore` read the keystore files directly, so on a split
-install run them on the signer host as the signer's user. The node's client certificate lives
-one year; reissue it with `--issue-node-identity` and replace the file and the pin.
+install run them on the signer host as the signer's user. On one host that user can neither
+read the node's backup key (`config/backup.key` or `config/backup-password.key`) nor write
+`backups/`, so there the scheduled or console backup is the one that works as installed. The
+node's client certificate lives one year; reissue it with `--issue-node-identity` and replace the
+file and the pin.
+
+### Ownership on a split install, and what upgrades keep
+
+| Path | Owner | Mode | |
+|---|---|---|---|
+| `/opt/modularca` and the program files | `root:root` | `0755` / `0644` | neither account can replace a binary |
+| `keystores/` and its files | `modularca-signer` | `0700` / `0600` | the node cannot read them |
+| `config/` | `modularca:modularca-signer` | `0750` | the node writes here; the signer reads |
+| `config/config.yaml`, `config/db.yaml` | `modularca:modularca-signer` | `0640` | |
+| `config/keystore.yaml`, `config/signer-*.pfx` | `modularca-signer` | `0600` | the node cannot read them |
+| `logs/`, `backups/`, every other file in `config/` | `modularca` | `0750`, `0700`, owner-only | as for a single process |
+
+`install.sh` and the `.deb` keep all of it on every run: they give the program files to root and
+never change the ownership, mode or contents of `config/`, `keystores/`, `logs/` or `backups/` once
+they exist. Each says so when it finds `keystores/` owned by `modularca-signer`. An install upgraded
+by a 0.4.0 pre-release installer before this was fixed had all of it handed back to `modularca`:
+check with `ls -la /opt/modularca/keystores /opt/modularca/config` and repeat step 1 if so.
+
+**What the node can still reach on one host.** It cannot read the keys, `keystore.yaml` or the
+signer's identity, and cannot replace the binaries the signer runs. It does own `config/` and
+`config.yaml`, which it rewrites from the console's settings pages, so it can replace any file in
+`config/` and change what the signer reads from `config.yaml`: `Hsm.ModulePath` (a library the
+signer loads), `Signer.PinnedClientSpki` and `Signer.Listen`. A compromised node can therefore get
+code run in the signer at its next start. Until the signer reads its settings from a file the node
+cannot write, the separation that holds against a compromised node is two hosts. The console's
+settings pages, the backup settings among them, rewrite `config.yaml` in place, so it
+keeps its owner, group and `0640`; an install that ran a 0.4.0 pre-release may have had it made
+owner-only by the backup settings page, which `ls -l /opt/modularca/config/config.yaml` shows
+(repeat the `chgrp` and `chmod` of step 1 for it if so).
 
 ## Three processes: signer, control, enrollment and validation
 

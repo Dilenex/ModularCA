@@ -696,11 +696,11 @@ PUT  /api/v1/admin/config/ldap-auth
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--backup [output-path]</td>
-                            <td className="py-2">Create an encrypted backup archive</td>
+                            <td className="py-2">Create an encrypted backup archive, in Backup.OutputPath (backups/ by default) unless a path inside the install directory is given. The Data Protection key ring and the SSH CA keys go in wrapped by the signer, so run it on the host that holds the keystore and keystore.yaml. The archived config.yaml carries no DB section.</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--restore {'{archive}'} [--password {'{pwd}'}]</td>
-                            <td className="py-2">Restore from an encrypted backup. Interactive password prompt for StoredPassword archives when key file is missing.</td>
+                            <td className="py-2">Restore from an encrypted backup into the databases this host&rsquo;s own db.yaml names, with its credentials; a host without db.yaml is refused. Interactive password prompt for StoredPassword archives when key file is missing. The live config/ and keystores are first saved to backups/pre-restore-&lt;timestamp&gt;.zip. CRL numbers are raised past anything published since the backup, and the wrapped key ring is unwrapped at the next start, once the restored keystore is unlocked.</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--setup-local</td>

@@ -77,10 +77,12 @@ public interface ISigningService
     Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Exports a key wrapped as <paramref name="wrap"/> says. Allowed for an end-entity key under
-    /// an <see cref="SigningPurpose.Export"/> context, and for every stored key under a
-    /// <see cref="SigningPurpose.Backup"/> context; the context must name its caller, and a
-    /// PKCS#11 key never leaves its token. A certificate the signer holds no key for is refused
+    /// Exports a key wrapped as <paramref name="wrap"/> says. A single key leaves as PKCS#12 only
+    /// when it is an end-entity key and the context is <see cref="SigningPurpose.Export"/>; a CA,
+    /// responder, TSA, CMP or system key never leaves as PKCS#12, and a PKCS#12 request under
+    /// <see cref="SigningPurpose.Backup"/> is refused as
+    /// <see cref="SigningRefusalReason.PurposeNotPermitted"/>. The context must name its caller,
+    /// and a PKCS#11 key never leaves its token. A certificate the signer holds no key for is refused
     /// as <see cref="SigningRefusalReason.UnknownKey"/>: since re-download ended, a key the CA
     /// generates is delivered once, with the request that carries it, and is not kept. A
     /// reference to a whole keystore (<see cref="KeyRef.ForKeystore"/>) with the

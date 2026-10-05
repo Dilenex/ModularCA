@@ -47,11 +47,19 @@ sudo apt install ./dist/modularca_0.1.0~rc3-1_amd64.deb
 Everything lives under `/opt/modularca`, with `/etc/modularca` and `/var/log/modularca` as
 symlinks into it. The exception is `/usr/share/modularca`: the schema-ownership repair SQL and the
 script that runs it, which run as the PostgreSQL superuser and as root, so they stay root-owned
-and outside the tree `postinst` chowns to the service account.
+and outside `/opt/modularca`, where the service account owns the runtime directories.
+
+Inside `/opt/modularca` the program files are root's: dpkg writes them `root:root`, and `postinst`
+gives back to root any directory of the package an older `postinst` had given to the service
+account. The service account owns only the runtime directories, `config/`, `keystores/`, `logs/`
+and `backups/` (`RUNTIME_DIRS` in `postinst` and `install.sh`). `postinst` creates one that is
+missing and hands over one dpkg left root-owned, and otherwise never changes them, so a split
+install's `modularca-signer` keeps `keystores/` and `keystore.yaml` across upgrades.
 
 That is a consequence of the application, not a packaging preference. Config, keystores, logs and
 backups all resolve from `AppContext.BaseDirectory` — **84 call sites**, with no override — and the
-systemd unit's `ProtectSystem=strict` plus `ReadWritePaths=/opt/modularca` is built around that.
+systemd unit's `ProtectSystem=strict` plus `ReadWritePaths=` naming those four directories is
+built around that.
 A genuine `/etc` + `/var/lib` + `/usr/lib` split needs the application to learn a base-path
 override first; it is not something the package can impose from outside.
 

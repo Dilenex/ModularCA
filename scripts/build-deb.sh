@@ -89,7 +89,8 @@ mkdir -p "$BINDIR"
 mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$STAGE/modularca-migrate" "$BINDIR/"
 
 # share/ goes to /usr/share/modularca, root-owned, never under /opt/modularca: its SQL is run as
-# the PostgreSQL superuser, and postinst chowns /opt/modularca to the service account.
+# the PostgreSQL superuser, and the service account owns runtime directories under /opt/modularca
+# (config/, keystores/, logs/, backups/), so a file kept there could be rewritten by it.
 SHAREDIR="$WORK/share"
 [[ -f "$STAGE/share/sql/adopt-ownership.sql" ]] || die "payload is missing share/sql/adopt-ownership.sql"
 mv "$STAGE/share" "$SHAREDIR"

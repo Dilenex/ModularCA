@@ -288,6 +288,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
         Get("Admin.AdminQuotaController", "GetAllQuotas", "/api/v1/admin/quotas"),
         Get("Admin.AdminKeyCeremonyController", "List", "/api/v1/admin/ceremonies"),
         Get("Admin.AdminCertificateController", "ListCertificates", "/api/v1/admin/certificates", ("page", 1), ("pageSize", 100)),
+        Get("Admin.AdminCertificateController", "GetLifecycleSummary", "/api/v1/admin/certificates/lifecycle-summary"),
         Get("Admin.AdminWhitelistController", "GetAll", "/api/v1/admin/whitelists"),
         Get("Admin.AdminSshController", "GetCaKeys", "/api/v1/admin/ssh/ca-keys"),
         Get("Admin.AdminSshTemplateController", "GetAll", "/api/v1/admin/ssh/templates"),
@@ -432,6 +433,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
         Get("Admin.AdminCertProfileController", "GetAll", "/api/v1/admin/cert-profiles", ("spaceId", s.SpaceId)),
         Get("Admin.AdminCertSignRequestController", "RetrievePendingRequests", "/api/v1/admin/requests", ("spaceId", s.SpaceId)),
         Get("Admin.AdminCertificateController", "ListCertificates", "/api/v1/admin/certificates", ("page", 1), ("pageSize", 100), ("spaceId", s.SpaceId)),
+        Get("Admin.AdminCertificateController", "GetLifecycleSummary", "/api/v1/admin/certificates/lifecycle-summary", ("spaceId", s.SpaceId)),
     ];
 
     /// <summary>Naming space B in a space route or a <c>spaceId</c> filter gets a user of A nothing of B or of the instance.</summary>

@@ -45,6 +45,36 @@ public static class MaintenanceSigner
             unlocked: false);
     }
 
+    /// <summary>
+    /// Creates an unlocked in-process signer for the command-line backup, which has to wrap the
+    /// configuration secrets it carries: the keystores are unlocked as the node unlocks them at
+    /// startup, with the passphrases <paramref name="yamlPath"/> and the database supply. Throws
+    /// what <see cref="SignerBootstrap.Unlock"/> throws when they cannot be.
+    /// </summary>
+    /// <param name="keystoresDirectory">The directory holding the keystore files.</param>
+    /// <param name="yamlPath">The keystore configuration file the secondary passphrases are read from.</param>
+    /// <param name="appConnectionString">The application database, for the pinned signer, the main passphrase and the audit.</param>
+    public static ISigningService CreateUnlocked(string keystoresDirectory, string yamlPath, string appConnectionString)
+    {
+        ArgumentNullException.ThrowIfNull(keystoresDirectory);
+        ArgumentNullException.ThrowIfNull(yamlPath);
+        ArgumentNullException.ThrowIfNull(appConnectionString);
+
+        var bootstrap = SignerBootstrap.Unlock(yamlPath, keystoresDirectory, appConnectionString);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDbContext<ModularCADbContext>(o => o.UseNpgsql(appConnectionString));
+        var provider = services.BuildServiceProvider();
+        var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+        return bootstrap.CreateSigner(
+            keystoresDirectory,
+            yamlPath,
+            scopes,
+            new DatabaseSignerAuditSink(scopes),
+            provider.GetRequiredService<ILogger<InProcessSigningService>>(),
+            keyWrapping: null);
+    }
+
     /// <summary>A registry that holds nothing: the maintenance signer has no keys and signs nothing.</summary>
     private sealed class LockedRegistry : ISignerKeyRegistry
     {

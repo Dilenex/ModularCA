@@ -35,18 +35,36 @@ public class InstallScriptTests
         Assert.Contains(" 0 failed", stdout.Result);
     }
 
+    /// <summary>
+    /// The payload is replaced only inside <c>install_payload</c> (wwwroot removed, program files
+    /// copied into <c>$APP_DIR</c>), which the top level calls once, after the units stop and the
+    /// upgrade check returns.
+    /// </summary>
     [Fact]
     public void The_check_runs_after_the_units_stop_and_before_the_payload_is_touched()
     {
         var code = CodeLines(Read("packaging/install.sh"));
-        var stop = code.FindIndex(l => l.Trim() == "systemctl stop \"${RESTART[@]}\"");
-        var check = code.FindIndex(l => l.Trim() == "upgrade_check");
+        var stop = code.FindIndex(l => l == "    systemctl stop \"${RESTART[@]}\"");
+        var check = code.FindIndex(l => l == "upgrade_check");
+        var payload = code.FindIndex(l => l == "install_payload");
+        var bodyStart = code.FindIndex(l => l == "install_payload() {");
+        var bodyEnd = bodyStart < 0 ? -1 : code.FindIndex(bodyStart, l => l == "}");
         var wwwroot = code.FindIndex(l => l.Trim() == "rm -rf \"$APP_DIR/wwwroot\"");
-        var copy = code.FindIndex(l => l.Contains("-exec cp -a {} \"$APP_DIR/\"", StringComparison.Ordinal));
+        var copy = code.FindIndex(l => Regex.IsMatch(l, @"\bcp -a\b.*""\$APP_DIR/""", RegexOptions.None));
 
-        Assert.True(stop >= 0 && check >= 0 && wwwroot >= 0 && copy >= 0, "an anchor line is missing from install.sh");
+        Assert.True(stop >= 0 && check >= 0 && payload >= 0 && bodyStart >= 0 && bodyEnd > bodyStart && wwwroot >= 0 && copy >= 0,
+            "an anchor line is missing from install.sh");
+
+        // One check and one payload call, both at the top level, in that order after the stop.
         Assert.Single(code, l => l.Trim() == "upgrade_check");
-        Assert.True(stop < check && check < wwwroot && check < copy);
+        Assert.Single(code, l => Regex.IsMatch(l, @"\binstall_payload\b") && !l.EndsWith("() {", StringComparison.Ordinal));
+        Assert.True(stop < check && check < payload, "the check must run after the units stop and before install_payload is called");
+
+        // Nothing replaces the payload outside install_payload.
+        Assert.Single(code, l => l.Trim() == "rm -rf \"$APP_DIR/wwwroot\"");
+        Assert.Single(code, l => Regex.IsMatch(l, @"\bcp -a\b.*""\$APP_DIR/"""));
+        Assert.True(bodyStart < wwwroot && wwwroot < bodyEnd && bodyStart < copy && copy < bodyEnd,
+            "the payload must be replaced only inside install_payload");
     }
 
     [Fact]

@@ -257,6 +257,7 @@ public class AuditService : IAuditService
             // Backup / restore
             AuditActionType.BackupCreated or
             AuditActionType.BackupRestored or
+            AuditActionType.CrlNumbersRaisedOnRestore or
             // Privileged access
             AuditActionType.SystemAdminElevatedAccess;
 

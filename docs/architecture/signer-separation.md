@@ -75,7 +75,7 @@ SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext 
 DecryptAsync(KeyRef key, byte[] enveloped, SigningContext ctx) -> byte[]        // SCEP only
 GenerateKeyAsync(KeySpec spec, SigningContext ctx) -> KeyRef + public key
 ImportKeyAsync(KeyMaterial wrapped, SigningContext ctx) -> KeyRef                // migration, HSM import
-ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext ctx) -> byte[]      // PKCS#12 under a caller password, policy-gated
+ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext ctx) -> byte[]      // PKCS#12: end-entity keys under Export only; Backup: whole keystore files only
 ListKeysAsync(SigningContext ctx) -> KeyRef[] with public keys and attributes
 RetireKeyAsync(KeyRef key, SigningContext ctx)
 HealthAsync() -> unlocked, key count, backend (software | pkcs11)
@@ -221,7 +221,9 @@ and this section records why.
 - **Backups carry whole keystore files.** The signer exports and imports keystore files as units
   (`SigningPurpose.Backup` and `Restore`), verified on import against the pinned signer. Per-key
   restore was rejected because the key that signs the keystore file is one of the keys being
-  restored. These two operations are permitted while the signer is locked, since they hand out no
+  restored. Backup never exports a single key as PKCS#12: that wrap is refused under Backup for
+  every key, so no CA, responder, TSA, CMP or system key can leave under a password the caller
+  chooses. These two operations are permitted while the signer is locked, since they hand out no
   usable key and restoring into an empty node is how a signer comes to hold keys.
 - **Locked means unavailable, visibly.** Enrollment protocol controllers and admin issuance answer
   503 with a retry hint until the signer reports unlocked; the health endpoint and the MSAE

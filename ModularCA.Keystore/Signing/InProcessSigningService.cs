@@ -313,13 +313,15 @@ public sealed class InProcessSigningService : ISigningService
 
     /// <inheritdoc />
     /// <remarks>
-    /// Two contexts export. Under <see cref="SigningPurpose.Export"/> an end-entity key goes to
-    /// its holder: the key the node wrapped at request time and stored on the certificate row,
-    /// before re-download ended, is unwrapped here with the CA key that wrapped it and
-    /// re-wrapped as PKCS#12 under the holder's password, beside the chain the caller supplies.
-    /// Under <see cref="SigningPurpose.Backup"/> every key the signer holds may leave the same
-    /// way under the backup's password. The context must name its caller in either case, since
-    /// the export right is a person's, and a PKCS#11 key never leaves its token. A certificate
+    /// A key leaves as PKCS#12 only under <see cref="SigningPurpose.Export"/>, and only an
+    /// end-entity key, to its holder: the key the node wrapped at request time and stored on the
+    /// certificate row, before re-download ended, is unwrapped here with the CA key that wrapped
+    /// it and re-wrapped as PKCS#12 under the holder's password, beside the chain the caller
+    /// supplies. Under <see cref="SigningPurpose.Backup"/> only whole keystore files leave, in
+    /// the keystore-file wrap; a PKCS#12 request under Backup is refused whatever the key, so no
+    /// CA or infrastructure key is ever re-wrapped under a password the caller chooses. The
+    /// context must name its caller, since the export right is a person's, and a PKCS#11 key
+    /// never leaves its token. A certificate
     /// with no stored key is refused as <see cref="SigningRefusalReason.UnknownKey"/>, and the
     /// reason says why: since re-download ended, a key the CA generates is delivered once, with
     /// the request that carries it, and is not kept. The audit row carries the hash of the
@@ -800,26 +802,30 @@ public sealed class InProcessSigningService : ISigningService
 
     /// <summary>
     /// What a purpose may wrap. One row per purpose: a purpose that is not here wraps nothing.
+    /// A backup wraps the configuration secrets its archive carries.
     /// </summary>
     private static readonly IReadOnlyDictionary<SigningPurpose, SecretKind> WrapRights =
         new Dictionary<SigningPurpose, SecretKind>
         {
             [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
             [SigningPurpose.Certificate] = SecretKind.HeldPrivateKey,
+            [SigningPurpose.Backup] = SecretKind.BackupConfigSecret,
         };
 
     /// <summary>
     /// What a purpose may unwrap, which is deliberately not what it may wrap: the issuance path
     /// that wraps a requester's held key has no right to read one back, and reading one back is
-    /// the export right, which is a person's. <see cref="SecretKind.KerberosRealmKey"/> appears
-    /// in neither table, so nothing wraps or unwraps it until the caching question the design
-    /// document raises is answered.
+    /// the export right, which is a person's. A backup's configuration secrets are read back
+    /// only by a restore, never by the backup that wrapped them.
+    /// <see cref="SecretKind.KerberosRealmKey"/> appears in neither table, so nothing wraps or
+    /// unwraps it until the caching question the design document raises is answered.
     /// </summary>
     private static readonly IReadOnlyDictionary<SigningPurpose, SecretKind> UnwrapRights =
         new Dictionary<SigningPurpose, SecretKind>
         {
             [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
             [SigningPurpose.Export] = SecretKind.HeldPrivateKey,
+            [SigningPurpose.Restore] = SecretKind.BackupConfigSecret,
         };
 
     /// <summary>
@@ -1093,9 +1099,11 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
-    /// What every export shares before the key is even looked at: the signer is unlocked, the
-    /// context names a caller, the purpose is <see cref="SigningPurpose.Export"/> or
-    /// <see cref="SigningPurpose.Backup"/>, and the wrap is one the signer produces.
+    /// What every PKCS#12 export shares before the key is even looked at: the signer is
+    /// unlocked, the context names a caller, the purpose is <see cref="SigningPurpose.Export"/>
+    /// and nothing else, and the wrap is one the signer produces. A backup never takes a key out
+    /// one at a time under a password the caller picks; it takes whole keystore files, which
+    /// branch off before this check.
     /// </summary>
     private SigningRefusedException? JudgeExportContext(SigningContext context, ExportWrap wrap)
     {
@@ -1104,9 +1112,11 @@ public sealed class InProcessSigningService : ISigningService
         if (string.IsNullOrWhiteSpace(context.Caller))
             return new SigningRefusedException(SigningRefusalReason.ContextRequired,
                 "An export names the caller it is for; a context with no caller exports nothing.");
-        if (context.Purpose is not (SigningPurpose.Export or SigningPurpose.Backup))
+        if (context.Purpose != SigningPurpose.Export)
             return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
-                $"Keys leave the signer only under an Export or Backup context, not {context.Purpose}.");
+                context.Purpose == SigningPurpose.Backup
+                    ? "A backup takes whole keystore files, never a single key as PKCS#12."
+                    : $"Keys leave the signer as PKCS#12 only under an Export context, not {context.Purpose}.");
         if (!string.Equals(wrap.Format, ExportWrap.Pkcs12, StringComparison.OrdinalIgnoreCase))
             return new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"The signer does not wrap an exported key as '{wrap.Format}'; it produces '{ExportWrap.Pkcs12}'.");
@@ -1114,14 +1124,13 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
-    /// The export policy table over the kind of key. Under Export only an end-entity key leaves,
-    /// to its holder; a CA or infrastructure key is never handed to a person through the API.
-    /// Under Backup every key the signer holds leaves, whatever its kind, since a backup is the
-    /// whole keystore.
+    /// The export policy table over the kind of key: only an end-entity key leaves, to its
+    /// holder; a CA, responder, TSA, CMP or system key is never handed out as PKCS#12, under
+    /// any purpose.
     /// </summary>
     private static SigningRefusedException? JudgeExport(CachedOwner owner, SigningContext context, KeyRef key)
     {
-        if (context.Purpose == SigningPurpose.Export && owner.Kind != KeyKind.EndEntity)
+        if (context.Purpose != SigningPurpose.Export || owner.Kind != KeyKind.EndEntity)
             return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
                 $"A {owner.Kind} key is not exported to a holder; only an end-entity key leaves under Export.");
         return null;
@@ -1177,8 +1186,8 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
-    /// A key the signer holds itself, for a backup: it must be a software key, since a PKCS#11
-    /// key never leaves its token and a backup of the token is the token's own affair.
+    /// A key the signer holds itself in its keystore: it must be a software key, since a PKCS#11
+    /// key never leaves its token. The export policy lets only an end-entity key reach here.
     /// </summary>
     private (AsymmetricKeyParameter? Key, SigningRefusedException? Refusal) HeldSoftwareKey(CachedOwner owner, KeyRef key)
     {

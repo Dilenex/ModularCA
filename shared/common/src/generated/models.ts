@@ -279,6 +279,29 @@ export interface CertExpiryNotificationConfig {
     schedule: string;
 }
 
+/** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
+export interface CertificateAttentionItemModel {
+    certificateId: string;
+    serialNumber: string;
+    subjectDN: string;
+    commonName: string;
+    notBefore: string;
+    notAfter: string;
+    state: string;
+    caId?: string | null;
+    caLabel?: string | null;
+    caName?: string | null;
+    issuanceChannel?: string | null;
+    autoRenewal?: boolean | null;
+    renewalPending: boolean;
+}
+
+/** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
+export interface CertificateCountByCaModel {
+    caId: string;
+    total: number;
+}
+
 /** From `ModularCA.Shared/Models/CertificateCsrRequestModel.cs`. */
 export interface CertificateCsrRequestModel {
     csrBytes: string;
@@ -334,6 +357,30 @@ export interface CertificateInfoModel {
     signingProfileId: string;
     certProfileId: string;
     issuerCertificateId?: string | null;
+    replaced: boolean;
+    replacedBySerial?: string | null;
+    issuanceChannel?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
+export interface CertificateLifecycleSummaryModel {
+    generatedAt: string;
+    replacementWindowDays: number;
+    total: number;
+    active: number;
+    revoked: number;
+    expired: number;
+    expiringWithin7Days: number;
+    expiringWithin30Days: number;
+    expiringWithin7DaysNotReplaced: number;
+    expiringWithin30DaysNotReplaced: number;
+    expiredReplaced: number;
+    expiredNotReplaced: number;
+    expiredUnchecked: number;
+    recentlyExpiredNotReplaced: number;
+    attentionTotal: number;
+    attention: CertificateAttentionItemModel[];
+    byCa: CertificateCountByCaModel[];
 }
 
 /** From `ModularCA.Shared/Models/CertificateRequestModel.cs`. */

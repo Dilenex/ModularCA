@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -12,6 +12,7 @@ import CertificateReissueModal from '../components/CertificateReissueModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { canReissue, capitalize, channelNote, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -241,6 +242,8 @@ const CertificateDetail: React.FC = () => {
             setHoldBusy(false);
         }
     };
+    const lifecycle = expiryState(cert);
+    const lifecycleToneValue = lifecycleTone(cert.notAfter, !!cert.replaced);
     const thumbprints = parseThumbprints(cert.thumbprints);
     const sans = parseSans(cert.subjectAlternativeNames);
     const cn = (cert.subjectDN || '').match(/CN=([^,]+)/)?.[1] || cert.serialNumber;
@@ -254,7 +257,7 @@ const CertificateDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'Certificates', to: '/certificates' }, { label: cn }]}
             title={cn}
-            status={<StatusBadge status={status} />}
+            status={status === 'expired' && cert.replaced ? <StatusBadge status="disabled" label="expired" /> : <StatusBadge status={status} />}
             subtitle={<span className="font-mono">{cert.serialNumber}</span>}
             backTo="/certificates"
             actions={
@@ -279,6 +282,29 @@ const CertificateDetail: React.FC = () => {
                             <button onClick={liftHold} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-crit text-crit hover:bg-crit-soft disabled:opacity-50">
                                 {holdBusy ? 'Lifting…' : 'Lift hold'}
                             </button>
+                        )}
+                    </div>
+                )}
+                {(lifecycle === 'expired' || lifecycle === 'expiring') && (
+                    <div className={`px-3 py-2.5 border rounded-md space-y-1.5 ${toneBannerClass(lifecycleToneValue)}`}>
+                        <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
+                            <span className={`text-sm font-semibold ${toneTextClass(lifecycleToneValue)}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                            <span className="text-xs text-ink-muted">{formatDate(cert.notAfter)}</span>
+                            <span className="text-sm text-ink">
+                                {cert.replaced
+                                    ? (cert.replacedBySerial
+                                        ? <>Replaced by <Link to={`/certificates/${cert.replacedBySerial}`} className="font-mono text-accent-ink hover:underline">{cert.replacedBySerial}</Link></>
+                                        : 'Replaced')
+                                    : 'Not replaced'}
+                            </span>
+                            {!cert.replaced && canReissue(cert) && (
+                                <button onClick={() => setReissueOpen(true)} className="ml-auto px-2.5 py-1 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors">Reissue</button>
+                            )}
+                        </div>
+                        {!cert.replaced && (
+                            <p className="text-xs text-ink-muted">
+                                {channelNote(cert.issuanceChannel)}
+                            </p>
                         )}
                     </div>
                 )}

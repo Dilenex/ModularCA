@@ -167,8 +167,10 @@ public class AdminLdapController(
     }
 
     /// <summary>
-    /// Serializes the current in-memory configuration to config.yaml on disk.
-    /// Silently ignores write failures (e.g. read-only filesystem in containers).
+    /// Serializes the current in-memory configuration to config.yaml on disk through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/> (no <c>DB</c> section, written in place
+    /// so the file keeps its owner, group and mode). Silently ignores write failures (e.g.
+    /// read-only filesystem in containers).
     /// </summary>
     private void PersistConfig()
     {
@@ -182,12 +184,8 @@ public class AdminLdapController(
         {
             envOverlay.WithSecretsProtected(config, () =>
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, config);
             });
         }
         catch

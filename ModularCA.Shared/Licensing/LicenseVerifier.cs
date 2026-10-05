@@ -72,7 +72,12 @@ public static class LicenseVerifier
     /// <remarks>
     /// Never throws. Every failure resolves to a <see cref="LicenseLoadResult"/> the caller can
     /// log and carry on from, because the only correct response to an unreadable licence is to
-    /// run as the free edition.
+    /// run as the free edition. An empty document is <see cref="LicenseStatus.Absent"/> whatever
+    /// the build's key, so a community install without a licence is unaffected. While
+    /// <see cref="LicenseKeyIsConfigured"/> is false every document is
+    /// <see cref="LicenseStatus.SignatureInvalid"/> before any signature is checked: the
+    /// placeholder is an all-zero, small-order point, and trust must not rest on the curve
+    /// library rejecting it. An all-zero override key is refused the same way.
     /// </remarks>
     /// <param name="document">The licence file's contents.</param>
     /// <param name="signerPublicKey">
@@ -105,13 +110,12 @@ public static class LicenseVerifier
                 LicenseStatus.Malformed, null, "Licence segments are not valid base64url.");
         }
 
+        if (signerPublicKey is null && !LicenseKeyIsConfigured)
+            return NoSigningKey;
+
         var key = signerPublicKey ?? DecodeSignerKey();
-        if (key is null || key.Length != 32)
-        {
-            return new LicenseLoadResult(
-                LicenseStatus.SignatureInvalid, null,
-                "This build has no usable licence signing key, so no licence can be verified.");
-        }
+        if (key is null || key.Length != 32 || key.All(b => b == 0))
+            return NoSigningKey;
 
         // Signed input is the encoded first segment verbatim — not the decoded JSON — so
         // re-serialisation can never change what was signed.
@@ -160,6 +164,11 @@ public static class LicenseVerifier
             LicenseStatus.Valid, claims,
             $"Licence {claims.LicenseId} for {claims.Licensee}, maintenance through {claims.MaintenanceThrough:yyyy-MM-dd}.");
     }
+
+    /// <summary>The result for every licence while this build has no usable licence signing key.</summary>
+    private static LicenseLoadResult NoSigningKey => new(
+        LicenseStatus.SignatureInvalid, null,
+        "This build has no licence signing key configured (the vendor key is still the placeholder), so no licence can be verified; running the free edition.");
 
     /// <summary>Decodes base64url, tolerating the omitted padding the encoding allows.</summary>
     private static byte[] Base64UrlDecode(string value)

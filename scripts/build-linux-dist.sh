@@ -92,7 +92,9 @@ cp config/*.example "$STAGE/config/" 2>/dev/null || true
 cp ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql"
 cmp -s ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql" \
     || { echo "REFUSING: the staged adopt-ownership.sql differs from ModularCA.Database/Sql" >&2; exit 1; }
-# deploy/ is gitignored (operator-specific), so tolerate its absence on a clean clone.
+# The two systemd units are required (the payload check below refuses an archive without them:
+# install.sh installs both). The nginx and nftables templates and the drop-ins are examples, so a
+# missing one is tolerated.
 if [[ -d deploy ]]; then
     cp deploy/modularca.service deploy/modularca-signer.service \
        deploy/nginx-modularca.conf deploy/nftables-modularca.conf \
@@ -126,7 +128,8 @@ chmod 0755 "$STAGE/install.sh" 2>/dev/null || true
 note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/public/index.html \
-                wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql; do
+                wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql \
+                deploy/modularca.service deploy/modularca-signer.service; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done
 # The interfaces bundle the vendored Plex fonts; SIL OFL 1.1 requires its text to travel with them.

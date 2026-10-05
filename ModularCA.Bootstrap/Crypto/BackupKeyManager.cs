@@ -43,8 +43,35 @@ public static class BackupKeyManager
     /// <summary>AES-256 key size in bytes.</summary>
     public const int KeySize = 32;
 
-    /// <summary>Default scrypt cost parameter N (2^15 = 32768). Balances ~50ms on modern hardware.</summary>
-    public const long DefaultScryptN = 32768;
+    /// <summary>
+    /// Default scrypt cost parameter N for a newly set password: 2^17 = 131072, which with r = 8
+    /// takes 128 MiB and roughly half a second per guess on a current server core. A password
+    /// archive is the one artefact an attacker can take offline and guess at without limit, so
+    /// the cost is set for that, not for interactive use. Archives and key files written with an
+    /// older N carry it in their header and are still read.
+    /// </summary>
+    public const long DefaultScryptN = 1L << 17;
+
+    /// <summary>The smallest scrypt N accepted from an archive header or key file (2^14).</summary>
+    public const long MinScryptN = 1L << 14;
+
+    /// <summary>The largest scrypt N accepted from an archive header or key file (2^20).</summary>
+    public const long MaxScryptN = 1L << 20;
+
+    /// <summary>The largest scrypt r accepted from an archive header or key file.</summary>
+    public const int MaxScryptR = 32;
+
+    /// <summary>The largest scrypt p accepted from an archive header or key file.</summary>
+    public const int MaxScryptP = 4;
+
+    /// <summary>The most memory a header may ask scrypt for (128 * N * r bytes): 1 GiB.</summary>
+    public const long MaxScryptMemoryBytes = 1L << 30;
+
+    /// <summary>The shortest password accepted for a new password-mode archive.</summary>
+    public const int MinPasswordLength = 16;
+
+    /// <summary>The fewest distinct characters a new backup password may contain.</summary>
+    public const int MinDistinctPasswordCharacters = 8;
 
     /// <summary>Default scrypt block-size parameter r.</summary>
     public const int DefaultScryptR = 8;
@@ -111,7 +138,34 @@ public static class BackupKeyManager
     }
 
     /// <summary>
-    /// Derives a 32-byte AES-256 KEK from a password and salt using scrypt with the supplied parameters.
+    /// Refuses scrypt parameters outside what this build writes or has ever written: N a power of
+    /// two in [<see cref="MinScryptN"/>, <see cref="MaxScryptN"/>], r in [1, <see cref="MaxScryptR"/>],
+    /// p in [1, <see cref="MaxScryptP"/>], and no more than <see cref="MaxScryptMemoryBytes"/> of
+    /// memory. The parameters come from an archive header, which an attacker can write, so an
+    /// unbounded N would turn a restore into an out-of-memory crash.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The parameters are out of range.</exception>
+    public static void ValidateScryptParameters(long N, int r, int p)
+    {
+        if (N < MinScryptN || N > MaxScryptN || (N & (N - 1)) != 0)
+            throw new InvalidDataException($"Backup scrypt N={N} is out of range (a power of two in [{MinScryptN}, {MaxScryptN}]).");
+        if (r < 1 || r > MaxScryptR)
+            throw new InvalidDataException($"Backup scrypt r={r} is out of range (1..{MaxScryptR}).");
+        if (p < 1 || p > MaxScryptP)
+            throw new InvalidDataException($"Backup scrypt p={p} is out of range (1..{MaxScryptP}).");
+        if (128L * N * r > MaxScryptMemoryBytes)
+            throw new InvalidDataException($"Backup scrypt parameters N={N}, r={r} need more than {MaxScryptMemoryBytes / (1 << 20)} MiB.");
+    }
+
+    /// <summary>
+    /// True when a stored password key file was derived with less work than this build's default,
+    /// so new archives under it are weaker than a freshly set password would make them.
+    /// </summary>
+    public static bool IsBelowDefaultCost(long N, int r) => N * r < DefaultScryptN * DefaultScryptR;
+
+    /// <summary>
+    /// Derives a 32-byte AES-256 KEK from a password and salt using scrypt with the supplied
+    /// parameters, after <see cref="ValidateScryptParameters"/> accepts them.
     /// </summary>
     /// <param name="password">Plain-text password supplied by the admin.</param>
     /// <param name="salt">Scrypt salt (typically 16 bytes of cryptographically random data).</param>
@@ -121,6 +175,7 @@ public static class BackupKeyManager
     /// <returns>A 32-byte key suitable for AES-256-GCM.</returns>
     public static byte[] DeriveKey(string password, byte[] salt, long N, int r, int p)
     {
+        ValidateScryptParameters(N, r, p);
         var passwordBytes = Encoding.UTF8.GetBytes(password);
         try
         {
@@ -261,16 +316,25 @@ public static class BackupKeyManager
     }
 
     /// <summary>
-    /// Validates a plain-text password against basic complexity rules: length &gt;= 12,
-    /// at least one letter, and at least one digit or symbol.
+    /// Validates a new backup password: at least <see cref="MinPasswordLength"/> characters, at
+    /// least <see cref="MinDistinctPasswordCharacters"/> distinct characters, at least one letter,
+    /// and at least one digit or symbol (a space counts, so a passphrase of words qualifies). An
+    /// archive under this password can be guessed at offline without limit, so length is the
+    /// requirement that matters. Applies to setting a password only; a restore accepts whatever
+    /// password an existing archive was made with.
     /// </summary>
     /// <param name="password">Plain-text password to validate.</param>
     /// <returns><c>null</c> if the password is acceptable, otherwise a human-readable failure reason.</returns>
     public static string? ValidatePassword(string password)
     {
-        if (string.IsNullOrEmpty(password) || password.Length < 12)
+        if (string.IsNullOrEmpty(password) || password.Length < MinPasswordLength)
         {
-            return "Password must be at least 12 characters.";
+            return $"Password must be at least {MinPasswordLength} characters; a passphrase of several words is easiest.";
+        }
+
+        if (password.Distinct().Count() < MinDistinctPasswordCharacters)
+        {
+            return $"Password must contain at least {MinDistinctPasswordCharacters} different characters.";
         }
 
         if (!password.Any(char.IsLetter))

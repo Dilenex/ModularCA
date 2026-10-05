@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.DependencyInjection;
+using ModularCA.Shared.Models.Config;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
@@ -63,7 +65,9 @@ public class AdminCertificateController(
     /// <param name="issuer">Partial match filter on the certificate issuer.</param>
     /// <param name="caId">Filter to certificates issued by this certificate authority.</param>
     /// <param name="spaceId">Filter to certificates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400), here and on the histogram and health summary.</param>
-    /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", or "expired".</param>
+    /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", or "expired" (expired and not revoked).</param>
+    /// <param name="replaced">"yes" or "no": certificates that have, or have not, been replaced (<see cref="CertificateLifecycle"/>).
+    /// Only certificates still valid or expired within <see cref="CertificateLifecycle.ReplacementWindowDays"/> days match either value.</param>
     /// <param name="keyAlgorithm">Filter on key algorithm by searching the KeyUsagesJson column (e.g. "RSA", "ECDSA", "Ed25519").</param>
     /// <param name="san">Partial match filter on subject alternative names JSON.</param>
     /// <param name="notAfterFrom">Minimum value for the NotAfter (expiry) date.</param>
@@ -93,7 +97,8 @@ public class AdminCertificateController(
         [FromQuery] DateTime? issuedFrom,
         [FromQuery] DateTime? issuedTo,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 25)
+        [FromQuery] int pageSize = 25,
+        [FromQuery] string? replaced = null)
     {
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
@@ -154,7 +159,7 @@ public class AdminCertificateController(
                     query = query.Where(c => c.Revoked);
                     break;
                 case "expired":
-                    query = query.Where(c => c.NotAfter < now);
+                    query = query.Where(c => !c.Revoked && c.NotAfter < now);
                     break;
             }
         }
@@ -177,6 +182,19 @@ public class AdminCertificateController(
             query = query.Where(c => c.NotBefore >= issuedFrom.Value);
         if (issuedTo.HasValue)
             query = query.Where(c => c.NotBefore <= issuedTo.Value);
+
+        var replacedFilter = replaced?.Trim().ToLowerInvariant();
+        if (replacedFilter is "yes" or "no")
+        {
+            var checkedAt = DateTime.UtcNow;
+            var windowStart = checkedAt.AddDays(-CertificateLifecycle.ReplacementWindowDays);
+            query = query.Where(c => c.NotAfter >= windowStart);
+            var replacedIds = (await CertificateLifecycle.ResolveReplacementsAsync(_dbContext, query, await IssuingCaMapAsync(), checkedAt))
+                .Keys.ToList();
+            query = replacedFilter == "yes"
+                ? query.Where(c => replacedIds.Contains(c.CertificateId))
+                : query.Where(c => !replacedIds.Contains(c.CertificateId));
+        }
 
         List<ModularCA.Shared.Entities.CertificateEntity> entities;
         int total;
@@ -206,9 +224,15 @@ public class AdminCertificateController(
         // Access control already applied by the IQueryable predicates above,
         // so we just map every page row. No more in-memory filtering after Skip/Take.
         var allowedItems = new List<CertificateInfoModel>();
+        var pageIds = entities.Select(e => e.CertificateId).ToList();
+        var pageReplacements = pageIds.Count == 0
+            ? new Dictionary<Guid, CertificateLifecycle.Replacement>()
+            : await ResolveVisibleReplacementsAsync(
+                _dbContext.Certificates.AsNoTracking().Where(c => pageIds.Contains(c.CertificateId)), userId);
 
         foreach (var c in entities)
         {
+            pageReplacements.TryGetValue(c.CertificateId, out var replacement);
             // Extract key algorithm/size/signature from the raw certificate (shared with the
             // key-algorithm filter above).
             var (certKeyAlgo, certKeySize, certSigAlgo) = ParseKeyInfo(c.RawCertificate);
@@ -239,6 +263,8 @@ public class AdminCertificateController(
                 ExtendedKeyUsages = string.IsNullOrWhiteSpace(c.ExtendedKeyUsagesJson)
                     ? new List<string>()
                     : JsonSerializer.Deserialize<List<string>>(c.ExtendedKeyUsagesJson)!,
+                Replaced = replacement != null,
+                ReplacedBySerial = replacement?.SuccessorSerial,
             });
         }
 
@@ -365,6 +391,26 @@ public class AdminCertificateController(
             || (c.IssuerCertificateId == null && c.SigningProfileId != null
                 && _dbContext.SigningProfiles.Any(sp => sp.Id == c.SigningProfileId && sp.IssuerId != null && issuerCertIds.Contains(sp.IssuerId.Value))));
 
+    private CertificateLifecycle.IssuingCaMap? _issuingCaMap;
+
+    /// <summary>The issuing-CA resolution the replacement rule uses, computed once per request.</summary>
+    private async Task<CertificateLifecycle.IssuingCaMap> IssuingCaMapAsync()
+        => _issuingCaMap ??= await CertificateLifecycle.IssuingCaMap.LoadAsync(_dbContext, await CaCertificateOwnersAsync());
+
+    /// <summary>
+    /// Replacements of <paramref name="certs"/> (a page or one certificate), with the successor's
+    /// serial withheld when the caller may not view the successor.
+    /// </summary>
+    private async Task<Dictionary<Guid, CertificateLifecycle.Replacement>> ResolveVisibleReplacementsAsync(
+        IQueryable<CertificateEntity> certs, Guid userId)
+    {
+        var found = await CertificateLifecycle.ResolveReplacementsAsync(_dbContext, certs, await IssuingCaMapAsync(), DateTime.UtcNow);
+        foreach (var (id, r) in found.ToList())
+            if (r.SuccessorId is { } successor && !_certificateAccessEvaluator.CanViewCertificate(userId, successor))
+                found[id] = new CertificateLifecycle.Replacement(null, null);
+        return found;
+    }
+
     /// <summary>
     /// Orders the certificate list by the <c>sort</c> parameter (<c>field</c> / <c>-field</c>):
     /// notBefore, notAfter, subject, serial, issuer. Default: newest first.
@@ -462,6 +508,144 @@ public class AdminCertificateController(
         });
     }
 
+    /// <summary>Most attention items the lifecycle summary returns.</summary>
+    private const int AttentionCap = 20;
+
+    /// <summary>
+    /// Expiry and replacement counts over every certificate the caller may view, scoped exactly
+    /// like the certificate list (access control, then <paramref name="caId"/> / <paramref name="spaceId"/>),
+    /// plus a capped list of certificates that need attention: expired in the last 30 days or
+    /// expiring within 30 days, with no replacement. Counts never depend on paging.
+    /// </summary>
+    /// <param name="caId">Optional issuing-CA filter (same semantics as the certificate list).</param>
+    /// <param name="spaceId">Optional space filter (same semantics as the certificate list).</param>
+    /// <returns>A <see cref="CertificateLifecycleSummaryModel"/>.</returns>
+    [HttpGet("lifecycle-summary")]
+    [RefuseQueryKey("tenantId", "spaceId")]
+    [ProducesResponseType(typeof(CertificateLifecycleSummaryModel), 200)]
+    [ProducesResponseType(401)]
+    public async Task<IActionResult> GetLifecycleSummary([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+
+        var userId = _currentUser.User.Id;
+        var query = await BuildAccessibleCertificatesQueryAsync(userId);
+        query = await ApplyScopeFiltersAsync(query, caId, spaceId);
+
+        var now = DateTime.UtcNow;
+        var in7 = now.AddDays(7);
+        var in30 = now.AddDays(30);
+        var recentStart = now.AddDays(-30);
+        var windowStart = now.AddDays(-CertificateLifecycle.ReplacementWindowDays);
+
+        var counts = await query
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Total = g.Count(),
+                Revoked = g.Count(c => c.Revoked),
+                Expired = g.Count(c => !c.Revoked && c.NotAfter < now),
+                ExpiredInWindow = g.Count(c => !c.Revoked && c.NotAfter < now && c.NotAfter >= windowStart),
+                Expiring7 = g.Count(c => !c.Revoked && c.NotAfter >= now && c.NotAfter <= in7),
+                Expiring30 = g.Count(c => !c.Revoked && c.NotAfter >= now && c.NotAfter <= in30),
+            })
+            .FirstOrDefaultAsync();
+
+        // The replacement check runs over a bounded band: certificates that expired within the
+        // window or expire within 30 days.
+        var band = query.Where(c => !c.Revoked && c.NotAfter >= windowStart && c.NotAfter <= in30);
+        var rows = await band
+            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.IssuerCertificateId, c.SigningProfileId })
+            .ToListAsync();
+        var caMap = await IssuingCaMapAsync();
+        var replaced = rows.Count == 0
+            ? new Dictionary<Guid, CertificateLifecycle.Replacement>()
+            : await CertificateLifecycle.ResolveReplacementsAsync(_dbContext, band, caMap, now);
+
+        var expiredInBand = rows.Where(r => r.NotAfter < now).ToList();
+        var expiringInBand = rows.Where(r => r.NotAfter >= now).ToList();
+        bool NotReplaced(Guid id) => !replaced.ContainsKey(id);
+
+        var attentionRows = expiredInBand
+            .Where(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId))
+            .OrderByDescending(r => r.NotAfter)
+            .Concat(expiringInBand.Where(r => NotReplaced(r.CertificateId)).OrderBy(r => r.NotAfter))
+            .ToList();
+        var shown = attentionRows.Take(AttentionCap).ToList();
+
+        var shownIds = shown.Select(r => r.CertificateId).ToList();
+        var channels = await CertificateLifecycle.ResolveIssuanceChannelsAsync(_dbContext,
+            HttpContext?.RequestServices?.GetService<AuditDbContext>(),
+            shown.Select(r => (r.CertificateId, r.SerialNumber)).ToList());
+        var pendingRenewals = await CertificateLifecycle.PendingRenewalsAsync(_dbContext, shownIds);
+        var autoRenewal = HttpContext?.RequestServices?.GetService<SystemConfig>()?.AutoRenewal;
+        var cas = await _dbContext.CertificateAuthorities.AsNoTracking()
+            .Select(ca => new { ca.Id, ca.Label, ca.Name })
+            .ToDictionaryAsync(ca => ca.Id);
+
+        var attention = shown.Select(r =>
+        {
+            var ca = caMap.CaOf(r.IssuerCertificateId, r.SigningProfileId);
+            var info = ca != null && cas.TryGetValue(ca.Value, out var found) ? found : null;
+            var expired = r.NotAfter < now;
+            return new CertificateAttentionItemModel
+            {
+                CertificateId = r.CertificateId,
+                SerialNumber = r.SerialNumber,
+                SubjectDN = r.SubjectDN,
+                CommonName = CertificateLifecycle.CommonNameOf(r.SubjectDN) ?? r.SerialNumber,
+                NotBefore = r.NotBefore,
+                NotAfter = r.NotAfter,
+                State = expired ? "expired" : "expiring",
+                CaId = ca,
+                CaLabel = info?.Label,
+                CaName = info?.Name,
+                IssuanceChannel = channels.GetValueOrDefault(r.CertificateId),
+                AutoRenewal = autoRenewal == null ? null : !expired && autoRenewal.Enabled,
+                RenewalPending = pendingRenewals.Contains(r.CertificateId),
+            };
+        }).ToList();
+
+        var byIssuer = await query
+            .GroupBy(c => new { c.IssuerCertificateId, c.SigningProfileId })
+            .Select(g => new { g.Key.IssuerCertificateId, g.Key.SigningProfileId, Count = g.Count() })
+            .ToListAsync();
+        var byCa = byIssuer
+            .Select(g => new { CaId = caMap.CaOf(g.IssuerCertificateId, g.SigningProfileId), g.Count })
+            .Where(g => g.CaId != null)
+            .GroupBy(g => g.CaId!.Value)
+            .Select(g => new CertificateCountByCaModel { CaId = g.Key, Total = g.Sum(x => x.Count) })
+            .OrderByDescending(g => g.Total)
+            .ToList();
+
+        var expiredReplaced = expiredInBand.Count(r => !NotReplaced(r.CertificateId));
+        var total = counts?.Total ?? 0;
+        var revoked = counts?.Revoked ?? 0;
+        var expiredTotal = counts?.Expired ?? 0;
+        return Ok(new CertificateLifecycleSummaryModel
+        {
+            GeneratedAt = now,
+            ReplacementWindowDays = CertificateLifecycle.ReplacementWindowDays,
+            Total = total,
+            Revoked = revoked,
+            Expired = expiredTotal,
+            Active = total - revoked - expiredTotal,
+            ExpiringWithin7Days = counts?.Expiring7 ?? 0,
+            ExpiringWithin30Days = counts?.Expiring30 ?? 0,
+            ExpiringWithin7DaysNotReplaced = expiringInBand.Count(r => r.NotAfter <= in7 && NotReplaced(r.CertificateId)),
+            ExpiringWithin30DaysNotReplaced = expiringInBand.Count(r => NotReplaced(r.CertificateId)),
+            ExpiredReplaced = expiredReplaced,
+            ExpiredNotReplaced = expiredInBand.Count - expiredReplaced,
+            ExpiredUnchecked = expiredTotal - (counts?.ExpiredInWindow ?? 0),
+            RecentlyExpiredNotReplaced = expiredInBand.Count(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId)),
+            AttentionTotal = attentionRows.Count,
+            Attention = attention,
+            ByCa = byCa,
+        });
+    }
+
     /// <summary>
     /// Retrieves detailed certificate information by serial number.
     /// </summary>
@@ -481,6 +665,18 @@ public class AdminCertificateController(
         var isAllowed = _certificateAccessEvaluator.CanViewCertificate(_currentUser.User.Id, cert.CertificateId);
         if (!isAllowed)
             return NotFound();
+
+        var certId = cert.CertificateId;
+        var replacements = await ResolveVisibleReplacementsAsync(
+            _dbContext.Certificates.AsNoTracking().Where(c => c.CertificateId == certId), _currentUser.User.Id);
+        if (replacements.TryGetValue(certId, out var replacement))
+        {
+            cert.Replaced = true;
+            cert.ReplacedBySerial = replacement.SuccessorSerial;
+        }
+        var channels = await CertificateLifecycle.ResolveIssuanceChannelsAsync(
+            _dbContext, HttpContext?.RequestServices?.GetService<AuditDbContext>(), [(certId, cert.SerialNumber)]);
+        cert.IssuanceChannel = channels.GetValueOrDefault(certId);
 
         return Ok(cert);
     }

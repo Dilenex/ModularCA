@@ -105,8 +105,9 @@ contents:
       mode: 0755
 
   # The schema-ownership repair, run as the PostgreSQL superuser. Root-owned and outside
-  # /opt/modularca on purpose: postinst chowns that tree to the service account, and a file the
-  # service account can write must never be run as a superuser. build-deb.sh carves share/ out of
+  # /opt/modularca on purpose: the service account owns the runtime directories there (and before
+  # 0.4.0 owned the whole tree), and a file the service account can write must never be run as a
+  # superuser. build-deb.sh carves share/ out of
   # the payload tree so no copy lands under /opt/modularca. db-ownership.sh is the postinst step
   # that runs it on a local PostgreSQL; it also serves an operator by hand (check | repair).
   - src: ${SHAREDIR}/sql/adopt-ownership.sql

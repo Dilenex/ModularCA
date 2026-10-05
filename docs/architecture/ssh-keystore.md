@@ -33,9 +33,9 @@ Every SSH signing operation shells out to `ssh-keygen`, run by the node process,
 | `ModularCA.API/Controllers/v1/User/UserSshController.cs:64-227` | self-service sign-user: request, signing and cert profiles, then `SignUserKeyAsync` (`:209`) |
 | `ModularCA.API/Controllers/v1/Public/PublicSshController.cs:16`, `:86-101` | anonymous `/ssh/ca-keys/{id}/krl`, on the **validation** role, runs `ssh-keygen -k` per request |
 | `AdminKeyCeremonyController.cs:702-743` | executes `CreateSshCa` (calls `GenerateKeyPairAsync` in the node) and `DeleteSshCa` |
-| `ModularCA.Bootstrap/BackupRestore.cs:201-206` | backup copies `config/` recursively, so `config/ssh-ca-keys/*` goes into every archive. The deny-list (`:26-34`) names files, not this directory |
-| `BackupRestore.cs:778-799` | restore writes them back into `config/` |
-| `BackupRestore.cs:1276-1300` | the pre-restore snapshot zips `config/`, keys included, **unencrypted** next to the install |
+| `ModularCA.Bootstrap/BackupRestore.cs:213-240` | backup wraps `config/ssh-ca-keys/*`, with the Data Protection key ring, through the signer as one `SecretKind.BackupConfigSecret` blob per directory (`BackupWrappedSecrets.cs:57-102`), and leaves the directory out of the config copy. The deny-list (`:27-35`) names files, not this directory |
+| `BackupRestore.cs:856-882` | restore stages the wrapped blobs in `config/restore-pending/`, and the next start unwraps them into `config/ssh-ca-keys` (`BackupWrappedSecrets.cs:138`, `StartModularCA.cs:2582`). An archive from before the wrap carries the keys in plaintext under `config/`; restore writes them back with a warning (`:701`) |
+| `BackupRestore.cs:1287-1300`, `:1605-1631` | the pre-restore snapshot zips `config/`, keys included, **unencrypted** (owner-only) into `backups/` |
 | `ModularCA.Bootstrap/BootstrapModularCA.cs:229-236` | reset deletes `keystores/ssh-ca-*`, a directory and pattern that hold no SSH keys. The real files in `config/ssh-ca-keys` survive a reset |
 
 ### Found along the way
@@ -437,14 +437,22 @@ where it runs:
   signer as the other two files are exported, and a signer without one skips it, as it already
   does for a missing file. Restore imports it through `ImportKeystoreFile`, verified against its
   own pin.
-- The config copy (`BackupRestore.cs:206`) excludes the `ssh-ca-keys` directory by name, so a new
+- **Interim: the SSH keys travel under the signer's backup wrap.** Until this design lands, an
+  archive carries `config/ssh-ca-keys` wrapped by the signer (`SecretKind.BackupConfigSecret`,
+  `BackupWrappedSecrets.cs`), never in plaintext; opening it needs the keystore and its secondary
+  passphrase as well as the archive key. That wrap is a stopgap for files that should not exist:
+  the SSH keystore replaces it. Once the keys live in `ssh-ca.keystore`, the directory drops out of
+  `BackupWrappedSecrets.Targets`, which then wraps only the Data Protection key ring.
+- The config copy (`BackupRestore.cs:240`) already leaves the `ssh-ca-keys` directory out, so a new
   archive never carries plaintext SSH keys, even from a host where an import failed.
-- Restore still accepts `config/ssh-ca-keys` from an older archive. That archive's database dump
+- Restore still accepts `config/ssh-ca-keys` from an older archive, in plaintext or under the
+  interim wrap (unwrapped at the next start, so the import must run after `ApplyPendingAsync`). That archive's database dump
   has `LegacyFile` rows and its keystores have no `ssh-ca.keystore`. A live `ssh-ca.keystore` is
   moved aside as `.bak.<timestamp>`, so that the restored state is consistent, and the next start
   imports the restored files. Restoring an old backup is therefore just another migration.
-- The pre-restore snapshot stops containing SSH keys once the directory is gone. Its plaintext
-  handling of the rest of `config/` is unchanged and out of scope here.
+- The pre-restore snapshot (now written to `backups/`, `BackupRestore.cs:1287`) stops containing
+  SSH keys once the directory is gone. Its plaintext handling of the rest of `config/` is unchanged
+  and out of scope here.
 - Reset (`BootstrapModularCA.cs:229-236`) deletes `keystores/ssh-ca.keystore` with the other two,
   and also the legacy `config/ssh-ca-keys` directory, which it misses today.
 

@@ -800,9 +800,10 @@ public abstract class SigningServiceContractTests
     // ---- Export ----------------------------------------------------------------------------
 
     /// <summary>
-    /// The export table. Under Export only an end-entity key leaves, to its holder; under Backup
-    /// every key the signer holds leaves; no other purpose exports anything; a key the signer
-    /// does not hold is unknown whatever the purpose.
+    /// The export table. Only an end-entity key leaves as PKCS#12, and only under Export, to its
+    /// holder. Backup takes whole keystore files and never a single key as PKCS#12, so every
+    /// key, CA or end-entity, is refused under it; no other purpose exports anything; a key the
+    /// signer does not hold is unknown under Export.
     /// </summary>
     public static IEnumerable<object[]> ExportRows()
     {
@@ -810,8 +811,8 @@ public abstract class SigningServiceContractTests
         foreach (var k in new[] { "ca-rsa", "ca-ec", "ocsp", "tsa", "cmp", "orphan", "keyless" })
             yield return new object[] { k, SigningPurpose.Export, SigningRefusalReason.PurposeNotPermitted };
 
-        foreach (var k in new[] { "ca-rsa", "ca-ec", "ocsp", "tsa", "cmp", "orphan", "leaf" })
-            yield return new object[] { k, SigningPurpose.Backup, null! };
+        foreach (var k in new[] { "ca-rsa", "ca-ec", "ocsp", "tsa", "cmp", "orphan", "leaf", "keyless", "leaf-unheld" })
+            yield return new object[] { k, SigningPurpose.Backup, SigningRefusalReason.PurposeNotPermitted };
 
         foreach (var p in Enum.GetValues<SigningPurpose>().Where(p => p is not (SigningPurpose.Export or SigningPurpose.Backup)))
         {
@@ -819,9 +820,7 @@ public abstract class SigningServiceContractTests
             yield return new object[] { "ca-rsa", p, SigningRefusalReason.PurposeNotPermitted };
         }
 
-        yield return new object[] { "keyless", SigningPurpose.Backup, SigningRefusalReason.UnknownKey };
         yield return new object[] { "leaf-unheld", SigningPurpose.Export, SigningRefusalReason.UnknownKey };
-        yield return new object[] { "leaf-unheld", SigningPurpose.Backup, SigningRefusalReason.UnknownKey };
     }
 
     [Theory]
@@ -1778,6 +1777,38 @@ public abstract class SigningServiceContractTests
         await Refused(heldKey, cmp);
         await Refused(heldKey, issuance);
         await Refused(cmpSecret, export);
+    }
+
+    /// <summary>
+    /// A backup wraps the configuration secrets its archive carries (the Data Protection key
+    /// ring, the SSH CA keys) and only a restore reads them back: the backup that wrote one
+    /// cannot, and no other purpose wraps or reads that kind.
+    /// </summary>
+    [Fact]
+    public async Task A_backup_wraps_its_configuration_secrets_and_only_a_restore_reads_them_back()
+    {
+        var signer = await CreateSignerAsync(SharedWorld);
+        var backup = Context(SigningPurpose.Backup, null, null);
+        var restore = Context(SigningPurpose.Restore, null, null);
+
+        var blob = await signer.WrapSecretAsync(SecretKind.BackupConfigSecret, WrappableSecret, backup);
+        Assert.DoesNotContain(Convert.ToHexStringLower(WrappableSecret), Convert.ToHexStringLower(blob));
+        Assert.Equal(WrappableSecret, await signer.UnwrapSecretAsync(blob, restore));
+
+        foreach (var purpose in Enum.GetValues<SigningPurpose>().Where(p => p != SigningPurpose.Restore))
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(blob, Context(purpose, null, null)));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, ex.Reason);
+        }
+        foreach (var purpose in Enum.GetValues<SigningPurpose>().Where(p => p != SigningPurpose.Backup))
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+                () => signer.WrapSecretAsync(SecretKind.BackupConfigSecret, WrappableSecret, Context(purpose, null, null)));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, ex.Reason);
+        }
+        var other = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.WrapSecretAsync(SecretKind.HeldPrivateKey, WrappableSecret, backup));
+        Assert.Equal(SigningRefusalReason.PurposeNotPermitted, other.Reason);
     }
 
     [Fact]

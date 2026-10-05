@@ -211,7 +211,9 @@ public static class SignerIdentityCommands
 
     /// <summary>
     /// Writes both halves of the channel into the one <c>Signer:</c> section of a config.yaml,
-    /// leaving every other section untouched, and proves the result by loading it back.
+    /// leaving every other section untouched, and proves the result by loading it back. The file
+    /// is rewritten in place (<see cref="ConfigYamlWriter.WriteKeepingAccess"/>), so on a split
+    /// install it keeps the signer's group read; the copy kept beside it is owner-only.
     /// </summary>
     private static int ApplyToConfig(
         string configPath, SignerConfig current, string dialHost, int listenPort,
@@ -235,19 +237,19 @@ public static class SignerIdentityCommands
         };
 
         var backup = configPath + $".pre-signer-{DateTime.UtcNow:yyyyMMdd-HHmmss}.bak";
-        File.Copy(configPath, backup, overwrite: false);
-        FileSecurityUtil.SetOwnerOnly(backup);
-
         var original = File.ReadAllText(configPath);
-        File.WriteAllText(configPath, YamlSectionSplicer.Replace(original, "Signer", section));
-        FileSecurityUtil.SetOwnerOnly(configPath);
+        if (File.Exists(backup))
+            throw new IOException($"{backup} already exists.");
+        ConfigYamlWriter.WriteKeepingAccess(backup, original);
+
+        ConfigYamlWriter.WriteKeepingAccess(configPath, YamlSectionSplicer.Replace(original, "Signer", section));
 
         var reloaded = YamlConfigLoader.Load(configPath).Signer;
         if (!reloaded.IsRemote
             || !string.Equals(reloaded.PinnedClientSpki, clientPin, StringComparison.Ordinal)
             || !string.Equals(reloaded.PinnedServerSpki, serverPin, StringComparison.Ordinal))
         {
-            File.Copy(backup, configPath, overwrite: true);
+            ConfigYamlWriter.WriteKeepingAccess(configPath, original);
             Console.Error.WriteLine($"[FATAL] {configPath} did not load back with the Signer section as written; restored from {backup}.");
             return 1;
         }

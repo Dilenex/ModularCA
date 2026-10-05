@@ -11,7 +11,8 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'subject', type: 'string', required: false, description: 'Partial match filter on the certificate Subject DN' },
             { name: 'serial', type: 'string', required: false, description: 'Partial match filter on the certificate serial number' },
             { name: 'issuer', type: 'string', required: false, description: 'Partial match filter on the certificate issuer' },
-            { name: 'status', type: 'string', required: false, description: 'Status filter: "active", "revoked", or "expired"' },
+            { name: 'status', type: 'string', required: false, description: 'Status filter: "active" (not revoked, not expired), "revoked", or "expired" (expired and not revoked)' },
+            { name: 'replaced', type: 'string', required: false, description: '"yes" or "no": certificates that have, or have not, been replaced (see lifecycle-summary). Either value only matches certificates still valid or expired within the last 90 days.' },
             { name: 'keyAlgorithm', type: 'string', required: false, description: 'Filter on key algorithm (e.g., "RSA", "ECDSA", "Ed25519")' },
             { name: 'san', type: 'string', required: false, description: 'Partial match filter on subject alternative names' },
             { name: 'notAfterFrom', type: 'DateTime', required: false, description: 'Minimum expiry date (NotAfter)' },
@@ -24,7 +25,7 @@ export const adminCertificates: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Paginated result with total, totalPages, page, pageSize, and items array of certificate info models.',
+        responseDescription: 'Paginated result with total, totalPages, page, pageSize, and items array of certificate info models. Each item carries replaced and, when the caller may view the successor, replacedBySerial.',
     },
     {
         method: 'GET',
@@ -35,7 +36,7 @@ export const adminCertificates: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Full certificate info model.',
+        responseDescription: 'Full certificate info model, with replaced, replacedBySerial (when the caller may view the successor) and issuanceChannel (ACME, EST, SCEP, CMP, MSAE or Manual; null when nothing on record says).',
     },
     {
         method: 'GET',
@@ -177,5 +178,21 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Object with total count, averageScore, and grade distribution (counts of A, B, C, D, F).',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/certificates/lifecycle-summary',
+        summary: 'Expiry and replacement counts over every certificate the caller may view, plus the certificates that need attention.',
+        auth: 'Authorize (CaAuditor)',
+        category: 'Admin Certificates',
+        queryParams: [
+            { name: 'caId', type: 'Guid', required: false, description: 'Only certificates issued by this CA (same semantics as the certificate list)' },
+            { name: 'spaceId', type: 'Guid', required: false, description: 'Only certificates issued by CAs of this space. The pre-0.4.0 tenantId is refused (400).' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'generatedAt, replacementWindowDays (90); counts total, active, revoked, expired (expired and not revoked); expiringWithin7Days and expiringWithin30Days with their NotReplaced counterparts; expiredReplaced, expiredNotReplaced and expiredUnchecked (expired before the window, not checked); recentlyExpiredNotReplaced (last 30 days); attentionTotal and attention, at most 20 items, each with certificateId, serialNumber, subjectDN, commonName, notBefore, notAfter, state ("expired" or "expiring"), caId, caLabel, caName, issuanceChannel, autoRenewal and renewalPending; byCa, the certificate count per issuing CA.',
+        notes: 'Scoped exactly like the certificate list, and counted on the server, so the numbers never depend on a list page. A certificate is replaced when it was reissued (flag or renewal link), or when a newer certificate from the same issuing CA, not revoked and not expired, has the same subject DN and the same SAN set (order and case ignored). Replacement is checked for certificates that expired within the last 90 days or expire within 30; older expired ones are counted in expiredUnchecked. Attention lists expired-in-the-last-30-days ones first, most recent first, then expiring ones, soonest first. The issuance channel comes from ACME orders, SCEP transactions and the protocol audit; when the audit database is unavailable it is left unknown rather than failing the call.',
     },
 ];

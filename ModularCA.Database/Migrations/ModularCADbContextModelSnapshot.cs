@@ -872,6 +872,8 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("IssuedCertificateId");
 
+                    b.HasIndex("RenewalOfCertificateId");
+
                     b.HasIndex("RequestorUserId");
 
                     b.HasIndex("SigningProfileId");
@@ -1117,6 +1119,8 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CertProfileId");
 
                     b.HasIndex("IssuerCertificateId");
+
+                    b.HasIndex("NotAfter");
 
                     b.HasIndex("SigningProfileId");
 

@@ -6,6 +6,34 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Keys, backups and packaging hardened before release
+
+- **The signer no longer exports CA keys as PKCS#12 under Backup.** The node, the signer's
+  only client, could ask for any CA, OCSP, TSA, CMP or system key with a password of its choosing.
+  PKCS#12 export is now Export-only and end-entity only; backups take whole keystore files.
+- **Backup archives no longer carry openable secrets.** The Data Protection key ring (which
+  opens TOTP secrets, held end-entity keys, Kerberos keys and LDAP passwords) and the SSH CA keys
+  travel wrapped by the signer and are unwrapped at the first start after a restore, so a restored
+  host needs the original secondary passphrase. Every writer of `config.yaml` used to copy the
+  database passwords into it, and so into every archive; none does now, archives strip the
+  section, and restore uses the new host's own `db.yaml`. New archive passwords need 16
+  characters and use scrypt N=2^17; old archives still restore.
+- **CRL numbers never go backwards after a restore.** Every counter is raised to the restore
+  time in Unix seconds, and the change is audited. Certificates revoked after the backup must be
+  revoked again.
+- **Program files belong to root.** Upgrades no longer chown the install tree: only `config`,
+  `keystores`, `logs` and `backups` stay with the service account, and existing ones are never
+  touched. On a split install the node could rewrite the signer's binary and, after any upgrade,
+  read its keystore and passphrase; the signer could also not reach its own binary at all. The
+  signer unit now ships and is installed. The pre-restore snapshot and the default `--backup`
+  archive live under `backups/`.
+- **Licences fail closed** while the vendor key is a placeholder.
+- **Expired certificates say what to do.** The dashboard counted from one page of the list; it
+  now uses a scoped lifecycle summary, separates expired certificates that were replaced (renewed
+  or reissued) from those that were not, lists what needs attention, and links every count to a
+  filtered list. The list and detail pages say when a certificate expired and what replaced it.
+  `status=expired` no longer includes revoked certificates.
+
 ### Review of 0.4.0: what changes for operators
 
 With the tenant filters gone, every check that relied on them was reviewed twice. The fixes

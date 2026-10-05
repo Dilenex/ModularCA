@@ -15,6 +15,8 @@ import { SavedViews } from '@shared/components/SavedViews';
 import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { Link } from 'react-router-dom';
+import { capitalize, expiryPhrase, expiryState, lifecycleTone, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -36,11 +38,46 @@ function parseSans(raw: any): string[] | null {
 
 const certKey = (c: any): string => c.serialNumber || c.certificateId;
 
+/** The status chip: an expired certificate that was replaced is routine, so it is shown muted. */
+function StatusChip({ cert }: { cert: any }) {
+    const st = certStatus(cert);
+    if (st === 'expired' && cert.replaced) return <StatusBadge status="disabled" label="expired" />;
+    return <StatusBadge status={st} />;
+}
+
+/**
+ * The expiry cell: the date, then for an expired or soon-expiring certificate how long ago or
+ * how soon, and whether it was replaced.
+ */
+function ExpiryCell({ cert }: { cert: any }) {
+    const now = new Date();
+    const state = expiryState(cert, now);
+    const show = state === 'expired' || state === 'expiring';
+    const tone = lifecycleTone(cert.notAfter, !!cert.replaced, now);
+    return (
+        <div className="flex flex-col min-w-0">
+            <span className="text-xs text-ink-muted">{formatDate(cert.notAfter)}</span>
+            {show && (
+                <span className="text-xs truncate">
+                    <span className={toneTextClass(tone)}>{capitalize(expiryPhrase(cert.notAfter, now))}</span>
+                    <span className="text-ink-muted"> · </span>
+                    {cert.replaced
+                        ? (cert.replacedBySerial
+                            ? <Link to={`/certificates/${cert.replacedBySerial}`} onClick={(e) => e.stopPropagation()} className="text-accent-ink hover:underline">Replaced by <span className="font-mono">{cert.replacedBySerial}</span></Link>
+                            : <span className="text-ink-muted">Replaced</span>)
+                        : <span className="text-ink-muted">Not replaced</span>}
+                </span>
+            )}
+        </div>
+    );
+}
+
 // Cross-page CSV: a fixed, complete field set (independent of which columns are visible/hidden).
-const CSV_HEADERS = ['Serial', 'Subject', 'Issuer', 'Status', 'Not Before', 'Not After', 'Key Algorithm', 'Revoked', 'Revocation Reason'];
+const CSV_HEADERS = ['Serial', 'Subject', 'Issuer', 'Status', 'Not Before', 'Not After', 'Key Algorithm', 'Revoked', 'Revocation Reason', 'Replaced', 'Replaced By'];
 const csvCells = (c: any): (string | number)[] => [
     c.serialNumber || '', c.subjectDN || '', c.issuer || '', certStatus(c),
     c.notBefore || '', c.notAfter || '', c.keyAlgorithm || '', c.revoked ? 'Yes' : 'No', c.revocationReason || '',
+    c.replaced ? 'Yes' : 'No', c.replacedBySerial || '',
 ];
 function downloadCsv(rows: any[], filename: string) {
     const esc = (v: unknown) => {
@@ -65,7 +102,7 @@ const EXPORT_MAX_ROWS = 50000; // safety cap on a fetch-all export
 /** What the certificate list keeps in the URL. Defaults stay out of the link. */
 const QUERY_DEFAULTS: TableQueryValues = {
     page: '1', pageSize: '20', sort: '-notBefore',
-    search: '', status: 'all', serial: '', san: '', issuer: '', caId: '', keyAlgorithm: '',
+    search: '', status: 'all', replaced: '', serial: '', san: '', issuer: '', caId: '', keyAlgorithm: '',
     notAfterFrom: '', notAfterTo: '', issuedFrom: '', issuedTo: '',
 };
 const PAGE_SIZES = [20, 50, 100];
@@ -80,6 +117,7 @@ const Certificates: React.FC = () => {
     const pageSize = PAGE_SIZES.includes(parseInt(q.pageSize, 10)) ? parseInt(q.pageSize, 10) : 20;
     const sort = parseSort(q.sort);
     const statusFilter = (['active', 'revoked', 'expired'].includes(q.status) ? q.status : 'all') as 'all' | 'active' | 'revoked' | 'expired';
+    const replacedFilter = q.replaced === 'yes' || q.replaced === 'no' ? q.replaced : '';
     const { caId: caIdFilter, keyAlgorithm: keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo } = q;
     // The typed filters are edited locally and written to the URL after a pause, so every
     // keystroke is not a history entry and not a request.
@@ -153,6 +191,7 @@ const Certificates: React.FC = () => {
         if (q.sort) params.set('sort', q.sort);
         if (q.search) params.set('search', q.search);
         if (statusFilter !== 'all') params.set('status', statusFilter);
+        if (replacedFilter) params.set('replaced', replacedFilter);
         if (q.serial) params.set('serial', q.serial);
         if (q.san) params.set('san', q.san);
         if (q.issuer) params.set('issuer', q.issuer);
@@ -164,7 +203,7 @@ const Certificates: React.FC = () => {
         if (issuedFrom) params.set('issuedFrom', issuedFrom);
         if (issuedTo) params.set('issuedTo', issuedTo);
         return params;
-    }, [q.sort, q.search, statusFilter, q.serial, q.san, q.issuer, caIdFilter, caQuery, keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo]);
+    }, [q.sort, q.search, statusFilter, replacedFilter, q.serial, q.san, q.issuer, caIdFilter, caQuery, keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo]);
 
     /** The current filter as a saved view sees it: filters and sort, never the page. */
     const currentView = viewQuery(q, QUERY_DEFAULTS);
@@ -269,13 +308,13 @@ const Certificates: React.FC = () => {
         kind: 'certificate',
         key: certKey,
         title: (c) => (c.subjectDN || '').match(/CN=([^,]+)/)?.[1] || c.serialNumber,
-        status: (c) => { const st = certStatus(c); return { label: st, tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'expired' ? 'warn' : 'neutral' }; },
+        status: (c) => { const st = certStatus(c); return { label: st, tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'expired' ? (c.replaced ? 'neutral' : 'warn') : 'neutral' }; },
         columns: [
-            { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusBadge status={certStatus(c)} /> },
+            { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusChip cert={c} /> },
             { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => c.serialNumber, render: (c) => <span className="data-mono text-ink-muted truncate">{c.serialNumber}</span> },
             { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-ink truncate">{c.subjectDN}</span> },
             { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-ink-muted">{c.keyAlgorithm || '-'}</span> },
-            { key: 'notAfter', header: 'Expires', defaultWidth: 160, minWidth: 120, sortable: true, exportValue: (c) => formatDate(c.notAfter), render: (c) => <span className="text-xs text-ink-muted">{formatDate(c.notAfter)}</span> },
+            { key: 'notAfter', header: 'Expires', defaultWidth: 240, minWidth: 140, sortable: true, truncate: false, exportValue: (c) => formatDate(c.notAfter), render: (c) => <ExpiryCell cert={c} /> },
         ],
         sections: [
             { fields: [
@@ -287,6 +326,8 @@ const Certificates: React.FC = () => {
             { title: 'Validity', fields: [
                 { label: 'Not Before', value: (c) => formatDate(c.notBefore) },
                 { label: 'Not After', value: (c) => formatDate(c.notAfter) },
+                { label: 'Expiry', value: (c) => { const st = expiryState(c); return st === 'expired' || st === 'expiring' ? capitalize(expiryPhrase(c.notAfter)) : null; } },
+                { label: 'Replaced by', value: (c) => (c.replaced ? (c.replacedBySerial || 'A replacement you cannot view') : null), mono: true },
             ] },
             { title: 'Names', fields: [
                 { label: 'SANs', value: (c) => { const sans = parseSans(c.subjectAlternativeNames); return sans && sans.length > 0 ? sans.join(', ') : null; } },
@@ -340,6 +381,13 @@ const Certificates: React.FC = () => {
                     <option value="active">Active</option>
                     <option value="revoked">Revoked</option>
                     <option value="expired">Expired</option>
+                </select>
+                <select value={replacedFilter} onChange={(e) => setQ({ replaced: e.target.value })} aria-label="Replacement"
+                    title="Replaced: reissued or renewed, or a newer valid certificate from the same CA has the same subject and names"
+                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
+                    <option value="">Replaced or not</option>
+                    <option value="yes">Replaced</option>
+                    <option value="no">Not replaced</option>
                 </select>
                 <button onClick={() => setShowAdvanced((v) => !v)}
                     className={`px-3 py-2 text-sm rounded border transition-colors ${advancedActive ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-raised text-ink border-line hover:bg-hover'}`}>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiGet, apiGetAllPages } from '../../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { Link } from 'react-router-dom';
+import { capitalize, expiryPhrase, lifecycleTone, toneTextClass } from '../certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -78,6 +79,7 @@ const Dashboard: React.FC = () => {
         return days <= 30;
     });
     const revokedCerts = certificates.filter(c => c.revoked);
+    const expiringNotReplaced = expiringSoon.filter(c => !c.replaced);
 
     const recentRequests = requests.slice(0, 5);
 
@@ -122,9 +124,12 @@ const Dashboard: React.FC = () => {
                     </div>
                     <div className="bg-raised border border-line rounded-lg p-4">
                         <p className="text-xs text-ink-muted uppercase tracking-wider">Expiring Within 30 Days</p>
-                        <p className={`text-2xl font-bold mt-1 ${expiringSoon.length > 0 ? 'text-warn' : 'text-ink-muted'}`}>
+                        <p className={`text-2xl font-bold mt-1 ${expiringNotReplaced.length > 0 ? 'text-warn' : 'text-ink-muted'}`}>
                             {expiringSoon.length}
                         </p>
+                        {expiringSoon.length > expiringNotReplaced.length && (
+                            <p className="text-xs text-ink-muted mt-0.5">{expiringSoon.length - expiringNotReplaced.length} already replaced</p>
+                        )}
                     </div>
                     <div className="bg-raised border border-line rounded-lg p-4">
                         <p className="text-xs text-ink-muted uppercase tracking-wider">Revoked</p>
@@ -143,15 +148,16 @@ const Dashboard: React.FC = () => {
             {!loadingCerts && !errorCerts && expiringSoon.length > 0 && (
                 <div>
                     <h2 className="text-lg font-semibold text-ink mb-3">Expiring Soon</h2>
-                    <div className="bg-raised border border-warn/40 rounded-lg overflow-hidden">
+                    <div className={`bg-raised border rounded-lg overflow-hidden ${expiringNotReplaced.length > 0 ? 'border-warn/40' : 'border-line'}`}>
                         {expiringSoon.map((cert) => {
-                            const days = Math.ceil((new Date(cert.notAfter).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                            const tone = lifecycleTone(cert.notAfter, !!cert.replaced);
                             return (
                                 <div
                                     key={cert.serialNumber}
-                                    className="px-4 py-3 flex items-center gap-3 border-b border-line last:border-b-0"
+                                    className="px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line last:border-b-0"
                                 >
-                                    <StatusBadge status="expired" label={`${days}d left`} />
+                                    <span className={`text-xs font-medium whitespace-nowrap ${toneTextClass(tone)}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                                    <span className="text-xs text-ink-muted whitespace-nowrap">{cert.replaced ? 'Replaced' : 'Not replaced'}</span>
                                     <span className="text-sm text-ink truncate flex-1">
                                         {cert.subjectDN || cert.serialNumber}
                                     </span>

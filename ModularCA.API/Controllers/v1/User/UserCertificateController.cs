@@ -141,6 +141,7 @@ public class UserCertificateController(
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToList();
+        await AnnotateReplacementsAsync(pagedItems, _currentUser.User.Id);
 
         return Ok(new
         {
@@ -168,7 +169,32 @@ public class UserCertificateController(
         if (!isAllowed)
             return NotFound();
 
+        await AnnotateReplacementsAsync([cert], _currentUser.User.Id);
         return Ok(cert);
+    }
+
+    /// <summary>
+    /// Sets <see cref="CertificateInfoModel.Replaced"/> and, when the caller may view the
+    /// successor, <see cref="CertificateInfoModel.ReplacedBySerial"/> on each certificate.
+    /// </summary>
+    private async Task AnnotateReplacementsAsync(List<CertificateInfoModel> certs, Guid userId)
+    {
+        if (certs.Count == 0)
+            return;
+        var ids = certs.Select(c => c.CertificateId).ToList();
+        var caMap = await CertificateLifecycle.IssuingCaMap.LoadAsync(_dbContext,
+            await IssuerChainResolver.ResolveCaCertificateOwnersAsync(_dbContext));
+        var found = await CertificateLifecycle.ResolveReplacementsAsync(_dbContext,
+            _dbContext.Certificates.AsNoTracking().Where(c => ids.Contains(c.CertificateId)), caMap, DateTime.UtcNow);
+        foreach (var cert in certs)
+        {
+            if (!found.TryGetValue(cert.CertificateId, out var r))
+                continue;
+            cert.Replaced = true;
+            cert.ReplacedBySerial = r.SuccessorId is { } successor && _certificateAccessEvaluator.CanViewCertificate(userId, successor)
+                ? r.SuccessorSerial
+                : null;
+        }
     }
 
     [HttpGet("{serial}/file")]

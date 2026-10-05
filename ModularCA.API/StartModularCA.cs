@@ -192,11 +192,30 @@ static ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appC
         Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
         appConnectionString);
 
+// The command-line backup also wraps the Data Protection key ring and the SSH CA keys, which
+// needs the keystore unlocked; where it cannot be (a node whose signer is remote) the backup
+// gets the locked maintenance signer and refuses rather than write the ring in the clear.
+static ModularCA.Shared.Signing.ISigningService BackupSignerFor(string appConnectionString)
+{
+    try
+    {
+        return ModularCA.Keystore.Signing.MaintenanceSigner.CreateUnlocked(
+            Path.Combine(AppContext.BaseDirectory, "keystores"),
+            Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+            appConnectionString);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  (i) The keystore could not be unlocked for this backup ({ex.GetType().Name}: {ex.Message}).");
+        return MaintenanceSignerFor(appConnectionString);
+    }
+}
+
 if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath, MaintenanceSignerFor);
+    var exitCode = await BackupRestore.Backup(outputPath, BackupSignerFor);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -2553,6 +2572,21 @@ if (app.Environment.IsDevelopment())
 if (hsmSession != null)
 {
     app.Lifetime.ApplicationStopping.Register(() => hsmSession.Dispose());
+}
+
+// A restore leaves the Data Protection key ring and the SSH CA keys wrapped under
+// config/restore-pending/; the signer now holds the restored keystore, so unwrap them before
+// anything reads the key ring. A blob that does not unwrap stays for the next start.
+if (!isSetupMode && activeRoles.HasAnyNodeRole)
+{
+    var pendingResult = await BackupWrappedSecrets.ApplyPendingAsync(
+        app.Services.GetRequiredService<ModularCA.Shared.Signing.ISigningService>(),
+        Path.Combine(AppContext.BaseDirectory, "config"));
+    foreach (var target in pendingResult.Applied)
+        Log.Warning("Restore: wrapped configuration secret {Target} unwrapped by the signer and written back", target);
+    foreach (var (file, reason) in pendingResult.Failed)
+        Log.Error("Restore: wrapped configuration secret {File} could not be unwrapped and stays pending: {Reason}. "
+                  + "TOTP, held keys, Kerberos and LDAP publishing that depend on the restored key ring will fail until it is.", file, reason);
 }
 
 //var trustStore = app.Services.GetRequiredService<ITrustStoreProvider>();

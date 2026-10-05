@@ -105,6 +105,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminCertificateController.GetCertificateInfo"] = "capability: CertificateAccessEvaluator.CanViewCertificate",
         ["AdminCertificateController.GetCertificateTags"] = "capability: CertificateAccessEvaluator.CanViewCertificate",
         ["AdminCertificateController.GetHealthSummary"] = "capability: BuildAccessibleCertificatesQueryAsync",
+        ["AdminCertificateController.GetLifecycleSummary"] = "capability: BuildAccessibleCertificatesQueryAsync",
         ["AdminCertificateController.ListCertificates"] = "capability: BuildAccessibleCertificatesQueryAsync",
         ["AdminCertificateController.SearchCertificatesByTag"] = "capability: CertificateAccessEvaluator.CanViewCertificate per row",
         ["AdminCrlController.GetCrlByCaSerial"] = "public: the CA's published CRL, served anonymously at its CDP",

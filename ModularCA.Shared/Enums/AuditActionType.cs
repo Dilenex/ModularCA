@@ -160,6 +160,8 @@ public static class AuditActionType
     public const string BackupCreated = "BackupCreated";
     public const string BackupRestored = "BackupRestored";
     public const string BackupListed = "BackupListed";
+    /// <summary>A restore raised the CRL number counters so no number already published is reused (RFC 5280 §5.2.3).</summary>
+    public const string CrlNumbersRaisedOnRestore = "CrlNumbersRaisedOnRestore";
 
     // ACME EAB keys
     public const string AcmeEabKeyCreated = "AcmeEabKeyCreated";

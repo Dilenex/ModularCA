@@ -45,6 +45,29 @@ public static class YamlSectionSplicer
     }
 
     /// <summary>
+    /// Returns the text without the named top-level section, or unchanged when there is none.
+    /// The block is delimited as in <see cref="Replace"/>.
+    /// </summary>
+    /// <param name="yaml">The existing file contents.</param>
+    /// <param name="section">The top-level key to remove.</param>
+    /// <returns>The new file contents.</returns>
+    public static string Remove(string yaml, string section)
+    {
+        var lines = yaml.Replace("\r\n", "\n").Split('\n');
+        var key = section + ":";
+
+        var start = Array.FindIndex(lines, l => l.StartsWith(key, StringComparison.Ordinal));
+        if (start < 0)
+            return yaml;
+
+        var end = start + 1;
+        while (end < lines.Length && (lines[end].Length == 0 || char.IsWhiteSpace(lines[end][0])))
+            end++;
+
+        return string.Join("\n", lines[..start].Concat(lines[end..]));
+    }
+
+    /// <summary>
     /// Serialises one section with the conventions the loaders read by: Pascal-case keys, and
     /// any member marked for quoting rendered quoted.
     /// </summary>

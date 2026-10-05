@@ -244,7 +244,9 @@ public class WebTlsProvisioningService(
     /// <see cref="EnvVarConfigOverlay.WithSecretsProtected"/> so env-sourced secrets are
     /// nulled for the YAML write and restored in-memory afterward. Without this, Stage 2
     /// TLS provisioning would leak env-sourced JWT secrets, DB passwords, etc. into
-    /// <c>config.yaml</c> on first runtime boot.
+    /// <c>config.yaml</c> on first runtime boot. Written through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/>, which leaves out the <c>DB</c>
+    /// section and keeps the file's owner, group and mode.
     /// </summary>
     private void PersistConfig()
     {
@@ -252,12 +254,8 @@ public class WebTlsProvisioningService(
         {
             try
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, config);
             }
             catch (Exception ex)
             {

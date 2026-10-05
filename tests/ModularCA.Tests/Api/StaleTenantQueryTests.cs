@@ -29,6 +29,7 @@ public sealed class StaleTenantQueryTests
         { Admin + "AdminCertificateController", "ListCertificates", "spaceId" },
         { Admin + "AdminCertificateController", "ExpiryHistogram", "spaceId" },
         { Admin + "AdminCertificateController", "GetHealthSummary", "spaceId" },
+        { Admin + "AdminCertificateController", "GetLifecycleSummary", "spaceId" },
         { Admin + "AdminCertificateTemplateController", "GetAll", "spaceId" },
         { Admin + "AdminCertProfileController", "GetAll", "spaceId" },
         { Admin + "AdminCertSignRequestController", "RetrievePendingRequests", "spaceId" },

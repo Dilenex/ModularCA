@@ -151,6 +151,9 @@ check "the pre-check refuses an archive without the systemd unit" '[ "$RC" = 1 ]
 mkdir -p "$WORK/archive/deploy"
 : > "$WORK/archive/deploy/modularca.service"
 OUT=$(precheck "$WORK/archive"); RC=$?
+check "the pre-check refuses an archive without the signer's unit" '[ "$RC" = 1 ] && printf "%s" "$OUT" | grep -q "missing from archive: deploy/modularca-signer.service; nothing was changed"'
+: > "$WORK/archive/deploy/modularca-signer.service"
+OUT=$(precheck "$WORK/archive"); RC=$?
 check "the pre-check passes a complete archive" '[ "$RC" = 0 ] && printf "%s" "$OUT" | grep -q PRECHECKED'
 check "no check for the unit is left after the units are stopped" '! sed -n "/^STOPPED=1/,\$p" "$SCRIPT" | grep -q "is missing from this distribution"'
 check "the closing heredoc does not reuse the name of the DONE variable" '! grep -qE "<<.?DONE" "$SCRIPT" && ! grep -qx "DONE" "$SCRIPT"'

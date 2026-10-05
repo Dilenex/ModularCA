@@ -153,6 +153,104 @@ public class LicenseVerifierTests
             "A real licence signing key is now pinned. Update this assertion — and confirm the "
             + "private half is stored somewhere the build cannot reach.");
     }
+
+    /// <summary>
+    /// A signature over the claims that a cofactorless verifier accepts for a small-order
+    /// public key whenever the challenge is a multiple of the key's order: R is the identity
+    /// point and S is zero, so the check reduces to [k]A being the identity.
+    /// </summary>
+    private static string SmallOrderForgery(string licenseId)
+    {
+        var claims = LicenseMint.Claims(new DateOnly(2099, 1, 1));
+        var json = JsonSerializer.SerializeToUtf8Bytes(new LicenseClaims
+        {
+            Licensee = claims.Licensee,
+            LicenseId = licenseId,
+            IssuedOn = claims.IssuedOn,
+            MaintenanceThrough = claims.MaintenanceThrough,
+            Entitlements = claims.Entitlements,
+            Limits = claims.Limits,
+        });
+        var signature = new byte[64];
+        signature[0] = 0x01;
+        return LicenseVerifier.Encode(json, signature);
+    }
+
+    [Fact]
+    public void While_the_vendor_key_is_the_placeholder_every_licence_is_refused_as_unconfigured()
+    {
+        var (_, priv) = LicenseMint.NewSigner();
+        var documents = new[] { LicenseMint.Sign(LicenseMint.Claims(new DateOnly(2027, 1, 1)), priv) }
+            .Concat(Enumerable.Range(0, 16).Select(i => SmallOrderForgery($"LIC-FORGED-{i}")));
+
+        foreach (var doc in documents)
+        {
+            var result = LicenseVerifier.Verify(doc);
+            Assert.Equal(LicenseStatus.SignatureInvalid, result.Status);
+            Assert.Null(result.Claims);
+            Assert.Contains("no licence signing key configured", result.Diagnostic);
+        }
+    }
+
+    [Fact]
+    public void An_all_zero_override_key_is_refused_as_unconfigured()
+    {
+        var result = LicenseVerifier.Verify(SmallOrderForgery("LIC-FORGED"), new byte[32]);
+
+        Assert.Equal(LicenseStatus.SignatureInvalid, result.Status);
+        Assert.Contains("no licence signing key configured", result.Diagnostic);
+    }
+
+    [Fact]
+    public void The_free_edition_is_unchanged_while_the_key_is_the_placeholder()
+    {
+        var result = LicenseVerifier.Verify(null);
+
+        Assert.Equal(LicenseStatus.Absent, result.Status);
+        Assert.Equal(LicenseStatus.Absent, new EntitlementService(null).License.Status);
+    }
+
+    /// <summary>The eight small-order points of edwards25519 in their canonical and common non-canonical encodings.</summary>
+    public static IEnumerable<object[]> SmallOrderKeys() => new[]
+    {
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+    }.Select(hex => new object[] { hex });
+
+    [Theory]
+    [MemberData(nameof(SmallOrderKeys))]
+    public void BouncyCastle_rejects_a_forgery_under_a_small_order_public_key(string keyHex)
+    {
+        // Pins the library behaviour the placeholder check no longer depends on: if a future
+        // BouncyCastle accepted these, an unconfigured build would still refuse every licence.
+        var key = Convert.FromHexString(keyHex);
+        var signature = new byte[64];
+        signature[0] = 0x01;
+
+        for (var i = 0; i < 32; i++)
+        {
+            var message = Encoding.ASCII.GetBytes($"licence-{i}");
+            bool verified;
+            try
+            {
+                var verifier = new Ed25519Signer();
+                verifier.Init(false, new Ed25519PublicKeyParameters(key, 0));
+                verifier.BlockUpdate(message, 0, message.Length);
+                verified = verifier.VerifySignature(signature);
+            }
+            catch (Exception)
+            {
+                verified = false;
+            }
+            Assert.False(verified, $"BouncyCastle accepted a forged signature under small-order key {keyHex}.");
+        }
+    }
 }
 
 /// <summary>

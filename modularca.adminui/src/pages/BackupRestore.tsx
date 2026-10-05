@@ -139,8 +139,12 @@ const BackupEncryptionSection: React.FC = () => {
     const handleSetPassword = async () => {
         setActionError(null);
         setActionSuccess(null);
-        if (newPassword.length < 12) {
-            setActionError('Password must be at least 12 characters.');
+        if (newPassword.length < 16) {
+            setActionError('Password must be at least 16 characters.');
+            return;
+        }
+        if (new Set(newPassword).size < 8) {
+            setActionError('Password must contain at least 8 different characters.');
             return;
         }
         if (newPassword !== confirmPassword) {
@@ -200,7 +204,7 @@ const BackupEncryptionSection: React.FC = () => {
     };
 
     const isStoredPassword = status?.mode === 'StoredPassword';
-    const formInvalid = newPassword.length < 12 || newPassword !== confirmPassword;
+    const formInvalid = newPassword.length < 16 || newPassword !== confirmPassword;
 
     return (
         <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
@@ -283,7 +287,8 @@ const BackupEncryptionSection: React.FC = () => {
                             />
                         </div>
                         <p className="text-xs text-ink-muted">
-                            Minimum 12 characters. Must include a letter and a digit or symbol. Store this
+                            Minimum 16 characters, at least 8 of them different, with a letter and a digit,
+                            symbol or space; a passphrase of several words is easiest. Store this
                             password in a secure location — if lost, any backups created in this mode become
                             unrecoverable unless you also have the password file.
                         </p>

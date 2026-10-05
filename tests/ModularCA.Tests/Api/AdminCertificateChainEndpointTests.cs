@@ -225,7 +225,7 @@ public sealed class AdminCertificateChainEndpointTests
     private static async Task<List<Guid>> ListAsync(object controller, Guid? caId = null, Guid? spaceId = null)
     {
         var ok = Assert.IsType<OkObjectResult>(await InvokeAsync(controller, "ListCertificates",
-            null, null, null, null, caId, spaceId, null, null, null, null, null, null, null, null, 1, 100));
+            null, null, null, null, caId, spaceId, null, null, null, null, null, null, null, null, 1, 100, null));
         var items = (IEnumerable<ModularCA.Shared.Models.CertificateInfoModel>)ok.Value!.GetType().GetProperty("items")!.GetValue(ok.Value)!;
         return items.Select(i => i.CertificateId).ToList();
     }

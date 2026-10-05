@@ -151,6 +151,7 @@ public sealed class VocabularyTests
         new("modularca.docsui/src/App.tsx", Reason.Legacy, Text: "/architecture/tenant-model"),
         new("modularca.docsui/src/pages/AdminUiGuide.tsx", Reason.Legacy, Text: "old /admin/tenants paths"),
         new("modularca.docsui/src/data/endpoints/admin/audit/audit.ts", Reason.Legacy, Text: "Replaces tenantId, which is refused with 400"),
+        new("modularca.docsui/src/data/endpoints/admin/ca-and-certs/certificates.ts", Reason.Legacy, Text: "The pre-0.4.0 tenantId is refused (400)"),
         new(Tests + "Shared/CeremonyParametersFixtures.cs", Reason.Legacy),
         new(Tests + "Shared/CeremonyParametersFixtureTests.cs", Reason.Legacy),
         new(Tests + "Shared/Config/LegacyConfigKeyTests.cs", Reason.Legacy),

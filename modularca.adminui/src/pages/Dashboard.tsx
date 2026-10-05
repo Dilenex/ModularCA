@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -21,6 +21,11 @@ import {
 } from './profileHelpers';
 import { AlgorithmSummary, KeyPolicySummary } from './profiles/KeyPolicyEditor';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
+import type { CertificateLifecycleSummaryModel } from '@shared/generated';
+import {
+    attentionTone, capitalize, channelLabel, expiringLink, expiryPhrase, isoDay, lifecycleHealth, sortAttention,
+    toneDotClass, toneTextClass, type LifecycleHealthItem,
+} from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -33,24 +38,10 @@ function certStatus(cert: any): 'active' | 'revoked' | 'expired' {
     return 'active';
 }
 
-interface CertStats {
-    total: number;
-    active: number;
-    expiringSoon: number;
-    expired: number;
-    revoked: number;
-}
-
 interface GroupStats {
     total: number;
     system: number;
     caScoped: number;
-}
-
-interface HealthIndicator {
-    label: string;
-    ok: boolean;
-    detail?: string;
 }
 
 /// Parses a SAN list from either an array, JSON string, or null.
@@ -157,18 +148,40 @@ const Dashboard: React.FC = () => {
         }
     };
 
+    // Attention items carry no SANs, so the reissue form is filled from the full certificate.
+    const openReissueForSerial = async (serial: string) => {
+        setReissueLoadingId(serial);
+        try {
+            const full = await apiGet<any>(`/api/v1/admin/certificates/${encodeURIComponent(serial)}`);
+            setReissueTarget({
+                id: full.certificateId,
+                serialNumber: full.serialNumber,
+                subjectDN: full.subjectDN,
+                sans: parseSansForReissue(full.subjectAlternativeNames ?? full.subjectAlternativeNamesJson),
+                notBefore: full.notBefore,
+                notAfter: full.notAfter,
+            });
+            setReissueOpen(true);
+        } catch (err: any) {
+            showToast('error', err?.message || 'Failed to load certificate');
+        } finally {
+            setReissueLoadingId(null);
+        }
+    };
+
     // Takes the severity the modal reports rather than assuming success: a reissue can come back
     // with a diagnostic saying the certificate is not what was asked for, and that is not green.
     const handleReissueSuccess = (message: NoticeInput, severity?: NoticeSeverity) => {
         showToast(severity ?? 'success', message);
+        setSummaryKey((k) => k + 1);
     };
 
-    const [certStats, setCertStats] = useState<CertStats | null>(null);
+    const [summary, setSummary] = useState<CertificateLifecycleSummaryModel | null>(null);
     const [certStatsLoading, setCertStatsLoading] = useState(true);
     const [certStatsError, setCertStatsError] = useState<string | null>(null);
+    const [summaryKey, setSummaryKey] = useState(0);
 
     const [caList, setCaList] = useState<any[]>([]);
-    const [certsByCa, setCertsByCa] = useState<Record<string, number>>({});
     const [caLoading, setCaLoading] = useState(true);
     const [caError, setCaError] = useState<NoticeInput | null>(null);
 
@@ -180,81 +193,25 @@ const Dashboard: React.FC = () => {
     const [pendingLoading, setPendingLoading] = useState(true);
     const [pendingError, setPendingError] = useState<string | null>(null);
 
-    const [health, setHealth] = useState<HealthIndicator[]>([]);
-
-    // Fetch certificate stats
+    // Counts come from the lifecycle summary, which counts every certificate in scope on the
+    // server; the certificate list is paged, so counting one page was wrong past a page's worth.
     useEffect(() => {
+        let cancelled = false;
         setCertStatsLoading(true);
-        apiGet<any>(`/api/v1/admin/certificates${caQuery()}`)
-            .then((data) => {
-                const items: any[] = Array.isArray(data) ? data : (data.items || []);
-                const now = new Date();
-                const soon = new Date();
-                soon.setDate(soon.getDate() + 30);
+        setCertStatsError(null);
+        apiGet<CertificateLifecycleSummaryModel>(`/api/v1/admin/certificates/lifecycle-summary${caQuery()}`)
+            .then((data) => { if (!cancelled) { setSummary(data); setCertStatsLoading(false); } })
+            .catch((err) => { if (!cancelled) { setCertStatsError(err.message || 'Failed to load certificate stats'); setCertStatsLoading(false); } });
+        return () => { cancelled = true; };
+    }, [caQuery, summaryKey]);
 
-                const stats: CertStats = { total: 0, active: 0, expiringSoon: 0, expired: 0, revoked: 0 };
-                const caCount: Record<string, number> = {};
-
-                // Use totalCount from paginated response if available
-                stats.total = data.total || data.totalCount || items.length;
-
-                for (const cert of items) {
-                    const s = certStatus(cert);
-                    if (s === 'revoked') stats.revoked++;
-                    else if (s === 'expired') stats.expired++;
-                    else {
-                        stats.active++;
-                        const notAfter = new Date(cert.notAfter);
-                        if (notAfter <= soon) stats.expiringSoon++;
-                    }
-
-                    // Count certs per issuer, keyed BOTH ways. The CA list identifies a CA by
-                    // its certificate's subject DN, while a certificate identifies its issuer by
-                    // the same DN string — but some rows only carry the issuing CA's id, so index
-                    // both and let the lookup below try each.
-                    if (cert.issuer) caCount[cert.issuer] = (caCount[cert.issuer] || 0) + 1;
-                    if (cert.issuingCaId) caCount[cert.issuingCaId] = (caCount[cert.issuingCaId] || 0) + 1;
-                }
-
-                setCertStats(stats);
-                setCertsByCa(caCount);
-                setCertStatsLoading(false);
-
-                // Health: expiry warnings
-                const healthItems: HealthIndicator[] = [];
-                healthItems.push({
-                    label: 'Database',
-                    ok: true,
-                    detail: 'Connected (data loaded)',
-                });
-                if (stats.expiringSoon > 0) {
-                    healthItems.push({
-                        label: 'Cert Expiry',
-                        ok: false,
-                        detail: `${stats.expiringSoon} certificate${stats.expiringSoon !== 1 ? 's' : ''} expiring within 30 days`,
-                    });
-                } else {
-                    healthItems.push({
-                        label: 'Cert Expiry',
-                        ok: true,
-                        detail: 'No certificates expiring soon',
-                    });
-                }
-                if (stats.expired > 0) {
-                    healthItems.push({
-                        label: 'Expired Certs',
-                        ok: false,
-                        detail: `${stats.expired} expired certificate${stats.expired !== 1 ? 's' : ''}`,
-                    });
-                }
-                setHealth(healthItems);
-            })
-            .catch((err) => {
-                setCertStatsError(err.message || 'Failed to load certificate stats');
-                setCertStatsLoading(false);
-                setHealth([{ label: 'Database', ok: false, detail: 'Failed to connect' }]);
-            });
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    const now = new Date();
+    const certsByCa: Record<string, number> = {};
+    for (const c of summary?.byCa ?? []) certsByCa[c.caId] = c.total;
+    const health: LifecycleHealthItem[] = summary
+        ? [{ key: 'database', label: 'Database', tone: 'ok', detail: 'Connected', to: '' }, ...lifecycleHealth(summary, now)]
+        : [];
+    const attention = summary ? sortAttention(summary.attention, now) : [];
 
     // Fetch CA list
     useEffect(() => {
@@ -327,6 +284,13 @@ const Dashboard: React.FC = () => {
     const statCardClass = 'bg-raised border border-line rounded-lg p-4';
     const statLabelClass = 'text-xs font-semibold text-ink-muted uppercase tracking-wide';
     const statValueClass = 'text-2xl font-bold text-ink mt-1';
+    const statLinkClass = `${statCardClass} block hover:bg-hover transition-colors`;
+    const stat = (n: number | undefined) => (certStatsLoading ? '...' : certStatsError ? '-' : n ?? 0);
+    const loudText = (t: string) => (t === 'crit' || t === 'warn' ? toneTextClass(t) : 'text-ink');
+    const expiredTone = health.find((h) => h.key === 'expired')?.tone ?? 'neutral';
+    const expiringTone = summary && summary.expiringWithin30DaysNotReplaced > 0
+        ? (summary.expiringWithin7DaysNotReplaced > 0 ? 'crit' : 'warn')
+        : 'neutral';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
@@ -338,57 +302,126 @@ const Dashboard: React.FC = () => {
                     <h3 className="text-sm font-semibold text-ink">System Health</h3>
                 </div>
                 <div className="p-4 flex flex-wrap gap-4">
-                    {health.length === 0 && (
+                    {health.length === 0 && !certStatsError && (
                         <span className="text-sm text-ink-muted">Checking...</span>
                     )}
-                    {health.map((h) => (
-                        <div key={h.label} className="flex items-center gap-2">
-                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${h.ok ? 'bg-ok' : 'bg-crit'}`} />
-                            <span className="text-sm text-ink font-medium">{h.label}</span>
-                            {h.detail && <span className="text-xs text-ink-muted">{h.detail}</span>}
+                    {certStatsError && (
+                        <div className="flex items-center gap-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full bg-crit" />
+                            <span className="text-sm text-ink font-medium">Database</span>
+                            <span className="text-xs text-ink-muted">{certStatsError}</span>
                         </div>
-                    ))}
+                    )}
+                    {health.map((h) => {
+                        const body = (<>
+                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${toneDotClass(h.tone)}`} aria-hidden="true" />
+                            <span className="text-sm text-ink font-medium">{h.label}</span>
+                            <span className={`text-xs ${h.tone === 'ok' || h.tone === 'neutral' ? 'text-ink-muted' : toneTextClass(h.tone)}`}>{h.detail}</span>
+                        </>);
+                        return h.to ? (
+                            <Link key={h.key} to={h.to} className="flex items-center gap-2 rounded px-1 -mx-1 hover:bg-hover transition-colors">{body}</Link>
+                        ) : (
+                            <div key={h.key} className="flex items-center gap-2">{body}</div>
+                        );
+                    })}
                 </div>
             </div>
 
             {/* Stats Row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                <div className={statCardClass}>
+                <Link to="/certificates" className={statLinkClass}>
                     <div className={statLabelClass}>Total Certs</div>
-                    <div className={statValueClass}>
-                        {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.total ?? 0}
-                    </div>
-                </div>
-                <div className={statCardClass}>
+                    <div className={statValueClass}>{stat(summary?.total)}</div>
+                </Link>
+                <Link to="/certificates?status=active" className={statLinkClass}>
                     <div className={statLabelClass}>Active</div>
-                    <div className={`${statValueClass} text-ok`}>
-                        {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.active ?? 0}
-                    </div>
-                </div>
-                <div className={statCardClass}>
+                    <div className={`${statValueClass} text-ok`}>{stat(summary?.active)}</div>
+                </Link>
+                <Link to={summary && summary.expiringWithin30DaysNotReplaced === 0 ? `/certificates?status=active&notAfterTo=${isoDay(new Date(now.getTime() + 31 * 86_400_000))}` : expiringLink(30, now)} className={statLinkClass}>
                     <div className={statLabelClass}>Expiring (30d)</div>
-                    <div className={`${statValueClass} ${(certStats?.expiringSoon ?? 0) > 0 ? 'text-warn' : 'text-ink'}`}>
-                        {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.expiringSoon ?? 0}
-                    </div>
-                </div>
-                <div className={statCardClass}>
+                    <div className={`${statValueClass} ${loudText(expiringTone)}`}>{stat(summary?.expiringWithin30Days)}</div>
+                    {summary && summary.expiringWithin30Days > 0 && (
+                        <div className="text-xs text-ink-muted mt-0.5">{summary.expiringWithin30DaysNotReplaced} not replaced</div>
+                    )}
+                </Link>
+                <Link to="/certificates?status=expired" className={statLinkClass}
+                    title={summary ? `Replacement is checked for certificates that expired in the last ${summary.replacementWindowDays} days.` : undefined}>
                     <div className={statLabelClass}>Expired</div>
-                    <div className={`${statValueClass} ${(certStats?.expired ?? 0) > 0 ? 'text-warn' : 'text-ink'}`}>
-                        {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.expired ?? 0}
-                    </div>
-                </div>
-                <div className={statCardClass}>
+                    <div className={`${statValueClass} ${loudText(expiredTone)}`}>{stat(summary?.expired)}</div>
+                    {summary && summary.expired > 0 && (
+                        <div className="text-xs text-ink-muted mt-0.5">
+                            {summary.expired} expired · {summary.expiredNotReplaced} not replaced
+                        </div>
+                    )}
+                </Link>
+                <Link to="/certificates?status=revoked" className={statLinkClass}>
                     <div className={statLabelClass}>Revoked</div>
-                    <div className={`${statValueClass} ${(certStats?.revoked ?? 0) > 0 ? 'text-crit' : 'text-ink'}`}>
-                        {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.revoked ?? 0}
-                    </div>
-                </div>
+                    <div className={`${statValueClass} ${(summary?.revoked ?? 0) > 0 ? 'text-crit' : 'text-ink'}`}>{stat(summary?.revoked)}</div>
+                </Link>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Pending CSRs</div>
                     <div className={`${statValueClass} ${pendingCount > 0 ? 'text-accent-ink' : 'text-ink'}`}>
                         {pendingLoading ? '...' : pendingError ? '-' : pendingCount}
                     </div>
                 </div>
+            </div>
+
+            {/* Needs attention: recently expired or soon expiring, with no replacement */}
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+                    <h3 className="text-sm font-semibold text-ink">Needs attention</h3>
+                    {summary && summary.attentionTotal > attention.length && (
+                        <span className="text-xs text-ink-muted">Showing {attention.length} of {summary.attentionTotal}</span>
+                    )}
+                </div>
+                {certStatsLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
+                {!certStatsLoading && summary && attention.length === 0 && (
+                    <div className="px-4 py-6 text-center">
+                        <div className="text-sm text-ink font-medium">Nothing needs attention</div>
+                        <div className="text-xs text-ink-muted mt-1">No certificate expired in the last 30 days or expires in the next 30 without a replacement.</div>
+                    </div>
+                )}
+                {!certStatsLoading && attention.length > 0 && (
+                    <ul className="divide-y divide-line max-h-96 overflow-y-auto">
+                        {attention.map((item) => {
+                            const tone = attentionTone(item, now);
+                            const channel = channelLabel(item.issuanceChannel);
+                            return (
+                                <li key={item.certificateId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+                                    <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${toneDotClass(tone)}`} aria-hidden="true" />
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex flex-wrap items-baseline gap-x-2">
+                                            <Link to={`/certificates/${item.serialNumber}`} className="text-sm text-ink font-medium truncate hover:underline">{item.commonName}</Link>
+                                            <span className={`text-xs font-medium ${toneTextClass(tone)}`} title={new Date(item.notAfter).toLocaleString()}>
+                                                {capitalize(expiryPhrase(item.notAfter, now))}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-x-2 text-xs text-ink-muted">
+                                            <span>{item.caLabel || item.caName || 'Unknown CA'}</span>
+                                            {channel && <span className="px-1.5 py-px rounded-sm border border-line bg-sunken text-ink-muted">{channel}</span>}
+                                            {item.renewalPending && <span>Renewal request pending</span>}
+                                            {item.autoRenewal === true && !item.renewalPending && <span>Auto-renewal on</span>}
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <Link to={`/certificates/${item.serialNumber}`} className="px-2.5 py-1 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">View</Link>
+                                        <button onClick={() => openReissueForSerial(item.serialNumber)} disabled={reissueLoadingId === item.serialNumber}
+                                            className="px-2.5 py-1 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors disabled:opacity-50">
+                                            {reissueLoadingId === item.serialNumber ? 'Loading...' : 'Reissue'}
+                                        </button>
+                                    </div>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+                {summary && summary.attentionTotal > attention.length && (
+                    <div className="px-4 py-2 border-t border-line text-xs">
+                        <Link to="/certificates?status=expired&replaced=no" className="text-accent-ink hover:underline">Expired, not replaced</Link>
+                        <span className="text-ink-muted"> · </span>
+                        <Link to={expiringLink(30, now)} className="text-accent-ink hover:underline">Expiring within 30 days, not replaced</Link>
+                    </div>
+                )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -412,17 +445,7 @@ const Dashboard: React.FC = () => {
                         {!caLoading && !caError && caList.map((ca) => {
                             const caKey = ca.id || ca.serialNumber || ca.certificateId;
                             const isEnabled = ca.isEnabled !== false;
-                            // GET /admin/authorities projects the CA's certificate subject as
-                            // `certificateSubjectDN`, not `subjectDN`. Reading the latter yielded
-                            // undefined, fell back to `ca.name` ("Test CA Root CA"), and compared
-                            // it against a count map keyed by full issuer DN
-                            // ("CN=Test CA Root CA,O=Test CA") — which can never match, so every
-                            // CA displayed "0 certs" while the page reported 14 total.
-                            const count =
-                                certsByCa[ca.certificateSubjectDN] ??
-                                certsByCa[ca.subjectDN] ??
-                                certsByCa[ca.id] ??
-                                0;
+                            const count = certsByCa[ca.id || ca.caId] ?? 0;
 
                             return (
                                 <div
@@ -490,7 +513,9 @@ const Dashboard: React.FC = () => {
                     modalFullViewUrl={() => '/certificates'}
                     renderSummary={(cert: any) => (
                         <div className="flex items-center gap-2">
-                            <StatusBadge status={certStatus(cert)} />
+                            {certStatus(cert) === 'expired' && cert.replaced
+                                ? <StatusBadge status="disabled" label="expired" />
+                                : <StatusBadge status={certStatus(cert)} />}
                             <span className="data-mono text-ink-muted">{cert.serialNumber?.substring(0, 12)}...</span>
                             <span className="truncate">{cert.subjectDN}</span>
                         </div>

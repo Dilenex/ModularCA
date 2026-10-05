@@ -499,7 +499,9 @@ public class AdminWebTlsController(
     }
 
     /// <summary>
-    /// Persists the in-memory config to config.yaml after PFX password update.
+    /// Persists the in-memory config to config.yaml after PFX password update, through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/> (no <c>DB</c> section, written in place
+    /// so the file keeps its owner, group and mode).
     /// </summary>
     private void PersistConfig()
     {
@@ -514,12 +516,8 @@ public class AdminWebTlsController(
         {
             envOverlay.WithSecretsProtected(_config, () =>
             {
-                var serializer = new YamlDotNet.Serialization.SerializerBuilder()
-                    .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(_config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
             });
         }
         catch (Exception ex)

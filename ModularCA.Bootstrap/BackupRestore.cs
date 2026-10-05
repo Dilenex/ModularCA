@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Bootstrap.Crypto;
 using ModularCA.Core.Helpers;
+using ModularCA.Core.Services;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Npgsql;
@@ -89,8 +90,14 @@ public static class BackupRestore
     /// Creates a compressed backup archive containing databases, keystores, and configuration files.
     /// The backup manifest includes a schema version derived from the current database table names.
     /// Validates that the output path and encryption key path do not escape the application directory.
+    /// The archived <c>config.yaml</c> never carries a <c>DB</c> section: the credentials stay in
+    /// <c>db.yaml</c>, which no archive carries.
     /// </summary>
-    /// <param name="outputPath">Optional explicit path for the output archive. When null, defaults to the application base directory.</param>
+    /// <param name="outputPath">
+    /// Optional explicit path for the output archive. When null, the archive goes to the configured
+    /// <c>Backup.OutputPath</c> (default <c>backups/</c>; see <see cref="ResolveBackupDirectory"/>).
+    /// Either way it must lie inside the application directory.
+    /// </param>
     /// <param name="signerForAppDatabase">
     /// Resolves the signer the keystore files are exported through, given the application
     /// database's connection string; the node passes its own signer and ignores the argument,
@@ -113,6 +120,10 @@ public static class BackupRestore
         OverlayDbYaml(config, configDir);
         var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
         var backupName = $"modularca-backup-{timestamp}";
+
+        var archivePath = ResolveArchivePath(outputPath, AppContext.BaseDirectory, config.Backup?.OutputPath, backupName);
+        EnsureOwnerOnlyDirectory(Path.GetDirectoryName(archivePath)!);
+
         var backupDir = Path.Combine(Path.GetTempPath(), backupName);
         Directory.CreateDirectory(backupDir);
         // Plaintext keystores and config are copied in here before the archive is encrypted.
@@ -189,7 +200,8 @@ public static class BackupRestore
             // encrypted and signed, and is written under keystores/ by name as before.
             var backupKeystores = Path.Combine(backupDir, "keystores");
             Console.Write("  Exporting keystores...");
-            var exported = await ExportKeystoresAsync(signerForAppDatabase(AppConnectionString(config)), BackupCaller);
+            var signer = signerForAppDatabase(AppConnectionString(config));
+            var exported = await ExportKeystoresAsync(signer, BackupCaller);
             if (exported.Count > 0)
             {
                 Directory.CreateDirectory(backupKeystores);
@@ -198,33 +210,59 @@ public static class BackupRestore
             }
             Console.WriteLine($" ✓ ({exported.Count} file(s))");
 
-            // 3. Copy config — explicit deny-list to keep KEKs and secret-bearing
+            // 3. The Data Protection key ring and the SSH CA keys travel wrapped by the signer,
+            // never in the clear: with the database dump the ring opens every DP-protected column.
+            var wrappedTargets = BackupWrappedSecrets.Targets(configDir, config.SshCa?.KeyStoragePath);
+            Console.Write("  Wrapping configuration secrets...");
+            IReadOnlyList<string> wrapped;
+            try
+            {
+                wrapped = await BackupWrappedSecrets.WrapAsync(signer, configDir, wrappedTargets,
+                    Path.Combine(backupDir, BackupWrappedSecrets.ArchiveDirectory), BackupCaller);
+            }
+            catch (SigningRefusedException ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"❌ The signer refused to wrap the configuration secrets: {ex.Message}");
+                Console.WriteLine("   The Data Protection key ring is never written to a backup in the clear. Take the backup");
+                Console.WriteLine("   from the console or the scheduler while the signer is unlocked, or run --backup on the");
+                Console.WriteLine("   host that holds the keystore and keystore.yaml.");
+                return 1;
+            }
+            Console.WriteLine(wrapped.Count > 0 ? $" ✓ ({string.Join(", ", wrapped)})" : " (none present)");
+
+            // 4. Copy config — explicit deny-list to keep KEKs and secret-bearing
             // files OUT of the archive that they protect. Anything matching the denylist is
-            // skipped and announced so operators can see what was excluded.
+            // skipped and announced so operators can see what was excluded; the wrapped
+            // directories are left out because their wrapped copies are already in the archive.
             var backupConfig = Path.Combine(backupDir, "config");
             Console.Write("  Copying config...");
-            CopyDirectoryFiltered(configDir, backupConfig, out var skippedDenied);
+            CopyDirectoryFiltered(configDir, backupConfig, wrappedTargets, out var skippedDenied);
+            // A config.yaml saved by an earlier build can carry the db.yaml credentials under DB:.
+            var archivedConfigYaml = Path.Combine(backupConfig, "config.yaml");
+            if (File.Exists(archivedConfigYaml))
+                File.WriteAllText(archivedConfigYaml, ConfigYamlWriter.WithoutDbSection(File.ReadAllText(archivedConfigYaml)));
             Console.WriteLine(" ✓");
             if (skippedDenied.Count > 0)
             {
                 Console.WriteLine($"  Excluded {skippedDenied.Count} secret-bearing file(s) from archive: {string.Join(", ", skippedDenied)}");
             }
 
-            // 4. Compute schema version from database table list
+            // 5. Compute schema version from database table list
             Console.Write("  Computing schema version...");
             var schemaVersion = await ComputeSchemaVersionAsync(config);
             Console.WriteLine($" {schemaVersion}");
 
-            // 5. Collect entity counts for manifest
+            // 6. Collect entity counts for manifest
             Console.Write("  Collecting entity counts...");
             var (caCount, certCount, userCount) = await CountEntitiesAsync(config);
             Console.WriteLine($" CAs={caCount}, Certs={certCount}, Users={userCount}");
 
-            // 6. Check integrity indicators
+            // 7. Check integrity indicators
             var keystoreIntegrity = exported.Count > 0;
             var dbIntegrity = File.Exists(appDumpPath) && new FileInfo(appDumpPath).Length > 0;
 
-            // 7. Write manifest (includes schema version and extended metadata)
+            // 8. Write manifest (includes schema version and extended metadata)
             var manifest = new
             {
                 Version = "1.0",
@@ -238,19 +276,14 @@ public static class BackupRestore
                 UserCount = userCount,
                 KeystoreIntegrity = keystoreIntegrity,
                 DbIntegrity = dbIntegrity,
+                WrappedSecrets = wrapped,
                 BackupSizeBytes = 0L // placeholder, updated after archive creation
             };
             var manifestPath = Path.Combine(backupDir, "manifest.json");
             File.WriteAllText(manifestPath,
                 JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }));
 
-            // 8. Create archive — validate output path does not escape the application directory
-            // (trailing-separator check via PathIsContainedIn).
-            if (outputPath != null && !PathIsContainedIn(outputPath, AppContext.BaseDirectory))
-            {
-                throw new InvalidOperationException("Backup output path must be within the application directory.");
-            }
-            var archivePath = outputPath ?? Path.Combine(AppContext.BaseDirectory, $"{backupName}.zip");
+            // 9. Create archive (its path was resolved and contained above).
             Console.Write($"  Creating archive...");
             // Refuse to silently overwrite an existing archive.
             if (File.Exists(archivePath))
@@ -262,7 +295,7 @@ public static class BackupRestore
             FileSecurityUtil.SetOwnerOnly(archivePath);
             Console.WriteLine(" ✓");
 
-            // 9. Update manifest with final archive size and rewrite into the archive
+            // 10. Update manifest with final archive size and rewrite into the archive
             var archiveSize = new FileInfo(archivePath).Length;
             var updatedManifest = new
             {
@@ -277,6 +310,7 @@ public static class BackupRestore
                 UserCount = userCount,
                 KeystoreIntegrity = keystoreIntegrity,
                 DbIntegrity = dbIntegrity,
+                WrappedSecrets = wrapped,
                 BackupSizeBytes = archiveSize
             };
             using (var zipStream = new FileStream(archivePath, FileMode.Open, FileAccess.ReadWrite))
@@ -311,6 +345,11 @@ public static class BackupRestore
             // Load the KEK + scrypt params. FileNotFoundException bubbles up as-is.
             var (key, saltOrNull, scryptN, scryptR, scryptP) =
                 BackupKeyManager.LoadEncryptionKey(mode, randomKeyPath, passwordKeyPath);
+            if (mode == BackupEncryptionMode.StoredPassword && BackupKeyManager.IsBelowDefaultCost(scryptN, scryptR))
+            {
+                Console.WriteLine($"  ⚠ The stored backup password was derived with scrypt N={scryptN}, r={scryptR}, below this build's");
+                Console.WriteLine($"    N={BackupKeyManager.DefaultScryptN}, r={BackupKeyManager.DefaultScryptR}. Set the backup password again to raise it for new archives.");
+            }
 
             byte[]? plaintext = null;
             byte[]? ciphertext = null;
@@ -390,8 +429,13 @@ public static class BackupRestore
     /// <summary>
     /// Restores databases, keystores, and configuration from a backup archive.
     /// Validates the schema version in the manifest against the current database before restoring,
-    /// captures a pre-restore snapshot of the live state for rollback, and refuses
+    /// captures a pre-restore snapshot of the live state for rollback in the backup directory
+    /// (<see cref="PreRestoreSnapshotPath"/>), and refuses
     /// archives that contain secret-bearing files on the deny-list.
+    /// The databases are restored into the ones this host's own <c>config/db.yaml</c> names, with
+    /// its credentials (<see cref="LoadRestoreTargetDatabases"/>); a host without one is refused
+    /// before anything changes. Restored config files keep the access of the files they replace
+    /// (<see cref="RestoreConfigFile"/>).
     /// Supports both the new <c>.enc</c> format (magic "MCAB" + mode marker + scrypt header) and
     /// the legacy format (<c>[nonce][tag][ciphertext]</c>) for backward compatibility.
     /// </summary>
@@ -423,6 +467,7 @@ public static class BackupRestore
         }
 
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
+        var archiveName = Path.GetFileName(archivePath);
         var restoreDir = Path.Combine(Path.GetTempPath(), $"modularca-restore-{Guid.NewGuid():N}");
         string? tempDecryptedZip = null;
 
@@ -601,6 +646,20 @@ public static class BackupRestore
                 return 1;
             }
 
+            // The databases restored into are this host's own, named by its config/db.yaml. The
+            // archive carries no credentials, and a DB: section in an older archive's config.yaml
+            // names the host the backup was taken on, which may still be serving.
+            var target = LoadRestoreTargetDatabases(configDir, out var targetProblem);
+            if (target == null)
+            {
+                Console.WriteLine($"❌ {targetProblem}");
+                Console.WriteLine("   A restore writes into the databases this host's config/db.yaml names, with its credentials.");
+                Console.WriteLine("   On a new host, set up the databases first (the setup wizard, or the roles and databases by");
+                Console.WriteLine("   hand with db.yaml written from db.yaml.example), then run the restore again.");
+                return 1;
+            }
+            ReportRestoreTarget(target, manifestJson);
+
             // Schema version check
             if (!skipSchemaCheck)
             {
@@ -626,7 +685,7 @@ public static class BackupRestore
                 Console.WriteLine("(i) Non-interactive restore — confirmation enforced upstream by API.");
             }
 
-            // Load the backup's config to get DB credentials
+            // The backup's config, for the settings it carries; never for database credentials.
             var backupConfigPath = Path.Combine(restoreDir, "config", "config.yaml");
             if (!File.Exists(backupConfigPath))
             {
@@ -634,23 +693,36 @@ public static class BackupRestore
                 return 1;
             }
             var backupConfig = YamlConfigLoader.Load(backupConfigPath);
-            OverlayDbYaml(backupConfig, Path.GetDirectoryName(backupConfigPath)!);
+
+            // An archive from before the key ring travelled wrapped carries it, and the SSH CA
+            // keys, in the clear under config/. It still restores: dropping the ring would leave
+            // every DP-protected column unreadable. The operator is told to replace the archive.
+            var archiveConfigDir = Path.Combine(restoreDir, "config");
+            var plaintextSecrets = BackupWrappedSecrets.PlaintextTargetsIn(archiveConfigDir,
+                BackupWrappedSecrets.Targets(archiveConfigDir, backupConfig.SshCa?.KeyStoragePath));
+            if (plaintextSecrets.Count > 0)
+            {
+                Console.WriteLine($"⚠  This archive carries {string.Join(", ", plaintextSecrets)} in plaintext (taken before these travelled wrapped).");
+                Console.WriteLine("   They are restored as before. Take a new backup once the restore is done and destroy this archive:");
+                Console.WriteLine("   anyone holding it and its key can read every TOTP secret, held key and stored credential.");
+            }
 
             // The signer the keystore files go back through, over the database the archive is
             // restored into. It is also what takes the pre-restore snapshot of the live files.
-            var signer = signerForAppDatabase(AppConnectionString(backupConfig));
+            var signer = signerForAppDatabase(AppConnectionString(target));
 
             // Capture a pre-restore snapshot of the LIVE keystores + config before any
             // destructive write. If the snapshot fails, abort the restore — operators must not
             // lose the only copy of the current state to a botched restore. The live keystore
             // files come from the signer; they are kept in memory too, to put back if the
-            // restore of the keystores fails part way.
-            var snapshotPath = Path.Combine(
-                AppContext.BaseDirectory,
-                $"pre-restore-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+            // restore of the keystores fails part way. It goes to the backup directory: the
+            // program files around config/ are root's and read-only to the service.
+            string snapshotPath;
             IReadOnlyList<(string Name, byte[] Bytes)> liveKeystores;
             try
             {
+                snapshotPath = PreRestoreSnapshotPath(AppContext.BaseDirectory, configDir, DateTime.UtcNow);
+                EnsureOwnerOnlyDirectory(Path.GetDirectoryName(snapshotPath)!);
                 liveKeystores = await ExportKeystoresAsync(signer, RestoreCaller);
                 CreatePreRestoreSnapshot(snapshotPath, configDir, liveKeystores);
                 Console.WriteLine($"  ✓ Pre-restore snapshot saved to: {snapshotPath}");
@@ -663,9 +735,9 @@ public static class BackupRestore
             }
 
             // Validate database name identifiers before use in command args
-            BootstrapDatabaseSetup.ValidateIdentifier(backupConfig.DB.App.Database, "app database name");
-            if (!string.IsNullOrWhiteSpace(backupConfig.DB.Audit.Database))
-                BootstrapDatabaseSetup.ValidateIdentifier(backupConfig.DB.Audit.Database, "audit database name");
+            BootstrapDatabaseSetup.ValidateIdentifier(target.DB.App.Database, "app database name");
+            if (!string.IsNullOrWhiteSpace(target.DB.Audit.Database))
+                BootstrapDatabaseSetup.ValidateIdentifier(target.DB.Audit.Database, "audit database name");
 
             // 1. Restore databases.
             //
@@ -688,11 +760,11 @@ public static class BackupRestore
             if (File.Exists(appDump))
             {
                 Console.Write("  Restoring app database...");
-                var restoreAppPass = WritePgPassFile(backupConfig.DB.App.Host, backupConfig.DB.App.Port, backupConfig.DB.App.Database, backupConfig.DB.App.Username, backupConfig.DB.App.Password);
+                var restoreAppPass = WritePgPassFile(target.DB.App.Host, target.DB.App.Port, target.DB.App.Database, target.DB.App.Username, target.DB.App.Password);
                 try
                 {
                     var (exit, err) = await RestoreDumpFileAsync(
-                        restoreAppPass, backupConfig.DB.App, appDump, ensureCitext: true);
+                        restoreAppPass, target.DB.App, appDump, ensureCitext: true);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
@@ -705,11 +777,11 @@ public static class BackupRestore
             if (File.Exists(auditDump))
             {
                 Console.Write("  Restoring audit database...");
-                var restoreAuditPass = WritePgPassFile(backupConfig.DB.Audit.Host, backupConfig.DB.Audit.Port, backupConfig.DB.Audit.Database, backupConfig.DB.Audit.Username, backupConfig.DB.Audit.Password);
+                var restoreAuditPass = WritePgPassFile(target.DB.Audit.Host, target.DB.Audit.Port, target.DB.Audit.Database, target.DB.Audit.Username, target.DB.Audit.Password);
                 try
                 {
                     var (exit, err) = await RestoreDumpFileAsync(
-                        restoreAuditPass, backupConfig.DB.Audit, auditDump, ensureCitext: false);
+                        restoreAuditPass, target.DB.Audit, auditDump, ensureCitext: false);
                     Console.WriteLine(exit == 0 ? " ✓" : $" ⚠ ({err})");
                 }
                 finally
@@ -717,6 +789,12 @@ public static class BackupRestore
                     try { File.Delete(restoreAuditPass); } catch { }
                 }
             }
+
+            // CRLs published after this backup was taken carried higher numbers than the restored
+            // counters; raise every counter past them before anything can generate a CRL.
+            var crlFloorFailed = false;
+            if (File.Exists(appDump))
+                crlFloorFailed = !await RaiseCrlNumbersAfterRestoreAsync(target, archiveName);
 
             // 2. Restore keystores, through the signer. Each file from the archive is offered
             // under the restore context; the signer verifies its signature against the pinned
@@ -793,9 +871,23 @@ public static class BackupRestore
                         throw new InvalidOperationException($"Path traversal detected in backup: {relativePath}");
 
                     Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                    File.Copy(file, destPath, overwrite: true);
+                    RestoreConfigFile(file, destPath);
                 }
                 Console.WriteLine(" ✓");
+            }
+
+            // 4. The wrapped configuration secrets wait under config/restore-pending/ until the
+            // node next starts: only then does the signer hold the restored keystore whose key
+            // wrapped them, and only then is it certain nothing has read the key ring yet.
+            var staged = BackupWrappedSecrets.StagePending(restoreDir, configDir);
+            if (staged > 0)
+                Console.WriteLine($"  ✓ {staged} wrapped configuration secret(s) staged; the signer unwraps them at the next start.");
+
+            if (crlFloorFailed)
+            {
+                Console.WriteLine("\n❌ Restore applied, but the CRL number counters could NOT be raised (see above).");
+                Console.WriteLine("   Do not start the CA until they are: the next CRL would reuse a number already published.");
+                return 2;
             }
 
             Console.WriteLine("\n✅ Restore complete. Restart the application to apply changes.");
@@ -807,6 +899,60 @@ public static class BackupRestore
             if (tempDecryptedZip != null)
                 try { File.Delete(tempDecryptedZip); } catch { }
         }
+    }
+
+    /// <summary>
+    /// Raises every CRL configuration's counter in the restored application database to the
+    /// time-derived floor of <see cref="CrlNumberFloor"/>, so no CRL number published after the
+    /// backup is used again, and records it in the restored audit trail. Returns false when the
+    /// counters could not be raised; a failure to write the audit record is reported but does
+    /// not undo the floor.
+    /// </summary>
+    /// <param name="config">The configuration the databases were restored with.</param>
+    /// <param name="archiveName">The archive's file name, for the audit record.</param>
+    private static async Task<bool> RaiseCrlNumbersAfterRestoreAsync(ModularCA.Shared.Models.Config.SystemConfig config, string archiveName)
+    {
+        var floor = CrlNumberFloor.FloorAt(DateTimeOffset.UtcNow);
+        IReadOnlyList<CrlNumberFloor.Raised> raised;
+        try
+        {
+            using var db = new ModularCA.Database.ModularCADbContext(
+                new DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>().UseNpgsql(AppConnectionString(config)).Options);
+            raised = await CrlNumberFloor.ApplyAsync(db, floor);
+            Console.WriteLine($"  ✓ CRL numbers: {raised.Count} configuration(s) raised to at least {floor}.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  ❌ CRL numbers could not be raised: {ex.Message}");
+            Console.WriteLine($"     Run: UPDATE \"CrlConfigurations\" SET \"LastCrlNumber\" = GREATEST(\"LastCrlNumber\", {floor});");
+            return false;
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+                throw new InvalidOperationException("no audit database is configured");
+            using var auditDb = new ModularCA.Database.AuditDbContext(
+                new DbContextOptionsBuilder<ModularCA.Database.AuditDbContext>().UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.Audit)).Options);
+            await new AuditHashChainService().AppendAsync(auditDb, new ModularCA.Shared.Entities.AuditLogEntity
+            {
+                ActionType = ModularCA.Shared.Enums.AuditActionType.CrlNumbersRaisedOnRestore,
+                ActorUsername = RestoreCaller,
+                TargetEntityType = "CrlConfiguration",
+                DetailsJson = AuditJsonScrubber.SerializeAndScrub(new
+                {
+                    Archive = archiveName,
+                    Floor = floor,
+                    Raised = raised.Select(r => new { r.TaskId, r.IssuerDn, r.IsDelta, r.Before, r.After }),
+                    Host = Environment.MachineName,
+                }),
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  ⚠ The CRL number floor was applied but not audited ({ex.GetType().Name}: {ex.Message}).");
+        }
+        return true;
     }
 
     /// <summary>
@@ -1090,6 +1236,184 @@ public static class BackupRestore
     }
 
     /// <summary>
+    /// The backup directory as an absolute path: <c>Backup.OutputPath</c> (default
+    /// <c>backups</c>), relative to <paramref name="baseDirectory"/> unless rooted. The console,
+    /// the command-line <c>--backup</c> default and the pre-restore snapshot all use it; it is one
+    /// of the four runtime directories the service may write.
+    /// </summary>
+    /// <param name="baseDirectory">The application directory.</param>
+    /// <param name="configuredOutputPath">The configured <c>Backup.OutputPath</c>, or null for the default.</param>
+    /// <returns>The absolute directory path.</returns>
+    public static string ResolveBackupDirectory(string baseDirectory, string? configuredOutputPath)
+    {
+        var path = string.IsNullOrWhiteSpace(configuredOutputPath) ? "backups" : configuredOutputPath;
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(baseDirectory, path));
+    }
+
+    /// <summary>
+    /// The absolute path a backup archive is written to: <paramref name="outputPath"/> when one
+    /// is given, otherwise <c>&lt;backupName&gt;.zip</c> in the backup directory
+    /// (<see cref="ResolveBackupDirectory"/>), never beside the binary, whose directory is root's
+    /// and read-only to the service. Either way it must lie inside
+    /// <paramref name="baseDirectory"/>.
+    /// </summary>
+    /// <param name="outputPath">The explicit archive path, or null for the default.</param>
+    /// <param name="baseDirectory">The application directory.</param>
+    /// <param name="configuredOutputPath">The configured <c>Backup.OutputPath</c>, or null.</param>
+    /// <param name="backupName">The archive's name without extension.</param>
+    /// <returns>The absolute archive path.</returns>
+    /// <exception cref="InvalidOperationException">The path lies outside the application directory.</exception>
+    internal static string ResolveArchivePath(string? outputPath, string baseDirectory, string? configuredOutputPath, string backupName)
+    {
+        var archivePath = Path.GetFullPath(outputPath
+            ?? Path.Combine(ResolveBackupDirectory(baseDirectory, configuredOutputPath), $"{backupName}.zip"));
+        if (!PathIsContainedIn(archivePath, baseDirectory))
+        {
+            throw new InvalidOperationException(
+                $"Backup output path '{archivePath}' must be within the application directory '{baseDirectory}'.");
+        }
+        return archivePath;
+    }
+
+    /// <summary>
+    /// Where a restore writes its pre-restore snapshot: <c>pre-restore-&lt;timestamp&gt;.zip</c> in
+    /// the backup directory this host's <c>config.yaml</c> names, or <c>backups/</c> when there is
+    /// no readable <c>config.yaml</c> yet (a new host).
+    /// </summary>
+    /// <param name="baseDirectory">The application directory.</param>
+    /// <param name="liveConfigDir">This host's <c>config/</c> directory.</param>
+    /// <param name="now">The time to stamp the snapshot with.</param>
+    /// <returns>The absolute snapshot path.</returns>
+    internal static string PreRestoreSnapshotPath(string baseDirectory, string liveConfigDir, DateTime now)
+    {
+        string? configured = null;
+        var liveConfigPath = Path.Combine(liveConfigDir, "config.yaml");
+        if (File.Exists(liveConfigPath))
+        {
+            try { configured = YamlConfigLoader.Load(liveConfigPath, _ => { }).Backup?.OutputPath; }
+            catch (Exception) { configured = null; }
+        }
+        return Path.Combine(ResolveBackupDirectory(baseDirectory, configured), $"pre-restore-{now:yyyyMMdd-HHmmss}.zip");
+    }
+
+    /// <summary>
+    /// Creates <paramref name="directory"/> owner-only when it does not exist; an existing one is
+    /// left exactly as it is.
+    /// </summary>
+    private static void EnsureOwnerOnlyDirectory(string directory)
+    {
+        if (Directory.Exists(directory))
+            return;
+        Directory.CreateDirectory(directory);
+        FileSecurityUtil.SetDirectoryOwnerOnly(directory);
+    }
+
+    /// <summary>
+    /// The databases a restore writes into and the credentials it uses: this host's own
+    /// <c>config/db.yaml</c>, with the environment overrides the service applies at start
+    /// (<see cref="EnvVarConfigOverlay"/>). Never the archive's: archives carry no
+    /// <c>db.yaml</c>, and the <c>DB</c> section an older archive's <c>config.yaml</c> may carry
+    /// names the host the backup was taken on. Returns null, with the reason, when this host has
+    /// no usable <c>db.yaml</c>.
+    /// </summary>
+    /// <param name="liveConfigDir">This host's <c>config/</c> directory.</param>
+    /// <param name="problem">Why there is no target, when there is none.</param>
+    /// <returns>A configuration whose <c>DB</c> section is this host's, or null.</returns>
+    internal static ModularCA.Shared.Models.Config.SystemConfig? LoadRestoreTargetDatabases(string liveConfigDir, out string? problem)
+    {
+        var dbYamlPath = Path.Combine(liveConfigDir, "db.yaml");
+        if (!File.Exists(dbYamlPath))
+        {
+            problem = $"This host has no {dbYamlPath}, so there is no database to restore into.";
+            return null;
+        }
+
+        var config = new ModularCA.Shared.Models.Config.SystemConfig();
+        try
+        {
+            OverlayDbYaml(config, liveConfigDir);
+        }
+        catch (Exception ex)
+        {
+            problem = $"{dbYamlPath} could not be read: {ex.Message}";
+            return null;
+        }
+        new EnvVarConfigOverlay().Apply(config);
+
+        if (string.IsNullOrWhiteSpace(config.DB.App.Database) || string.IsNullOrWhiteSpace(config.DB.App.Username))
+        {
+            problem = $"{dbYamlPath} names no application database or role.";
+            return null;
+        }
+
+        problem = null;
+        return config;
+    }
+
+    /// <summary>
+    /// Says which databases the restore writes into, and when the archive was taken from
+    /// databases of other names, says that too.
+    /// </summary>
+    private static void ReportRestoreTarget(ModularCA.Shared.Models.Config.SystemConfig target, string manifestJson)
+    {
+        Console.WriteLine($"  Restoring into this host's databases (config/db.yaml): app '{target.DB.App.Database}' on " +
+                          $"{target.DB.App.Host}:{target.DB.App.Port}, audit '{target.DB.Audit.Database}' on {target.DB.Audit.Host}:{target.DB.Audit.Port}.");
+        try
+        {
+            using var doc = JsonDocument.Parse(manifestJson);
+            var archivedApp = doc.RootElement.TryGetProperty("AppDatabase", out var a) ? a.GetString() : null;
+            var archivedAudit = doc.RootElement.TryGetProperty("AuditDatabase", out var b) ? b.GetString() : null;
+            if ((archivedApp != null && archivedApp != target.DB.App.Database)
+                || (archivedAudit != null && archivedAudit != target.DB.Audit.Database))
+            {
+                Console.WriteLine($"  (i) The archive was taken from app '{archivedApp}' and audit '{archivedAudit}'.");
+            }
+        }
+        catch (JsonException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Writes one file from an archive's <c>config/</c> over this host's. A file that exists is
+    /// rewritten in place, so it keeps its owner, group and mode (on a split install
+    /// <c>config.yaml</c> keeps the signer's group read); a new one is created owner-only.
+    /// <c>config.yaml</c> loses any <c>DB</c> section an older archive carries: this host's
+    /// <c>db.yaml</c> owns the credentials.
+    /// </summary>
+    /// <param name="source">The extracted archive file.</param>
+    /// <param name="destination">The path under this host's <c>config/</c>.</param>
+    internal static void RestoreConfigFile(string source, string destination)
+    {
+        if (string.Equals(Path.GetFileName(destination), "config.yaml", StringComparison.OrdinalIgnoreCase))
+        {
+            ConfigYamlWriter.WriteKeepingAccess(destination, ConfigYamlWriter.WithoutDbSection(File.ReadAllText(source)));
+            return;
+        }
+
+        var bytes = File.ReadAllBytes(source);
+        try
+        {
+            if (File.Exists(destination))
+            {
+                File.WriteAllBytes(destination, bytes);
+                return;
+            }
+
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+            if (!OperatingSystem.IsWindows())
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var stream = new FileStream(destination, options))
+                stream.Write(bytes);
+            FileSecurityUtil.SetOwnerOnly(destination);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    /// <summary>
     /// Overlays runtime DB credentials from <c>db.yaml</c> onto the given config. Post-refactor,
     /// <c>config.yaml</c> no longer carries <c>DB.App.*</c> / <c>DB.Audit.*</c> secrets — they
     /// live in <c>db.yaml</c> alongside, and every tool that opens the app DB must apply this
@@ -1196,14 +1520,17 @@ public static class BackupRestore
     /// </summary>
     /// <param name="source">Source directory.</param>
     /// <param name="destination">Destination directory (created if missing).</param>
+    /// <param name="excludedDirectories">Directories, relative to <paramref name="source"/> with forward slashes, left out whole.</param>
     /// <param name="skipped">Receives the list of denied file names that were skipped (relative paths).</param>
-    private static void CopyDirectoryFiltered(string source, string destination, out List<string> skipped)
+    internal static void CopyDirectoryFiltered(string source, string destination, IEnumerable<string> excludedDirectories, out List<string> skipped)
     {
         skipped = new List<string>();
-        CopyDirectoryFilteredImpl(source, destination, source, skipped);
+        var excluded = new HashSet<string>(excludedDirectories.Select(d => d.Replace('\\', '/').Trim('/')), StringComparer.Ordinal);
+        CopyDirectoryFilteredImpl(source, destination, source, excluded, skipped);
     }
 
-    private static void CopyDirectoryFilteredImpl(string source, string destination, string root, List<string> skipped)
+    /// <summary>The recursion behind <see cref="CopyDirectoryFiltered"/>.</summary>
+    private static void CopyDirectoryFilteredImpl(string source, string destination, string root, HashSet<string> excluded, List<string> skipped)
     {
         Directory.CreateDirectory(destination);
         foreach (var file in Directory.GetFiles(source))
@@ -1218,8 +1545,10 @@ public static class BackupRestore
         }
         foreach (var dir in Directory.GetDirectories(source))
         {
+            if (excluded.Contains(Path.GetRelativePath(root, dir).Replace('\\', '/')))
+                continue;
             var dirName = Path.GetFileName(dir);
-            CopyDirectoryFilteredImpl(dir, Path.Combine(destination, dirName), root, skipped);
+            CopyDirectoryFilteredImpl(dir, Path.Combine(destination, dirName), root, excluded, skipped);
         }
     }
 

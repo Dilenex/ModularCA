@@ -29,4 +29,12 @@ public enum SecretKind
     /// path; see the design document.
     /// </summary>
     KerberosRealmKey = 3,
+
+    /// <summary>
+    /// A bundle of node configuration secrets a backup archive carries: the Data Protection key
+    /// ring, and the SSH CA keys until they have a keystore of their own. Wrapped under
+    /// <see cref="SigningPurpose.Backup"/> and unwrapped under <see cref="SigningPurpose.Restore"/>
+    /// only, so opening one needs the keystore and its passphrases as well as the archive key.
+    /// </summary>
+    BackupConfigSecret = 4,
 }

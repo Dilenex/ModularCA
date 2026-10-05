@@ -285,8 +285,9 @@ public static class BootstrapDatabaseSetup
     }
 
     /// <summary>
-    /// Generates the runtime config.yaml containing database credentials, JWT settings,
-    /// security parameters, logging, email, HTTPS, and other application configuration.
+    /// Generates the runtime config.yaml containing JWT settings, security parameters, logging,
+    /// email, HTTPS, and other application configuration; the database credentials go to
+    /// db.yaml only. An existing file is rewritten in place, keeping its owner, group and mode.
     /// </summary>
     public static void WriteConfigFile(
         string configDir,
@@ -445,10 +446,9 @@ public static class BootstrapDatabaseSetup
 
         var yaml = serializer.Serialize(config);
         var yamlPath = Path.Combine(configDir, "config.yaml");
-        File.WriteAllText(yamlPath, yaml);
-        FileSecurityUtil.SetOwnerOnly(yamlPath);
+        ConfigYamlWriter.WriteKeepingAccess(yamlPath, yaml);
 
         Console.WriteLine($"\n📝 Runtime configuration written to: {yamlPath}");
-        Console.WriteLine("   (Contains DB credentials and JWT secret — protect this file)");
+        Console.WriteLine("   (Contains the JWT secret — protect this file)");
     }
 }

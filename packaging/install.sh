@@ -7,7 +7,9 @@
 # script does about ownership and mode is therefore mandatory, not cosmetic: without it the
 # apphost is not executable and the secret-bearing config files are world-readable.
 #
-# Idempotent. Safe to re-run for an upgrade; it never overwrites config/ or keystores/.
+# Idempotent. Safe to re-run for an upgrade. The program files belong to root; the service account
+# owns only the runtime directories (RUNTIME_DIRS), and once one exists the script never changes
+# its ownership, its mode or its contents, so a split install's signer keeps what it was given.
 #
 # On an upgrade (an existing config/db.yaml) the NEW build's --upgrade-check runs first, as the
 # service account against the installed config: it dry-runs every pending migration and rolls
@@ -23,7 +25,15 @@ set -euo pipefail
 APP_DIR=/opt/modularca
 SERVICE_USER=modularca
 SERVICE_GROUP=modularca
+SIGNER_USER=modularca-signer
 UNIT=/etc/systemd/system/modularca.service
+SIGNER_UNIT=/etc/systemd/system/modularca-signer.service
+# The directories under $APP_DIR the service writes at run time. Everything else there is program
+# files, owned by root. packaging/debian/postinst keeps the same list, and ReadWritePaths= in
+# deploy/modularca.service names the same directories.
+RUNTIME_DIRS=(config keystores logs backups)
+# Parts of the archive that are not copied into $APP_DIR.
+NOT_INSTALLED=(deploy share install.sh README-DEPLOY.md)
 STAGE_PARENT=${APP_DIR%/*}
 SKIP_UPGRADE_CHECK=0
 STAGE=
@@ -86,9 +96,129 @@ remove_stage() {
 precheck_archive() {
     local item
     for item in ModularCA.API ModularCA.Keystore.Unlocker modularca-migrate wwwroot share/sql/adopt-ownership.sql \
-                deploy/modularca.service; do
+                deploy/modularca.service deploy/modularca-signer.service; do
         [[ -e "$SRC/$item" ]] || die "missing from archive: $item; nothing was changed"
     done
+}
+
+# Prints the name of each top-level entry of the archive that is copied into $APP_DIR: the program
+# files.
+program_entries() {
+    local name skip
+    while IFS= read -r name; do
+        for skip in "${RUNTIME_DIRS[@]}" "${NOT_INSTALLED[@]}"; do
+            [[ $name == "$skip" ]] && continue 2
+        done
+        printf '%s\n' "$name"
+    done < <(find "$SRC" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+}
+
+runtime_mode() {
+    case $1 in
+        logs) echo 0750 ;;
+        *) echo 0700 ;;
+    esac
+}
+
+# True on a split install: the signer's account exists and owns keystores/.
+is_split_install() {
+    getent passwd "$SIGNER_USER" >/dev/null 2>&1 \
+        && [[ -d $APP_DIR/keystores && $(stat -c %U "$APP_DIR/keystores") == "$SIGNER_USER" ]]
+}
+
+# Copies the program files into $APP_DIR. wwwroot is removed first rather than merged into: Vite
+# names every chunk by content hash, so a merge keeps serving the old chunks to any browser that
+# cached an old index.html. Everything under it is build output shipped in this archive.
+install_payload() {
+    local name
+    rm -rf "$APP_DIR/wwwroot"
+    while IFS= read -r name; do
+        cp -a "$SRC/$name" "$APP_DIR/"
+    done < <(program_entries)
+}
+
+# Program files belong to root: directories and the executables 0755, everything else 0644. The
+# signer runs these binaries too, so the node's account must not be able to replace them.
+set_program_ownership() {
+    local name
+    chown root:root "$APP_DIR"
+    chmod 0755 "$APP_DIR"
+    while IFS= read -r name; do
+        chown -R root:root "$APP_DIR/$name"
+        find "$APP_DIR/$name" -type d -exec chmod 0755 {} +
+        find "$APP_DIR/$name" -type f -exec chmod 0644 {} +
+    done < <(program_entries)
+    chmod 0755 "$APP_DIR/ModularCA.API" "$APP_DIR/ModularCA.Keystore.Unlocker" "$APP_DIR/modularca-migrate"
+}
+
+# Creates each missing runtime directory for the service account, and hands over one that is
+# still root's (a run that stopped part way). One that belongs to anyone else, or is a symlink, is
+# left exactly as it is, contents included: on a split install the signer owns keystores/ and
+# config/keystore.yaml, and the operator set config/'s group and mode.
+prepare_runtime_dirs() {
+    local dir path
+    for dir in "${RUNTIME_DIRS[@]}"; do
+        path=$APP_DIR/$dir
+        [[ -L $path ]] && continue
+        if [[ ! -d $path ]]; then
+            install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m "$(runtime_mode "$dir")" "$path"
+        elif [[ $(stat -c %U "$path") == root ]]; then
+            chown "$SERVICE_USER:$SERVICE_GROUP" "$path"
+            chmod "$(runtime_mode "$dir")" "$path"
+        fi
+    done
+}
+
+# Config examples are only seeded where absent, never over an operator's real config.
+seed_examples() {
+    local f dest
+    for f in "$SRC"/config/*.example; do
+        [[ -e "$f" ]] || continue
+        dest="$APP_DIR/config/$(basename "$f")"
+        [[ -e "$dest" ]] || install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0600 "$f" "$dest"
+    done
+}
+
+# Says which top-level entries of $APP_DIR the service account owns that are neither program files
+# nor runtime directories: files an older build shipped, or a directory a configured path names.
+# They are left as they are.
+warn_leftovers() {
+    local path name skip found=()
+    for path in "$APP_DIR"/* "$APP_DIR"/.[!.]*; do
+        [[ -e $path || -L $path ]] || continue
+        name=${path##*/}
+        for skip in "${RUNTIME_DIRS[@]}"; do
+            [[ $name == "$skip" ]] && continue 2
+        done
+        [[ -e "$SRC/$name" ]] && continue
+        [[ $(stat -c %U "$path") == "$SERVICE_USER" ]] && found+=("$name")
+    done
+    if [[ ${#found[@]} -gt 0 ]]; then
+        warn "not part of this build and still owned by $SERVICE_USER, left as they are: ${found[*]}"
+        warn "remove what an older build left; a path in config.yaml needs ReadWritePaths= in a drop-in"
+    fi
+}
+
+# Every ownership and mode the install sets, after the payload is copied.
+set_ownership() {
+    if is_split_install; then
+        note "split install: keystores/ belongs to $SIGNER_USER; the runtime directories are left as they are"
+    fi
+    set_program_ownership
+    prepare_runtime_dirs
+    seed_examples
+    warn_leftovers
+}
+
+# Installs a packaged systemd unit, unless one there differs from it.
+install_unit() {
+    if [[ -f $2 ]] && ! cmp -s "$1" "$2"; then
+        note "unit file differs from the packaged one; leaving yours in place at $2"
+        note "  packaged copy: $1"
+    else
+        note "installing systemd unit $2"
+        install -m 0644 "$1" "$2"
+    fi
 }
 
 # ERR trap: remembers where the script failed, for the EXIT trap's message.
@@ -136,12 +266,13 @@ can_run_in_place() {
 # directory beside $APP_DIR (same filesystem, so it is not noexec) that the service account can
 # read and run but not write.
 stage_build() {
+    local name
     STAGE=$(mktemp -d "$STAGE_PARENT/.modularca-upgrade-check.XXXXXX") || return 1
     chmod 0755 "$STAGE" || return 1
-    find "$SRC" -mindepth 1 -maxdepth 1 \
-         ! -name config ! -name keystores ! -name logs ! -name deploy ! -name share ! -name wwwroot \
-         ! -name install.sh ! -name README-DEPLOY.md \
-         -exec cp -R -t "$STAGE" -- {} + || return 1
+    while IFS= read -r name; do
+        [[ $name == wwwroot ]] && continue
+        cp -R -t "$STAGE" -- "$SRC/$name" || return 1
+    done < <(program_entries)
     chmod -R u=rwX,go=rX "$STAGE" || return 1
     chmod 0755 "$STAGE/ModularCA.API" || return 1
     can_run_in_place "$STAGE"
@@ -248,77 +379,31 @@ note "installing to $APP_DIR"
 TOUCHED=1
 mkdir -p "$APP_DIR"
 
-# Binaries and static assets are replaced. config/ and keystores/ are NOT in this list: they
-# hold the install's identity and secrets, and an upgrade must never touch them. Every part
-# copied below was checked present by precheck_archive before anything was stopped.
-#
-# Note the copy below MERGES rather than replaces, so a file the new build no longer ships
-# survives on disk. That is handled for wwwroot (removed first, below). Stale runtime
-# assemblies in the app directory are a known remaining gap.
-
-# wwwroot is removed before the copy rather than merged into.
-#
-# `cp -a` merges directories: it overwrites what exists in both and leaves behind anything the
-# new build no longer ships. Vite names every chunk by content hash, so a new release overwrites
-# nothing and only adds — the old chunks stay on disk and stay served. A browser holding a cached
-# index.html then keeps fetching a bundle from several releases ago, successfully, and the
-# operator debugs behaviour from code that is no longer deployed.
-#
-# Safe to delete outright: everything under wwwroot is build output shipped in this archive.
-# config/, keystores/ and logs/ are excluded from the copy below and are never touched.
-rm -rf "$APP_DIR/wwwroot"
-
-find "$SRC" -maxdepth 1 -mindepth 1 \
-     ! -name config ! -name keystores ! -name logs ! -name deploy ! -name share \
-     ! -name install.sh ! -name README-DEPLOY.md \
-     -exec cp -a {} "$APP_DIR/" \;
-
-mkdir -p "$APP_DIR/config" "$APP_DIR/keystores" "$APP_DIR/logs"
+# The program files are replaced; the runtime directories are never copied into. Every part
+# copied was checked present by precheck_archive before anything was stopped. The copy merges, so
+# a top-level file the new build no longer ships survives; warn_leftovers names any the service
+# account owns.
+install_payload
 
 # The schema-ownership repair SQL is run as the PostgreSQL superuser, so it goes root-owned under
-# /usr/share and never into $APP_DIR, which the service account owns and can rewrite.
+# /usr/share rather than into $APP_DIR.
 install -d -o root -g root -m 0755 /usr/share/modularca /usr/share/modularca/sql
 install -o root -g root -m 0644 "$SRC/share/sql/adopt-ownership.sql" /usr/share/modularca/sql/adopt-ownership.sql
-
-# Config examples are only seeded on a first install — never over an operator's real config.
-for f in "$SRC"/config/*.example; do
-    [[ -e "$f" ]] || continue
-    dest="$APP_DIR/config/$(basename "$f")"
-    [[ -e "$dest" ]] || cp -a "$f" "$dest"
-done
 
 # ── Ownership and modes ────────────────────────────────────────────────────────
 # The archive carries none of this; see the header.
 note "setting ownership and permissions"
-chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
+set_ownership
 
-# Executables. The .NET apphost and the break-glass unlocker both need +x.
-chmod 0755 "$APP_DIR/ModularCA.API" "$APP_DIR/ModularCA.Keystore.Unlocker" \
-           "$APP_DIR/modularca-migrate"
 # On the path, so the MariaDB-to-PostgreSQL migration is one word from anywhere. The .deb
 # ships the same link; this is the tarball doing it by hand.
 ln -sf "$APP_DIR/modularca-migrate" /usr/local/bin/modularca-migrate
 
-# Application directory: traversable, not world-writable.
-chmod 0750 "$APP_DIR"
-
-# Secrets. config/ holds db.yaml (database credentials) and keystore.yaml (the secondary
-# keystore passphrase); keystores/ holds the CA private keys. Owner-only, both.
-chmod 0700 "$APP_DIR/config" "$APP_DIR/keystores"
-find "$APP_DIR/config" -type f -exec chmod 0600 {} \;
-find "$APP_DIR/keystores" -type f -exec chmod 0600 {} \; 2>/dev/null || true
-
-chmod 0750 "$APP_DIR/logs"
-
 # ── systemd ────────────────────────────────────────────────────────────────────
-# The unit was checked present by precheck_archive, before anything was stopped or replaced.
-if [[ -f "$UNIT" ]] && ! cmp -s "$SRC/deploy/modularca.service" "$UNIT"; then
-    note "unit file differs from the packaged one; leaving yours in place at $UNIT"
-    note "  packaged copy: $SRC/deploy/modularca.service"
-else
-    note "installing systemd unit"
-    install -m 0644 "$SRC/deploy/modularca.service" "$UNIT"
-fi
+# Both units were checked present by precheck_archive, before anything was stopped or replaced.
+# The signer's unit is installed for a split install and never enabled here.
+install_unit "$SRC/deploy/modularca.service" "$UNIT"
+install_unit "$SRC/deploy/modularca-signer.service" "$SIGNER_UNIT"
 systemctl daemon-reload
 
 # ── Ports below 1024 ───────────────────────────────────────────────────────────

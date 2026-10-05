@@ -17,6 +17,89 @@ SERVICE_GROUP=modularca
 MARKERS=/run/modularca-upgrade
 UNITS="modularca.service modularca-signer.service"
 DB_OWNERSHIP=/usr/share/modularca/db-ownership.sh
+# The directories under $APP_DIR the service writes at run time. Everything else there is program
+# files, owned by root. packaging/install.sh keeps the same list, and ReadWritePaths= in
+# modularca.service names the same directories.
+RUNTIME_DIRS="config keystores logs backups"
+
+runtime_mode() {
+    case $1 in
+        logs) echo 0750 ;;
+        *) echo 0700 ;;
+    esac
+}
+
+# Prints each path the package installed under $APP_DIR outside the runtime directories.
+program_paths() {
+    dpkg-query -L modularca 2>/dev/null | while IFS= read -r path; do
+        case $path in
+            "$APP_DIR"/*) ;;
+            *) continue ;;
+        esac
+        top=${path#"$APP_DIR"/}
+        top=${top%%/*}
+        case " $RUNTIME_DIRS " in
+            *" $top "*) continue ;;
+        esac
+        printf '%s\n' "$path"
+    done
+}
+
+# Program files belong to root. dpkg writes every file root-owned with the package's mode, but
+# leaves a directory that already exists as it is, and before 0.4.0 this script gave the whole
+# tree to the service account. The signer runs these binaries too, so the node's account must not
+# be able to replace them.
+set_program_ownership() {
+    chown root:root "$APP_DIR"
+    chmod 0755 "$APP_DIR"
+    program_paths | xargs -r -d '\n' chown -h root:root --
+    program_paths | while IFS= read -r path; do
+        if [ -d "$path" ] && [ ! -L "$path" ]; then
+            chmod 0755 "$path"
+        fi
+    done
+    for exe in ModularCA.API ModularCA.Keystore.Unlocker modularca-migrate; do
+        if [ -e "$APP_DIR/$exe" ]; then
+            chmod 0755 "$APP_DIR/$exe"
+        fi
+    done
+}
+
+# Creates each missing runtime directory for the service account, and hands over one that is
+# still root's, as dpkg creates config/, keystores/ and logs/ on a first install. One that belongs
+# to anyone else, or is a symlink, is left exactly as it is, contents included: on a split install
+# the signer owns keystores/ and config/keystore.yaml, and the operator set config/'s group and mode.
+prepare_runtime_dirs() {
+    for dir in $RUNTIME_DIRS; do
+        path=$APP_DIR/$dir
+        [ -L "$path" ] && continue
+        if [ ! -d "$path" ]; then
+            install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m "$(runtime_mode "$dir")" "$path"
+        elif [ "$(stat -c %U "$path")" = root ]; then
+            chown "$SERVICE_USER:$SERVICE_GROUP" "$path"
+            chmod "$(runtime_mode "$dir")" "$path"
+        fi
+    done
+}
+
+# The shipped .example files are the only configuration this package owns. A real config.yaml
+# holds the database password and the JWT signing secret, so it is deliberately NOT a dpkg
+# conffile: dpkg would keep hashes and backup copies of it in its own bookkeeping, and would
+# prompt on upgrade to replace a working CA's identity with defaults. Seeding only where a
+# file is absent gives the useful half of that behaviour with none of the hazard.
+seed_config() {
+    for example in "$APP_DIR"/config/*.example; do
+        [ -e "$example" ] || continue
+        target="${example%.example}"
+        [ -e "$target" ] || install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0600 "$example" "$target"
+    done
+}
+
+set_ownership() {
+    set_program_ownership
+    prepare_runtime_dirs
+    seed_config
+}
 
 # Starts, without waiting, the units prerm recorded as running: the node before the signer. The
 # node applies migrations before it reports ready, which can take far longer than dpkg should wait.
@@ -36,6 +119,10 @@ start_recorded() {
     fi
 }
 
+if [ "${MODULARCA_POSTINST_SOURCED:-}" = 1 ]; then
+    return 0
+fi
+
 case "$1" in
 configure)
 
@@ -49,52 +136,30 @@ configure)
                 --gecos "ModularCA certificate authority" "$SERVICE_USER"
     fi
 
-    # ── Configuration ──────────────────────────────────────────────────────────
-    # The shipped .example files are the only configuration this package owns. A real config.yaml
-    # holds the database password and the JWT signing secret, so it is deliberately NOT a dpkg
-    # conffile: dpkg would keep hashes and backup copies of it in its own bookkeeping, and would
-    # prompt on upgrade to replace a working CA's identity with defaults. Seeding only where a
-    # file is absent gives the useful half of that behaviour with none of the hazard.
-    mkdir -p "$APP_DIR/config" "$APP_DIR/keystores" "$APP_DIR/logs"
-    for example in "$APP_DIR"/config/*.example; do
-        [ -e "$example" ] || continue
-        target="${example%.example}"
-        [ -e "$target" ] || cp -a "$example" "$target"
-    done
-
-    # ── Ownership and modes ────────────────────────────────────────────────────
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
-
-    # The .NET apphosts. Both need +x and neither can rely on the archive to say so.
-    [ -e "$APP_DIR/ModularCA.API" ] && chmod 0755 "$APP_DIR/ModularCA.API"
-    [ -e "$APP_DIR/ModularCA.Keystore.Unlocker" ] && chmod 0755 "$APP_DIR/ModularCA.Keystore.Unlocker"
-
-    chmod 0750 "$APP_DIR"
-    # Config and keystores hold secrets and CA private key material: owner only, no group read.
-    chmod 0700 "$APP_DIR/config" "$APP_DIR/keystores"
-    find "$APP_DIR/config" -type f -exec chmod 0600 {} \;
-    find "$APP_DIR/keystores" -type f -exec chmod 0600 {} \; 2>/dev/null || true
-    chmod 0750 "$APP_DIR/logs"
+    # ── Ownership, modes and configuration ─────────────────────────────────────
+    set_ownership
 
     # ── systemd ────────────────────────────────────────────────────────────────
     # A unit in /etc/systemd/system takes precedence over the one this package ships in /lib, and
     # silently. An install upgraded from the tarball will have exactly that file, left behind by
     # packaging/install.sh, and would keep running the old unit while every change to the packaged
     # one appeared to do nothing. Worth an explicit warning rather than a puzzle.
-    if [ -f /etc/systemd/system/modularca.service ]; then
-        cat >&2 <<'SHADOW'
+    for unit in $UNITS; do
+        if [ -f "/etc/systemd/system/$unit" ]; then
+            cat >&2 <<SHADOW
 
-  WARNING: /etc/systemd/system/modularca.service exists and overrides the unit shipped by this
-  package (/lib/systemd/system/modularca.service). It is most likely left over from a tarball
+  WARNING: /etc/systemd/system/$unit exists and overrides the unit shipped by this
+  package (/lib/systemd/system/$unit). It is most likely left over from a tarball
   install. Remove it, or move your changes into a drop-in:
 
-      sudo rm /etc/systemd/system/modularca.service
-      sudo mkdir -p /etc/systemd/system/modularca.service.d
-      # put local overrides in /etc/systemd/system/modularca.service.d/override.conf
+      sudo rm /etc/systemd/system/$unit
+      sudo mkdir -p /etc/systemd/system/$unit.d
+      # put local overrides in /etc/systemd/system/$unit.d/override.conf
       sudo systemctl daemon-reload
 
 SHADOW
-    fi
+        fi
+    done
 
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || true

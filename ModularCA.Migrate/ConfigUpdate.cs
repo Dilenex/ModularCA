@@ -47,6 +47,7 @@ public static class ConfigUpdate
 
     /// <summary>
     /// Backs up the existing configuration and writes one naming the PostgreSQL databases.
+    /// <c>config.yaml</c> is rewritten in place, keeping its owner, group and mode.
     /// </summary>
     /// <param name="options">The resolved options, which carry the configuration path.</param>
     /// <param name="appPassword">The generated application role password.</param>
@@ -89,8 +90,7 @@ public static class ConfigUpdate
 
                 var original = File.ReadAllText(configYamlPath);
                 var db = ConfigYamlDbSection.From(options, appPassword, auditPassword);
-                File.WriteAllText(configYamlPath, ConfigYamlDbSection.Replace(original, db));
-                FileSecurityUtil.SetOwnerOnly(configYamlPath);
+                ConfigYamlWriter.WriteKeepingAccess(configYamlPath, ConfigYamlDbSection.Replace(original, db));
 
                 // Proved rather than assumed: a spliced file that does not load back as intended
                 // is restored, because a broken config.yaml stops the node from starting at all.
@@ -128,7 +128,10 @@ public static class ConfigUpdate
         backups.Add(backup);
     }
 
-    /// <summary>Puts every backed-up file back, best effort.</summary>
+    /// <summary>
+    /// Puts every backed-up file back, best effort, rewriting each in place so it keeps its
+    /// owner, group and mode.
+    /// </summary>
     private static void Restore(List<string> backups)
     {
         foreach (var backup in backups)
@@ -136,8 +139,7 @@ public static class ConfigUpdate
             try
             {
                 var original = backup[..backup.LastIndexOf(".mariadb-", StringComparison.Ordinal)];
-                File.Copy(backup, original, overwrite: true);
-                FileSecurityUtil.SetOwnerOnly(original);
+                ConfigYamlWriter.WriteKeepingAccess(original, File.ReadAllText(backup));
             }
             catch
             {

@@ -897,7 +897,10 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Persists the in-memory config to config.yaml. Env-sourced secrets are temporarily
+    /// Persists the in-memory config to config.yaml through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/>, which leaves out the <c>DB</c>
+    /// section (<c>db.yaml</c> owns it) and rewrites the file in place so it keeps its owner,
+    /// group and mode. Env-sourced secrets are temporarily
     /// cleared before serialization (via <see cref="EnvVarConfigOverlay.WithSecretsProtected"/>)
     /// so they are never written to disk. Throws on write failure so callers can surface
     /// the failure as 500 to the operator instead of silently returning 200 — a swallowed
@@ -913,12 +916,8 @@ public class AdminConfigController(
         {
             try
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(_config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
             }
             catch (Exception ex)
             {

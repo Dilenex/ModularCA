@@ -240,6 +240,9 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertRequestEntity>(entity =>
         {
             entity.HasIndex(c => c.SubmittedAt);
+            // The lifecycle checks join requests to the certificates they renew
+            // (CertificateLifecycle.ResolveReplacementsAsync, PendingRenewalsAsync).
+            entity.HasIndex(c => c.RenewalOfCertificateId);
             entity.HasOne(c => c.IssuedCertificate)
                   .WithMany()
                   .HasForeignKey(c => c.IssuedCertificateId)
@@ -269,6 +272,12 @@ public class ModularCADbContext : DbContext
             // so the responder MUST filter by IssuerCertificateId to avoid
             // cross-CA serial collisions returning the wrong status.
             c.HasIndex(c => new { c.IssuerCertificateId, c.SerialNumber });
+
+            // Expiry: the lifecycle summary's band, the list's status, date-range and replaced
+            // filters, its NotAfter sort and the expiry chart all bound or order by NotAfter.
+            // NotAfter alone rather than (Revoked, NotAfter): several of those carry no Revoked
+            // predicate, which a Revoked-led index would not serve, and Revoked selects little.
+            c.HasIndex(c => c.NotAfter);
 
             c.HasOne(c => c.SigningProfile)
                 .WithMany()
