@@ -12,6 +12,8 @@ import CertificateReissueModal from '../components/CertificateReissueModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
+import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { canReissue, capitalize, channelNote, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
@@ -107,6 +109,8 @@ const CertificateDetail: React.FC = () => {
     const [revokeReason, setRevokeReason] = useState('Unspecified');
     const [revokeLoading, setRevokeLoading] = useState(false);
     const [revokeError, setRevokeError] = useState<NoticeInput | null>(null);
+    // Revoking a CA was refused because nobody else could approve its ceremony.
+    const [revokeRefusal, setRevokeRefusal] = useState<CeremonyRefusal | null>(null);
 
     const [reissueOpen, setReissueOpen] = useState(false);
 
@@ -196,7 +200,7 @@ const CertificateDetail: React.FC = () => {
 
     const handleRevokeConfirm = async () => {
         if (!cert) return;
-        setRevokeLoading(true); setRevokeError(null);
+        setRevokeLoading(true); setRevokeError(null); setRevokeRefusal(null);
         try {
             // The revoke endpoints key off the BODY (serialNumber), not the route param — the page is
             // loaded by serial, so revoke by serial. CA certs use the revoke-ca step-up op.
@@ -205,7 +209,9 @@ const CertificateDetail: React.FC = () => {
             setRevokeOpen(false);
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') setRevokeError(errorNotice(err, 'Revocation failed'));
+            const refusal = readCeremonyRefusal(err);
+            if (refusal) setRevokeRefusal(refusal);
+            else if (err.message !== 'Step-up MFA cancelled') setRevokeError(errorNotice(err, 'Revocation failed'));
         } finally {
             setRevokeLoading(false);
         }
@@ -432,6 +438,7 @@ const CertificateDetail: React.FC = () => {
                                     </select>
                                     <RevocationReasonHint reason={revokeReason} />
                                 </div>
+                                {revokeRefusal && <CeremonyRefusalNotice refusal={revokeRefusal} />}
                                 {revokeError && <InlineNotice notice={revokeError} />}
                             </div>
                             <div className="px-6 py-4 border-t border-line flex justify-end gap-3">

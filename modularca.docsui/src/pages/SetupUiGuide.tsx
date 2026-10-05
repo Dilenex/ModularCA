@@ -186,9 +186,22 @@ export default function SetupUiGuide() {
                         <li>At least one special character</li>
                     </ul>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-ink">
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><strong>Confirm Password:</strong> Must match the password field</li>
+                    <li>
+                        <strong>Will more than one person administer this CA?</strong> Required, with no
+                        answer pre-selected: <em>Just me</em> or <em>Several people</em>
+                    </li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The answer decides whether key ceremonies start on. A key ceremony makes a second
+                    administrator approve before a CA is created, revoked or deleted, and whoever starts one
+                    can never approve it. With <em>Just me</em> they start off, for the instance and for the
+                    first space, because nobody else could approve one; with <em>Several people</em> they
+                    start on. Either way the choice is recorded in the audit log, and it can be changed
+                    later in the admin console: Settings, Security, Key Ceremonies for the instance, and the
+                    space&apos;s own page for a space. Turn them on once a second administrator exists.
+                </p>
             </section>
 
             {/* Step 5: Security */}

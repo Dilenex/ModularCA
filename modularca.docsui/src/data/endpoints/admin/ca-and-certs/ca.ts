@@ -116,7 +116,7 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created intermediate CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
+        notes: 'Key algorithm policy enforced: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'POST',
@@ -147,6 +147,6 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created root CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly.',
+        notes: 'Key algorithm policy enforced. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
 ];

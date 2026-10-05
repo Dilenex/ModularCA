@@ -83,7 +83,9 @@ public class AdminKeyCeremonyController : ControllerBase
     /// The parameters name the CA's scope explicitly: a space id, or scope "instance" (400 otherwise).
     /// The label, name and CA certificate profile are checked now (<see cref="RefuseCaCreationParametersAsync"/>),
     /// so a ceremony that could never execute is not put to the approvers. A control character in
-    /// the description, target id or a parameter text field is refused with 400.
+    /// the description, target id or a parameter text field is refused with 400. A ceremony too
+    /// few other accounts could approve is refused with 409 and nothing is opened
+    /// (<see cref="ModularCA.API.Services.CeremonyRefusalResponse"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -162,6 +164,10 @@ public class AdminKeyCeremonyController : ControllerBase
                     ? "Ceremony auto-approved (quorum = 1). Ready for execution."
                     : $"Ceremony created. {ceremony.RequiredApprovals} approval(s) required."
             });
+        }
+        catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
+        {
+            return Conflict(await ModularCA.API.Services.CeremonyRefusalResponse.BuildAsync(HttpContext, ex));
         }
         catch (Exception ex)
         {
@@ -294,7 +300,10 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Retrieves full detail for a single key ceremony, including the approval records, and for a
     /// controlled-user ceremony the named scope of its affected tier (<c>tierScope</c>) and why the
-    /// caller may not approve it (<c>approvalRefusal</c>), if so.
+    /// caller may not approve it (<c>approvalRefusal</c>), if so. A pending ceremony also reports
+    /// whether it can still reach its quorum (<c>quorumReachable</c>), from the approvals it still
+    /// needs (<c>approvalsStillNeeded</c>) and the accounts that could still give one
+    /// (<c>eligibleApprovers</c>, see <see cref="CeremonyQuorumGuard"/>); all three are null otherwise.
     /// Enforces space-level access: only system admins or space-level CA admins can view.
     /// </summary>
     [HttpGet("{id:guid}")]
@@ -311,6 +320,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
         var approval = await ComputeCanApproveAsync(ceremony, _currentUser.User.Id);
+        var reach = ceremony.Status == "Pending" ? await new CeremonyQuorumGuard(_db).AssessPendingAsync(ceremony) : null;
         return Ok(new
         {
             ceremony.Id,
@@ -330,9 +340,49 @@ public class AdminKeyCeremonyController : ControllerBase
             ceremony.ApprovalsJson,
             CanApprove = approval.CanApprove,
             ApprovalRefusal = approval.Refusal,
+            QuorumReachable = reach?.Reachable,
+            ApprovalsStillNeeded = reach?.RequiredApprovals,
+            EligibleApprovers = reach?.EligibleApprovers,
             TierScope = IsControlledUserChange(ceremony) && _controlledUserSvc.DescribeCeremony(ceremony).Minted is { } minted
                 ? await _controlledUserSvc.DescribeScopeAsync(minted)
                 : null,
+        });
+    }
+
+    /// <summary>
+    /// Reports whether a key ceremony the caller opened in a scope could be approved: the scope's
+    /// requirement and quorum, and how many accounts other than the caller could approve
+    /// (<c>eligibleApprovers</c>, see <see cref="CeremonyQuorumGuard"/>). The scope is the space
+    /// in the route, or the instance without one. The console reads it to warn before the
+    /// requirement is turned on where nobody else could approve. Needs <c>ca.manage</c> across
+    /// the scope (403 otherwise); an unknown space is 404.
+    /// </summary>
+    [HttpGet("approvers")]
+    [HttpGet("approvers/{spaceId:guid}")]
+    public async Task<IActionResult> Approvers([FromRoute] Guid? spaceId = null)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (_currentUser.User == null) return Unauthorized();
+        var userId = _currentUser.User.Id;
+        if (!await _groupAuth.IsSystemAdminAsync(userId)
+            && !await _groupAuth.HasScopeCapabilityAsync(userId, spaceId, Capabilities.CaManage))
+            return StatusCode(403, new { error = "You need ca.manage for this scope." });
+
+        var policy = await new ModularCA.Database.EffectivePolicyResolver(_db).ResolveAsync(spaceId);
+        if (!policy.Found)
+            return NotFound(new { error = $"Space '{spaceId}' not found." });
+
+        // Any CA operation: they share one approval rule.
+        var eligible = await new CeremonyQuorumGuard(_db).EligibleApproversAsync("CreateIntermediateCA", spaceId, null, userId);
+        var required = Math.Max(1, policy.CeremonyRequiredApprovals);
+        return Ok(new
+        {
+            scope = spaceId == null ? "instance" : "space",
+            spaceId,
+            requireKeyCeremony = policy.RequireKeyCeremony,
+            requiredApprovals = required,
+            eligibleApprovers = eligible.Count,
+            reachable = eligible.Count >= required,
         });
     }
 

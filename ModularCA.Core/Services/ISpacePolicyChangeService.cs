@@ -34,7 +34,9 @@ public interface ISpacePolicyChangeService
     /// ceremony when <paramref name="spaceId"/> is null. The approval threshold snaps to the
     /// scope's <i>current</i> <c>CeremonyRequiredApprovals</c>. Fails with
     /// <see cref="InvalidOperationException"/> if another Pending policy-change ceremony already
-    /// exists for the scope.
+    /// exists for the scope, and with
+    /// <see cref="ModularCA.Shared.Errors.CeremonyQuorumUnreachableException"/>, creating nothing,
+    /// when too few accounts other than the initiator could approve it.
     /// </summary>
     /// <param name="spaceId">The space whose policy will change on execution, or null for the instance's.</param>
     /// <param name="proposedRequireKeyCeremony">Proposed value, or null if unchanged.</param>
@@ -54,6 +56,14 @@ public interface ISpacePolicyChangeService
         bool userQuorumIncluded = false,
         int? proposedUserQuorum = null,
         IReadOnlyList<ModularCA.Shared.Models.CaUserQuorumChange>? caUserQuorums = null);
+
+    /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.CeremonyQuorumUnreachableException"/> when a
+    /// policy-change ceremony <paramref name="initiatorUserId"/> opened for
+    /// <paramref name="spaceId"/> (null for the instance) could never reach its quorum. The check
+    /// <see cref="InitiateChangeAsync"/> makes, for a caller that saves other fields first.
+    /// </summary>
+    Task EnsureChangeApprovableAsync(Guid? spaceId, Guid initiatorUserId);
 
     /// <summary>
     /// Applies an approved policy-change ceremony to the space row, or to the instance's

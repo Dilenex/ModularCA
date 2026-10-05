@@ -175,7 +175,7 @@ public class CeremonyParametersFixtureTests
     {
         _ = type;
         using var db = InMemoryDbContextFactory.Create();
-        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => new KeyCeremonyService(db, new RecordingAuditService())
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard())
             .InitiateAsync("RevokeCa", "x", "", F.Admin, "carol", legacy));
         Assert.Empty(db.KeyCeremonies);
     }
@@ -190,7 +190,7 @@ public class CeremonyParametersFixtureTests
         db.Spaces.Add(new SpaceEntity { Id = F.SpaceA, Name = "Acme", Slug = "acme", CeremonyRequiredApprovals = 2 });
         await db.SaveChangesAsync();
 
-        var ceremony = await new KeyCeremonyService(db, new RecordingAuditService())
+        var ceremony = await new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard())
             .InitiateAsync(operation, "x", "", F.Admin, "carol", fixture);
 
         Assert.Equal(expected, ceremony.SpaceId);
@@ -238,7 +238,7 @@ public class CeremonyParametersFixtureTests
         };
         db.KeyCeremonies.Add(ceremony);
         await db.SaveChangesAsync();
-        var changes = new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()),
+        var changes = new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()),
             NullLogger<SpacePolicyChangeService>.Instance);
 
         var result = await changes.ApplyApprovedChangeAsync(ceremony.Id);

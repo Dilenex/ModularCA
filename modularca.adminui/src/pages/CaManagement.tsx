@@ -18,6 +18,8 @@ import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
+import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
+import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { NameConstraintsEditor, type NameConstraintsValue } from '@shared/components/NameConstraintsEditor';
 import { nameConstraintRowsInvalid, nameConstraintRowsToList } from '@shared/generalNames';
 
@@ -92,6 +94,8 @@ const CaManagement: React.FC = () => {
     const [formPublicBaseUrl, setFormPublicBaseUrl] = useState('');
     const [createLoading, setCreateLoading] = useState(false);
     const [createError, setCreateError] = useState<NoticeInput | null>(null);
+    // The create was refused because nobody else could approve its ceremony; shown with next steps.
+    const [createRefusal, setCreateRefusal] = useState<CeremonyRefusal | null>(null);
     const [createSuccess, setCreateSuccess] = useState<string | null>(null);
 
     // Name constraints, as typed rows; sent as List<string> of TYPE:value.
@@ -239,6 +243,7 @@ const CaManagement: React.FC = () => {
         }
         setCreateLoading(true);
         setCreateError(null);
+        setCreateRefusal(null);
         setCreateSuccess(null);
 
         try {
@@ -289,7 +294,10 @@ const CaManagement: React.FC = () => {
             setNameConstraints({ permitted: [], excluded: [] });
             loadAuthorities();
         } catch (err: any) {
-            setCreateError(errorNotice(err, 'Failed to create CA'));
+            // Nobody else could approve the ceremony: say so here, with the way out.
+            const refusal = readCeremonyRefusal(err);
+            if (refusal) setCreateRefusal(refusal);
+            else setCreateError(errorNotice(err, 'Failed to create CA'));
         } finally {
             setCreateLoading(false);
         }
@@ -527,6 +535,7 @@ const CaManagement: React.FC = () => {
                             {nameConstraintsInvalid && <FieldHint tone="warn">Fix the name constraints marked above to continue.</FieldHint>}
                         </div>
 
+                        {createRefusal && <CeremonyRefusalNotice refusal={createRefusal} />}
                         {createError && (
                             <div className="bg-crit-soft border border-crit/40 rounded p-3">
                                 <InlineNotice notice={createError} variant="line" />

@@ -110,6 +110,8 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 username: admin.username.trim(),
                 email: admin.email.trim() || undefined,
                 password: admin.password,
+                // Decides whether key ceremonies start on; the server refuses a request without it.
+                multipleAdministrators: admin.multipleAdministrators,
             },
             features: {
                 enableCrl: security.enableCrl,
@@ -284,6 +286,13 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 <SummaryRow label="Username" value={admin.username} />
                 {admin.email && <SummaryRow label="Email" value={admin.email} />}
                 <SummaryRow label="Password" value={"*".repeat(12)} />
+                <SummaryRow label="Administrators" value={admin.multipleAdministrators ? 'Several people' : 'Just me'} />
+                <SummaryRow
+                    label="Key Ceremonies"
+                    value={admin.multipleAdministrators
+                        ? 'On: a second administrator approves CA changes'
+                        : 'Off: turn on in Settings once a second administrator exists'}
+                />
             </SummaryCard>
 
             {/* Security & Features */}

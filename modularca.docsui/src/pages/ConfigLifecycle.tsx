@@ -293,8 +293,26 @@ HttpsApi:
 
 Features:
   # ACME/EST/SCEP/CMP default to false so a first run does not expose
-  # enrollment protocols nobody opted into. CRL/OCSP stay on.`}</pre>
+  # enrollment protocols nobody opted into. CRL/OCSP stay on.
+
+Administration:
+  # Will more than one person administer this CA?
+  #   true  - key ceremonies start on.
+  #   false - key ceremonies start off for the instance and the first space.
+  # Omitted, key ceremonies start on.
+  MultipleAdministrators: true`}</pre>
                 </div>
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>Administration.MultipleAdministrators</code> is the unattended form of the setup
+                    wizard&apos;s question &ldquo;Will more than one person administer this CA?&rdquo;. A key
+                    ceremony makes a second administrator approve before a CA is created, revoked or deleted,
+                    and the person who starts one can never approve it, so a lone administrator could never
+                    finish one. <code>false</code> therefore starts the requirement off, for the instance
+                    policy and for the first space; <code>true</code>, or leaving the key out, starts it on.
+                    The choice is written to the audit log. Turn the requirement on later in the console,
+                    under Settings for the instance and on the space&apos;s page for a space, once a second
+                    administrator exists.
+                </p>
                 <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Written once during setup, never modified</li>
                     <li>Presence of this file with <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">completed: true</code> disables the setup wizard</li>

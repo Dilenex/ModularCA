@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -19,6 +19,8 @@ import type { ValidityCeilingBehavior } from '@shared/generated';
 import { SPACE_REALMS_ANCHOR } from './msaeRefusals';
 import { useScrollToHash } from '../hooks/useScrollToHash';
 import { ceremonyLink } from './ceremonyLinks';
+import { INSTANCE_CEREMONY_SETTINGS_PATH, KEY_CEREMONIES_ANCHOR, USERS_PATH, requirementWarning } from './ceremonyRefusal';
+import { useAuth } from '../context/AuthContext';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));
 
@@ -35,8 +37,13 @@ const SpaceDetail: React.FC = () => {
     const navigate = useNavigate();
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
+    const { user } = useAuth();
+    // A link to the key-ceremony switch (#key-ceremonies) opens the page ready to change it.
+    const { hash } = useLocation();
 
     const [space, setSpace] = useState<Space | null>(null);
+    /* Accounts other than this one that could approve a key ceremony in this space; null until known. */
+    const [approvers, setApprovers] = useState<number | null>(null);
     const [quorum, setQuorum] = useState<SpaceQ | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -73,7 +80,9 @@ const SpaceDetail: React.FC = () => {
         Promise.all([
             apiGet<any>('/api/v1/admin/quotas/by-space'),
             apiGet<QuorumData>('/api/v1/admin/user-quorum').catch(() => null),
-        ]).then(([quotaData, quorumData]) => {
+            apiGet<any>(`/api/v1/admin/ceremonies/approvers/${id}`, { toast: false }).catch(() => null),
+        ]).then(([quotaData, quorumData, approverData]) => {
+            setApprovers(typeof approverData?.eligibleApprovers === 'number' ? approverData.eligibleApprovers : null);
             const t: Space | null = (quotaData.spaces || []).find((x: Space) => x.id === id) || null;
             const q: SpaceQ | null = quorumData ? ((quorumData.spaces || []).find((x: SpaceQ) => x.id === id) || null) : null;
             setSpace(t); setQuorum(q); setError(null);
@@ -120,6 +129,16 @@ const SpaceDetail: React.FC = () => {
     // A change is a security downgrade when it turns the ceremony off or lowers the approval count.
     const downgrade = (form.requireKeyCeremony === false && t.requireKeyCeremony === true) ||
         (form.ceremonyRequiredApprovals < t.ceremonyRequiredApprovals);
+    const ceremonyPolicyDirty = form.requireKeyCeremony !== (t.requireKeyCeremony ?? false) ||
+        (form.requireKeyCeremony && form.ceremonyRequiredApprovals !== (t.ceremonyRequiredApprovals ?? 1));
+    // Warns, without blocking, when the requirement is (or would be) on and too few others could approve.
+    const ceremonyWarning = requirementWarning({
+        required: form.requireKeyCeremony,
+        wasRequired: t.requireKeyCeremony === true,
+        approvals: form.ceremonyRequiredApprovals,
+        eligibleApprovers: approvers,
+        scope: 'this space',
+    });
 
     // ── unified save: ONE atomic request through the combined settings sub-resource, gated by a
     // single step-up MFA prompt (any sensitive field counts). We send the full desired state. ──
@@ -180,6 +199,7 @@ const SpaceDetail: React.FC = () => {
             subtitle={t.description || undefined}
             backTo="/spaces"
             editable
+            initialMode={hash === `#${KEY_CEREMONIES_ANCHOR}` ? 'edit' : 'view'}
             onSave={handleSave}
             onCancel={resetEdits}
             saveDisabled={!anyDirty || quorumInvalid}
@@ -215,25 +235,7 @@ const SpaceDetail: React.FC = () => {
                                         Refuse governs admin and interactive issuance only. ACME, EST, SCEP and CMP enrollments and automatic renewals <strong>always shorten</strong>, whatever this is set to — an enrolling client can neither see this ceiling nor change its own request, so refusing it would fail enrollments nobody at the other end can fix.
                                     </p>
                                 </div>
-                                <div className="flex items-center gap-2 pt-2">
-                                    <input type="checkbox" id={`cer-${t.id}`} checked={form.requireKeyCeremony}
-                                        onChange={(e) => setForm({ ...form, requireKeyCeremony: e.target.checked })}
-                                        className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
-                                    <label htmlFor={`cer-${t.id}`} className="text-xs text-ink-muted">Require Key Ceremony for CA Creation</label>
-                                </div>
-                                {form.requireKeyCeremony && (
-                                    <div><label className={labelCls}>Required Approvals</label>
-                                        <input inputMode="numeric" value={form.ceremonyRequiredApprovals}
-                                            onChange={(e) => setForm({ ...form, ceremonyRequiredApprovals: parseInt(e.target.value.replace(/\D/g, '') || '1', 10) || 1 })} className={numInput} />
-                                        <FieldHint>Approvals from other space admins before a CA key ceremony may execute. The initiator is always excluded, so the effective minimum is 1 other approver.</FieldHint>
-                                    </div>
-                                )}
                             </div>
-                            {downgrade && (
-                                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
-                                    This change lowers space security policy. Saving will start a key ceremony requiring {t.ceremonyRequiredApprovals} approvals from space admins before the change takes effect. System admins can bypass this by using the direct API with step-up MFA.
-                                </div>
-                            )}
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
@@ -245,11 +247,56 @@ const SpaceDetail: React.FC = () => {
                                     ? 'Refuse admin requests (protocol enrollments still shorten)'
                                     : 'Shorten and warn')
                                 : 'n/a — no ceiling set'} />
-                            <DetailField label="Key Ceremony Required" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No'} />
                             <DetailField label="Created" value={formatDate(t.createdAt)} />
                         </div>
                     )}
                 </DetailSection>
+
+                <div id={KEY_CEREMONIES_ANCHOR} className="scroll-mt-4">
+                    <DetailSection title="Key Ceremonies">
+                        <div className="space-y-3">
+                            <p className="text-xs text-ink-muted">
+                                A key ceremony makes other administrators approve before a CA of this space is created or revoked.
+                                Whoever starts one can never approve it, so it needs at least one other administrator who can approve.
+                                The instance&apos;s own CAs have a separate switch in <Link to={INSTANCE_CEREMONY_SETTINGS_PATH} className="underline">Settings</Link>.
+                            </p>
+                            {mode === 'edit' ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div className="flex items-center gap-2 pt-2">
+                                        <input type="checkbox" id={`cer-${t.id}`} checked={form.requireKeyCeremony}
+                                            onChange={(e) => setForm({ ...form, requireKeyCeremony: e.target.checked })}
+                                            className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
+                                        <label htmlFor={`cer-${t.id}`} className="text-xs text-ink">Require key ceremonies for this space&apos;s CAs</label>
+                                    </div>
+                                    {form.requireKeyCeremony && (
+                                        <div><label className={labelCls}>Approvals required</label>
+                                            <input inputMode="numeric" value={form.ceremonyRequiredApprovals}
+                                                onChange={(e) => setForm({ ...form, ceremonyRequiredApprovals: parseInt(e.target.value.replace(/\D/g, '') || '1', 10) || 1 })} className={numInput} />
+                                            <FieldHint>Approvals from other administrators before a key ceremony may execute. The initiator is always excluded, so the effective minimum is 1 other approver.</FieldHint>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <DetailField label="Required" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No. Switch to Edit to turn it on.'} />
+                            )}
+                            {ceremonyWarning && (
+                                <div role="alert" className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
+                                    {ceremonyWarning}{' '}
+                                    <Link to={USERS_PATH} className="underline font-medium">Add an administrator</Link>
+                                </div>
+                            )}
+                            {mode === 'edit' && ceremonyPolicyDirty && (
+                                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
+                                    {user?.isSuper
+                                        ? (downgrade
+                                            ? 'This lowers the space’s security policy. As a system super-administrator your change applies directly, after an MFA check.'
+                                            : 'As a system super-administrator your change applies directly.')
+                                        : `Saving opens a policy-change ceremony that needs ${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from other administrators of this space before it takes effect.`}
+                                </div>
+                            )}
+                        </div>
+                    </DetailSection>
+                </div>
 
                 <div className="space-y-3">
                     <div>

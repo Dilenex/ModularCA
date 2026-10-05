@@ -32,7 +32,7 @@ public class InstancePolicyCeremonyTests
         var space = new SpaceEntity { Name = "Acme", Slug = "acme", CeremonyRequiredApprovals = 2 };
         db.Spaces.Add(space);
         await db.SaveChangesAsync();
-        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
+        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard());
 
         var instance = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { SpaceId = (Guid?)null }));
         var spaced = await ceremonies.InitiateAsync(operation, "x", "", Guid.NewGuid(), "op", JsonSerializer.Serialize(new { SpaceId = space.Id }));
@@ -63,7 +63,7 @@ public class InstancePolicyCeremonyTests
             new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", SpaceId = null, ExpiresAt = DateTime.UtcNow.AddHours(1) },
             new KeyCeremonyEntity { OperationType = "RevokeCa", Status = "Pending", SpaceId = space, ExpiresAt = DateTime.UtcNow.AddHours(1) });
         await db.SaveChangesAsync();
-        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
+        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard());
 
         Assert.Equal([space], (await ceremonies.ListBySpacesAsync([space])).Select(c => c.SpaceId!.Value));
         Assert.Equal(2, (await ceremonies.ListBySpacesAsync([space], includeInstance: true)).Count);
@@ -83,7 +83,7 @@ public class InstancePolicyCeremonyTests
         var spaceCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Acme Root", Label = "acme-root", SpaceId = space.Id };
         db.CertificateAuthorities.AddRange(instanceCa, spaceCa);
         await db.SaveChangesAsync();
-        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService());
+        var ceremonies = new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard());
         var changes = new SpacePolicyChangeService(db, ceremonies, NullLogger<SpacePolicyChangeService>.Instance);
 
         var id = await changes.InitiateChangeAsync(null, false, 1, Guid.NewGuid(), "admin",
@@ -130,7 +130,7 @@ public class InstancePolicyCeremonyTests
         var ceremony = new KeyCeremonyEntity { OperationType = "SpacePolicyChange", CeremonyType = CeremonyType.SpacePolicyChange, Status = "Approved", ParametersJson = parameters, ExpiresAt = DateTime.UtcNow.AddHours(1) };
         db.KeyCeremonies.Add(ceremony);
         await db.SaveChangesAsync();
-        var changes = new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), NullLogger<SpacePolicyChangeService>.Instance);
+        var changes = new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()), NullLogger<SpacePolicyChangeService>.Instance);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => changes.ApplyApprovedChangeAsync(ceremony.Id));
         Assert.True((await db.SecurityPolicies.AsNoTracking().SingleAsync()).RequireKeyCeremony);

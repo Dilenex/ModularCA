@@ -727,7 +727,9 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// advisory lock so two concurrent callers (including multi-instance deployments
     /// behind a load balancer) cannot both race <c>BootstrapService.RunFromSetupRequest</c>.
     /// A Web TLS SAN other than DNS or IP is refused with 400 before any setup work
-    /// (<c>BootstrapCertCreator.EnsureWebTlsSansSupported</c>).
+    /// (<c>BootstrapCertCreator.EnsureWebTlsSansSupported</c>), as is a request that does not
+    /// answer <c>admin.multipleAdministrators</c>: false starts key ceremonies off for the
+    /// instance and the first space, true starts them on.
     /// </summary>
     [HttpPost("initialize")]
     public IActionResult Initialize([FromBody] SetupRequest request)
@@ -756,6 +758,8 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                 return BadRequest(new { error = "Organization name is required." });
             if (string.IsNullOrWhiteSpace(request.RootCa.CommonName))
                 return BadRequest(new { error = "Root CA Common Name is required." });
+            if (request.Admin?.MultipleAdministrators == null)
+                return BadRequest(new { error = "Say whether more than one person will administer this CA (admin.multipleAdministrators: true or false). It decides whether key ceremonies start on." });
             if (RootCaNameClashesWithSystemCa(request.RootCa.CommonName))
                 return BadRequest(new { error = "The Root CA Common Name is taken by the system signing CA, whose name and label are reserved. CA names and labels are unique across the instance; choose another." });
             try

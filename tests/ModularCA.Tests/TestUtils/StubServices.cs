@@ -70,6 +70,23 @@ internal sealed class EnrollmentTokenServiceStub : IEnrollmentTokenService
 }
 
 /// <summary>
+/// An <see cref="ICeremonyQuorumGuard"/> that finds every ceremony approvable, for tests of
+/// something else that open a ceremony without seeding a second administrator. Tests of the guard
+/// leave <see cref="KeyCeremonyService"/> its default.
+/// </summary>
+internal sealed class OpenQuorumGuard : ICeremonyQuorumGuard
+{
+    public Task<IReadOnlySet<Guid>> EligibleApproversAsync(string operationType, Guid? spaceId, string? parametersJson, Guid initiatorUserId)
+        => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task EnsureReachableAsync(string operationType, Guid? spaceId, string? parametersJson, Guid initiatorUserId, int requiredApprovals)
+        => Task.CompletedTask;
+
+    public Task<CeremonyReach> AssessPendingAsync(KeyCeremonyEntity ceremony)
+        => Task.FromResult(new CeremonyReach(ceremony.RequiredApprovals, ceremony.RequiredApprovals));
+}
+
+/// <summary>
 /// Records every audit row a service under test writes, as (action, target id, details), so a
 /// test can assert what was audited without the real audit chain.
 /// </summary>

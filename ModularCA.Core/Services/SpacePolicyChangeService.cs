@@ -20,8 +20,19 @@ namespace ModularCA.Core.Services;
 public class SpacePolicyChangeService(
     ModularCADbContext db,
     IKeyCeremonyService keyCeremonyService,
-    ILogger<SpacePolicyChangeService> logger) : ISpacePolicyChangeService
+    ILogger<SpacePolicyChangeService> logger,
+    ICeremonyQuorumGuard? quorumGuard = null) : ISpacePolicyChangeService
 {
+    /// <inheritdoc />
+    public async Task EnsureChangeApprovableAsync(Guid? spaceId, Guid initiatorUserId)
+    {
+        // The quorum KeyCeremonyService resolves for a policy change: the scope's current one.
+        var policy = await new EffectivePolicyResolver(db).ResolveAsync(spaceId);
+        var operationType = (spaceId == null ? CeremonyType.InstancePolicyChange : CeremonyType.SpacePolicyChange).ToString();
+        await (quorumGuard ?? new CeremonyQuorumGuard(db)).EnsureReachableAsync(
+            operationType, spaceId, null, initiatorUserId, Math.Max(1, policy.CeremonyRequiredApprovals));
+    }
+
     /// <inheritdoc />
     public bool IsDowngrade(
         bool currentRequireKeyCeremony,

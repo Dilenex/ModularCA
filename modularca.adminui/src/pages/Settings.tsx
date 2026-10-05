@@ -13,6 +13,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import ConfirmModal from '../components/ConfirmModal';
 import { ceremonyLink } from './ceremonyLinks';
+import { KEY_CEREMONIES_ANCHOR, USERS_PATH, requirementWarning } from './ceremonyRefusal';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { ChipListInput, type ChipSuggestion } from '@shared/components/ChipListInput';
 import { invalidItems, listFromValue, listToCsv } from '@shared/components/chipList';
@@ -345,6 +346,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [securityPolicyLoading, setSecurityPolicyLoading] = useState(false);
     const [securityPolicyError, setSecurityPolicyError] = useState<NoticeInput | null>(null);
     const [securityPolicySaving, setSecurityPolicySaving] = useState(false);
+    /* How many accounts other than this one could approve a key ceremony on an instance CA;
+       null until known. Read to warn before the requirement is saved where nobody could. */
+    const [instanceApprovers, setInstanceApprovers] = useState<number | null>(null);
 
     /* Snapshots of what the server last returned, for the unsaved-changes guard. Each loader
        stamps its own key; `dirty` is true when any live buffer differs from its snapshot. */
@@ -377,6 +381,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             .then((s) => { setSecurityPolicy(s); snap('securityPolicy', s); })
             .catch((err) => setSecurityPolicyError(errorNotice(err, 'The request failed.')))
             .finally(() => setSecurityPolicyLoading(false));
+        apiGet<any>('/api/v1/admin/ceremonies/approvers', { toast: false })
+            .then((a) => setInstanceApprovers(typeof a?.eligibleApprovers === 'number' ? a.eligibleApprovers : null))
+            .catch(() => setInstanceApprovers(null));
     };
 
     /* Protocol Rate Limits (DB) — multi-row */
@@ -417,6 +424,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     useEffect(() => {
         if (loading || tab !== 'General' || window.location.hash !== `#${RESTART_ANCHOR}`) return;
         document.getElementById(RESTART_ANCHOR)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, [loading, tab]);
+
+    // Other pages link to /settings?tab=Security#key-ceremonies: open that card and scroll to it.
+    useEffect(() => {
+        if (loading || tab !== 'Security' || window.location.hash !== `#${KEY_CEREMONIES_ANCHOR}`) return;
+        setExpanded('keyCeremonies');
+        document.getElementById(KEY_CEREMONIES_ANCHOR)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, [loading, tab]);
 
     const saveSection = async (endpoint: string, data: any, sectionKey: string) => {
@@ -507,6 +521,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         }
     };
     const updateSecurityPolicyField = (key: string, value: any) => setSecurityPolicy({ ...securityPolicy, [key]: value });
+    const instanceCeremonyWarning = securityPolicy ? requirementWarning({
+        required: securityPolicy.requireKeyCeremony !== false,
+        wasRequired: saved.current.securityPolicy ? JSON.parse(saved.current.securityPolicy).requireKeyCeremony !== false : true,
+        approvals: Number(securityPolicy.ceremonyRequiredApprovals) || 1,
+        eligibleApprovers: instanceApprovers,
+        scope: 'the instance',
+    }) : null;
 
     /* --- Rate Limits helpers --- */
     const updateRateLimitField = (protocol: string, key: 'maxRequests' | 'windowMinutes', value: any) => {
@@ -852,6 +873,51 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         )}
                     </div>
 
+                    {/* Key ceremonies: the instance's requirement, stored on the SecurityPolicy row and
+                        edited in its own card so it can be found and linked to. */}
+                    <div className={`${cardClass} scroll-mt-4`} id={KEY_CEREMONIES_ANCHOR}>
+                        <SectionHeader title="Key Ceremonies" expanded={expanded === 'keyCeremonies'} onToggle={() => toggle('keyCeremonies')}
+                            description={securityPolicy
+                                ? (securityPolicy.requireKeyCeremony === false ? 'Off for instance CAs' : 'Required for instance CAs')
+                                : 'Loading...'} tag="live" />
+                        {expanded === 'keyCeremonies' && (
+                            <div className="p-4 border-t border-line space-y-4">
+                                {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
+                                {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
+                                {securityPolicy && (
+                                    <>
+                                        <p className="text-xs text-ink-muted">
+                                            A key ceremony makes other administrators approve before a CA is created, revoked or deleted.
+                                            Whoever starts one can never approve it, so it needs at least one other administrator. This
+                                            switch covers the instance&apos;s own CAs (the system signing CA and SSH CAs). Each space has
+                                            its own switch, on its page under <Link to="/spaces" className="underline">Spaces</Link>.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <ConfigToggle label="Require key ceremonies for instance CAs" checked={securityPolicy.requireKeyCeremony ?? true} onChange={(v) => updateSecurityPolicyField('requireKeyCeremony', v)}
+                                                hintTone={securityPolicy.requireKeyCeremony === false ? 'warn' : 'muted'}
+                                                hint="Creating, revoking or deleting an instance CA needs a key ceremony. Off lets an administrator do it directly." />
+                                            <ConfigNumber label="Approvals required (min 1)" value={securityPolicy.ceremonyRequiredApprovals} onChange={(v) => updateSecurityPolicyField('ceremonyRequiredApprovals', v)} fallback={2}
+                                                hint="Approvals from other people for a key ceremony on an instance CA. The initiator is never counted." />
+                                        </div>
+                                        {instanceCeremonyWarning && (
+                                            <div role="alert" className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
+                                                {instanceCeremonyWarning}{' '}
+                                                <Link to={USERS_PATH} className="underline font-medium">Add an administrator</Link>
+                                            </div>
+                                        )}
+                                        {!user?.isSuper && (
+                                            <p className="text-[11px] text-ink-muted">
+                                                Only a system super-administrator changes these directly. Saving a change opens a ceremony
+                                                that another system administrator approves.
+                                            </p>
+                                        )}
+                                        <SaveButton saving={securityPolicySaving} onClick={handleSaveSecurityPolicy} label="Save Key Ceremony Policy" />
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
                     {/* Security Policy (DB) — runtime-tunable session/MFA/OCSP/approval.
                         Login lockout moved to the Login Protection card above. */}
                     <div className={cardClass}>
@@ -920,7 +986,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Controlled-User Ceremonies</h4>
                                         <p className="text-[11px] text-ink-muted">
                                             <strong>User quorum</strong> = approvals required to promote / demote / delete a controlled user (admin / operator / CA-admin)
-                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per space in Spaces and for the instance below).
+                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per space in Spaces and for the instance in the Key Ceremonies card above).
                                             The initiator is always excluded, so the effective minimum is 1 other approver.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -930,15 +996,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Instance CA Policy</h4>
                                         <p className="text-[11px] text-ink-muted">
                                             Governs the instance's own CAs only (no space: the system signing CA, SSH CAs). Each space keeps its own
-                                            policy, set in Spaces; the two are independent and nothing merges. System administrators only; a change to the
-                                            ceremony requirement or its approvals by anyone but a system super-administrator opens a ceremony.
+                                            policy, set in Spaces; the two are independent and nothing merges. System administrators only. The key
+                                            ceremony requirement and its approvals are in the <strong>Key Ceremonies</strong> card above.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                            <ConfigToggle label="Require Key Ceremony" checked={securityPolicy.requireKeyCeremony ?? true} onChange={(v) => updateSecurityPolicyField('requireKeyCeremony', v)}
-                                                hintTone={securityPolicy.requireKeyCeremony === false ? 'warn' : 'muted'}
-                                                hint="Creating, revoking or deleting an instance CA needs a key ceremony. Off lets an administrator do it directly." />
-                                            <ConfigNumber label="Ceremony Required Approvals (min 1)" value={securityPolicy.ceremonyRequiredApprovals} onChange={(v) => updateSecurityPolicyField('ceremonyRequiredApprovals', v)} fallback={2}
-                                                hint="Approvals from other people for a key ceremony on an instance CA. The initiator is never counted." />
                                             <ConfigNumber label="Max Cert Validity (days, 0 = unlimited)" value={securityPolicy.maxValidityDays} onChange={(v) => updateSecurityPolicyField('maxValidityDays', v)}
                                                 hint="Longest validity a leaf issued by an instance CA may carry." />
                                             <ConfigSelect label="Over the ceiling" value={securityPolicy.validityCeilingBehavior || 'Shorten'} options={['Shorten', 'Refuse']} onChange={(v) => updateSecurityPolicyField('validityCeilingBehavior', v)}

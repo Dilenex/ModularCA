@@ -134,6 +134,18 @@ public static class ErrorCodes
     /// </summary>
     public const string CertProfileOutOfScope = "MCA-CFG-019";
 
+    /// <summary>
+    /// A ceremony was not opened because no account other than its initiator could approve it.
+    /// See <see cref="CeremonyQuorumUnreachableException"/>.
+    /// </summary>
+    public const string CeremonyNoApprover = "MCA-CFG-020";
+
+    /// <summary>
+    /// A ceremony was not opened because fewer accounts other than its initiator could approve it
+    /// than it needs approvals. See <see cref="CeremonyQuorumUnreachableException"/>.
+    /// </summary>
+    public const string CeremonyQuorumUnreachable = "MCA-CFG-021";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>

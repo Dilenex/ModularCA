@@ -526,7 +526,8 @@ public class AdminGroupController(
     /// tier guard, duplicate check, and the controlled-user gate. Crucially, promoting a controlled
     /// user starts its OWN ceremony, so a batch can spawn one ceremony PER controlled user while adding
     /// uncontrolled users directly. Returns a per-user result summary; never aborts the batch on a
-    /// single user's failure. A promotion the caller may not open is reported as <c>refused</c>.
+    /// single user's failure. A promotion the caller may not open, or that nobody else could
+    /// approve, is reported as <c>refused</c>.
     /// </summary>
     [HttpPost("{id:guid}/members/bulk")]
     [Authorize(Policy = "SystemAdmin")]
@@ -582,6 +583,10 @@ public class AdminGroupController(
                     results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "ceremony", CeremonyId = ceremonyId });
                 }
                 catch (ControlledUserInitiationRefusedException ex)
+                {
+                    results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "refused", Error = ex.Message });
+                }
+                catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
                 {
                     results.Add(new BulkMemberResult { UserId = userId, Username = user.Username, Status = "refused", Error = ex.Message });
                 }
@@ -687,7 +692,8 @@ public class AdminGroupController(
     /// guard. Demoting a controlled user starts its OWN ceremony, so a batch can spawn one ceremony PER
     /// controlled user while removing uncontrolled users directly. A user that would be the last
     /// controlled user of its scope is refused individually (status <c>last_user</c>) without aborting
-    /// the rest. Returns a per-user result summary.
+    /// the rest, as is one whose ceremony nobody else could approve (status <c>refused</c>).
+    /// Returns a per-user result summary.
     /// </summary>
     [HttpPost("{id:guid}/members/bulk-remove")]
     [Authorize(Policy = "SystemAdmin")]
@@ -725,18 +731,25 @@ public class AdminGroupController(
             // Controlled-user demote gate → a ceremony PER controlled user.
             if (demoteTier != null && _currentUser.User != null && !callerIsSuper)
             {
-                var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                    new Shared.Models.ControlledUserChangeParameters
-                    {
-                        ChangeType = "RemoveGroupMember",
-                        TargetUserId = userId,
-                        GroupId = id,
-                        CertificateAuthorityId = group.CertificateAuthorityId,
-                    },
-                    demoteTier.Value,
-                    _currentUser.User.Id,
-                    _currentUser.User.Username ?? string.Empty);
-                results.Add(new BulkMemberResult { UserId = userId, Status = "ceremony", CeremonyId = ceremonyId });
+                try
+                {
+                    var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                        new Shared.Models.ControlledUserChangeParameters
+                        {
+                            ChangeType = "RemoveGroupMember",
+                            TargetUserId = userId,
+                            GroupId = id,
+                            CertificateAuthorityId = group.CertificateAuthorityId,
+                        },
+                        demoteTier.Value,
+                        _currentUser.User.Id,
+                        _currentUser.User.Username ?? string.Empty);
+                    results.Add(new BulkMemberResult { UserId = userId, Status = "ceremony", CeremonyId = ceremonyId });
+                }
+                catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
+                {
+                    results.Add(new BulkMemberResult { UserId = userId, Status = "refused", Error = ex.Message });
+                }
                 continue;
             }
 
@@ -753,7 +766,7 @@ public class AdminGroupController(
         {
             removed = results.Count(r => r.Status == "removed"),
             ceremonies = results.Count(r => r.Status == "ceremony"),
-            refused = results.Count(r => r.Status == "last_user"),
+            refused = results.Count(r => r.Status is "last_user" or "refused"),
             skipped = results.Count(r => r.Status is "not_found" or "denied"),
             results,
         });

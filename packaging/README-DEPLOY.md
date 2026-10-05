@@ -967,8 +967,11 @@ signer is a sidecar and scales with the node, not apart from it.
 
 Before the first start, put into the `modularca-config` volume what a headless bootstrap needs —
 `bootstrap.yaml`, `setup-database.yaml`, and a `config.yaml` naming the node (each has an
-`.example` under `config/`). Nothing else is ever needed. Three init containers run every start
-and find their work done after the first:
+`.example` under `config/`). Nothing else is ever needed. If one person will administer the
+instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
+then start off for the instance and the first space, where a lone administrator could never get
+one approved. Left out, they start on. Three init containers run every start and find their work
+done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the
    keystore locally and there is nothing to split until it exists. The initial administrator

@@ -1293,6 +1293,7 @@ export interface SetupAdmin {
     username: string;
     password?: string | null;
     email?: string | null;
+    multipleAdministrators?: boolean | null;
 }
 
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */
@@ -1424,6 +1425,12 @@ export interface SignerConfig {
     pinnedClientSpki: string;
     identityCa: string;
     identityCaPassword: string;
+}
+
+/** From `ModularCA.Shared/Models/Config/SignerPaths.cs`. */
+export interface SignerPaths {
+    baseDirectory: string;
+    signerDirectory?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/SigningProfile.cs`. */

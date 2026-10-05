@@ -579,9 +579,26 @@ export default function AdminUiGuide() {
                     <li>Multi-party authorization workflows</li>
                     <li>Ceremony audit logs and attestation records</li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">With one administrator</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Whoever starts a ceremony can never approve it, so a ceremony needs at least one other
+                    account that can approve. When too few can, the action that would have opened the
+                    ceremony is refused instead and nothing is started: &ldquo;You&apos;re the only
+                    administrator who can approve this&rdquo; (code MCA-CFG-020), or &ldquo;This needs N
+                    approvals and only M other administrators can approve&rdquo; (MCA-CFG-021). Service
+                    identities and disabled or locked accounts do not count.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>The refusal appears where the action was taken, with links to the next step you are allowed to take</li>
+                    <li>A system super-administrator can turn the requirement off: Settings, Security, Key Ceremonies for instance CAs, and the Key Ceremonies section of a space&apos;s page for that space</li>
+                    <li>Or add a second administrator under Users, then try again</li>
+                    <li>Both switches warn before you turn the requirement on while nobody else could approve; the warning does not block the save</li>
+                    <li>A ceremony that was already pending and can no longer be approved says so in its drawer, where its initiator can cancel it</li>
+                </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/ceremonies<br />
-                    POST /api/v1/admin/ceremonies
+                    POST /api/v1/admin/ceremonies<br />
+                    GET /api/v1/admin/ceremonies/approvers
                 </div>
             </section>
 

@@ -32,6 +32,7 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created SSH CA key with ID, name, key type, key size, public key, and createdAt. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
+        notes: 'When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'GET',
@@ -144,5 +145,6 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Confirmation that the SSH CA key was disabled and all certificates revoked. If ceremony required: { requiresCeremony, ceremonyId, message }.',
+        notes: 'When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
 ];

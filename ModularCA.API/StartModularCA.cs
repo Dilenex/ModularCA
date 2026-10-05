@@ -1643,6 +1643,7 @@ builder.Services.AddHttpClient("Webhook")
     .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ISecurityAlertService, SecurityAlertService>();
+builder.Services.AddScoped<ICeremonyQuorumGuard, CeremonyQuorumGuard>();
 builder.Services.AddScoped<IKeyCeremonyService, KeyCeremonyService>();
 builder.Services.AddSchedulerJob<CertExpiryNotificationJob>(activeRoles);
 builder.Services.AddSchedulerJob<ComplianceScanJob>(activeRoles);

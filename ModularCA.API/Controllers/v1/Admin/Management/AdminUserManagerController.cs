@@ -720,7 +720,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// gate, and the last-controlled-user guard. A privileged add/remove spawns its OWN controlled-user
         /// ceremony, so a batch can start several ceremonies (one per privileged group) while applying
         /// uncontrolled changes directly. Never aborts on one group's failure; returns a per-group summary,
-        /// where a promotion the caller may not open is <c>refused</c>.
+        /// where a change the caller may not open, or whose ceremony nobody else could approve, is
+        /// <c>refused</c>.
         /// </summary>
         [HttpPost("{id:guid}/groups/bulk")]
         [Authorize(Policy = "CaAdmin")]
@@ -766,6 +767,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                     {
                         results.Add(new { groupId, action = "add", status = "refused", error = ex.Message }); skipped++;
                     }
+                    catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
+                    {
+                        results.Add(new { groupId, action = "add", status = "refused", error = ex.Message }); skipped++;
+                    }
                     continue;
                 }
 
@@ -790,13 +795,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 { results.Add(new { groupId, action = "remove", status = "last_user" }); skipped++; continue; }
                 if (tier != null && !isSuper)
                 {
-                    var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                        new ModularCA.Shared.Models.ControlledUserChangeParameters
-                        {
-                            ChangeType = "RemoveGroupMember", TargetUserId = id, GroupId = groupId, CertificateAuthorityId = grp.CertificateAuthorityId,
-                        },
-                        tier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
-                    results.Add(new { groupId, action = "remove", status = "ceremony", ceremonyId }); ceremonies++; continue;
+                    try
+                    {
+                        var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                            new ModularCA.Shared.Models.ControlledUserChangeParameters
+                            {
+                                ChangeType = "RemoveGroupMember", TargetUserId = id, GroupId = groupId, CertificateAuthorityId = grp.CertificateAuthorityId,
+                            },
+                            tier.Value, _currentUser.User!.Id, _currentUser.User!.Username ?? string.Empty);
+                        results.Add(new { groupId, action = "remove", status = "ceremony", ceremonyId }); ceremonies++;
+                    }
+                    catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
+                    {
+                        results.Add(new { groupId, action = "remove", status = "refused", error = ex.Message }); skipped++;
+                    }
+                    continue;
                 }
 
                 if (await _userService.RemoveUserFromGroup(id, groupId))

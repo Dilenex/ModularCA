@@ -10,6 +10,8 @@ public interface IKeyCeremonyService
 {
     /// <summary>
     /// Initiates a new key ceremony. If the resolved quorum is 1, the ceremony is auto-executed immediately.
+    /// Throws <see cref="ModularCA.Shared.Errors.CeremonyQuorumUnreachableException"/>, creating
+    /// nothing, when too few accounts other than the initiator could approve it.
     /// </summary>
     /// <param name="operationType">The operation type (e.g., CreateRootCA, RevokeCA).</param>
     /// <param name="description">Human-readable description of the operation.</param>

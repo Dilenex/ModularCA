@@ -8,7 +8,8 @@ namespace ModularCA.Core.Services;
 /// to every serialized <c>DetailsJson</c> blob before it reaches the audit database. Walks the
 /// parsed <see cref="JsonNode"/> tree and replaces the value of any property whose name matches
 /// a sensitive pattern (case-insensitive substring match against <see cref="SensitiveNameTokens"/>)
-/// with the literal string <c>"***"</c>.
+/// with the literal string <c>"***"</c>. A <c>true</c> or <c>false</c> value is kept: it cannot
+/// carry a secret.
 ///
 /// This is unconditionally applied regardless of caller diligence — the controller-level
 /// allowlist projection (used by <c>AdminConfigController.UpdateEmail</c> / <c>UpdateLdapAuth</c>)
@@ -100,6 +101,10 @@ public static class AuditJsonScrubber
                         if (IsSensitiveName(key))
                         {
                             var existing = obj[key];
+                            // A switch such as RequireKeyCeremony holds no secret, and blanking
+                            // it loses what a policy change changed.
+                            if (existing is JsonValue flag && flag.GetValueKind() is JsonValueKind.True or JsonValueKind.False)
+                                continue;
                             // Preserve null as null (a null secret is still "nothing to leak").
                             obj[key] = existing == null ? null : JsonValue.Create("***");
                         }

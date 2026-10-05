@@ -42,10 +42,13 @@ export const setup: ApiEndpoint[] = [
         summary: 'Run the full bootstrap procedure with the provided configuration. Returns admin credentials.',
         auth: 'Anonymous',
         category: 'Setup',
+        requestBody: [
+            { name: 'admin.multipleAdministrators', type: 'bool', required: true, description: 'The answer to “Will more than one person administer this CA?”. false starts key ceremonies off for the instance policy and the first space, because a lone administrator could never get one approved; true starts them on. A request without it is refused with 400. The rest of the body is the wizard’s configuration (organization, rootCa, admin, features, webTlsCertificate, database, security, network)' },
+        ],
         headers: [
             { name: 'X-CSRF-Token', type: 'string', required: true, description: 'Anti-CSRF token for state-changing anonymous requests' },
         ],
         responseDescription: 'Bootstrap result including generated admin username and password on success.',
-        notes: 'Returns 404 once the system is configured. Invalidates setup middleware cache on success. Each webTlsCertificate.sans entry must be DNS:name or IP:address; any other type, an untyped entry or an invalid IP is refused with 400 before any setup work.',
+        notes: 'Returns 404 once the system is configured. Invalidates setup middleware cache on success. Each webTlsCertificate.sans entry must be DNS:name or IP:address; any other type, an untyped entry or an invalid IP is refused with 400 before any setup work. admin.multipleAdministrators is required and decides whether key ceremonies start on; the choice is written to the audit log, and the requirement can be changed afterwards through the security policy (instance) and the space (first space). The unattended equivalent is Administration.MultipleAdministrators in bootstrap.yaml, which may be left out to keep them on.',
     },
 ];

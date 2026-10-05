@@ -6,6 +6,33 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### One administrator can run an instance
+
+- **Setup asks whether more than one person will administer the CA.** The question has no
+  default. "Just me" starts key ceremonies off for the instance policy and the first space;
+  "Several people" starts them on, as before. The choice is audited. Unattended bootstrap takes
+  `Administration.MultipleAdministrators` in `bootstrap.yaml`; without the key, ceremonies start
+  on. `POST /api/v1/setup/initialize` refuses a body without `admin.multipleAdministrators`.
+- **A ceremony nobody else could approve is no longer opened.** The initiator never counts, so
+  with one administrator every ceremony sat pending until it expired. CA creation, SSH CA
+  creation and deletion, CA revocation, the generic initiate endpoint, space and instance policy
+  changes and controlled-user changes now answer 409 and open nothing: `MCA-CFG-020` when no
+  other account can approve, `MCA-CFG-021` when some can but fewer than the quorum. Service
+  identities and disabled or locked accounts do not count. The response names the scope whose
+  switch applies and whether the caller, a system super-administrator, may turn it off.
+- **The console shows the way out.** The refusal appears where the action was taken, with links
+  to the key ceremony switch (Settings, Security, Key Ceremonies for the instance; a space's own
+  page for a space) and to Users, each only for a viewer who can use it. Both switches warn, and
+  do not block, before the requirement is turned on while nobody else could approve. A ceremony
+  already pending that can no longer be approved says so in its drawer, where its initiator can
+  cancel it.
+- **Bootstrap audit lines reach the audit trail.** The replay at first start read the lines with
+  the wrong key casing and skipped every one. Keystore events written before the audit database
+  is reachable are now replayed, a failed one as a failure.
+- **Audit rows keep on/off values.** The audit scrubber blanked every value whose name contains
+  "key", "pin" or "token", so a change to `RequireKeyCeremony` was recorded as `***` before and
+  after. True and false are now kept; everything else under such a name is still blanked.
+
 ### Keys, backups and packaging hardened before release
 
 - **The signer no longer exports CA keys as PKCS#12 under Backup.** The node, the signer's

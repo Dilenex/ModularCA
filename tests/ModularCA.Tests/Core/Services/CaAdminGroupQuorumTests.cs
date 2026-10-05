@@ -39,7 +39,7 @@ public class CaAdminGroupQuorumTests
         Group("Administrator", 3, auto: true, Capabilities.AdministratorTemplate);
         await db.SaveChangesAsync();
 
-        var ceremony = await new KeyCeremonyService(db, new RecordingAuditService())
+        var ceremony = await new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard())
             .InitiateAsync("RevokeCa", "x", ca.Id.ToString(), Guid.NewGuid(), "op", JsonSerializer.Serialize(new { SpaceId = gone.Id }));
 
         Assert.Equal(3, ceremony.RequiredApprovals);

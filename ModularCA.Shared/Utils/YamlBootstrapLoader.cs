@@ -29,6 +29,19 @@ namespace ModularCA.Shared.Utils
             public SigningProfileConfig SigningProfile { get; set; } = new();
             public HttpsApiConfig HttpsApi { get; set; } = new();
             public FeaturesConfig Features { get; set; } = new();
+            public AdministrationConfig Administration { get; set; } = new();
+        }
+
+        /// <summary>Who will administer the instance, which decides whether key ceremonies start on.</summary>
+        public class AdministrationConfig
+        {
+            /// <summary>
+            /// Whether more than one person will administer this CA. False starts key ceremonies
+            /// off for the instance policy and the first space, because a lone administrator could
+            /// never get one approved; true starts them on. Null (the key is absent) keeps the
+            /// default: on.
+            /// </summary>
+            public bool? MultipleAdministrators { get; set; }
         }
 
         /// <summary>

@@ -12,26 +12,34 @@ namespace ModularCA.Core.Services;
 /// <summary>
 /// Manages key ceremony workflows for catastrophic CA operations.
 /// Enforces quorum-based multi-party approval, self-approval prevention,
-/// 24-hour expiry, and permanent audit trails.
+/// 24-hour expiry, and permanent audit trails. A ceremony that could never reach its quorum is
+/// refused at initiation (<see cref="ICeremonyQuorumGuard"/>).
 /// </summary>
 public class KeyCeremonyService : IKeyCeremonyService
 {
     private readonly ModularCADbContext _db;
     private readonly IAuditService _audit;
     private readonly IEffectivePolicyResolver _policies;
+    private readonly ICeremonyQuorumGuard _quorumGuard;
 
     /// <summary>
     /// Initializes a new instance of <see cref="KeyCeremonyService"/>. <paramref name="policies"/>
-    /// resolves scope quorums and defaults to one over <paramref name="db"/>.
+    /// resolves scope quorums and <paramref name="quorumGuard"/> refuses ceremonies nobody could
+    /// approve; each defaults to one over <paramref name="db"/>.
     /// </summary>
-    public KeyCeremonyService(ModularCADbContext db, IAuditService audit, IEffectivePolicyResolver? policies = null)
+    public KeyCeremonyService(ModularCADbContext db, IAuditService audit, IEffectivePolicyResolver? policies = null, ICeremonyQuorumGuard? quorumGuard = null)
     {
         _db = db;
         _audit = audit;
         _policies = policies ?? new EffectivePolicyResolver(db);
+        _quorumGuard = quorumGuard ?? new CeremonyQuorumGuard(db);
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Opens a ceremony, or throws <see cref="ModularCA.Shared.Errors.CeremonyQuorumUnreachableException"/>
+    /// and creates nothing when fewer accounts other than the initiator could approve it than its
+    /// quorum needs. Every initiation path ends here, so this is the one place that check is made.
+    /// </summary>
     public async Task<KeyCeremonyEntity> InitiateAsync(
         string operationType,
         string description,
@@ -52,6 +60,8 @@ public class KeyCeremonyService : IKeyCeremonyService
         // (bypassing the ceremony purpose), so we clamp to at least 1.
         if (quorum < 1)
             quorum = 1;
+
+        await _quorumGuard.EnsureReachableAsync(operationType, spaceId, parametersJson, initiatorUserId, quorum);
 
         var ceremony = new KeyCeremonyEntity
         {

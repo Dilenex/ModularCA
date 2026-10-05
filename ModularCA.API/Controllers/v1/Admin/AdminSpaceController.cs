@@ -240,7 +240,8 @@ public partial class AdminSpaceController(
     /// <summary>
     /// Updates a space's name, description, validity ceiling or ceremony policy (space quotas were removed in 0.4.0).
     /// Disabling RequireKeyCeremony (true to false) requires step-up MFA verification
-    /// to prevent accidental or malicious removal of ceremony protections.
+    /// to prevent accidental or malicious removal of ceremony protections. A change that needs a
+    /// policy-change ceremony nobody else could approve is refused with 409 before anything is saved.
     /// </summary>
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(
@@ -289,6 +290,10 @@ public partial class AdminSpaceController(
         var keyCeremonyChanged = proposedRequireKeyCeremony.HasValue || proposedCeremonyRequiredApprovals.HasValue;
         bool callerIsSuper = _currentUser.User != null && await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id);
         var gateThroughCeremony = keyCeremonyChanged && !callerIsSuper;
+
+        // Before anything is saved: a ceremony nobody else could approve is refused (409).
+        if (gateThroughCeremony && _currentUser.User != null)
+            await _spacePolicyChangeService.EnsureChangeApprovableAsync(space.Id, _currentUser.User.Id);
 
         // KC-07: Disabling ceremony requirement requires step-up MFA. Only enforced on
         // the direct-write path (system-super); the ceremony path has its
@@ -445,7 +450,8 @@ public partial class AdminSpaceController(
     /// sensitive, the whole save is gated by ONE step-up MFA token (<see cref="StepUpOps.UpdateSpaceSettings"/>),
     /// so editing several fields prompts the operator exactly once. A key-ceremony downgrade by a
     /// non-system-super caller is still routed through a space policy-change ceremony (202), mirroring
-    /// <see cref="Update"/>. PUT replaces the settings representation with the supplied desired state.
+    /// <see cref="Update"/>, and refused with 409 before anything is saved when nobody else could
+    /// approve that ceremony. PUT replaces the settings representation with the supplied desired state.
     /// </summary>
     [HttpPut("{id:guid}/settings")]
     [RequireStepUp(StepUpOps.UpdateSpaceSettings, "id")]
@@ -530,6 +536,10 @@ public partial class AdminSpaceController(
             }
         }
         var gateThroughCeremony = (keyCeremonyChanged || userQuorumChanged || caQuorumChanges.Count > 0) && !callerIsSuper;
+
+        // Before anything is saved: a ceremony nobody else could approve is refused (409).
+        if (gateThroughCeremony && _currentUser.User != null)
+            await _spacePolicyChangeService.EnsureChangeApprovableAsync(space.Id, _currentUser.User.Id);
 
         // ── apply: non-gated space fields (always — not security thresholds) ──
         if (request.Description != null) space.Description = request.Description;

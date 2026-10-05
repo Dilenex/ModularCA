@@ -18,7 +18,31 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created ceremony with ID, operationType, description, requiredApprovals, currentApprovals, status, createdAt, expiresAt. If quorum is 1, ceremony is auto-approved.',
-        notes: 'Self-approval is forbidden. Parameters are locked at initiation time. Stale ceremonies auto-expire. Triggers a security alert.',
+        notes: 'Self-approval is forbidden. Parameters are locked at initiation time. Stale ceremonies auto-expire. Triggers a security alert. A ceremony that could never reach its quorum is not opened: 409 with code MCA-CFG-020 (“You’re the only administrator who can approve this…”) when no account other than the caller can approve it, or MCA-CFG-021 (“This needs N approvals and only M other administrators can approve…”) when some can but too few. The same refusal comes from every endpoint that opens a ceremony: CA creation, SSH CA creation and deletion, CA revocation, space and instance policy changes, and controlled-user changes. The body is problem+json: detail, code, remediation, operationType, requiredApprovals, eligibleApprovers (accounts other than the caller that could approve), requirementScope (“instance” or “space”, the scope whose RequireKeyCeremony switch opened the ceremony; null for policy and controlled-user changes, which no switch governs), spaceId and spaceName for a space, and canDisableRequirement (true only when a switch applies and the caller is a system super-administrator, who may turn it off directly). An approver is an account that can sign in (active, not locked, not a service identity) and passes the approve endpoint’s rule for that kind of ceremony.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/ceremonies/approvers',
+        summary: 'Report whether a key ceremony the caller opened on an instance CA could be approved: the instance’s requirement and quorum, and how many accounts other than the caller could approve.',
+        auth: 'Authorize (ca.manage at system scope)',
+        category: 'Admin Key Ceremonies',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: '{ scope: "instance", spaceId: null, requireKeyCeremony, requiredApprovals, eligibleApprovers, reachable }. reachable is eligibleApprovers >= requiredApprovals.',
+        notes: 'The console reads it to warn before the requirement is turned on where nobody else could approve. Returns 403 without ca.manage for the scope.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/ceremonies/approvers/{spaceId}',
+        summary: 'The same report for a space: its requirement and quorum, and how many accounts other than the caller could approve a key ceremony on its CAs.',
+        auth: 'Authorize (ca.manage across the space)',
+        category: 'Admin Key Ceremonies',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: '{ scope: "space", spaceId, requireKeyCeremony, requiredApprovals, eligibleApprovers, reachable }.',
+        notes: 'Returns 403 without ca.manage for the space and 404 for an unknown space.',
     },
     {
         method: 'GET',
@@ -44,8 +68,8 @@ export const adminKeyCeremonies: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Full ceremony detail including parametersJson, approvalsJson, canApprove and approvalRefusal.',
-        notes: 'Returns 403 if the caller does not have access to the ceremony\'s space.',
+        responseDescription: 'Full ceremony detail including parametersJson, approvalsJson, canApprove and approvalRefusal. A pending ceremony also carries quorumReachable, approvalsStillNeeded and eligibleApprovers (accounts other than the initiator and those who already approved that could still approve); all three are null once it is no longer pending.',
+        notes: 'Returns 403 if the caller does not have access to the ceremony\'s space. quorumReachable is false for a ceremony opened before unreachable ones were refused, or whose approvers have since been removed, disabled or locked; its initiator can cancel it.',
     },
     {
         method: 'POST',

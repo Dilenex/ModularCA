@@ -308,6 +308,8 @@ public class BootstrapModularCA
     /// the roles and databases are provisioned fail-fast, the keystores are deleted, both schemas
     /// are applied and the data seeded as the runtime roles, the ownership rule is proved, and
     /// only then is the configuration written. No migration ever runs as SqlRoot.
+    /// <c>Administration.MultipleAdministrators</c> in bootstrap.yaml decides whether key
+    /// ceremonies start on (<see cref="ApplyAdministratorChoice"/>); absent, they do.
     /// Returns 0 on success, 1 on a refusal, a failure or an abort. A refusal (a SqlRoot that is
     /// not a superuser, or whose login PostgreSQL rejects, among them), a runtime role's refused
     /// login and any other database error are printed as a message, never as a stack trace.
@@ -699,6 +701,7 @@ public class BootstrapModularCA
 
         BootstrapProfileSeeder.SeedPasswordPolicy(dbContext);
         BootstrapProfileSeeder.SeedSecurityPolicy(dbContext);
+        ApplyAdministratorChoice(dbContext, orgSpace, bootstrapConfig.Administration?.MultipleAdministrators);
 
         // === IP Whitelist defaults ===
         // This call was missing from the CLI path while the setup wizard has always made it,
@@ -882,6 +885,46 @@ public class BootstrapModularCA
             Console.WriteLine($"✓ Seeded {seeded} baseline policy file(s) in {policiesDir}");
         else
             Console.WriteLine($"✓ Policy files already exist in {policiesDir}");
+    }
+
+    /// <summary>
+    /// Applies the setup answer to "Will more than one person administer this CA?", for both
+    /// bootstrap paths, after the security policy is seeded. False turns the key ceremony
+    /// requirement off for the instance policy and for <paramref name="firstSpace"/>, where a lone
+    /// administrator could never get a ceremony approved; true sets both on. Null (the wizard
+    /// field or the <c>Administration.MultipleAdministrators</c> key was absent) changes nothing,
+    /// so both keep the entity default, on. An explicit answer is written to the bootstrap audit
+    /// log (<see cref="BootstrapAuditLog.LogSetupDecision"/>).
+    /// </summary>
+    /// <returns>Whether key ceremonies are required after the call.</returns>
+    public static bool ApplyAdministratorChoice(ModularCADbContext dbContext, SpaceEntity firstSpace, bool? multipleAdministrators)
+    {
+        var policy = dbContext.SecurityPolicies.FirstOrDefault()
+            ?? throw new InvalidOperationException("The security policy must be seeded before the administrator choice is applied.");
+        if (multipleAdministrators is not bool several)
+            return policy.RequireKeyCeremony;
+
+        var space = dbContext.Spaces.First(s => s.Id == firstSpace.Id);
+        policy.RequireKeyCeremony = several;
+        space.RequireKeyCeremony = several;
+        dbContext.SaveChanges();
+
+        // No property name here may contain "key": the audit scrubber would blank its value.
+        BootstrapAuditLog.LogSetupDecision(
+            ModularCA.Shared.Enums.AuditActionType.SecurityPolicyUpdated, "SecurityPolicy", "instance",
+            new
+            {
+                SetupChoice = "MultipleAdministrators",
+                MultipleAdministrators = several,
+                CeremoniesRequired = several,
+                CeremonyRequirementDisabled = !several,
+                AppliedTo = new[] { "instance", $"space:{space.Slug}" },
+                SpaceId = space.Id,
+            });
+        Console.WriteLine(several
+            ? "✓ Several administrators: key ceremonies are required for the instance and the first space."
+            : "✓ Single administrator: key ceremonies are off for the instance and the first space. Turn them on in Settings once a second administrator exists.");
+        return several;
     }
 
     /// <summary>

@@ -5,6 +5,7 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { Drawer } from '@shared/components/Drawer';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { CEREMONIES_PATH, ceremonyPath } from './ceremonyLinks';
+import { USERS_PATH, stuckCeremonyNotice } from './ceremonyRefusal';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -13,7 +14,9 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { can } from '../authz';
 import { FieldHint } from '@shared/components/forms';
 import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 
@@ -132,8 +135,10 @@ const CeremonyWarnings: React.FC<{ warnings: string[]; className?: string }> = (
     </div>
 );
 
-/* ── read-only detail drawer (fetches full ceremony by id) ─────────────────── */
-const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
+/* ── detail drawer (fetches full ceremony by id). Read-only, except that the initiator of a
+   ceremony nobody else can approve is offered Cancel here. ───────────────── */
+const CeremonyDrawer: React.FC<{ ceremony: any; isInitiator: boolean; onCancel: () => void }> = ({ ceremony, isInitiator, onCancel }) => {
+    const { capabilities } = useAuth();
     const [detail, setDetail] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
 
@@ -152,10 +157,36 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
     const approvalLog = (parseJson(detail?.approvalsJson || ceremony.approvalsJson) as any[]) || [];
     const { text, warnings } = splitDescription(ceremony);
     const approvalRefusal: string | null = ceremony.status === 'Pending' ? (detail?.approvalRefusal ?? ceremony.approvalRefusal ?? null) : null;
+    // A ceremony opened before the server refused unreachable ones can sit pending with nobody to approve it.
+    const stuck = stuckCeremonyNotice(detail ? { ...detail, status: ceremony.status } : null);
 
     return (
         <div className="text-sm space-y-4">
             <CeremonyWarnings warnings={warnings} />
+            {stuck && (
+                <div role="alert" className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn space-y-2">
+                    <p className="font-semibold">{stuck}</p>
+                    <p>
+                        {isInitiator
+                            ? 'Cancel it, then add an administrator who can approve or turn the key ceremony requirement off, and start again.'
+                            : 'Its initiator can cancel it. It needs another administrator who can approve before it can go ahead.'}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        {isInitiator && (
+                            <button type="button" onClick={onCancel}
+                                className="px-3 py-1.5 text-xs font-medium bg-raised text-ink border border-line-strong rounded hover:bg-hover transition-colors">
+                                Cancel this ceremony
+                            </button>
+                        )}
+                        {can(capabilities, Capabilities.UserManage) && (
+                            <Link to={USERS_PATH}
+                                className="px-3 py-1.5 text-xs font-medium bg-raised text-ink border border-line-strong rounded hover:bg-hover transition-colors">
+                                Add an administrator
+                            </Link>
+                        )}
+                    </div>
+                </div>
+            )}
             {approvalRefusal && (
                 <div className="bg-raised border border-line rounded p-3 text-xs text-ink">
                     <span className="font-semibold">You cannot approve this ceremony.</span> {approvalRefusal}
@@ -512,7 +543,7 @@ const Ceremonies: React.FC = () => {
 
             <Drawer open={!!openId} onClose={closeDrawer} title={opened ? splitDescription(opened).text : 'Ceremony'}>
                 {opened
-                    ? <CeremonyDrawer ceremony={opened} />
+                    ? <CeremonyDrawer ceremony={opened} isInitiator={isInitiator(opened)} onCancel={() => handleCancel(opened)} />
                     : linkedError
                         ? <InlineNotice notice={linkedError} />
                         : <div className="text-xs text-ink-muted">Loading…</div>}

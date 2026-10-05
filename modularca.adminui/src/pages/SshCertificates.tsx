@@ -12,6 +12,8 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
 import { ChipListInput } from '@shared/components/ChipListInput';
+import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
+import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -42,6 +44,8 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const [generating, setGenerating] = useState(false);
     const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
     const [showGenForm, setShowGenForm] = useState(false);
+    // Creating the CA was refused because nobody else could approve its ceremony.
+    const [genRefusal, setGenRefusal] = useState<CeremonyRefusal | null>(null);
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string; confirmLabel: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
@@ -78,6 +82,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         e.preventDefault();
         if (caRoleMissing) return;
         setGenerating(true);
+        setGenRefusal(null);
         try {
             const result: any = await apiPostWithMfa('/api/v1/admin/ssh/ca-keys', {
                 name: genForm.name || 'SSH CA Key',
@@ -97,7 +102,9 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
             onRefresh();
         } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled')
+            const refusal = readCeremonyRefusal(err);
+            if (refusal) setGenRefusal(refusal);
+            else if (err.message !== 'Step-up MFA cancelled')
                 showToast('error', err.message || 'Failed to generate CA key');
         } finally {
             setGenerating(false);
@@ -293,6 +300,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                     >
                         {generating ? 'Generating...' : 'Generate'}
                     </button>
+                    {genRefusal && <CeremonyRefusalNotice refusal={genRefusal} />}
                 </form>
             )}
 

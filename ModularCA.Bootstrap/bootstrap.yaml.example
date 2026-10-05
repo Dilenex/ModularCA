@@ -37,6 +37,16 @@ Features:
   CMP: false
   MSAE: false
 
+Administration:
+  # Will more than one person administer this CA?
+  #   true  - key ceremonies start ON: creating, revoking or deleting a CA needs another
+  #           administrator's approval, and the person who starts a ceremony can never approve it.
+  #   false - just one administrator: key ceremonies start OFF for the instance and for the first
+  #           space, because nobody else could approve one. Turn them on in the console (Settings,
+  #           and the space's page) once a second administrator exists.
+  # Leave the key out and key ceremonies start on.
+  MultipleAdministrators: true
+
 HttpsApi:
   CN: "ModularCA API"
   SANs:

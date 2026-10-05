@@ -54,6 +54,8 @@ public sealed class ControlledUserBypassEndpointTests
             return Task.FromResult(Guid.NewGuid());
         }
 
+        public Task EnsureChangeApprovableAsync(Guid? spaceId, Guid initiatorUserId) => Task.CompletedTask;
+
         public Task<SpacePolicyChangeAppliedResult> ApplyApprovedChangeAsync(Guid ceremonyId) => throw new NotSupportedException();
     }
 

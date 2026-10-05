@@ -60,6 +60,7 @@ export const adminSpaces: ApiEndpoint[] = [
         ],
         headers: [...auth, stepUp],
         responseDescription: 'The updated space, or 202 with ceremonyId when a key-ceremony policy change needs a ceremony.',
+        notes: 'A change that needs a policy-change ceremony nobody else could approve is refused with 409 (code MCA-CFG-020 or MCA-CFG-021) before anything is saved; a system super-administrator applies the change directly instead. Turning requireKeyCeremony off directly needs the disable-ceremony-requirement step-up.',
     },
     {
         method: 'PUT',
@@ -69,6 +70,7 @@ export const adminSpaces: ApiEndpoint[] = [
         category: 'Admin Spaces',
         headers: [...auth, stepUp],
         responseDescription: 'The settings, or 202 with ceremonyId when a ceremony or quorum change by a non-super opens a ceremony.',
+        notes: 'A change that needs a policy-change ceremony nobody else could approve is refused with 409 (code MCA-CFG-020 or MCA-CFG-021) before anything is saved; a system super-administrator applies the change directly instead.',
     },
     {
         method: 'DELETE',

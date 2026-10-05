@@ -36,6 +36,8 @@ public class BootstrapService
     /// refused by pg_hba, or an MCA- coded validation failure is returned verbatim (none carries
     /// a secret); anything else returns only a correlation id. A Web TLS SAN of a type the
     /// certificate cannot carry is refused first (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
+    /// <c>Admin.MultipleAdministrators</c> decides whether key ceremonies start on
+    /// (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves
     /// <see cref="IWhitelistService"/> after seeding and calls <c>ReloadAsync</c> so the live
     /// singleton snapshot picks up the freshly-seeded rows before the wizard returns.
@@ -434,6 +436,7 @@ public class BootstrapService
                 dbContext,
                 request.Security?.MaxFailedLoginAttempts,
                 request.Security?.LockoutMinutes);
+            BootstrapModularCA.ApplyAdministratorChoice(dbContext, orgSpace, request.Admin?.MultipleAdministrators);
             BootstrapProfileSeeder.SeedLdapPublisherPolicy(dbContext);
             BootstrapProfileSeeder.SeedProtocolRateLimits(dbContext);
             BootstrapProfileSeeder.SeedDefaultSshProfiles(dbContext);

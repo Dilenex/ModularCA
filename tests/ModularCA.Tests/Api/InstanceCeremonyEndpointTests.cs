@@ -61,7 +61,7 @@ public sealed class InstanceCeremonyEndpointTests
         var actor = Guid.NewGuid();
         var controller = New(Ns + "AdminRevocationController", actor,
             null, new CurrentUserStub(actor), new RecordingAuditService(), null, new RecordingAlertService(), db,
-            new KeyCeremonyService(db, new RecordingAuditService()));
+            new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()));
 
         var gate = controller.GetType().GetMethod("TryCreateRevokeCaCeremonyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var result = await (Task<IActionResult?>)gate.Invoke(controller, [cert, RevocationReason.Superseded])!;
@@ -97,7 +97,7 @@ public sealed class InstanceCeremonyEndpointTests
         cache.SetString($"mfa-stepup:{actor}:{StepUpOps.DisableSshCa}:{key.Id}", token);
         var controller = New(Ns + "AdminSshController", actor,
             null, new CurrentUserStub(actor), new RecordingAuditService(), db, new SystemConfig(),
-            new KeyCeremonyService(db, new RecordingAuditService()), cache);
+            new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()), cache);
 
         var result = await (Task<IActionResult>)controller.GetType().GetMethod("DisableSshCaKey")!.Invoke(controller, [key.Id, token])!;
 
@@ -178,7 +178,7 @@ public sealed class InstanceCeremonyEndpointTests
             audit, new CurrentUserStub(actor),
             NotSuper<ModularCA.Auth.Authorization.IControlledUserCeremonyService>.Create(),
             Fake<ModularCA.Auth.Authorization.ICaGroupAuthorizationService>.Create(),
-            new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<SpacePolicyChangeService>.Instance),
+            new SpacePolicyChangeService(db, new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()), Microsoft.Extensions.Logging.Abstractions.NullLogger<SpacePolicyChangeService>.Instance),
             cache);
         var requestType = ApiAssembly.TypeNamed(Ns + "SecurityPolicyUpdateRequest");
         var request = Activator.CreateInstance(requestType)!;

@@ -6,7 +6,26 @@ export interface AdminAccountData {
     email: string;
     password: string;
     confirmPassword: string;
+    /**
+     * The answer to "Will more than one person administer this CA?". Null until the operator
+     * picks one: there is no default, and the step cannot be passed without it.
+     */
+    multipleAdministrators: boolean | null;
 }
+
+/** The two answers, with what each does to key ceremonies. */
+const ADMINISTRATOR_CHOICES: { value: boolean; label: string; effect: string }[] = [
+    {
+        value: false,
+        label: 'Just me',
+        effect: 'Key ceremonies start off. With one administrator there is nobody to approve one.',
+    },
+    {
+        value: true,
+        label: 'Several people',
+        effect: 'Key ceremonies start on. Add the other administrators after setup.',
+    },
+];
 
 interface AdminAccountProps {
     data: AdminAccountData;
@@ -181,6 +200,47 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                         </span>
                     </li>
                 </ul>
+            </div>
+
+            <div role="radiogroup" aria-labelledby="administrators-question" aria-describedby="administrators-help" aria-required="true"
+                className="border-t border-line pt-6">
+                <p id="administrators-question" className="text-sm font-medium text-ink mb-1">
+                    Will more than one person administer this CA? <span className="text-crit">*</span>
+                </p>
+                <p id="administrators-help" className="text-sm text-ink-muted mb-3">
+                    A key ceremony makes a second administrator approve before a CA is created, revoked or
+                    deleted, and whoever starts one can never approve it. You can turn key ceremonies on
+                    later in Settings, once a second administrator exists.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                    {ADMINISTRATOR_CHOICES.map(choice => {
+                        const selected = data.multipleAdministrators === choice.value;
+                        return (
+                            <label
+                                key={choice.label}
+                                className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                                    selected ? 'border-accent bg-accent-soft' : 'border-line-strong bg-raised hover:bg-hover'
+                                }`}
+                            >
+                                <input
+                                    type="radio"
+                                    name="multipleAdministrators"
+                                    required
+                                    className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                                    checked={selected}
+                                    onChange={() => onChange({ ...data, multipleAdministrators: choice.value })}
+                                />
+                                <span>
+                                    <span className="block text-sm font-medium text-ink">{choice.label}</span>
+                                    <span className="block text-sm text-ink-muted mt-0.5">{choice.effect}</span>
+                                </span>
+                            </label>
+                        );
+                    })}
+                </div>
+                {data.multipleAdministrators === null && (
+                    <p className="text-sm text-ink-muted mt-2">Choose one to continue.</p>
+                )}
             </div>
         </div>
     );

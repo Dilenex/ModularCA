@@ -121,6 +121,8 @@ const initialData: WizardData = {
         email: '',
         password: '',
         confirmPassword: '',
+        // No default: the operator must say whether anyone else will administer the CA.
+        multipleAdministrators: null,
     },
     security: {
         enableCrl: true,
@@ -267,9 +269,10 @@ const WizardContent: React.FC = () => {
             case STEP_ORGANIZATION: return data.organization.orgName.trim().length > 0;
             case STEP_ROOT_CA: return data.rootCa.commonName.trim().length > 0;
             case STEP_ADMIN: {
-                const { username, password, confirmPassword } = data.admin;
+                const { username, password, confirmPassword, multipleAdministrators } = data.admin;
                 const allRulesMet = passwordRules.every(rule => rule(password));
-                return username.trim().length > 0 && allRulesMet && password === confirmPassword;
+                return username.trim().length > 0 && allRulesMet && password === confirmPassword
+                    && multipleAdministrators !== null;
             }
             case STEP_SECURITY: {
                 if (data.security.backupSchedule.trim().length === 0) return false;
