@@ -120,4 +120,82 @@ public class BootstrapServiceUrlBuilderTests
         Assert.NotNull(url);
         Assert.StartsWith("http://", url);
     }
+
+    /// <summary>
+    /// The unattended bootstrap wrote an empty Https.PublicDomain, and the node exits at startup
+    /// without one. The name it now writes is never empty.
+    /// </summary>
+    [Theory]
+    [InlineData("ca.example.test", new[] { "DNS:other.example.test" }, "ca.example.test")]
+    [InlineData(" ca.example.test ", null, "ca.example.test")]
+    [InlineData(null, new[] { "DNS:localhost", "DNS:ca.example.test", "IP:10.0.0.5" }, "ca.example.test")]
+    [InlineData("", new[] { "DNS:localhost", "IP:127.0.0.1" }, "localhost")]
+    [InlineData(null, null, "localhost")]
+    public void The_public_name_is_the_stated_one_then_the_first_routable_san_then_localhost(
+        string? stated, string[]? sans, string expected)
+        => Assert.Equal(expected, BootstrapServiceUrlBuilder.ResolvePublicDomain(stated, sans));
+
+    [Theory]
+    [InlineData("https://ca.example.test")]
+    [InlineData("ca.example.test/admin")]
+    [InlineData("ca.example.test:8443")]
+    [InlineData("not a host")]
+    public void A_public_name_the_node_would_refuse_is_refused_at_bootstrap(string stated)
+        => Assert.Throws<ModularCA.Shared.Errors.InvalidRequestException>(
+            () => BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(stated));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("ca.example.test")]
+    [InlineData("10.0.0.5")]
+    [InlineData("fd00::5")]
+    public void A_bare_name_or_address_or_none_is_accepted(string? stated)
+        => BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(stated);
+
+    /// <summary>A certificate that does not cover the public name fails every client that verifies it.</summary>
+    [Theory]
+    [InlineData("ca.example.test", new[] { "DNS:localhost" }, new[] { "DNS:ca.example.test", "DNS:localhost" })]
+    [InlineData("CA.example.test", new[] { "DNS:ca.example.test" }, new[] { "DNS:ca.example.test" })]
+    [InlineData("10.0.0.5", new[] { "DNS:localhost" }, new[] { "IP:10.0.0.5", "DNS:localhost" })]
+    [InlineData("10.0.0.5", new[] { "IP:10.0.0.5" }, new[] { "IP:10.0.0.5" })]
+    [InlineData("localhost", new[] { "IP:127.0.0.1" }, new[] { "IP:127.0.0.1" })]
+    [InlineData("ca.example.test", null, new[] { "DNS:ca.example.test" })]
+    public void The_certificate_covers_the_public_name(string publicName, string[]? sans, string[] expected)
+        => Assert.Equal(expected, BootstrapServiceUrlBuilder.SansCovering(publicName, sans));
+
+    /// <summary>The unattended path resolves the name once and uses it for all three.</summary>
+    [Fact]
+    public void The_unattended_bootstrap_writes_the_public_name_it_builds_the_urls_from()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !dir.EnumerateFiles("*.sln").Any())
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        var text = File.ReadAllText(Path.Combine(dir!.FullName, "ModularCA.Bootstrap", "BootstrapModularCA.cs"));
+
+        Assert.Contains("ResolvePublicDomain(\n            bootstrapConfig.HttpsApi.PublicDomain, bootstrapConfig.HttpsApi.SANs)", text.Replace("\r\n", "\n"));
+        Assert.Contains("publicDomain: publicDomain,\n            dnsSans:", text.Replace("\r\n", "\n"));
+        Assert.Contains("SansCovering(publicDomain, httpsApi.SANs)", text);
+        var write = text.IndexOf("BootstrapDatabaseSetup.WriteConfigFile(", StringComparison.Ordinal);
+        Assert.Contains("publicDomain: publicDomain,", text[write..text.IndexOf(");", write, StringComparison.Ordinal)]);
+    }
+
+    [Theory]
+    [InlineData("HttpsApi:\n  PublicDomain: \"ca.example.test\"\n", "ca.example.test")]
+    [InlineData("HttpsApi:\n  CN: \"x\"\n", null)]
+    [InlineData("", null)]
+    public void Bootstrap_yaml_may_state_the_public_name(string section, string? expected)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bootstrap-{Guid.NewGuid():N}.yaml");
+        File.WriteAllText(path, "CA:\n  Subject:\n    CN: \"Test Root\"\n" + section);
+        try
+        {
+            Assert.Equal(expected, ModularCA.Shared.Utils.YamlBootstrapLoader.Load(path).HttpsApi.PublicDomain);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

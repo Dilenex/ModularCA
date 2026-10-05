@@ -370,6 +370,7 @@ public class BootstrapModularCA
         {
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
             BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi?.SANs);
+            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi?.PublicDomain);
         }
         catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {
@@ -685,8 +686,18 @@ public class BootstrapModularCA
 
         // Auto-generate service URLs (AIA/CDP) for the public CA. Shares its derivation with the
         // setup wizard — see BootstrapServiceUrlBuilder for what each path used to get wrong.
+        var publicDomain = BootstrapServiceUrlBuilder.ResolvePublicDomain(
+            bootstrapConfig.HttpsApi.PublicDomain, bootstrapConfig.HttpsApi.SANs);
+        if (publicDomain == "localhost")
+        {
+            Console.WriteLine("[WARNING] No public name: bootstrap.yaml sets no HttpsApi.PublicDomain and HttpsApi.SANs has no");
+            Console.WriteLine("          DNS name other than localhost. The instance will answer as localhost, and the URLs in");
+            Console.WriteLine("          issued certificates will point there. Set HttpsApi.PublicDomain to the name clients use.");
+        }
+        else
+            Console.WriteLine($"✓ Public name: {publicDomain}");
         var publicBaseUrl = BootstrapServiceUrlBuilder.Build(
-            publicDomain: null,
+            publicDomain: publicDomain,
             dnsSans: bootstrapConfig.HttpsApi.SANs,
             httpPort: bootstrapConfig.HttpsApi.HttpPort);
 
@@ -747,7 +758,7 @@ public class BootstrapModularCA
         var pendingSubjectDn = !string.IsNullOrWhiteSpace(httpsApi.SubjectDn)
             ? httpsApi.SubjectDn
             : $"CN={httpsApi.CN}";
-        var pendingSans = httpsApi.SANs;
+        var pendingSans = BootstrapServiceUrlBuilder.SansCovering(publicDomain, httpsApi.SANs);
         var pendingValidityDays = httpsApi.ValidityDays;
 
         // === Prove the ownership rule, then write config.yaml and db.yaml ===
@@ -759,6 +770,8 @@ public class BootstrapModularCA
             // Was hardcoded 8080 while the AIA/CDP builder above pointed at the TLS port. Both now
             // read the same field, so the listener and the URLs in issued certificates agree.
             httpPort: bootstrapConfig.HttpsApi.HttpPort,
+            // The node refuses to start with no Https.PublicDomain, which this path left empty.
+            publicDomain: publicDomain,
             security: null,
             network: null,
             pendingSubjectDn: pendingSubjectDn,

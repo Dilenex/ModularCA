@@ -111,6 +111,16 @@ namespace ModularCA.Shared.Utils
             /// <summary>Subject Alternative Names. Each entry is typed as "DNS:host" or "IP:addr".</summary>
             public List<string> SANs { get; set; } = new() { "DNS:localhost", "IP:127.0.0.1" };
 
+            /// <summary>
+            /// The bare hostname or IP address clients reach this instance by, written to
+            /// <c>Https.PublicDomain</c> in config.yaml. ACME directory URLs, redirects, the
+            /// WebAuthn origin and the CRL, OCSP and AIA URLs in issued certificates are built
+            /// from it. Null (the key is absent) takes the first <c>DNS:</c> entry of
+            /// <see cref="SANs"/> that is not <c>localhost</c>, or <c>localhost</c> when there is
+            /// none. A value no SAN covers is added to the certificate's SANs.
+            /// </summary>
+            public string? PublicDomain { get; set; }
+
             /// <summary>HTTPS port the management UI listens on.</summary>
             public int Port { get; set; } = 8443;
 

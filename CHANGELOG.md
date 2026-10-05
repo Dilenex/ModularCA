@@ -18,6 +18,21 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   optional. Neither is read unless ACME is on.
 - **The Setup UI guide said ACME starts on.** It starts off.
 
+### An unattended install starts
+
+- **`--bootstrap` wrote no public name, and the node then refused to start.** The headless path
+  left `Https.PublicDomain` empty in `config.yaml`, which startup treats as fatal, so every
+  unattended install needed a hand edit before its first start. Bootstrap now writes one:
+  `HttpsApi.PublicDomain` from `bootstrap.yaml`, or without that key the first DNS name under
+  `HttpsApi.SANs` that is not `localhost`, or `localhost`. The CRL, OCSP and AIA URLs use the
+  same name. A value that is not a bare hostname or IP address is refused before any change.
+- **The web certificate covers the public name.** A name the SANs do not list is added.
+- **The deploy guide asked for a `config.yaml` in the pod's config volume.** Bootstrap replaces
+  that file, so what was put there was lost. The guide now says to set the name in
+  `bootstrap.yaml`.
+- **`bootstrap.yaml.example` set `HttpsApi.ValidityYears`,** a key nothing reads. It now sets
+  `ValidityDays: 397`, which is the value that was in effect.
+
 ### Containers: a compose quick start, and an image that can back itself up
 
 - **`deploy/compose` runs ModularCA and PostgreSQL on one host.** `docker compose up -d`, read

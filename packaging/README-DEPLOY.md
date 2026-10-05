@@ -1003,6 +1003,9 @@ Things to know:
 - **To install unattended**, put a `bootstrap.yaml` and a `setup-database.yaml` in the `config`
   volume before the first start (each has an `.example` under `config/`). The container then
   bootstraps without the wizard and prints the first administrator's password once, in its log.
+  Set `HttpsApi.PublicDomain` in `bootstrap.yaml` to the name clients will use. Left out, it is
+  the first DNS name under `HttpsApi.SANs` that is not `localhost`, and `localhost` when there
+  is none, which only works from the host itself.
 - **To upgrade**, change the image tag and `docker compose up -d`. Migrations run when the new
   version starts. Take a backup first; going back means restoring it. To see whether the new
   version would refuse the upgrade before committing to it, run its check, which changes
@@ -1023,9 +1026,11 @@ manifest that Podman runs directly:
 The same file is a plain Pod on Kubernetes, or the template of a one-replica Deployment: the
 signer is a sidecar and scales with the node, not apart from it.
 
-Before the first start, put into the `modularca-config` volume what a headless bootstrap needs —
-`bootstrap.yaml`, `setup-database.yaml`, and a `config.yaml` naming the node (each has an
-`.example` under `config/`). Nothing else is ever needed. If one person will administer the
+Before the first start, put into the `modularca-config` volume what a headless bootstrap needs:
+`bootstrap.yaml` and `setup-database.yaml` (each has an `.example` under `config/`). Nothing
+else is ever needed. Name the node in `bootstrap.yaml` with `HttpsApi.PublicDomain`, the
+hostname clients will use; bootstrap writes `config.yaml` itself and replaces one that is
+already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
 one approved. Left out, they start on. Three init containers run every start and find their work

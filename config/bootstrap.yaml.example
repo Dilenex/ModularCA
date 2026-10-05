@@ -62,6 +62,12 @@ Acme:
 
 HttpsApi:
   CN: "ModularCA API"
+  # The bare hostname or IP address clients reach this instance by: no scheme, port or path.
+  # ACME directory URLs, redirects, passkey sign-in and the CRL, OCSP and AIA URLs in issued
+  # certificates are built from it, and the node will not start without one. Leave the key out
+  # and it is the first DNS name under SANs that is not localhost, or localhost when there is
+  # none. A name the SANs do not cover is added to the certificate.
+  # PublicDomain: "ca.example.com"
   SANs:
     - "DNS:localhost"
     - "IP:127.0.0.1"
@@ -71,4 +77,4 @@ HttpsApi:
   # issued certificate point here, so it must match what clients can actually reach. Set to 0 to
   # disable plain HTTP, in which case certificates are issued with no distribution point.
   HttpPort: 8080
-  ValidityYears: 2
+  ValidityDays: 397

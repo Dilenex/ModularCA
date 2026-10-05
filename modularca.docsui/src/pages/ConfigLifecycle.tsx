@@ -289,7 +289,13 @@ SigningProfile:
   KeyUsages: [digitalSignature, keyCertSign, crlSign]
 
 HttpsApi:
-  ...
+  CN: "ModularCA API"
+  # The bare hostname or IP address clients reach this instance by.
+  # Omitted, it is the first DNS name under SANs that is not localhost.
+  PublicDomain: "ca.example.com"
+  SANs: ["DNS:localhost", "IP:127.0.0.1"]
+  Port: 8443
+  HttpPort: 8080
 
 Features:
   # ACME/EST/SCEP/CMP default to false so a first run does not expose
@@ -319,6 +325,16 @@ Acme:
                     The choice is written to the audit log. Turn the requirement on later in the console,
                     under Settings for the instance and on the space&apos;s page for a space, once a second
                     administrator exists.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>HttpsApi.PublicDomain</code> is the bare hostname or IP address clients reach the
+                    instance by, with no scheme, port or path. Bootstrap writes it to{' '}
+                    <code>Https.PublicDomain</code> in <code>config.yaml</code>, which the node will not
+                    start without, and builds the ACME directory URLs, redirects, the passkey origin and
+                    the CRL, OCSP and AIA URLs in issued certificates from it. Left out, it is the first DNS
+                    name under <code>SANs</code> that is not <code>localhost</code>, or{' '}
+                    <code>localhost</code> when there is none, which only works from the host itself. A
+                    name the SANs do not cover is added to the web certificate.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
                     <code>Acme.AllowPrivateAddressValidation</code> is the unattended form of the

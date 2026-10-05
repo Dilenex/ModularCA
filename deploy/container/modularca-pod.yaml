@@ -13,8 +13,8 @@
 # signer is a sidecar and scales with the node, not independently of it).
 #
 # Before the first start, the config volume holds what a headless bootstrap needs: bootstrap.yaml,
-# setup-database.yaml, and a config.yaml naming the node. See README-DEPLOY.md, "Headless
-# bootstrap". Every later start needs nothing: the init containers are idempotent and find their
+# which names the node in HttpsApi.PublicDomain, and setup-database.yaml. See README-DEPLOY.md,
+# "The pod". Every later start needs nothing: the init containers are idempotent and find their
 # work already done.
 #
 # What the init containers do, in order, and why they are init containers rather than the
