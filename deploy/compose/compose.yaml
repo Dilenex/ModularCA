@@ -1,0 +1,71 @@
+# ModularCA and its PostgreSQL on one host, as one process: the quick start, and enough for a
+# small install. Works with Docker Compose and with podman compose.
+#
+#   cp .env.example .env        # then set POSTGRES_PASSWORD in it
+#   docker compose up -d
+#   docker compose logs modularca | grep -i "setup token"
+#
+# Open https://<this host>:8443 and finish the setup wizard with that token. On its database
+# step enter host "db", port 5432, superuser "postgres", the password from .env, and leave TLS
+# on "Require". Keep the wizard's ports at 8443 and 8080, or change the mappings below to match.
+# README-DEPLOY.md, "Compose: one host, one process", walks through it.
+#
+# The wizard stops the process twice on the way through; "restart: unless-stopped" is what
+# brings it back, so do not remove it.
+#
+# For the signer in its own container, holding the keys apart from the node, use
+# ../container/modularca-pod.yaml instead.
+name: modularca
+
+services:
+  db:
+    # Keep this major version the same as the image's pg_dump (PG_MAJOR in the Containerfile, 16
+    # by default): backups are taken with it, and it cannot dump a newer server.
+    image: docker.io/library/postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # ModularCA asks for TLS to its database by default. This turns it on with the certificate
+    # the image already carries. It is not verified and its key is the same in every copy of the
+    # image, so it protects nothing beyond this file's private network, which no other container
+    # joins. For a database on another host, give PostgreSQL a certificate of its own.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # No ports: only the modularca service reaches the database.
+
+  modularca:
+    image: ${MODULARCA_IMAGE:-ghcr.io/dilenex/modularca:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8443:8443"   # HTTPS: the console, the API and the enrollment protocols
+      - "8080:8080"   # plain HTTP: CRL and OCSP
+    volumes:
+      - config:/opt/modularca/config
+      - keystores:/opt/modularca/keystores
+      - logs:/opt/modularca/logs
+      - backups:/opt/modularca/backups
+
+# Everything the instance is lives in these five volumes. "docker compose down" keeps them;
+# "docker compose down -v" deletes the CA.
+volumes:
+  db:
+  config:
+  keystores:
+  logs:
+  backups:

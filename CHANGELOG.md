@@ -6,6 +6,26 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Containers: a compose quick start, and an image that can back itself up
+
+- **`deploy/compose` runs ModularCA and PostgreSQL on one host.** `docker compose up -d`, read
+  the setup token from the log, and finish the wizard in a browser. See README-DEPLOY.md,
+  "Compose: one host, one process".
+- **The image starts the setup wizard when it is not configured.** It used to run the headless
+  bootstrap unconditionally and fail without a `bootstrap.yaml`. With one in the config volume
+  it still bootstraps headlessly.
+- **The image now carries `pg_dump`, `pg_restore` and `ssh-keygen`.** Without them no backup
+  could be taken or restored in a container, and SSH certificates could not be signed. The
+  PostgreSQL tools are version 16; build with `--build-arg PG_MAJOR=17` for a newer server.
+- **Backups and logs are volumes.** Backups were written inside the container and lost with it;
+  the image declared `/var/lib/modularca`, which nothing writes to. The volumes are now
+  `config`, `keystores`, `logs` and `backups` under `/opt/modularca`. The pod manifest mounts
+  its data volume at `/opt/modularca/backups`.
+- **Program files in the image belong to root**, as on a host install. The service account
+  writes only the four volumes.
+- **The pod manifest is in the repository.** `deploy/container/modularca-pod.yaml` was matched by
+  an ignore rule and never committed, so the documented file was missing from every checkout.
+
 ### One administrator can run an instance
 
 - **Setup asks whether more than one person will administer the CA.** The question has no

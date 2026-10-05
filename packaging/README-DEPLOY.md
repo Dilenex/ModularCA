@@ -953,6 +953,56 @@ needs and whether it has it: validation the signer reachable, enrollment the sig
 control the database. A process without the control role refuses to start an unconfigured
 install, because the wizard is the control plane's.
 
+## Compose: one host, one process
+
+`deploy/compose/compose.yaml`, in the source repository, runs ModularCA and a PostgreSQL 16
+server on one host, with every role in one process. It is the shortest way to a working CA, and enough for a small install. It
+works with Docker Compose and with `podman compose`.
+
+    cd deploy/compose
+    cp .env.example .env        # set POSTGRES_PASSWORD in it
+    docker compose up -d
+    docker compose logs modularca | grep -i "setup token"
+
+Then open `https://<host>:8443`. The certificate is a temporary one made for setup: compare its
+fingerprint with the one in the log before going on. The wizard asks for:
+
+- **The token** from the log.
+- **The database.** Host `db`, port 5432, superuser `postgres`, the password from `.env`, TLS
+  left on "Require". The superuser is used once, to create the two databases and their roles.
+- **The public name** clients will use for this host. ACME, passkeys and the web certificate are
+  all bound to it, so choose the real one.
+- **Whether more than one person will administer the CA.** "Just me" starts key ceremonies off,
+  since a lone administrator could never get one approved.
+- **Ports.** Keep 8443 and 8080, or change the `ports:` mappings in `compose.yaml` to match.
+
+The wizard stops the process after the database step and again at the end. The `restart:` line
+in `compose.yaml` brings it back each time; wait a few seconds and reload the page.
+
+Things to know:
+
+- **The instance is the five named volumes**: `db`, `config`, `keystores`, `logs` and `backups`.
+  `docker compose down` keeps them. `docker compose down -v` deletes the CA.
+- **Backups land in the `backups` volume**, on the same host as everything else. Copy them off
+  it. A restore on another host also needs the backup key or password and the keystore's
+  secondary passphrase, both of which live in the `config` volume: keep a copy of those too, or
+  the archives cannot be opened.
+- **Keep the database and the image's client tools at the same major version.** The image
+  carries `pg_dump` 16 to match `postgres:16`. For a newer server, build the image with
+  `--build-arg PG_MAJOR=17`.
+- **The database connection is encrypted but not verified.** It never leaves the private network
+  compose creates. Give PostgreSQL its own certificate if you move it to another host.
+- **To install unattended**, put a `bootstrap.yaml` and a `setup-database.yaml` in the `config`
+  volume before the first start (each has an `.example` under `config/`). The container then
+  bootstraps without the wizard and prints the first administrator's password once, in its log.
+- **To upgrade**, change the image tag and `docker compose up -d`. Migrations run when the new
+  version starts. Take a backup first; going back means restoring it. To see whether the new
+  version would refuse the upgrade before committing to it, run its check, which changes
+  nothing: `docker compose run --rm modularca --upgrade-check`.
+
+For the signer in its own container, holding the keys where the node cannot read them, use the
+pod below.
+
 ## The pod: node and signer as two containers
 
 The container tier is the two-unit shape above with the units as containers from one image,

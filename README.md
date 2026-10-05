@@ -39,6 +39,22 @@ Planned for exploration:
 - Keystore loading only when in use, with unloading after use.
 - Database connection creation on use and destruction after use.
 
+## Quick start
+
+With Docker or Podman, one host runs ModularCA and its PostgreSQL from [`deploy/compose`](deploy/compose):
+
+```
+cd deploy/compose
+cp .env.example .env          # set POSTGRES_PASSWORD in it
+docker compose up -d
+docker compose logs modularca | grep -i "setup token"
+```
+
+Open `https://<host>:8443`, accept the temporary certificate, and finish the setup wizard with
+that token. On the database step enter host `db`, superuser `postgres` and the password from
+`.env`. `packaging/README-DEPLOY.md`, "Compose: one host, one process", has the details,
+including backups. For a host install without containers, see the same file.
+
 ## Build
 
 #### Requirements
