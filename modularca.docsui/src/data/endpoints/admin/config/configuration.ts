@@ -191,6 +191,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed mTLS config.',
+        notes: 'requiredPaths and trustedCaCertPaths left out (or null) keep their current value; an empty array clears them. With requiredPaths cleared, no API path requires a client certificate after the next restart (mTLS login on the auth subdomain is unaffected). The audit record carries both lists before and after, and clearing either raises a security alert. Listed trusted CA paths must load or the request is refused with 400.',
     },
     {
         method: 'PUT',

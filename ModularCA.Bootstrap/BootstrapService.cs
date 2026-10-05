@@ -34,7 +34,8 @@ public class BootstrapService
     /// that succeeds; both schemas are applied and the data seeded as the runtime roles; the
     /// ownership rule is proved before any configuration is written. A refusal, a runtime role
     /// refused by pg_hba, or an MCA- coded validation failure is returned verbatim (none carries
-    /// a secret); anything else returns only a correlation id.
+    /// a secret); anything else returns only a correlation id. A Web TLS SAN of a type the
+    /// certificate cannot carry is refused first (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves
     /// <see cref="IWhitelistService"/> after seeding and calls <c>ReloadAsync</c> so the live
     /// singleton snapshot picks up the freshly-seeded rows before the wizard returns.
@@ -45,6 +46,8 @@ public class BootstrapService
 
         try
         {
+            BootstrapCertCreator.EnsureWebTlsSansSupported(request.WebTlsCertificate?.Sans);
+
             // === Build a BootstrapConfig-equivalent from the SetupRequest ===
             var configDir = Path.Combine(AppContext.BaseDirectory, "config");
             var keystoreDir = Path.Combine(AppContext.BaseDirectory, "keystores");

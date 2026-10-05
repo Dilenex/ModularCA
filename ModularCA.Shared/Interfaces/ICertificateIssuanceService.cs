@@ -73,7 +73,8 @@ namespace ModularCA.Shared.Interfaces
         /// <param name="notBefore">Optional explicit start.</param>
         /// <param name="notAfter">Optional explicit expiry.</param>
         /// <param name="newSubjectDn">Optional replacement subject DN.</param>
-        /// <param name="newSans">Optional replacement SAN list.</param>
+        /// <param name="newSans">Optional replacement SAN list: null keeps the current SANs, an empty list removes
+        /// them all (refused where a certificate without SANs is not valid, such as a TLS server certificate).</param>
         /// <param name="ceilingEnforcement">
         /// Whether this call site lets the space's <c>ValidityCeilingBehavior</c> refuse an
         /// over-reaching request; see <see cref="ValidityCeilingEnforcement"/>. The default never

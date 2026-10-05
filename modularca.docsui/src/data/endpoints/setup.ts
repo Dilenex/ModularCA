@@ -46,6 +46,6 @@ export const setup: ApiEndpoint[] = [
             { name: 'X-CSRF-Token', type: 'string', required: true, description: 'Anti-CSRF token for state-changing anonymous requests' },
         ],
         responseDescription: 'Bootstrap result including generated admin username and password on success.',
-        notes: 'Returns 404 once the system is configured. Invalidates setup middleware cache on success.',
+        notes: 'Returns 404 once the system is configured. Invalidates setup middleware cache on success. Each webTlsCertificate.sans entry must be DNS:name or IP:address; any other type, an untyped entry or an invalid IP is refused with 400 before any setup work.',
     },
 ];

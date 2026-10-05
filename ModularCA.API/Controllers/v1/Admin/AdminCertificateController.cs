@@ -736,7 +736,8 @@ public class AdminCertificateController(
 
     /// <summary>
     /// Adds a key-value tag to a certificate.
-    /// The combination of certificate and tag key must be unique.
+    /// The combination of certificate and tag key must be unique. Requires manage access to the
+    /// certificate (<see cref="ICertificateAccessEvaluator.CanManageCertificate"/>); 404 otherwise.
     /// </summary>
     /// <param name="serial">The serial number of the certificate.</param>
     /// <param name="request">The tag key and value to add.</param>
@@ -760,6 +761,9 @@ public class AdminCertificateController(
         var cert = await _dbContext.Certificates
             .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
+            return NotFound(new { error = "Certificate not found." });
+
+        if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, cert.CertificateId))
             return NotFound(new { error = "Certificate not found." });
 
         // Check for duplicate key on this certificate
@@ -788,7 +792,8 @@ public class AdminCertificateController(
     }
 
     /// <summary>
-    /// Removes a tag from a certificate by tag ID.
+    /// Removes a tag from a certificate by tag ID. Requires manage access to the certificate
+    /// (<see cref="ICertificateAccessEvaluator.CanManageCertificate"/>), as adding a tag does; 404 otherwise.
     /// </summary>
     /// <param name="serial">The serial number of the certificate.</param>
     /// <param name="tagId">The unique identifier of the tag to remove.</param>
@@ -805,6 +810,9 @@ public class AdminCertificateController(
             .AsNoTracking()
             .ResolveBySerialOrNullAsync(serial);
         if (cert == null)
+            return NotFound(new { error = "Certificate not found." });
+
+        if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, cert.CertificateId))
             return NotFound(new { error = "Certificate not found." });
 
         var tag = await _dbContext.CertificateTags

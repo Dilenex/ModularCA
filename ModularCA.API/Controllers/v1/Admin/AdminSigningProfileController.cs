@@ -75,6 +75,55 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
+    /// Null when every certificate profile in <paramref name="certProfileIds"/> may be linked to a
+    /// signing profile issuing from CA certificate <paramref name="issuerId"/>; otherwise 400 (404
+    /// when the issuer is no registered CA). Each profile must exist and be inside the caller's
+    /// cert.view <see cref="SpaceFence"/> (<see cref="SpaceFence.AllowsProfile"/>), except one
+    /// already in <paramref name="alreadyLinked"/>, and <see cref="ModularCA.Core.Authorization.CertProfileScope"/> must admit it
+    /// for the issuing CA, as issuance will: an instance-wide profile (no space, no CA) fits every
+    /// CA, a space profile only that space's CAs, a CA-bound one only its CA. An unbound signing
+    /// profile has no CA, so only instance-wide profiles fit it.
+    /// </summary>
+    private async Task<IActionResult?> CertProfileLinksErrorAsync(Guid? issuerId, IEnumerable<Guid>? certProfileIds,
+        IReadOnlyCollection<Guid>? alreadyLinked = null)
+    {
+        var ids = (certProfileIds ?? []).Distinct().ToList();
+        if (ids.Count == 0)
+            return null;
+
+        var caId = Guid.Empty;
+        Guid? caSpaceId = null;
+        if (issuerId is Guid issuer)
+        {
+            var ca = await db.CertificateAuthorities.AsNoTracking()
+                .Where(c => c.CertificateId == issuer).Select(c => new { c.Id, c.SpaceId }).FirstOrDefaultAsync();
+            if (ca == null)
+                return NotFound(new { error = "Issuing CA not found" });
+            (caId, caSpaceId) = (ca.Id, ca.SpaceId);
+        }
+
+        var profiles = await db.CertProfiles.AsNoTracking()
+            .Where(p => ids.Contains(p.Id))
+            .Select(p => new { p.Id, p.SpaceId, p.CertificateAuthorityId })
+            .ToDictionaryAsync(p => p.Id);
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+        foreach (var id in ids)
+        {
+            if (!profiles.TryGetValue(id, out var p)
+                || (alreadyLinked?.Contains(id) != true && !fence.AllowsProfile(p.SpaceId, p.CertificateAuthorityId)))
+                return BadRequest(new { error = $"Certificate profile {id} not found." });
+            if (!ModularCA.Core.Authorization.CertProfileScope.Admits(p.SpaceId, p.CertificateAuthorityId, caId, caSpaceId))
+                return BadRequest(new
+                {
+                    error = $"Certificate profile {id} belongs to another scope than the signing profile's issuing CA. Link a profile of "
+                        + "the CA's own space, one bound to this CA, or an instance-wide profile.",
+                    code = ModularCA.Shared.Errors.ErrorCodes.CertProfileOutOfScope,
+                });
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Why the request's name-constraint fields would not build, or null: each must be blank or a
     /// JSON array of entries <see cref="NameConstraintRules"/> accepts, so a profile is never saved
     /// with constraints the certificate builder would refuse when it issues a CA certificate.
@@ -125,7 +174,8 @@ public class AdminSigningProfileController(
     /// and inheritance configuration. The issuer's CA must be inside the caller's fence and the
     /// caller must hold ca.manage on it (<see cref="AuthorizeIssuerAsync"/>). Invalid name
     /// constraints (<see cref="NameConstraintsError"/>) and certificate policies
-    /// (<see cref="CertificatePoliciesError"/>) are refused with 400.
+    /// (<see cref="CertificatePoliciesError"/>) are refused with 400, as are allowed cert profiles
+    /// the caller cannot see or the issuing CA could not issue under (<see cref="CertProfileLinksErrorAsync"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -137,6 +187,8 @@ public class AdminSigningProfileController(
             return Unauthorized();
         if (await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
             return refused;
+        if (await CertProfileLinksErrorAsync(r.IssuerId, r.AllowedCertProfileIds) is { } badLinks)
+            return badLinks;
         if (NameConstraintsError(r) is string ncError)
             return BadRequest(new { error = ncError });
         if (CertificatePoliciesError(r) is string cpError)
@@ -154,7 +206,9 @@ public class AdminSigningProfileController(
     /// issuer, or none (unbinding, which needs system scope), is checked by
     /// <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the current one. Invalid
     /// name constraints (<see cref="NameConstraintsError"/>) and certificate policies
-    /// (<see cref="CertificatePoliciesError"/>) are refused with 400.
+    /// (<see cref="CertificatePoliciesError"/>) are refused with 400, as are allowed cert profiles
+    /// the resulting issuer could not issue under, or newly linked ones the caller cannot see
+    /// (<see cref="CertProfileLinksErrorAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -171,6 +225,8 @@ public class AdminSigningProfileController(
             return NotFound(new { message = "Profile not found" });
         if (current.IssuerId != r.IssuerId && await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
             return refused;
+        if (await CertProfileLinksErrorAsync(r.IssuerId, r.AllowedCertProfileIds, current.AllowedCertProfileIds) is { } badLinks)
+            return badLinks;
         if (NameConstraintsError(r) is string ncError)
             return BadRequest(new { error = ncError });
         if (CertificatePoliciesError(r) is string cpError)
@@ -222,7 +278,9 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
-    /// Replaces the set of allowed cert profile IDs for the specified signing profile.
+    /// Replaces the set of allowed cert profile IDs for the specified signing profile. A profile
+    /// outside the caller's ca.manage <see cref="SpaceFence"/> is not found, and the links are
+    /// checked by <see cref="CertProfileLinksErrorAsync"/> as on create and update.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}/allowed-cert-profiles")]
@@ -234,7 +292,14 @@ public class AdminSigningProfileController(
         if (currentUser.User == null)
             return Unauthorized();
 
-        await service.SetAllowedCertProfilesAsync(id, certProfileIds);
+        var current = await service.GetByIdAsync(id);
+        if (current == null || !await InFenceAsync(current.IssuerId, Capabilities.CaManage))
+            return NotFound(new { message = "Profile not found" });
+        certProfileIds ??= [];
+        if (await CertProfileLinksErrorAsync(current.IssuerId, certProfileIds, current.AllowedCertProfileIds) is { } badLinks)
+            return badLinks;
+
+        await service.SetAllowedCertProfilesAsync(id, certProfileIds.Distinct().ToList());
         await audit.LogAsync(AuditActionType.SigningProfileUpdated, currentUser.User?.Id, currentUser.User?.Username,
             "SigningProfile", id.ToString(), new { AllowedCertProfileIds = certProfileIds },
             HttpContext.Connection.RemoteIpAddress?.ToString());

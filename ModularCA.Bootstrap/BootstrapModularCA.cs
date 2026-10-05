@@ -365,8 +365,9 @@ public class BootstrapModularCA
         try
         {
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
+            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi?.SANs);
         }
-        catch (ModularCA.Shared.Errors.ConfigurationValidationException ex)
+        catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {
             Console.WriteLine($"❌ Bootstrap refused before any change was made: {ex.Message}");
             return 1;

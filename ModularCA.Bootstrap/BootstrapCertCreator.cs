@@ -297,6 +297,38 @@ public static class BootstrapCertCreator
     }
 
     /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.InvalidRequestException"/> when an entry of the
+    /// setup Web TLS certificate's <paramref name="sans"/> is not <c>DNS:name</c> or
+    /// <c>IP:address</c>. The certificate is issued on first start from these entries, by a CSR
+    /// builder that encodes only those two types and skipped any other, so an Email, URI or
+    /// untyped entry used to vanish from the certificate. Blank entries carry no name and are
+    /// ignored. Called before any setup work, on the wizard and the CLI path.
+    /// </summary>
+    public static void EnsureWebTlsSansSupported(IEnumerable<string>? sans)
+    {
+        foreach (var raw in sans ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+            var entry = raw.Trim();
+            var colon = entry.IndexOf(':');
+            var type = colon > 0 ? entry[..colon].Trim().ToUpperInvariant() : null;
+            var value = colon > 0 ? entry[(colon + 1)..].Trim() : string.Empty;
+            string? problem = type switch
+            {
+                null => "has no type; write it as DNS:name or IP:address",
+                "DNS" or "IP" when value.Length == 0 => "has no value",
+                "IP" when !System.Net.IPAddress.TryParse(value, out _) => $"'{value}' is not an IP address",
+                "DNS" or "IP" => null,
+                _ => $"has type '{type}', which the Web TLS certificate cannot carry; only DNS and IP names are supported",
+            };
+            if (problem != null)
+                throw new ModularCA.Shared.Errors.InvalidRequestException(
+                    $"Web TLS certificate SAN '{entry}' {problem}.", ModularCA.Shared.Errors.ErrorCodes.RequestInvalid);
+        }
+    }
+
+    /// <summary>
     /// Converts a CA name into a URL-safe label (lowercase, hyphens, no special chars), as
     /// bootstrap labels the root CA.
     /// </summary>

@@ -530,7 +530,9 @@ namespace ModularCA.Core.Services
         /// re-validated against the resolved certificate profile via the existing override pipeline.</param>
         /// <param name="newSans">Optional new SAN list (entries formatted as "DNS:host" / "IP:1.2.3.4") that
         /// overrides whatever SAN overrides were stored on the original CSR. The list is JSON-serialized into the
-        /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile.</param>
+        /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile. Null keeps
+        /// the current SANs; an empty list removes them all, refused with 400 before the predecessor is revoked
+        /// when a certificate without SANs is not valid (<see cref="EnsureSanlessCertificateIsValid"/>).</param>
         /// <param name="ceilingEnforcement">Whether the space's validity-ceiling behaviour may refuse
         /// this caller rather than shorten it; see <see cref="ValidityCeilingEnforcement"/>. Defaults to
         /// shortening, so an automated reissue path added later cannot start refusing by omission.</param>
@@ -655,6 +657,16 @@ namespace ModularCA.Core.Services
                     ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
                 ModularCA.Core.Authorization.CertProfileScope.Ensure(
                     reissueScope.SpaceId, reissueScope.CertificateAuthorityId, reissueCaEntity.Id, reissueCaEntity.SpaceId);
+            }
+
+            // An explicit empty SAN list replaces the SANs with none; refused here, before the
+            // predecessor is revoked, where a certificate without SANs is not valid.
+            if (newSans is { Count: 0 } && csrEntity.CertProfileId is Guid sanlessProfileId)
+            {
+                var sanlessProfile = await _profileResolver.ResolveCertProfileAsync(sanlessProfileId);
+                EnsureSanlessCertificateIsValid(
+                    string.IsNullOrWhiteSpace(newSubjectDn) ? prevCert.SubjectDN : newSubjectDn,
+                    _validation.SetupAllowedExtendedOids(sanlessProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs));
             }
 
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
@@ -1130,15 +1142,40 @@ namespace ModularCA.Core.Services
             return new X509Name(oids, values);
         }
 
+        /// <summary>id-kp-serverAuth (RFC 5280 §4.2.1.12).</summary>
+        private const string ServerAuthOid = "1.3.6.1.5.5.7.3.1";
+
         /// <summary>
-        /// Returns the SAN overrides JSON if present and non-empty, otherwise falls back to
-        /// the original SANs from the CSR entity. The returned value is a JSON array string
-        /// suitable for passing to <see cref="CertificateBuilderService.BuildCertificateAsync"/>.
+        /// Throws <see cref="InvalidRequestException"/> (<see cref="ErrorCodes.SanOverrideInvalid"/>, 400)
+        /// when a certificate with <paramref name="subjectDn"/> and the extended key usages
+        /// <paramref name="ekuOids"/> would not be valid without any SAN: an empty subject needs a
+        /// SAN (RFC 5280 §4.2.1.6), and a TLS server certificate (serverAuth) is matched to its host
+        /// by SAN alone (RFC 6125 §6.4.4, CA/B Forum BR §7.1.2.7.12).
+        /// </summary>
+        internal static void EnsureSanlessCertificateIsValid(string? subjectDn, IEnumerable<string> ekuOids)
+        {
+            if (string.IsNullOrWhiteSpace(subjectDn))
+                throw new InvalidRequestException(
+                    "A certificate with an empty subject must carry at least one Subject Alternative Name (RFC 5280 §4.2.1.6).",
+                    ErrorCodes.SanOverrideInvalid);
+            if (ekuOids.Contains(ServerAuthOid, StringComparer.Ordinal))
+                throw new InvalidRequestException(
+                    "A TLS server certificate (serverAuth) needs at least one Subject Alternative Name: clients match the host "
+                    + "name against SANs only. Keep at least one DNS or IP name, or reissue under a profile without serverAuth.",
+                    ErrorCodes.SanOverrideInvalid);
+        }
+
+        /// <summary>
+        /// Returns the SAN overrides JSON when it is a JSON array of strings, otherwise falls back
+        /// to the original SANs from the CSR entity. An empty array is an override that replaces
+        /// the SANs with none; only an absent (null or blank) or malformed override keeps the
+        /// originals. The returned value is a JSON array string suitable for passing to
+        /// <see cref="CertificateBuilderService.BuildCertificateAsync"/>.
         /// </summary>
         /// <param name="originalSansJson">The original SANs JSON array from the CSR, or null.</param>
         /// <param name="sanOverridesJson">The SAN overrides JSON array, or null.</param>
         /// <returns>The effective SANs JSON string.</returns>
-        private static string? ApplySanOverrides(string? originalSansJson, string? sanOverridesJson)
+        internal static string? ApplySanOverrides(string? originalSansJson, string? sanOverridesJson)
         {
             if (string.IsNullOrWhiteSpace(sanOverridesJson))
                 return originalSansJson;
@@ -1147,7 +1184,7 @@ namespace ModularCA.Core.Services
             {
                 // Validate that the overrides are a well-formed JSON array
                 var overrides = JsonSerializer.Deserialize<List<string>>(sanOverridesJson, SafeJsonOptions.Default);
-                if (overrides != null && overrides.Count > 0)
+                if (overrides != null)
                     return sanOverridesJson;
             }
             catch

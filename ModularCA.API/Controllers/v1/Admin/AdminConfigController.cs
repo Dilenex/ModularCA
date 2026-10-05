@@ -623,10 +623,18 @@ public class AdminConfigController(
     /// in <c>CaGroups.MtlsSigningCaId</c>, which is the normal configuration for an instance that
     /// issues its own client certificates. Only paths the operator actually named are checked.
     /// </para>
+    /// <para>
+    /// <c>RequiredPaths</c> and <c>TrustedCaCertPaths</c> left out of the body (or null) keep their
+    /// current value; an empty list clears them. Clearing <c>RequiredPaths</c> means
+    /// <c>MtlsMiddleware</c> demands a client certificate on no path after the next restart: mTLS
+    /// login on the auth subdomain is unaffected, but no API path is gated on a client certificate
+    /// any more. The audit record carries both lists before and after, and a cleared list raises a
+    /// security alert.
+    /// </para>
     /// </summary>
     [HttpPut("mtls")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateMtls([FromBody] MtlsConfig update)
+    public async Task<IActionResult> UpdateMtls([FromBody] MtlsUpdateRequest update)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
@@ -668,18 +676,32 @@ public class AdminConfigController(
                 });
         }
 
+        var previousRequired = _config.Mtls.RequiredPaths.ToList();
+        var previousTrusted = _config.Mtls.TrustedCaCertPaths.ToList();
         _config.Mtls.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.AuthSubdomain)) _config.Mtls.AuthSubdomain = update.AuthSubdomain;
-        // These != null guards are INERT: MtlsConfig declares both collections as `= new()`, so
-        // an omitted JSON key arrives as an empty non-null list and passes the guard. A partial
-        // PUT therefore replaced the mTLS TRUST ANCHORS with an empty list — and because the
-        // file-existence validation above only runs over the supplied entries, an empty list
-        // validated cleanly and no error surfaced. Treat empty as "not sent": clearing the
-        // anchors deliberately is not something to do by omission.
-        if (update.RequiredPaths is { Count: > 0 }) _config.Mtls.RequiredPaths = update.RequiredPaths;
-        if (update.TrustedCaCertPaths is { Count: > 0 }) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
+        // The body's lists are nullable, so an omitted key (null) is told apart from an explicit
+        // empty list: omission must never clear the trust anchors, but removing the last entry must.
+        if (update.RequiredPaths != null) _config.Mtls.RequiredPaths = update.RequiredPaths;
+        if (update.TrustedCaCertPaths != null) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
+        var requiredCleared = previousRequired.Count > 0 && _config.Mtls.RequiredPaths.Count == 0;
+        var trustedCleared = previousTrusted.Count > 0 && _config.Mtls.TrustedCaCertPaths.Count == 0;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("Mtls", new { update.Enabled, update.AuthSubdomain });
+        await AuditConfigChange("Mtls", new
+        {
+            update.Enabled,
+            update.AuthSubdomain,
+            RequiredPaths = new { Before = previousRequired, After = _config.Mtls.RequiredPaths },
+            TrustedCaCertPaths = new { Before = previousTrusted, After = _config.Mtls.TrustedCaCertPaths },
+            RequiredPathsCleared = requiredCleared,
+            TrustedCaCertPathsCleared = trustedCleared,
+        });
+        if (requiredCleared || trustedCleared)
+            _ = _alertService.RaiseAlertAsync("MtlsConfigCleared", AlertSeverity.Warning,
+                requiredCleared
+                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: after restart no path requires a client certificate."
+                    : $"mTLS Trusted CA Cert Paths cleared by {_currentUser.User.Username}: anchors now come only from enrolled mTLS signing CAs.",
+                new { RequiredPathsCleared = requiredCleared, TrustedCaCertPathsCleared = trustedCleared, PreviousRequiredPaths = previousRequired, PreviousTrustedCaCertPaths = previousTrusted });
         return Ok(new { message = "mTLS config updated", config = _config.Mtls });
     }
 
@@ -966,6 +988,26 @@ public class AdminConfigController(
             return null;
         return StatusCode(403, new { error });
     }
+}
+
+/// <summary>
+/// Request body for PUT /config/mtls. <see cref="RequiredPaths"/> and
+/// <see cref="TrustedCaCertPaths"/> left out (null) keep their current value; an empty list
+/// clears them.
+/// </summary>
+public class MtlsUpdateRequest
+{
+    /// <summary>Whether mTLS client-certificate login is offered.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>The auth subdomain; null or empty keeps the current one.</summary>
+    public string? AuthSubdomain { get; set; }
+
+    /// <summary>Path prefixes that require a client certificate; null keeps, empty clears.</summary>
+    public List<string>? RequiredPaths { get; set; }
+
+    /// <summary>Trust-anchor certificate file paths; null keeps, empty clears.</summary>
+    public List<string>? TrustedCaCertPaths { get; set; }
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>

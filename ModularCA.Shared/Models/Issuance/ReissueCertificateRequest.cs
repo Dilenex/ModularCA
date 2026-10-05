@@ -23,6 +23,8 @@ namespace ModularCA.Shared.Models.Issuance
         /// Optional new Subject Alternative Name list (overrides the original CSR's SANs).
         /// When set, must still validate against the resolved request profile's SanRules.
         /// Each entry is prefixed with the type: "DNS:host.example.com" or "IP:10.0.0.1".
+        /// Null or absent keeps the current SANs; an empty list removes them all, refused with 400
+        /// where a certificate without SANs is not valid (a TLS server certificate, or an empty subject).
         /// </summary>
         public List<string>? NewSans { get; set; }
     }
@@ -50,6 +52,8 @@ namespace ModularCA.Shared.Models.Issuance
         /// Optional new Subject Alternative Name list (overrides the original CSR's SANs).
         /// When set, must still validate against the resolved request profile's SanRules.
         /// Each entry is prefixed with the type: "DNS:host.example.com" or "IP:10.0.0.1".
+        /// Null or absent keeps the current SANs; an empty list removes them all, refused with 400
+        /// where a certificate without SANs is not valid (a TLS server certificate, or an empty subject).
         /// </summary>
         public List<string>? NewSans { get; set; }
     }
@@ -75,6 +79,8 @@ namespace ModularCA.Shared.Models.Issuance
         /// Optional new Subject Alternative Name list (overrides the original CSR's SANs).
         /// When set, must still validate against the resolved request profile's SanRules.
         /// Each entry is prefixed with the type: "DNS:host.example.com" or "IP:10.0.0.1".
+        /// Null or absent keeps the current SANs; an empty list removes them all, refused with 400
+        /// where a certificate without SANs is not valid (a TLS server certificate, or an empty subject).
         /// </summary>
         public List<string>? NewSans { get; set; }
     }

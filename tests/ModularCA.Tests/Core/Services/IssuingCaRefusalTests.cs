@@ -45,11 +45,11 @@ public class IssuingCaRefusalTests
         return cg.Generate(new Asn1SignatureFactory("SHA256WITHECDSA", kp.Private, new SecureRandom()));
     }
 
-    private sealed record Seeded(CertificateEntity CaRow, X509Certificate CaCert, CertificateAuthorityEntity? Ca, Guid CsrId, CertificateEntity? Predecessor);
+    internal sealed record Seeded(CertificateEntity CaRow, X509Certificate CaCert, CertificateAuthorityEntity? Ca, Guid CsrId, CertificateEntity? Predecessor);
 
     public enum CaState { Healthy, Revoked, OnHold, Expired, NotYetValid, Disabled, Deleted, Unregistered }
 
-    private static Seeded Seed(ModularCADbContext db, CaState state, bool forReissue = false, bool instanceLeaf = false, bool spaceDeleted = false)
+    internal static Seeded Seed(ModularCADbContext db, CaState state, bool forReissue = false, bool instanceLeaf = false, bool spaceDeleted = false)
     {
         Guid? spaceId = null;
         if (!instanceLeaf)
@@ -163,7 +163,7 @@ public class IssuingCaRefusalTests
     /// The real service with the collaborators used up to the CA gate; everything past it is null,
     /// so a missing gate fails with a null reference rather than passing quietly.
     /// </summary>
-    private static CertificateIssuanceService Service(ModularCADbContext db, X509Certificate ca) => new(
+    internal static CertificateIssuanceService Service(ModularCADbContext db, X509Certificate ca) => new(
         db,
         keystore: new KeystoreStub(ca),
         certStore: null!,

@@ -174,8 +174,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
     const editedSans = entriesToList(form.sans);
     const sansChanged = !sameEntryLists(editedSans, cert.sans ?? [], SAN_TYPES);
     const sansInvalid = sansChanged && hasTypedEntryProblems(form.sans, SAN_TYPES);
-    // ApplySanOverrides treats an empty override list as "no override", so clearing every name
-    // reissues with the original SANs; say so rather than let the operator expect otherwise.
+    // An empty list reissues with no SANs, which the server refuses for a TLS server certificate.
     const clearsAllSans = sansChanged && editedSans.length === 0;
 
     const handleClose = () => {
@@ -404,7 +403,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                         )}
                         {clearsAllSans && (
                             <p className="text-xs text-warn mt-2">
-                                An empty list is not applied: the server reissues with the certificate&apos;s current names when no SAN is given.
+                                The new certificate will carry no subject alternative names. The server refuses this for a TLS server certificate, or when the subject is empty.
                             </p>
                         )}
                         <div className={helperClass}>

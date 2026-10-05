@@ -352,9 +352,8 @@ Other findings:
   the lock-out warning showed on every reissue. It now compares the names.
 - The reissue modal's comment said an emptied SAN list reissues with no SANs. It does not:
   `CertificateIssuanceService.ApplySanOverrides` treats an empty override list as no override and
-  keeps the original names. Not changed here (only the reissue path writes an empty override, so
-  the fix looks local, but it changes what reissue does); the modal now says so when every row is
-  removed.
+  keeps the original names. Fixed afterwards on the server: an empty list now removes every SAN,
+  and is refused for a serverAuth certificate or an empty subject; the modal warns accordingly.
 - `CertificateRequestForm` matched the server's per-SAN results to rows by raw index, while the
   validate call omits blank rows, so a blank row shifted every result below it. Now mapped.
 - Setup's Web TLS SANs go to the same infrastructure CSR builder (DNS and IP only); the wizard now

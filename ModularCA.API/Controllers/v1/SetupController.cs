@@ -726,6 +726,8 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// <see cref="SemaphoreSlim"/> and wraps the bootstrap in a MySQL <c>GET_LOCK</c>
     /// advisory lock so two concurrent callers (including multi-instance deployments
     /// behind a load balancer) cannot both race <c>BootstrapService.RunFromSetupRequest</c>.
+    /// A Web TLS SAN other than DNS or IP is refused with 400 before any setup work
+    /// (<c>BootstrapCertCreator.EnsureWebTlsSansSupported</c>).
     /// </summary>
     [HttpPost("initialize")]
     public IActionResult Initialize([FromBody] SetupRequest request)
@@ -783,6 +785,15 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
                     request.Admin.Password, new ModularCA.Shared.Entities.PasswordPolicyEntity());
                 if (errors.Count > 0)
                     return BadRequest(new { error = "Administrator password: " + string.Join("; ", errors) });
+            }
+
+            try
+            {
+                ModularCA.Bootstrap.BootstrapCertCreator.EnsureWebTlsSansSupported(request.WebTlsCertificate?.Sans);
+            }
+            catch (ModularCA.Shared.Errors.RequestValidationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
             }
 
             // Refuse to issue a Web TLS cert that won't validate against the

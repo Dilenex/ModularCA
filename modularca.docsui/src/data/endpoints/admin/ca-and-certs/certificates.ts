@@ -103,6 +103,7 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created tag with ID, key, value, and createdAt.',
+        notes: 'Requires manage access to the certificate (cert.revoke on its issuing CA, its requester, or a Manage ACL entry); 404 otherwise.',
     },
     {
         method: 'DELETE',
@@ -114,6 +115,7 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Confirmation of tag removal.',
+        notes: 'Requires manage access to the certificate, as adding a tag does; 404 otherwise.',
     },
     {
         method: 'GET',
