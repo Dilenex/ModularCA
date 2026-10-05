@@ -1,6 +1,7 @@
 # SSH keystore
 
-Status: draft, for owner review (2026-10-05). Nothing here is built.
+Status: owner decisions recorded 2026-10-05 (see "Decided by the owner"). Stage 1, the wire
+format in `ModularCA.Shared/Ssh`, is built; nothing calls it yet.
 
 ## Why
 
@@ -59,7 +60,8 @@ Every SSH signing operation shells out to `ssh-keygen`, run by the node process,
 - **Extension semantics are `ssh-keygen`'s.** `-O` flags add to the default set (the five
   `permit-*` extensions for a user certificate) unless `clear` is given, and the code never passes
   `clear`. A profile that lists only `permit-pty` therefore issues all five. The profile form
-  (`SshCertProfileForm.tsx:46-48`) documents the `no-*` flags as ssh-keygen's.
+  (`SshCertProfileForm.tsx:46-48`) documents the `no-*` flags as ssh-keygen's. The owner has
+  decided that profiles become exact (decision 7 below).
 - **SSH CA creation is already ceremony-gated**, by the same instance `RequireKeyCeremony` switch
   as X.509 (`AdminSshController.cs:104`, quorum at `KeyCeremonyService.cs:351`). What is missing is
   enforcement at the signer: the key is made in the node, so the signer never sees the ceremony.
@@ -100,6 +102,8 @@ Every SSH signing operation shells out to `ssh-keygen`, run by the node process,
    the instance's `RequireKeyCeremony` covers SSH CAs, as it does today.
 6. `ssh-keygen`, `SshCa.SshKeygenPath`, `SshCa.KeyStoragePath` and `PUT /config/ssh-ca` are
    removed.
+7. A certificate carries exactly the extensions its profile names, with no `ssh-keygen` defaults
+   added (owner decision, 2026-10-05).
 
 ## Signing: the signer builds the certificate
 
@@ -160,9 +164,11 @@ the signature algorithm from the CA key. The caller cannot choose any of these.
 The node keeps everything about who may ask: request, signing and cert profiles, principal
 patterns, allowed extensions, approvals and the serial's uniqueness check against
 `SshCertificates`. The node also turns profile options into the explicit option set the signer
-takes. It reproduces `ssh-keygen`'s additive `-O` semantics exactly (defaults, `clear`, `no-*`,
-`permit-*`), so a certificate issued after the change carries the same extensions as before.
-Whether to keep those semantics is an open question below.
+takes. That set is exact: a certificate carries the profile's extensions and nothing else. It does
+not reproduce `ssh-keygen`'s additive `-O` semantics (the five default `permit-*` extensions unless
+`clear`), so a certificate issued after the change can carry fewer permits than the same profile
+issued before. A profile that named only `permit-pty` issued all five; afterwards it issues
+`permit-pty` alone. The `no-*` flags lose their meaning, since there are no defaults to remove.
 
 ### Algorithms
 
@@ -173,7 +179,10 @@ Whether to keep those semantics is an open question below.
 | RSA ≥ 2048 | `ssh-rsa-cert-v01@openssh.com` | `SHA512withRSA` | `rsa-sha2-512`; never SHA-1 `ssh-rsa` |
 
 The encoder takes ECDSA output in either shape: DER from a software key, raw `r||s` from a PKCS#11
-key (`Pkcs11SessionManager.Sign` returns the token's output as is).
+key (`Pkcs11SessionManager.Sign` returns the token's output as is). The caller names the shape
+(`EcdsaSignatureFormat`) rather than the encoder guessing, because a raw `r||s` can happen to parse
+as DER. `rsa-sha2-256` is encoded and verified as well, for the fixtures and for reading
+certificates; the signer issues `rsa-sha2-512`.
 
 ## Storage: a third keystore file, same unlock
 
@@ -290,9 +299,10 @@ message KeySpec {
 - **`ISigningService.SignSshCertificateAsync(SshCertificateRequest, SigningContext)`** is added in
   `ModularCA.Shared/Signing`, along with the OpenSSH encoder in `ModularCA.Shared/Ssh`. Both node
   and signer use the encoder. `Shared` already depends on BouncyCastle, whose OpenSSH utilities
-  cover public-key encoding. Whether they also parse every `openssh-key-v1` private key type the
-  migration needs is checked in stage 1. If they do not, the migration needs a small reader of its
-  own.
+  cover public-key encoding. Stage 1 checked the private side: BouncyCastle 2.7.0's
+  `OpenSshPrivateKeyUtilities` reads unencrypted `openssh-key-v1` Ed25519, ECDSA P-256/P-384/P-521
+  and RSA keys as `ssh-keygen` 10.2 writes them. `SshPrivateKeyFile` wraps it, checks the file's
+  public key against its private key, and gives the PKCS#8 the import sends.
 - **`SigningPurpose.SshCertificate`**: signs SSH certificates, and only through
   `SignSshCertificate`.
 - **`SigningPurpose.SshKeyMigration`**: permits `ImportKey` into `ssh-ca.keystore` only. The
@@ -400,7 +410,8 @@ The keys were also in plaintext:
 The upgrade output and the SSH CA page therefore carry one notice: these keys were stored in
 plaintext before this version, and archives and snapshots made before the upgrade still contain
 them. Rotating an SSH CA (a new CA and new trust lines on the servers) is the only remedy, and it
-is the operator's call. The notice names the archive and snapshot files it can see.
+is the operator's call. The notice recommends it and names the archive and snapshot files it can
+see. This release informs only; guided rotation comes later.
 
 ### Split installs
 
@@ -532,7 +543,7 @@ guide.
 
 | Stage | Work | Effort |
 |---|---|---|
-| 1 | `ModularCA.Shared/Ssh`: certificate encoder, public key encode/decode, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `ssh-keygen` option-set mapping. Golden tests against fixtures made offline with `ssh-keygen` and checked with `ssh-keygen -L` / `-Q`. No behaviour change | M |
+| 1 | **Built.** `ModularCA.Shared/Ssh`: certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Shared/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
 | 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed | L |
 | 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console | M |
 | 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
@@ -542,22 +553,37 @@ guide.
 Stages 1 to 5 are the release, **L** overall. Stage 1 can start at once, since it touches nothing
 shared.
 
+## Decided by the owner (2026-10-05)
+
+1. **Profile extensions are exact.** A certificate carries exactly the profile's extensions. This
+   is not `ssh-keygen`'s defaults-plus-profile behaviour, which is what ships today, so a
+   certificate issued after the change may carry fewer permits than the same profile issued
+   before: a profile naming only `permit-pty` issued all five user permits, and afterwards issues
+   `permit-pty` alone. Operators who relied on the defaults add those permits to their profiles.
+2. **`ssh-ca.keystore` shares the secondary passphrase** with `ca-certs.keystore`. Operators who
+   keep secondaries in `MODULARCA_KEYSTORE_SECONDARY_PASSPHRASE` have nothing to add.
+3. **Migrating the existing plaintext keys needs no ceremony**, on any instance. The import runs
+   automatically at the first start after the upgrade, and each key's import is audited.
+4. **The plaintext history gets a notice only in this release.** A console notice and the upgrade
+   output explain that the keys were stored in plaintext, that earlier archives and snapshots still
+   hold them, and recommend rotating the SSH CA. Guided rotation comes in a later release.
+
 ## Open questions for the owner
 
-1. **Keep `ssh-keygen`'s additive extension semantics, or make profiles explicit?** Today a profile
-   naming `permit-pty` issues all five user permits. Keeping that is compatible; making the
-   option list exact is what the profile UI suggests and is safer, but changes issued certificates
-   on upgrade.
-2. **Share the secondary passphrase with `ca-certs.keystore`** (recommended), or give
-   `ssh-ca.keystore` its own entry and accept a one-time operator step for env-var users?
-3. **Migration without a ceremony** on instances that require ceremonies (recommended, reasoning
-   above), or hold the import until a ceremony approves it?
-4. **The plaintext notice**: inform only (recommended), or also offer a guided SSH CA rotation in
-   this release?
-5. **`valid_after` backdating**: five minutes for clock skew, or none, matching `ssh-keygen`?
-6. **Empty KRL**: keep today's 204 / JSON message, or always return a valid KRL with no entries,
-   which an `sshd` `RevokedKeys` fetcher can install without special-casing?
-7. **`ssh-dss` subject keys** are accepted today (`SshCaService.cs:600`) and OpenSSH has removed
-   DSA. Refuse them now?
-8. **Stage 6**: is importing an external SSH CA key (`ImportSshCa`) wanted, and is PKCS#11 for SSH
+1. **`valid_after` backdating**: five minutes for clock skew, or none, matching `ssh-keygen`?
+   Stage 1 does not force this. Note for stage 2: the signer refuses a `valid_after` more than its
+   skew allowance from its own clock (`SshCertificateRules.CheckValidity`, default five minutes,
+   a parameter). If the node backdates by five minutes, the allowance must be wider than five
+   minutes, or any node clock running behind the signer's is refused.
+2. **Empty KRL**: keep today's 204 / JSON message, or always return a valid KRL with no entries,
+   which an `sshd` `RevokedKeys` fetcher can install without special-casing? Stage 1 does not force
+   this: `SshKrl.Encode` with no serials writes the header-only KRL, byte for byte what
+   `ssh-keygen -k` writes, so either answer is available.
+3. **`ssh-dss` subject keys** are accepted today (`SshCaService.cs:600`) and OpenSSH has removed
+   DSA. Refuse them now? Stage 1 follows the signer's list in this design, which already leaves DSA
+   out: `SshCertificateRules.CheckSubjectKey` refuses it and the encoder cannot make a DSA
+   certificate. So DSA is refused from stage 3 whatever the answer. The parser still reads
+   `ssh-dss`, so the node can name the key type in its refusal. What stays open is only whether the
+   node refuses DSA before stage 3.
+4. **Stage 6**: is importing an external SSH CA key (`ImportSshCa`) wanted, and is PKCS#11 for SSH
    needed before HA?

@@ -74,5 +74,6 @@
 
   <ItemGroup>
     <None Include="Core\Services\Msae\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Shared\Ssh\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
