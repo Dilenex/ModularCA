@@ -36,6 +36,10 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
   changes its ownership, its mode or anything in it, on any run; the service writes its secrets
   there owner-only itself. On a split install the signer keeps `keystores/` and `keystore.yaml` across every
   upgrade (see "Two units" below).
+- **The signer's own directory, `signer/`, is never the installer's.** On a split install the
+  operator creates it for `modularca-signer`; `install.sh` and the `.deb` never create it, copy into
+  it, chown or chmod it, and warn when it belongs to anyone else. It is not in the node unit's
+  `ReadWritePaths=`.
 - `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
   superuser, so it must not live where the service account can rewrite it.
 
@@ -696,48 +700,72 @@ passwords and any PKCS#11 session, and answers the node over gRPC with mutual TL
 The node (`modularca.service` with `--role node`) then holds no key and no keystore password;
 each side pins the other's public key, and there is no trust-store lookup.
 
+The signer reads its settings from its own directory, `/opt/modularca/signer/`, which belongs to
+`modularca-signer` and which the node can neither read nor write. The packaged unit says so:
+`--signer-dir /opt/modularca/signer`. From there it reads `signer.yaml` (its settings only),
+`db.yaml`, `keystore.yaml` and its identity files, and writes its logs and keystore audit to
+`signer/logs/`. It reads nothing under `config/`. The node keeps `config/` to itself, and nothing
+the node writes, its console's settings pages included, can change what the signer loads.
+
 Do this after the first install has completed its wizard as a single process, so the keystores
 and `config/keystore.yaml` exist.
 
-1. Create the signer's user and give it the keys. The node keeps everything else.
+1. Create the signer's user and its directory, and give it the keys and its files. The node keeps
+   everything else, and `config/` stays `modularca`'s alone.
 
        sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
        sudo systemctl stop modularca
        cd /opt/modularca
        sudo chown -R modularca-signer:modularca-signer keystores
        sudo chmod 0700 keystores
-       sudo chown modularca-signer:modularca-signer config/keystore.yaml
-       sudo chmod 0600 config/keystore.yaml
-       sudo chgrp modularca-signer config config/config.yaml config/db.yaml
-       sudo chmod 0640 config/config.yaml config/db.yaml
-       sudo chmod 0770 config      # until step 2 is done: the signer writes its identity there
+       sudo install -d -o modularca-signer -g modularca-signer -m 0700 signer
+       sudo install -o modularca-signer -g modularca-signer -m 0600 config/keystore.yaml signer/keystore.yaml
+       sudo install -o modularca-signer -g modularca-signer -m 0600 config/db.yaml signer/db.yaml
+       sudo rm config/keystore.yaml
 
-   Both units read `config/config.yaml` and `config/db.yaml`; only the signer reads
-   `keystore.yaml`. The node no longer needs `keystore.yaml` or `keystores/` at all, and on two
-   hosts they are simply not copied to the node.
+   The signer uses only the `App:` section of its `db.yaml`; you may delete `Audit:` from its copy.
+   If the database password later changes (`modularca-migrate`, a rotation), update both copies.
 
-2. On the signer, create the identity CA and the signer's server certificate, then issue the
-   node its client certificate, and close `config/` to the signer's writes again:
+2. Write the signer's settings, `signer/signer.yaml`. It has the shape of `config.yaml` and holds
+   only what the signer reads; relative paths resolve against `signer/`:
+
+       sudo -u modularca-signer tee signer/signer.yaml >/dev/null <<'EOF'
+       Signer:
+         Listen: "127.0.0.1:8446"
+         ServerCertificate: "signer-server.pfx"
+         IdentityCa: "signer-identity-ca.pfx"
+       EOF
+       sudo chmod 0600 signer/signer.yaml
+
+   An HSM is configured here, not in the node's `config.yaml`: move any `Hsm:` section (and a
+   `Schema:` or `Logging:` you changed) from `config.yaml` into `signer.yaml`, and delete it from
+   `config.yaml`. The node with a remote signer never reads `Hsm:`, and the PIN then lives only in
+   the signer's directory.
+
+3. On the signer, create the identity CA and the signer's server certificate, then issue the
+   node its client certificate:
 
        cd /opt/modularca
-       sudo -u modularca-signer ./ModularCA.API --role signer --init-identity
-       sudo -u modularca-signer ./ModularCA.API --role signer --issue-node-identity /tmp/node-identity
-       sudo chmod 0750 config
+       sudo -u modularca-signer ./ModularCA.API --role signer --signer-dir /opt/modularca/signer --init-identity
+       sudo -u modularca-signer ./ModularCA.API --role signer --signer-dir /opt/modularca/signer --issue-node-identity /tmp/node-identity
 
-   The first writes `config/signer-identity-ca.pfx` and `config/signer-server.pfx`, owned by
-   `modularca-signer`, owner-only. The second writes `/tmp/node-identity/signer-client.pfx` and
-   `signer-pin.txt` and prints two things: the `PinnedClientSpki` for the signer, and the
-   `Signer:` section for the node. `--init-identity --force` later (a new identity CA) needs
-   `config/` at `0770` again for its run.
+   The first writes `signer/signer-identity-ca.pfx` and `signer/signer-server.pfx`, owner-only. The
+   second writes `/tmp/node-identity/signer-client.pfx` and `signer-pin.txt` and prints two things:
+   the `PinnedClientSpki` for the signer, and the `Signer:` section for the node. (`--apply`, which
+   writes both halves into one `config.yaml`, is the pod's and is refused with `--signer-dir`.)
 
-3. Configure both sides in `config/config.yaml`. The signer side:
+4. Configure both sides. The signer side, in `signer/signer.yaml` (`sudo -e` keeps its owner and
+   mode):
 
        Signer:
          Listen: "127.0.0.1:8446"
-         ServerCertificate: "config/signer-server.pfx"
+         ServerCertificate: "signer-server.pfx"
+         IdentityCa: "signer-identity-ca.pfx"
          PinnedClientSpki: "<printed by --issue-node-identity>"
 
-   The node side, after moving the node's certificate into place:
+   The node side, in `config/config.yaml`, after moving the node's certificate into place. This is
+   everything the node needs to know about the signer, the address it dials and the server key it
+   pins, and it stays in the node's own file:
 
        sudo install -o modularca -g modularca -m 0600 /tmp/node-identity/signer-client.pfx /opt/modularca/config/
        sudo rm -rf /tmp/node-identity
@@ -748,12 +776,12 @@ and `config/keystore.yaml` exist.
          ClientCertificate: "config/signer-client.pfx"
          PinnedServerSpki: "<the contents of signer-pin.txt>"
 
-   On one host both sections live in the same file; each process reads the keys for its role.
-
-4. Point the node's unit at the node role, then start the node and the signer. The signer's unit
-   is already installed, not enabled: `install.sh` puts it in `/etc/systemd/system/`, the `.deb` in
-   `/lib/systemd/system/` (its source is `deploy/modularca-signer.service` in the archive). Do not
-   copy it into `/etc/systemd/system/` on a `.deb` install; a copy there overrides the packaged one.
+5. Point the node's unit at the node role, then start the node and the signer. The signer's unit
+   is already installed, not enabled, with `--signer-dir /opt/modularca/signer` on its `ExecStart=`
+   and `ReadWritePaths=` naming `keystores/` and `signer/` only: `install.sh` puts it in
+   `/etc/systemd/system/`, the `.deb` in `/lib/systemd/system/` (its source is
+   `deploy/modularca-signer.service` in the archive). Do not copy it into `/etc/systemd/system/` on
+   a `.deb` install; a copy there overrides the packaged one.
 
        sudo mkdir -p /etc/systemd/system/modularca.service.d
        printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role node\n' \
@@ -766,17 +794,69 @@ and `config/keystore.yaml` exist.
    applies migrations before it reports ready, and the signer starts after that. A signer started
    on its own waits for those migrations in-process.
 
-   `journalctl -u modularca-signer` shows the listener and the pins it holds; `/health/ready`
-   on the node shows the signer as a step. While the signer is down the node answers 503 on
-   every enrollment endpoint with "The signer is unreachable" and reconnects on its own.
+   `journalctl -u modularca-signer` shows where the signer read its settings from, the listener
+   and the pins it holds; `/health/ready` on the node shows the signer as a step. While the signer
+   is down the node answers 503 on every enrollment endpoint with "The signer is unreachable" and
+   reconnects on its own.
 
 Backups taken by the node's scheduled job go through the signer and keep working. The
 command-line `--backup` and `--restore` read the keystore files directly, so on a split
-install run them on the signer host as the signer's user. On one host that user can neither
+install run them on the signer host as the signer's user, with `--role signer --signer-dir
+/opt/modularca/signer` so they find its `keystore.yaml`. On one host that user can neither
 read the node's backup key (`config/backup.key` or `config/backup-password.key`) nor write
 `backups/`, so there the scheduled or console backup is the one that works as installed. The
 node's client certificate lives one year; reissue it with `--issue-node-identity` and replace the
 file and the pin.
+
+### Moving an existing split install onto the signer's directory
+
+A split install made before `--signer-dir` reads `config/config.yaml`, `config/db.yaml`,
+`config/keystore.yaml` and `config/signer-*.pfx`, in the directory the node owns. Until it moves,
+the signer says so in a warning at every start. The packaged unit already names
+`/opt/modularca/signer`: while that directory does not exist the signer reads `config/` as before
+(and warns that the directory is missing), so an upgrade does not stop it. To move it:
+
+1. Create the directory and let the signer copy what it reads into it. The signer's account can
+   still read the shared files; the copy writes `signer.yaml` with only the signer's sections (its
+   half of `Signer:`, `Hsm:`, `Schema:`, the logging levels), `db.yaml` with only the application
+   database, `keystore.yaml` and the identity files, all owner-only, and changes nothing in
+   `config/`:
+
+       cd /opt/modularca
+       sudo install -d -o modularca-signer -g modularca-signer -m 0700 signer
+       sudo -u modularca-signer ./ModularCA.API --role signer --signer-dir /opt/modularca/signer --migrate-signer-dir
+
+2. Read `signer/signer.yaml` before the signer does (`sudo cat`). It was copied from a file the
+   node could write, so check `Hsm.ModulePath`, `Signer.PinnedClientSpki` and `Signer.Listen`
+   against what you set.
+
+3. Point the unit at the directory. A `.deb` install has the flag once upgraded to this build
+   (`systemctl cat modularca-signer` shows it). A tarball install keeps the unit it already has,
+   since `install.sh` never replaces a unit that differs from the packaged one; give it the flag
+   with a drop-in, which is harmless where the flag is already there:
+
+       sudo mkdir -p /etc/systemd/system/modularca-signer.service.d
+       printf '[Service]\nExecStart=\nExecStart=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer\nReadWritePaths=-/opt/modularca/signer\n' \
+           | sudo tee /etc/systemd/system/modularca-signer.service.d/signer-dir.conf
+       sudo systemctl daemon-reload
+       sudo systemctl restart modularca-signer
+
+   `journalctl -u modularca-signer` now names `signer/signer.yaml` and no longer warns.
+
+4. Take the signer's files and access away from the node's directory:
+
+       cd /opt/modularca
+       sudo rm config/keystore.yaml config/signer-server.pfx config/signer-identity-ca.pfx
+       sudo chgrp modularca config config/config.yaml config/db.yaml
+       sudo chmod 0700 config
+       sudo chmod 0600 config/config.yaml config/db.yaml
+
+   Remove `Hsm:` and the signer's half of `Signer:` (`Listen`, `ServerCertificate`,
+   `PinnedClientSpki`, `IdentityCa` and their passwords) from `config/config.yaml`; the node never
+   reads them. Restart the node.
+
+To go back, stop the signer, remove `--signer-dir` from its unit (or the drop-in) and restore the
+files and the group read of step 1 above as they were.
 
 ### Ownership on a split install, and what upgrades keep
 
@@ -784,28 +864,26 @@ file and the pin.
 |---|---|---|---|
 | `/opt/modularca` and the program files | `root:root` | `0755` / `0644` | neither account can replace a binary |
 | `keystores/` and its files | `modularca-signer` | `0700` / `0600` | the node cannot read them |
-| `config/` | `modularca:modularca-signer` | `0750` | the node writes here; the signer reads |
-| `config/config.yaml`, `config/db.yaml` | `modularca:modularca-signer` | `0640` | |
-| `config/keystore.yaml`, `config/signer-*.pfx` | `modularca-signer` | `0600` | the node cannot read them |
-| `logs/`, `backups/`, every other file in `config/` | `modularca` | `0750`, `0700`, owner-only | as for a single process |
+| `signer/` and everything in it | `modularca-signer` | `0700` / `0600` | the signer's settings, identity and logs; the node can neither read nor write them |
+| `config/`, `logs/`, `backups/` and their files | `modularca` | `0700`, `0750`, `0700`, owner-only | the node's alone, as for a single process |
 
 `install.sh` and the `.deb` keep all of it on every run: they give the program files to root and
 never change the ownership, mode or contents of `config/`, `keystores/`, `logs/` or `backups/` once
-they exist. Each says so when it finds `keystores/` owned by `modularca-signer`. An install upgraded
-by a 0.4.0 pre-release installer before this was fixed had all of it handed back to `modularca`:
-check with `ls -la /opt/modularca/keystores /opt/modularca/config` and repeat step 1 if so.
+they exist. They never create, copy into, chown or chmod `signer/`, and warn when it belongs to
+anyone but `modularca-signer`. Each says so when it finds `keystores/` owned by `modularca-signer`.
+An install upgraded by a 0.4.0 pre-release installer before this was fixed had all of it handed
+back to `modularca`: check with `ls -la /opt/modularca/keystores /opt/modularca/signer` and repeat
+step 1 if so.
 
-**What the node can still reach on one host.** It cannot read the keys, `keystore.yaml` or the
-signer's identity, and cannot replace the binaries the signer runs. It does own `config/` and
-`config.yaml`, which it rewrites from the console's settings pages, so it can replace any file in
-`config/` and change what the signer reads from `config.yaml`: `Hsm.ModulePath` (a library the
-signer loads), `Signer.PinnedClientSpki` and `Signer.Listen`. A compromised node can therefore get
-code run in the signer at its next start. Until the signer reads its settings from a file the node
-cannot write, the separation that holds against a compromised node is two hosts. The console's
-settings pages, the backup settings among them, rewrite `config.yaml` in place, so it
-keeps its owner, group and `0640`; an install that ran a 0.4.0 pre-release may have had it made
-owner-only by the backup settings page, which `ls -l /opt/modularca/config/config.yaml` shows
-(repeat the `chgrp` and `chmod` of step 1 for it if so).
+**What the node can still reach on one host.** It cannot read the keys or anything in `signer/`,
+cannot write anything the signer reads, and cannot replace the binaries the signer runs. It shares
+the application database with the signer, as the same role: it can change the rows the signer
+reads there (keystore rows, which the keystore's pin MAC and file signatures guard, ceremonies,
+which the signer verifies) and the signer's audit rows. It can make itself unreachable to the
+signer or fill the disk the two share. And a signer still on the shared layout (one that warns at
+start) reads the node's `config/`, where the node can change `Hsm.ModulePath` (a library the
+signer loads), `Signer.PinnedClientSpki` and `Signer.Listen` and so get code run in the signer at
+its next start: move it as above.
 
 ## Three processes: signer, control, enrollment and validation
 
@@ -834,7 +912,7 @@ Every node process reads the same `config.yaml` shape, so each host gets its own
 the same database, the same `JWT.Secret` (a token the console issued must verify on every
 host's `/health/ready`), and a `Signer:` section pointing at the signer. Two
 node processes cannot share one install directory on one host: they would bind the same
-ports. The signer's `Signer.Listen` must then be reachable from the enrollment and validation
+ports. The signer's `Signer.Listen` (in `signer/signer.yaml`) must then be reachable from the enrollment and validation
 hosts (not loopback), and each of them needs its own client certificate from
 `--issue-node-identity`; the pinning works the same.
 

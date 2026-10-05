@@ -60,16 +60,25 @@ public static class SignerIdentityCommands
     public static bool IsIdentityCommand(IReadOnlyList<string> args)
         => args.Any(a => a.Equals(InitFlag, StringComparison.OrdinalIgnoreCase) || a.Equals(IssueNodeFlag, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Runs the identity command the arguments name and returns the exit code.</summary>
+    /// <summary>Runs the identity command the arguments name in the shared layout under <paramref name="baseDirectory"/> and returns the exit code.</summary>
     public static int Run(IReadOnlyList<string> args, SignerConfig signer, string baseDirectory)
+        => Run(args, signer, SignerPaths.Shared(baseDirectory));
+
+    /// <summary>
+    /// Runs the identity command the arguments name and returns the exit code. The identity
+    /// files resolve through <paramref name="paths"/>: under the application directory in the
+    /// shared layout, into the signer's own directory with <c>--signer-dir</c>.
+    /// </summary>
+    public static int Run(IReadOnlyList<string> args, SignerConfig signer, SignerPaths paths)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(signer);
+        ArgumentNullException.ThrowIfNull(paths);
         try
         {
             if (args.Any(a => a.Equals(InitFlag, StringComparison.OrdinalIgnoreCase)))
-                return InitIdentity(args, signer, baseDirectory);
-            return IssueNodeIdentity(args, signer, baseDirectory);
+                return InitIdentity(args, signer, paths);
+            return IssueNodeIdentity(args, signer, paths);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
         {
@@ -82,12 +91,13 @@ public static class SignerIdentityCommands
     /// Creates the identity CA (ECDSA P-256, self-signed, ten years) and the server certificate
     /// with the listen host as its SAN, into the paths <c>Signer.IdentityCa</c> and
     /// <c>Signer.ServerCertificate</c> name. Refuses to replace an existing CA without
-    /// <see cref="ForceFlag"/>, since every node identity it issued would stop matching.
+    /// <see cref="ForceFlag"/>, since every node identity it issued would stop matching. With
+    /// <c>--signer-dir</c> both files go into the signer's directory.
     /// </summary>
-    private static int InitIdentity(IReadOnlyList<string> args, SignerConfig signer, string baseDirectory)
+    private static int InitIdentity(IReadOnlyList<string> args, SignerConfig signer, SignerPaths paths)
     {
-        var caPath = SignerConfig.ResolvePath(signer.IdentityCa, baseDirectory);
-        var serverPath = SignerConfig.ResolvePath(signer.ServerCertificate, baseDirectory);
+        var caPath = paths.ResolveFile(signer.IdentityCa);
+        var serverPath = paths.ResolveFile(signer.ServerCertificate);
         var force = args.Any(a => a.Equals(ForceFlag, StringComparison.OrdinalIgnoreCase));
         if (File.Exists(caPath) && !force)
         {
@@ -121,20 +131,32 @@ public static class SignerIdentityCommands
         Console.WriteLine($"  Server certificate: {serverPath}  (SAN {host}, valid until {server.NotAfter:yyyy-MM-dd})");
         Console.WriteLine($"  Server SPKI pin:    {SpkiPin.Compute(server)}");
         Console.WriteLine();
-        Console.WriteLine($"Next: issue the node its identity with  --role signer {IssueNodeFlag} <output-dir>");
+        Console.WriteLine($"Next: issue the node its identity with  {RoleArgs(paths)} {IssueNodeFlag} <output-dir>");
         return 0;
     }
+
+    /// <summary>The role arguments to repeat in a printed command: <c>--role signer</c>, with <c>--signer-dir</c> when one is in use.</summary>
+    private static string RoleArgs(SignerPaths paths)
+        => paths.IsDedicated ? $"--role signer {SignerPaths.Flag} {paths.SignerDirectory}" : "--role signer";
 
     /// <summary>
     /// Issues a node client certificate (one year) under the identity CA into the output
     /// directory as <see cref="ClientFileName"/>, writes the server's pin beside it as
     /// <see cref="PinFileName"/>, and prints the client's pin for <c>Signer.PinnedClientSpki</c>
-    /// on the signer and the keys the node's config needs.
+    /// on the signer and the keys the node's config needs. <see cref="ApplyFlag"/> writes one
+    /// config.yaml shared by both processes, so it is refused with <c>--signer-dir</c>, whose
+    /// point is that the signer reads nothing the node writes.
     /// </summary>
-    private static int IssueNodeIdentity(IReadOnlyList<string> args, SignerConfig signer, string baseDirectory)
+    private static int IssueNodeIdentity(IReadOnlyList<string> args, SignerConfig signer, SignerPaths paths)
     {
         var applyTo = ValueOf(args, ApplyFlag);
         var outputDir = ValueOf(args, IssueNodeFlag);
+        if (applyTo is not null && paths.IsDedicated)
+        {
+            Console.Error.WriteLine($"[FATAL] {ApplyFlag} writes one config.yaml for the node and the signer, and {SignerPaths.Flag} keeps them apart.");
+            Console.Error.WriteLine($"        Run without {ApplyFlag}, then set PinnedClientSpki in {paths.ConfigPath} and the node's Signer section as printed.");
+            return 1;
+        }
         if (applyTo is not null)
         {
             // With --apply the certificate goes beside the config it is named in.
@@ -158,11 +180,11 @@ public static class SignerIdentityCommands
             Console.Error.WriteLine($"   or: --role signer {IssueNodeFlag} {ApplyFlag} <config.yaml>");
             return 1;
         }
-        var caPath = SignerConfig.ResolvePath(signer.IdentityCa, baseDirectory);
-        var serverPath = SignerConfig.ResolvePath(signer.ServerCertificate, baseDirectory);
+        var caPath = paths.ResolveFile(signer.IdentityCa);
+        var serverPath = paths.ResolveFile(signer.ServerCertificate);
         if (!File.Exists(caPath) || !File.Exists(serverPath))
         {
-            Console.Error.WriteLine($"[FATAL] No signer identity at {caPath}; run  --role signer {InitFlag}  first.");
+            Console.Error.WriteLine($"[FATAL] No signer identity at {caPath}; run  {RoleArgs(paths)} {InitFlag}  first.");
             return 1;
         }
 
@@ -193,7 +215,7 @@ public static class SignerIdentityCommands
             return ApplyToConfig(applyTo, signer, dialHost, listenPort, clientPin, serverPin, clientPassword);
         }
 
-        Console.WriteLine("On the signer, set in config.yaml and restart the signer unit:");
+        Console.WriteLine($"On the signer, set in {(paths.IsDedicated ? paths.ConfigPath : "config.yaml")} and restart the signer unit:");
         Console.WriteLine("  Signer:");
         Console.WriteLine($"    PinnedClientSpki: \"{clientPin}\"");
         Console.WriteLine();

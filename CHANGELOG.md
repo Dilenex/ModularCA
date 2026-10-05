@@ -27,6 +27,14 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   read its keystore and passphrase; the signer could also not reach its own binary at all. The
   signer unit now ships and is installed. The pre-restore snapshot and the default `--backup`
   archive live under `backups/`.
+- **The signer reads its settings from a directory the node cannot write.** With
+  `--signer-dir /opt/modularca/signer`, now on the packaged signer unit, the signer reads
+  `signer.yaml`, `db.yaml`, `keystore.yaml` and its identity from that directory and nothing
+  under `config/`, and logs there. On one host the node could otherwise set the PKCS#11 module
+  the signer loads, its client pin and its listen address. The keystore unlock no longer reads
+  `config/config.yaml` and `db.yaml` behind the caller's back. Existing split installs keep
+  running on `config/` with a warning until moved (`--migrate-signer-dir`; README-DEPLOY.md,
+  "Two units").
 - **Licences fail closed** while the vendor key is a placeholder.
 - **Expired certificates say what to do.** The dashboard counted from one page of the list; it
   now uses a scoped lifecycle summary, separates expired certificates that were replaced (renewed

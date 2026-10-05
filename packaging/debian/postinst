@@ -21,6 +21,11 @@ DB_OWNERSHIP=/usr/share/modularca/db-ownership.sh
 # files, owned by root. packaging/install.sh keeps the same list, and ReadWritePaths= in
 # modularca.service names the same directories.
 RUNTIME_DIRS="config keystores logs backups"
+# The split signer's own directory (--signer-dir in modularca-signer.service). The operator creates
+# it for modularca-signer; this script never creates, chowns or chmods it. The package ships nothing
+# there, so set_program_ownership never reaches it either.
+SIGNER_DIR=signer
+SIGNER_USER=modularca-signer
 
 runtime_mode() {
     case $1 in
@@ -38,7 +43,7 @@ program_paths() {
         esac
         top=${path#"$APP_DIR"/}
         top=${top%%/*}
-        case " $RUNTIME_DIRS " in
+        case " $RUNTIME_DIRS $SIGNER_DIR " in
             *" $top "*) continue ;;
         esac
         printf '%s\n' "$path"
@@ -95,10 +100,27 @@ seed_config() {
     done
 }
 
+# Says what it finds of the signer's own directory, and changes nothing in it: one that is not
+# $SIGNER_USER's is warned about, since whoever owns it can change what the signer reads.
+check_signer_dir() {
+    path=$APP_DIR/$SIGNER_DIR
+    [ -e "$path" ] || [ -L "$path" ] || return 0
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
+        echo "ModularCA: WARNING: $path is not a directory; the signer reads the shared config/ until it is." >&2
+        return 0
+    fi
+    owner=$(stat -c %U "$path")
+    if [ "$owner" != "$SIGNER_USER" ]; then
+        echo "ModularCA: WARNING: $path belongs to $owner, not $SIGNER_USER: $owner can change what the signer reads; left as it is." >&2
+        echo "ModularCA:   fix: chown -R $SIGNER_USER:$SIGNER_USER $path && chmod 0700 $path" >&2
+    fi
+}
+
 set_ownership() {
     set_program_ownership
     prepare_runtime_dirs
     seed_config
+    check_signer_dir
 }
 
 # Starts, without waiting, the units prerm recorded as running: the node before the signer. The

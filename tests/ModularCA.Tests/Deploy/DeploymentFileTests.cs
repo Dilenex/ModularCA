@@ -31,6 +31,18 @@ public class DeploymentFileTests
     }
 
     [Fact]
+    public void The_signer_reads_its_own_directory_and_only_the_signer_may_write_it()
+    {
+        var signer = Directives("deploy/modularca-signer.service");
+        Assert.Contains("ExecStart=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer", signer);
+        var writable = Assert.Single(signer, d => d.StartsWith("ReadWritePaths=", StringComparison.Ordinal));
+        Assert.Equal(new[] { "/opt/modularca/keystores", "-/opt/modularca/signer" }, writable["ReadWritePaths=".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+        var node = Directives("deploy/modularca.service");
+        Assert.DoesNotContain(node, d => d.StartsWith("ReadWritePaths=", StringComparison.Ordinal) && d.Contains("signer", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void The_package_ships_the_repair_script_and_its_helper_root_owned_outside_the_payload()
     {
         var sql = NfpmEntry("dst: " + SchemaOwnership.LinuxRepairScriptPath);

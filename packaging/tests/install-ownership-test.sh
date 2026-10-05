@@ -11,7 +11,9 @@
 # an upgrade of a single-process install gives back to root what an older installer gave to
 # modularca and touches nothing in config/, keystores/ or logs/; an upgrade of a split install
 # leaves the signer's keystores/, keystore.yaml and identity and the config/ group and modes
-# exactly as they were. Also: one list of runtime directories in both scripts and the unit.
+# exactly as they were; the signer's own directory (signer/) is never created, copied into, chowned
+# or chmodded, and one the node owns is warned about. Also: one list of runtime directories in both
+# scripts and the node's unit, which cannot write signer/, and the signer's unit pointed at it.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -290,6 +292,47 @@ check "split: the signer keeps keystores/, keystore.yaml and its identity; confi
 check "split: no runtime directory is chowned or chmodded" 'untouched "$A/config" && untouched "$A/keystores" && untouched "$A/logs" && untouched "$A/backups"'
 check "split: the binaries the signer runs are root's" 'is "$A" "root root 0755" && is "$A/ModularCA.API" "root root 0755" && is "$A/ModularCA.API.dll" "root root 0644"'
 
+# ── install.sh: a split install with the signer's own directory ────────────────────────────────
+signer_dir_state() {
+    put "$A/signer/" modularca-signer modularca-signer 0700
+    put "$A/signer/signer.yaml" modularca-signer modularca-signer 0600
+    put "$A/signer/db.yaml" modularca-signer modularca-signer 0600
+    put "$A/signer/keystore.yaml" modularca-signer modularca-signer 0600
+    put "$A/signer/signer-server.pfx" modularca-signer modularca-signer 0600
+    put "$A/signer/signer-identity-ca.pfx" modularca-signer modularca-signer 0600
+    put "$A/signer/logs/" modularca-signer modularca-signer 0700
+    put "$A/signer/logs/modularca-20261005.log" modularca-signer modularca-signer 0600
+}
+signer_dir_kept() {
+    is "$A/signer" "modularca-signer modularca-signer 0700" \
+        && is "$A/signer/signer.yaml" "modularca-signer modularca-signer 0600" \
+        && is "$A/signer/db.yaml" "modularca-signer modularca-signer 0600" \
+        && is "$A/signer/keystore.yaml" "modularca-signer modularca-signer 0600" \
+        && is "$A/signer/signer-server.pfx" "modularca-signer modularca-signer 0600" \
+        && is "$A/signer/signer-identity-ca.pfx" "modularca-signer modularca-signer 0600" \
+        && is "$A/signer/logs" "modularca-signer modularca-signer 0700" \
+        && is "$A/signer/logs/modularca-20261005.log" "modularca-signer modularca-signer 0600"
+}
+reset; make_src; split_state; signer_dir_state
+mkdir -p "$WORK/src/signer"; : > "$WORK/src/signer/from-the-archive"
+OUT=$(run_install)
+check "signer dir: runs to the end" 'printf "%s" "$OUT" | grep -q RETURNED'
+check "signer dir: never chowned or chmodded, nor anything in it" 'untouched "$A/signer"'
+check "signer dir: keeps its owner and modes, contents included" 'signer_dir_kept'
+check "signer dir: nothing from the archive is copied into it" '[ ! -e "$A/signer/from-the-archive" ]'
+check "signer dir: said to belong to the signer, and not named as a leftover" 'printf "%s" "$OUT" | grep -q "signer directory: .*/signer belongs to modularca-signer" && ! printf "%s" "$OUT" | grep -q "left as they are: .*signer"'
+check "signer dir: the rest of the split is kept as before" 'split_kept && untouched "$A/config" && untouched "$A/keystores"'
+
+reset; make_src; split_state
+put "$A/signer/" modularca modularca 0700
+put "$A/signer/signer.yaml" modularca modularca 0600
+OUT=$(run_install)
+check "signer dir owned by the node: warned about and left as it is" 'printf "%s" "$OUT" | grep -q "signer belongs to modularca, not modularca-signer" && untouched "$A/signer" && is "$A/signer" "modularca modularca 0700" && is "$A/signer/signer.yaml" "modularca modularca 0600"'
+
+reset; make_src
+OUT=$(run_install)
+check "no signer dir: none is created" '[ ! -e "$A/signer" ] && ! printf "%s" "$OUT" | grep -q "signer directory"'
+
 # ── install.sh: a run that stopped part way, and a symlinked runtime directory ──────────────────
 reset; make_src
 put "$A/config/" root root 0755
@@ -349,6 +392,16 @@ check "postinst split: runs to the end" 'printf "%s" "$OUT" | grep -q RETURNED'
 check "postinst split: the signer keeps keystores/, keystore.yaml and its identity; config/ keeps its group and modes" 'split_kept'
 check "postinst split: no runtime directory is chowned or chmodded" 'untouched "$A/config" && untouched "$A/keystores" && untouched "$A/logs" && untouched "$A/backups"'
 
+reset; deb_payload; split_state; signer_dir_state
+OUT=$(run_postinst)
+check "postinst signer dir: runs to the end" 'printf "%s" "$OUT" | grep -q RETURNED'
+check "postinst signer dir: never chowned or chmodded, and keeps everything" 'untouched "$A/signer" && signer_dir_kept && ! printf "%s" "$OUT" | grep -q WARNING'
+
+reset; deb_payload; split_state
+put "$A/signer/" modularca modularca 0700
+OUT=$(run_postinst)
+check "postinst signer dir owned by the node: warned about and left as it is" 'printf "%s" "$OUT" | grep -q "signer belongs to modularca, not modularca-signer" && untouched "$A/signer" && is "$A/signer" "modularca modularca 0700"'
+
 # ── install.sh: the signer's unit ──────────────────────────────────────────────────────────────
 reset; make_src
 echo packaged > "$WORK/src/deploy/modularca-signer.service"
@@ -372,6 +425,10 @@ INSTALL_LIST=$(sed -n 's/^RUNTIME_DIRS=(\(.*\))$/\1/p' "$INSTALL_SH")
 POSTINST_LIST=$(sed -n 's/^RUNTIME_DIRS="\(.*\)"$/\1/p' "$POSTINST")
 UNIT_LIST=$(sed -n 's/^ReadWritePaths=//p' "$UNIT_FILE" | tr ' ' '\n' | sed 's|^/opt/modularca/||' | tr '\n' ' ' | sed 's/ $//')
 check "install.sh, postinst and the unit's ReadWritePaths name the same runtime directories" '[ -n "$INSTALL_LIST" ] && [ "$INSTALL_LIST" = "$POSTINST_LIST" ] && [ "$INSTALL_LIST" = "$UNIT_LIST" ]'
+SIGNER_UNIT_FILE="$HERE/../../deploy/modularca-signer.service"
+check "the node's unit cannot write the signer's directory" '! grep "^ReadWritePaths=" "$UNIT_FILE" | grep -q signer'
+check "the signer's unit runs with --signer-dir /opt/modularca/signer and may write only there and keystores/" 'grep -qx "ExecStart=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer" "$SIGNER_UNIT_FILE" && grep -qx "ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer" "$SIGNER_UNIT_FILE"'
+check "neither script names the signer's directory in a chown, chmod or install" '! grep -E "^[[:space:]]*(chown|chmod|install)\b.*SIGNER_DIR" "$INSTALL_SH" "$POSTINST" >/dev/null'
 check "neither script hands the whole tree to the service account" '! grep -qE "chown -R \"?\\\$SERVICE_USER" "$INSTALL_SH" "$POSTINST"'
 check "install.sh sets ownership after copying the payload" '[ "$(grep -n "^install_payload$" "$INSTALL_SH" | cut -d: -f1)" -lt "$(grep -n "^set_ownership$" "$INSTALL_SH" | cut -d: -f1)" ]'
 check "postinst runs its ownership step on configure" 'sed -n "/^configure)/,/^    ;;/p" "$POSTINST" | grep -qx "    set_ownership"'

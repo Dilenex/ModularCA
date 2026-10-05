@@ -10,6 +10,7 @@
 # Idempotent. Safe to re-run for an upgrade. The program files belong to root; the service account
 # owns only the runtime directories (RUNTIME_DIRS), and once one exists the script never changes
 # its ownership, its mode or its contents, so a split install's signer keeps what it was given.
+# The signer's own directory ($APP_DIR/signer) is never created, copied into or changed.
 #
 # On an upgrade (an existing config/db.yaml) the NEW build's --upgrade-check runs first, as the
 # service account against the installed config: it dry-runs every pending migration and rolls
@@ -34,6 +35,9 @@ SIGNER_UNIT=/etc/systemd/system/modularca-signer.service
 RUNTIME_DIRS=(config keystores logs backups)
 # Parts of the archive that are not copied into $APP_DIR.
 NOT_INSTALLED=(deploy share install.sh README-DEPLOY.md)
+# The split signer's own directory (--signer-dir in modularca-signer.service). The operator creates
+# it for modularca-signer; this script never creates, copies into, chowns or chmods it.
+SIGNER_DIR=signer
 STAGE_PARENT=${APP_DIR%/*}
 SKIP_UPGRADE_CHECK=0
 STAGE=
@@ -106,7 +110,7 @@ precheck_archive() {
 program_entries() {
     local name skip
     while IFS= read -r name; do
-        for skip in "${RUNTIME_DIRS[@]}" "${NOT_INSTALLED[@]}"; do
+        for skip in "${RUNTIME_DIRS[@]}" "${NOT_INSTALLED[@]}" "$SIGNER_DIR"; do
             [[ $name == "$skip" ]] && continue 2
         done
         printf '%s\n' "$name"
@@ -187,7 +191,7 @@ warn_leftovers() {
     for path in "$APP_DIR"/* "$APP_DIR"/.[!.]*; do
         [[ -e $path || -L $path ]] || continue
         name=${path##*/}
-        for skip in "${RUNTIME_DIRS[@]}"; do
+        for skip in "${RUNTIME_DIRS[@]}" "$SIGNER_DIR"; do
             [[ $name == "$skip" ]] && continue 2
         done
         [[ -e "$SRC/$name" ]] && continue
@@ -196,6 +200,24 @@ warn_leftovers() {
     if [[ ${#found[@]} -gt 0 ]]; then
         warn "not part of this build and still owned by $SERVICE_USER, left as they are: ${found[*]}"
         warn "remove what an older build left; a path in config.yaml needs ReadWritePaths= in a drop-in"
+    fi
+}
+
+# Says what it finds of the signer's own directory, and changes nothing in it: one that is not
+# $SIGNER_USER's is warned about, since whoever owns it can change what the signer reads.
+check_signer_dir() {
+    local path=$APP_DIR/$SIGNER_DIR owner
+    [[ -e $path || -L $path ]] || return 0
+    if [[ -L $path || ! -d $path ]]; then
+        warn "$path is not a directory; the signer reads the shared config/ until it is"
+        return 0
+    fi
+    owner=$(stat -c %U "$path")
+    if [[ $owner == "$SIGNER_USER" ]]; then
+        note "signer directory: $path belongs to $SIGNER_USER and is left as it is"
+    else
+        warn "$path belongs to $owner, not $SIGNER_USER: $owner can change what the signer reads; left as it is"
+        warn "  fix: chown -R $SIGNER_USER:$SIGNER_USER $path && chmod 0700 $path"
     fi
 }
 
@@ -208,6 +230,7 @@ set_ownership() {
     prepare_runtime_dirs
     seed_examples
     warn_leftovers
+    check_signer_dir
 }
 
 # Installs a packaged systemd unit, unless one there differs from it.

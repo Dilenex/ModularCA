@@ -49,6 +49,32 @@ var bootstrapConsoleFormat = ConsoleLogFormatResolver.Resolve(
     underSystemd: SystemdHelpers.IsSystemdService(),
     inContainer: string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase));
 
+// Where a signer process reads its files: the shared layout under config/, or the directory
+// --signer-dir names (SignerPaths). Resolved first, because the signer's logs go there too. The
+// flag is the signer role's alone; a directory it names that does not exist yet is the shared
+// layout, warned about below, so a split install upgraded before it migrated keeps running.
+SignerPaths signerPaths;
+string? absentSignerDirectory = null;
+try
+{
+    var signerCommand = ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args)
+        || ModularCA.API.Startup.SignerDirectoryMigration.IsNamedIn(args);
+    if (signerCommand)
+        signerPaths = SignerPaths.FromArgs(args, AppContext.BaseDirectory);
+    else
+        signerPaths = SignerPaths.ForRun(args, AppContext.BaseDirectory, out absentSignerDirectory);
+    if (SignerPaths.IsNamedIn(args) && ModularCA.API.Startup.ProcessRoles.Parse(args) != ModularCA.API.Startup.ProcessRole.Signer)
+        throw new ArgumentException($"{SignerPaths.Flag} is read by the signer role only: add --role signer.");
+    if (signerCommand && signerPaths.SignerDirectory is { } namedDirectory && !Directory.Exists(namedDirectory))
+        throw new ArgumentException($"{namedDirectory} does not exist. Create it owned by the signer's account, mode 0700, first.");
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"[FATAL] {ex.Message}");
+    Environment.Exit(1);
+    throw;
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -65,10 +91,14 @@ switch (bootstrapConsoleFormat)
 
 Log.Logger = bootstrapConfig
     .WriteTo.File(new CompactJsonFormatter(),
-        Path.Combine(AppContext.BaseDirectory, "logs", "modularca-bootstrap-.log"),
+        Path.Combine(signerPaths.LogsDirectory, "modularca-bootstrap-.log"),
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 14)
     .CreateBootstrapLogger();
+
+if (absentSignerDirectory != null)
+    Log.Warning("{Flag} names {Directory}, which does not exist: the signer reads the shared layout under config/ as before. "
+        + "Create the directory and migrate as README-DEPLOY.md, \"Two units\", describes.", SignerPaths.Flag, absentSignerDirectory);
 
 // === Handle CLI flags ===
 if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
@@ -185,23 +215,24 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
 }
 // The command-line backup and restore run before the node's container exists, so the keystore
 // files go through a maintenance signer: locked, holding no key, auditing to the application
-// database the operation names. The node's own paths use its signer instead.
-static ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
+// database the operation names. The node's own paths use its signer instead. keystore.yaml is
+// the signer's (signerPaths): config/keystore.yaml, or the one in --signer-dir.
+ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
     => ModularCA.Keystore.Signing.MaintenanceSigner.Create(
-        Path.Combine(AppContext.BaseDirectory, "keystores"),
-        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+        signerPaths.KeystoresDirectory,
+        signerPaths.KeystoreYamlPath,
         appConnectionString);
 
 // The command-line backup also wraps the Data Protection key ring and the SSH CA keys, which
 // needs the keystore unlocked; where it cannot be (a node whose signer is remote) the backup
 // gets the locked maintenance signer and refuses rather than write the ring in the clear.
-static ModularCA.Shared.Signing.ISigningService BackupSignerFor(string appConnectionString)
+ModularCA.Shared.Signing.ISigningService BackupSignerFor(string appConnectionString)
 {
     try
     {
         return ModularCA.Keystore.Signing.MaintenanceSigner.CreateUnlocked(
-            Path.Combine(AppContext.BaseDirectory, "keystores"),
-            Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+            signerPaths.KeystoresDirectory,
+            signerPaths.KeystoreYamlPath,
             appConnectionString);
     }
     catch (Exception ex)
@@ -320,14 +351,15 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
     var writeMode = args.Contains("--write", StringComparer.OrdinalIgnoreCase);
     Log.Warning("Operator triggered keystore pin backfill writeMode={WriteMode}", writeMode);
 
-    var cfgPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+    // The signer's files: config/ by default, its own directory with --role signer --signer-dir.
+    var cfgPath = signerPaths.ConfigPath;
     if (!File.Exists(cfgPath))
     {
-        Console.Error.WriteLine("❌ config.yaml not found — bootstrap must complete before backfill can run.");
+        Console.Error.WriteLine($"❌ {cfgPath} not found — bootstrap must complete before backfill can run.");
         Environment.Exit(1);
     }
     var cfg = YamlConfigLoader.Load(cfgPath);
-    var dbYamlPath2 = Path.Combine(AppContext.BaseDirectory, "config", "db.yaml");
+    var dbYamlPath2 = signerPaths.DbYamlPath;
     var dbYaml2 = YamlDbConfigLoader.Load(dbYamlPath2);
     if (dbYaml2 != null)
     {
@@ -346,10 +378,10 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
         .UseNpgsql(backfillConnStr)
         .Options;
     using var backfillDb = new ModularCADbContext(dbOptions);
-    var keystoresDir = Path.Combine(AppContext.BaseDirectory, "keystores");
+    var keystoresDir = signerPaths.KeystoresDirectory;
     // Supply the secondary passphrase so the backfill can authenticate the pin it writes.
     // Without it the pin goes in unprotected, which is the state the backfill exists to clear.
-    var keystoreYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
+    var keystoreYamlPath = signerPaths.KeystoreYamlPath;
     var report = ModularCA.Keystore.Services.KeystoreService.BackfillPinnedSpki(
         backfillDb, keystoresDir, persist: writeMode,
         secondaryPassphraseResolver: name =>
@@ -456,15 +488,30 @@ if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.O
     Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
 }
 
+// Moves a split install's signer onto its own directory; see SignerDirectoryMigration.
+if (ModularCA.API.Startup.SignerDirectoryMigration.IsNamedIn(args))
+{
+    Log.Information("Operator triggered {Flag} into {Directory}", ModularCA.API.Startup.SignerDirectoryMigration.Flag, signerPaths.SignerDirectory ?? "(none)");
+    var migrateExit = signerPaths.IsDedicated
+        ? ModularCA.API.Startup.SignerDirectoryMigration.Run(SignerPaths.Shared(AppContext.BaseDirectory), signerPaths, Console.Out, Console.Error)
+        : 1;
+    if (!signerPaths.IsDedicated)
+        Console.Error.WriteLine($"Usage: --role signer {SignerPaths.Flag} <dir> {ModularCA.API.Startup.SignerDirectoryMigration.Flag}   (run as the signer's account)");
+    await Log.CloseAndFlushAsync();
+    Environment.Exit(migrateExit);
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSystemd();
 
-// Load DB credentials from db.yaml (runtime app DB creds)
-var dbYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "db.yaml");
+// Load DB credentials from db.yaml (runtime app DB creds). A signer run with --signer-dir reads
+// its own db.yaml and signer.yaml instead (signerPaths); every other process, and a signer
+// without the flag, reads config/db.yaml and config/config.yaml.
+var dbYamlPath = signerPaths.DbYamlPath;
 var dbYaml = YamlDbConfigLoader.Load(dbYamlPath);
 
 // Load config.yaml for everything else (JWT, HTTPS, logging, scheduler, etc.)
-var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+var configPath = signerPaths.ConfigPath;
 SystemConfig config;
 bool isSetupMode = false;
 
@@ -505,6 +552,11 @@ if (dbYaml != null)
     config.DB.Audit.Username = dbYaml.Audit.Username;
     config.DB.Audit.Password = dbYaml.Audit.Password;
     config.DB.Audit.SslMode = dbYaml.Audit.SslMode;
+}
+else if (signerPaths.IsDedicated)
+{
+    // The signer's own directory has no setup mode, and nothing under config/ stands in for it.
+    isSetupMode = true;
 }
 else
 {
@@ -557,7 +609,7 @@ if (config.LdapAuth.Enabled && !config.LdapAuth.UseSsl)
         "Set LdapAuth.UseSsl=true or use LDAPS (port 636) for production deployments.");
 }
 
-if (isSetupMode)
+if (isSetupMode && !signerPaths.IsDedicated)
 {
     Console.WriteLine("[WARNING] Running in setup mode.");
     Console.WriteLine("         Navigate to the web interface to complete initial setup.");
@@ -822,12 +874,12 @@ if (ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args))
         Environment.Exit(1);
     }
     Log.Information("Operator triggered a signer identity command ({Args})", string.Join(' ', args));
-    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, AppContext.BaseDirectory));
+    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, signerPaths));
 }
 if (processRoles == ModularCA.API.Startup.ProcessRole.Signer)
 {
     Log.Information("Starting in the signer role");
-    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode));
+    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode, signerPaths));
 }
 
 // The setup wizard is the control role's. A process without it has nothing to serve on an

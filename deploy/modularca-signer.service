@@ -8,10 +8,14 @@
 # install.sh installs this unit as /etc/systemd/system/modularca-signer.service and the .deb as
 # /lib/systemd/system/modularca-signer.service; neither enables it. Set up the split as
 # README-DEPLOY.md, "Two units: the signer apart from the node", describes (after the node is set
-# up as a single process and its wizard has completed): the signer's account, the ownership of
-# keystores/ and config/, the identity, then
+# up as a single process and its wizard has completed): the signer's account, keystores/ and the
+# signer's own directory /opt/modularca/signer, the identity, then
 #   sudo systemctl enable --now modularca-signer
 # Upgrades leave the ownership the split set alone. The binaries this unit runs belong to root.
+#
+# --signer-dir: the signer reads signer.yaml, db.yaml, keystore.yaml and its identity from
+# /opt/modularca/signer (modularca-signer, 0700) and nothing under config/, which the node writes.
+# While that directory does not exist the signer reads config/ as before and warns at every start.
 #
 # Logs:  journalctl -u modularca-signer -f
 
@@ -38,7 +42,7 @@ NotifyAccess=main
 User=modularca-signer
 Group=modularca-signer
 WorkingDirectory=/opt/modularca
-ExecStart=/opt/modularca/ModularCA.API --role signer
+ExecStart=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer
 
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=DOTNET_CONSOLE_ANSI_COLOR=false
@@ -55,7 +59,7 @@ CapabilityBoundingSet=
 # --- Hardening -------------------------------------------------------------------
 # This is the process that holds the CA private keys. Everything the node's unit locks down
 # is locked down here, and the writable surface is smaller still: the keystores (a committed
-# key appends to them) and the logs, nothing else.
+# key appends to them) and the signer's own directory (its logs), nothing else.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -75,10 +79,10 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
-# Only what the signer writes. config/ is read-only here: the identity commands run as this
-# user before the unit starts, and the unit itself changes no configuration. logs/ belongs to the
-# node's account, so on one host the signer's file logs are refused there and the journal has them.
-ReadWritePaths=/opt/modularca/keystores /opt/modularca/logs
+# Only what the signer writes: the keystores, and its own directory, where its file logs and
+# keystore audit go (logs/ there). The leading "-" lets the unit start while the directory does not
+# exist yet. config/ and logs/ are the node's: read-only here, and not read with --signer-dir.
+ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
 
 # Core dumps of this process would contain unwrapped key material.
