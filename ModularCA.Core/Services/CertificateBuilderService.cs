@@ -599,10 +599,11 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Public helper that builds a <see cref="NameConstraints"/> ASN.1 structure from a pair
         /// of JSON arrays in the same format the signing-profile entity uses
-        /// (<c>["DNS:.example.com", "IP:10.0.0.0/8", "Email:@example.com"]</c>). Returns
+        /// (<c>["DNS:.example.com", "IP:10.0.0.0/8", "EMAIL:example.com"]</c>). Returns
         /// <c>null</c> when both inputs are null/empty so callers can treat the whole
         /// extension as optional. Used by <c>CaCreationService</c> to attach
         /// NameConstraints at CA-creation time, before the per-CA signing profile exists.
+        /// Throws <see cref="InvalidOperationException"/> on an entry <see cref="NameConstraintRules"/> refuses.
         /// </summary>
         /// <param name="permittedJson">JSON array of permitted general-name entries.</param>
         /// <param name="excludedJson">JSON array of excluded general-name entries.</param>
@@ -618,45 +619,11 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Parses a JSON array of general name entries (e.g. "DNS:example.com") into GeneralSubtree objects
-        /// for use in NameConstraints extensions.
+        /// for use in NameConstraints extensions, through <see cref="NameConstraintRules.ParseJson"/>: the
+        /// parser the save-time checks run. Null for a blank field or an empty array. An invalid entry
+        /// throws <see cref="InvalidOperationException"/> instead of being dropped, since dropping it
+        /// would encode a constraint other than the one configured.
         /// </summary>
-        private static GeneralSubtree[]? ParseSubtrees(string? json)
-        {
-            if (string.IsNullOrWhiteSpace(json)) return null;
-            var entries = JsonSerializer.Deserialize<List<string>>(json, SafeJsonOptions.Default);
-            if (entries == null || entries.Count == 0) return null;
-
-            return entries.Select(entry =>
-            {
-                var colonIdx = entry.IndexOf(':');
-                if (colonIdx < 0) return null;
-                var prefix = entry[..colonIdx].Trim().ToUpperInvariant();
-                var value = entry[(colonIdx + 1)..].Trim();
-
-                GeneralName? gn = prefix switch
-                {
-                    "DNS" => new GeneralName(GeneralName.DnsName, value),
-                    "IP" => new GeneralName(GeneralName.IPAddress, value),
-                    "EMAIL" => new GeneralName(GeneralName.Rfc822Name, value),
-                    "URI" => new GeneralName(GeneralName.UniformResourceIdentifier, value),
-                    // DirectoryName subtrees are parsed through the DN
-                    // sanitizer before handing them to X509Name so a malicious profile
-                    // can't smuggle control chars / BIDI overrides into a permitted /
-                    // excluded DN subtree.
-                    "DN" => new GeneralName(
-                        GeneralName.DirectoryName,
-                        new X509Name(SanitizeDnString(value))),
-                    _ => null
-                };
-                return gn != null ? new GeneralSubtree(gn) : null;
-            }).Where(s => s != null).ToArray()!;
-        }
-
-        /// <summary>
-        /// Applies <see cref="DnComponentSanitizer"/> to every component of a distinguished name.
-        /// Used by <see cref="ParseSubtrees"/> so name-constraint subtrees cannot carry invisible
-        /// or spoofing characters into a certificate.
-        /// </summary>
-        private static string SanitizeDnString(string dn) => DnComponentSanitizer.SanitizeDistinguishedName(dn);
+        private static GeneralSubtree[]? ParseSubtrees(string? json) => NameConstraintRules.ParseJson(json);
     }
 }

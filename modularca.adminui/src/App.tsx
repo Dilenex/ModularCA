@@ -15,6 +15,7 @@ import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
 import { legacySpacePath } from './legacyPaths';
+import { profileDetailRoute, profileNewRoute } from './pages/profiles/profileRoutes';
 import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
@@ -227,12 +228,20 @@ const App: React.FC = () => {
 
                                                             {/* Profiles */}
                                                             <Route path="/profiles" element={<ProtectedRoute {...CA_MANAGE}><ProfileManagement /></ProtectedRoute>} />
-                                                            <Route path="/profiles/request/:id" element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/cert/:id" element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/signing/:id" element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-signing/:id" element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-cert/:id" element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-request/:id" element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail /></ProtectedRoute>} />
+                                                            {/* Each /new is listed before its /:id and keyed apart from it, so creating
+                                                                remounts the page on the stored profile in view mode. */}
+                                                            <Route path={profileNewRoute('request')} element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('request')} element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('cert')} element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('cert')} element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('signing')} element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('signing')} element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-signing')} element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-signing')} element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-cert')} element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-cert')} element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-request')} element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-request')} element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail /></ProtectedRoute>} />
                                                             <Route path="/templates" element={<ProtectedRoute {...CA_MANAGE}><CertificateTemplates /></ProtectedRoute>} />
 
                                                             {/* Protocols */}

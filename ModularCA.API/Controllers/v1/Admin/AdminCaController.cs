@@ -437,7 +437,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// with a parent in that space or one the caller holds <c>ca.manage</c> on. The space
         /// and parent come from the body, so the check is made here rather than by a route policy
         /// (see <see cref="CaCreationAccess"/>). A parent that is disabled, revoked or outside its
-        /// validity is refused before any ceremony is opened. The body names the new CA's scope
+        /// validity is refused before any ceremony is opened, as is a name constraint
+        /// <see cref="NameConstraintRules"/> refuses (400). The body names the new CA's scope
         /// explicitly, a space id or scope "instance"; neither is a 400.
         /// </summary>
         [HttpPost("create-intermediate")]
@@ -481,6 +482,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             // Enforce central key-algorithm policy before touching the service layer
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+
+            // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
+            if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
+                ?? NameConstraintRules.ListError(request.NameConstraintsExcluded, nameof(request.NameConstraintsExcluded))) is string ncError)
+                return BadRequest(new { error = ncError });
 
             // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
             var space = await new EffectivePolicyResolver(_db).ResolveAsync(request.SpaceId);
@@ -678,7 +684,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Create a new self-signed root CA. Requires step-up MFA verification. The body names the
-        /// CA's scope explicitly, a space id or scope "instance"; neither is a 400.
+        /// CA's scope explicitly, a space id or scope "instance"; neither is a 400. A name
+        /// constraint <see cref="NameConstraintRules"/> refuses is a 400, before any ceremony is opened.
         /// </summary>
         [HttpPost("create-root")]
         [Authorize(Policy = "SystemAdmin")]
@@ -696,6 +703,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             // Enforce central key-algorithm policy before touching the service layer
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+
+            // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
+            if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
+                ?? NameConstraintRules.ListError(request.NameConstraintsExcluded, nameof(request.NameConstraintsExcluded))) is string ncError)
+                return BadRequest(new { error = ncError });
 
             // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
             var rootSpace = await new EffectivePolicyResolver(_db).ResolveAsync(request.SpaceId);

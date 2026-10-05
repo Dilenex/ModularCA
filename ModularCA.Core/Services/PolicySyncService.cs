@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Utils;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -182,7 +183,10 @@ public class PolicySyncService : IPolicySyncService
     }
 
     /// <summary>
-    /// Parses and synchronizes signing profile definitions from YAML content.
+    /// Parses and synchronizes signing profile definitions from YAML content. A profile whose
+    /// name constraints <see cref="NameConstraintRules"/> refuses, or whose policy OIDs
+    /// <see cref="CertificatePolicyRules"/> refuses, is skipped with an error. YAML carries no
+    /// policy qualifiers, so a synced profile keeps the ones it has.
     /// </summary>
     private async Task<PolicySyncResult> SyncSigningProfilesAsync(string yamlContent)
     {
@@ -215,6 +219,20 @@ public class PolicySyncService : IPolicySyncService
                 if (string.IsNullOrWhiteSpace(yamlProfile.Name))
                 {
                     result.Errors.Add("Signing profile entry missing required 'name' field");
+                    continue;
+                }
+
+                // The same check the admin API applies at save, so a policy file cannot store
+                // constraints the certificate builder will refuse when it issues a CA certificate.
+                if ((NameConstraintRules.JsonError(yamlProfile.NameConstraintsPermitted, "nameConstraintsPermitted")
+                    ?? NameConstraintRules.JsonError(yamlProfile.NameConstraintsExcluded, "nameConstraintsExcluded")) is string ncError)
+                {
+                    result.Errors.Add($"Signing profile '{yamlProfile.Name}' not synced: {ncError}");
+                    continue;
+                }
+                if (CertificatePolicyRules.PolicyOidsError(yamlProfile.PolicyOids) is string policyError)
+                {
+                    result.Errors.Add($"Signing profile '{yamlProfile.Name}' not synced: {policyError}");
                     continue;
                 }
 

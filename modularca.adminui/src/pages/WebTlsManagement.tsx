@@ -7,6 +7,9 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
 import { inputClass as inputCls, labelClass as labelCls, FieldHint } from '@shared/components/forms';
 import ConfirmModal from '../components/ConfirmModal';
+import { TypedEntryListEditor } from '@shared/components/TypedEntryListEditor';
+import { type TypedEntry, entriesFromList, entriesToList, hasTypedEntryProblems } from '@shared/components/typedEntryList';
+import { INFRA_SAN_TYPES } from '@shared/generalNames';
 
 interface WebTlsCertStatusResponse {
     serialNumber: string;
@@ -35,7 +38,7 @@ interface ReissueFormState {
     locality: string;
     state: string;
     country: string;
-    sansText: string;
+    sans: TypedEntry[];
     validityDays: number;
     signingProfileId: string;
     keyAlgorithm: string;
@@ -60,7 +63,7 @@ const emptyForm: ReissueFormState = {
     locality: '',
     state: '',
     country: '',
-    sansText: '',
+    sans: [],
     validityDays: 397,
     signingProfileId: '',
     keyAlgorithm: 'ECDSA',
@@ -234,7 +237,7 @@ const ReissueCard: React.FC<{
                 locality: status.locality ?? '',
                 state: status.state ?? '',
                 country: status.country ?? '',
-                sansText: (status.sans ?? []).join('\n'),
+                sans: entriesFromList(status.sans, INFRA_SAN_TYPES),
                 validityDays: 397,
                 signingProfileId: status.signingProfileId ?? '',
                 keyAlgorithm: status.keyAlgorithm ?? 'ECDSA',
@@ -247,7 +250,10 @@ const ReissueCard: React.FC<{
     // The hostname this console is being reached on must survive the reissue, or the operator is
     // locked out the moment the new certificate is swapped in; nothing on this page can undo that.
     const consoleHost = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : '';
-    const requestedSans = form.sansText.split(/[\n,]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    // Compare the names alone: this matched the lines with their DNS:/IP: prefix still on, so the
+    // console host never matched and the lock-out warning showed on every reissue.
+    const requestedSans = form.sans.map((r) => r.value.trim().toLowerCase()).filter(Boolean);
+    const sansInvalid = hasTypedEntryProblems(form.sans, INFRA_SAN_TYPES);
     const consoleHostCovered = !consoleHost || requestedSans.some((san) => san === consoleHost || (san.startsWith('*.') && consoleHost.endsWith(san.slice(1)) && !consoleHost.slice(0, -san.length + 1).includes('.')));
 
     const handleReissue = async () => {
@@ -275,9 +281,7 @@ const ReissueCard: React.FC<{
                 locality: form.locality || undefined,
                 state: form.state || undefined,
                 country: form.country || undefined,
-                sans: form.sansText
-                    ? form.sansText.split('\n').map(s => s.trim()).filter(Boolean)
-                    : undefined,
+                sans: entriesToList(form.sans).length > 0 ? entriesToList(form.sans) : undefined,
                 validityDays: form.validityDays || undefined,
                 signingProfileId: form.signingProfileId || undefined,
                 keyAlgorithm: form.keyAlgorithm,
@@ -389,22 +393,16 @@ const ReissueCard: React.FC<{
             </div>
 
             <div>
-                <label className={labelCls}>Subject Alternative Names</label>
-                <textarea
-                    value={form.sansText}
-                    onChange={(e) => setForm({ ...form, sansText: e.target.value })}
-                    disabled={submitting || loading}
-                    rows={5}
-                    className={`${inputCls} font-mono`}
-                />
+                <span id="webtls-sans-label" className={labelCls}>Subject Alternative Names</span>
+                <TypedEntryListEditor id="webtls-sans" aria-label="Subject Alternative Names" aria-describedby="webtls-sans-hint"
+                    value={form.sans} onChange={(sans) => setForm({ ...form, sans })}
+                    types={INFRA_SAN_TYPES} addLabel="+ Add name" emptyText="No names." disabled={submitting || loading} />
                 {!consoleHostCovered && (
                     <FieldHint tone="warn">You are reaching this console as <span className="font-mono">{consoleHost}</span>, which is not in this list. Reissuing without it makes the console unreachable, and this page cannot undo that.</FieldHint>
                 )}
-                <p className="mt-1 text-xs text-ink-muted">
-                    One per line. Each entry must be prefixed with a type, e.g.{' '}
-                    <code className="px-1 bg-sunken rounded">DNS:api.example.com</code>{' '}
-                    or <code className="px-1 bg-sunken rounded">IP:10.0.0.5</code>.
-                </p>
+                <FieldHint id="webtls-sans-hint">
+                    DNS names and IP addresses only: the Web TLS certificate is built from a server-generated request that carries no other SAN types.
+                </FieldHint>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -515,7 +513,7 @@ const ReissueCard: React.FC<{
             <div>
                 <button
                     onClick={() => setConfirmReissue(true)}
-                    disabled={submitting || loading}
+                    disabled={submitting || loading || sansInvalid}
                     className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors"
                 >
                     {submitting ? 'Reissuing...' : 'Reissue Web TLS Certificate'}

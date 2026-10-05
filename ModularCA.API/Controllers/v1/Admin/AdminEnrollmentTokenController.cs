@@ -195,6 +195,11 @@ public class AdminEnrollmentTokenController(
         }
     }
 
+    /// <summary>
+    /// Generates an enrollment token for the target the selected profiles resolve to. A subject or
+    /// SAN restriction <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError"/>
+    /// refuses is a 400.
+    /// </summary>
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -218,6 +223,10 @@ public class AdminEnrollmentTokenController(
             if (!SpaceFence.From(HttpContext, Capabilities.CertRevoke).Allows(caInfo.Value.SpaceId))
                 return NotFound(new { error = "Enrollment target not found." });
         }
+
+        if ((ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError(request.SubjectRestriction, forSans: false, maxLength: 255)
+            ?? ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError(request.SANRestriction, forSans: true, maxLength: 500)) is string restrictionError)
+            return BadRequest(new { error = restrictionError });
 
         var expiresIn = TimeSpan.FromHours(request.ExpiresInHours ?? 24);
         var token = await tokenService.GenerateTokenAsync(

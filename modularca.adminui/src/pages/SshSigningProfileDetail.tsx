@@ -3,24 +3,27 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPutWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { SSH_EXTENSION_OPTIONS, parseJsonArray, BadgeList, MultiToggle } from './profileHelpers';
-import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+import { BadgeList, SubmitBlockedHint } from './profileHelpers';
 import { StepUpOps } from '@shared/generated';
+import { SshSigningProfileForm } from './profiles/SshSigningProfileForm';
+import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshSigningProfile';
+import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 
-const SSH_SIGNING_TAB = `/profiles?tab=${encodeURIComponent('SSH Signing')}`;
+const SSH_SIGNING_TAB = PROFILE_TYPES['ssh-signing'].listPath;
 
 /// <summary>
-/// Editable detail page for a single SSH signing profile (a tab on Profile Management). View shows
-/// the bound CA key, validity, allow flags and extensions; Edit changes all fields (step-up MFA save).
+/// Detail page for a single SSH signing profile (a tab on Profile Management), and with
+/// <c>isNew</c> the page that creates one. View shows the bound CA key, validity, allow flags and
+/// extensions; edit and create share SshSigningProfileForm. Both create and update need step-up MFA.
 /// </summary>
-const SshSigningProfileDetail: React.FC = () => {
+const SshSigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
@@ -34,11 +37,6 @@ const SshSigningProfileDetail: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
 
-    const emptyForm = {
-        name: '', description: '', sshCaKeyId: '', maxValidityHours: '720',
-        allowUserCerts: true, allowHostCerts: false, forceCommand: '', sourceAddressRestrictions: '',
-        defaultExtensions: [] as string[],
-    };
     const [editForm, setEditForm] = useState(emptyForm);
     const [initialForm, setInitialForm] = useState(emptyForm);
 
@@ -47,57 +45,51 @@ const SshSigningProfileDetail: React.FC = () => {
         setLoading(true);
         setError(null);
         Promise.all([
-            apiGet<any>('/api/v1/admin/ssh/profiles/signing'),
+            isNew ? Promise.resolve([]) : apiGet<any>('/api/v1/admin/ssh/profiles/signing'),
             apiGet<any>('/api/v1/admin/ssh/ca-keys').catch(() => []),
         ]).then(([data, keyData]) => {
             if (cancelled) return;
             const list = Array.isArray(data) ? data : [];
-            const p = list.find((x: any) => x.id === id) || null;
+            const p = isNew ? null : list.find((x: any) => x.id === id) || null;
             setProfile(p);
             setCaKeys(Array.isArray(keyData) ? keyData : []);
             if (p) {
-                const seeded = {
-                    name: p.name || '', description: p.description || '', sshCaKeyId: p.sshCaKeyId || '',
-                    maxValidityHours: String(p.maxValidityHours ?? 720),
-                    allowUserCerts: !!p.allowUserCerts, allowHostCerts: !!p.allowHostCerts,
-                    forceCommand: p.forceCommand || '',
-                    sourceAddressRestrictions: parseJsonArray(p.sourceAddressRestrictions).join(', '),
-                    defaultExtensions: parseJsonArray(p.defaultExtensions),
-                };
+                const seeded = formFromProfile(p);
                 setEditForm(seeded);
                 setInitialForm(seeded);
             }
             setLoading(false);
         }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load SSH signing profile')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [id, refresh]);
+    }, [id, refresh, isNew]);
 
     const caKeyName = (kid: string) => caKeys.find((k) => k.id === kid)?.name || kid;
 
+    const mode = isNew ? 'create' : 'edit';
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
-    // A profile that allows neither user nor host certificates can sign nothing; the server would
-    // still save it, and the signing form would then filter it out of every dropdown.
-    const signsNothing = !editForm.allowUserCerts && !editForm.allowHostCerts;
+    const blockedReasons = validate(editForm, mode);
 
     const handleSave = async () => {
         try {
-            await apiPutWithMfa(`/api/v1/admin/ssh/profiles/signing/${id}`, {
-                name: editForm.name, description: editForm.description || undefined, sshCaKeyId: editForm.sshCaKeyId,
-                maxValidityHours: parseInt(editForm.maxValidityHours) || 720,
-                allowUserCerts: editForm.allowUserCerts, allowHostCerts: editForm.allowHostCerts,
-                forceCommand: editForm.forceCommand || undefined,
-                sourceAddressRestrictions: JSON.stringify(editForm.sourceAddressRestrictions ? editForm.sourceAddressRestrictions.split(',').map((s) => s.trim()).filter(Boolean) : []),
-                defaultExtensions: JSON.stringify(editForm.defaultExtensions),
-            }, requireStepUp, StepUpOps.UpdateSshProfile, id!);
+            if (isNew) {
+                const created = await apiPostWithMfa<any>('/api/v1/admin/ssh/profiles/signing', formToCreateBody(editForm), requireStepUp, StepUpOps.CreateSshProfile);
+                showToast('success', 'SSH signing profile created');
+                navigate(created?.id ? profileDetailPath('ssh-signing', created.id) : SSH_SIGNING_TAB, { replace: true });
+                return;
+            }
+            await apiPutWithMfa(`/api/v1/admin/ssh/profiles/signing/${id}`, formToUpdateBody(editForm), requireStepUp, StepUpOps.UpdateSshProfile, id!);
             showToast('success', 'SSH signing profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to update SSH signing profile');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || (isNew ? 'Failed to create SSH signing profile' : 'Failed to update SSH signing profile'));
             throw err;
         }
     };
 
-    const handleCancel = () => setEditForm(initialForm);
+    const handleCancel = () => {
+        if (isNew) navigate(SSH_SIGNING_TAB);
+        else setEditForm(initialForm);
+    };
 
     const doDelete = async () => {
         setDeleting(true);
@@ -115,64 +107,36 @@ const SshSigningProfileDetail: React.FC = () => {
 
     if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
-    if (!profile) return (
+    if (!isNew && !profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-ink-muted">SSH signing profile not found.</p>
             <button onClick={() => navigate(SSH_SIGNING_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Signing Profiles</button>
         </div>
     );
 
-    const p = profile;
+    const p = profile ?? {};
+    const title = isNew ? 'New SSH signing profile' : p.name;
 
     return (
         <DetailPage
-            breadcrumbs={[{ label: 'Profile Management', to: SSH_SIGNING_TAB }, { label: 'SSH Signing Profiles', to: SSH_SIGNING_TAB }, { label: p.name }]}
-            title={p.name}
-            status={<span className="flex items-center gap-2">{p.allowUserCerts && <StatusBadge status="active" label="User" />}{p.allowHostCerts && <StatusBadge status="pending" label="Host" />}</span>}
-            subtitle={caKeyName(p.sshCaKeyId)}
+            breadcrumbs={[{ label: 'Profile Management', to: SSH_SIGNING_TAB }, { label: 'SSH Signing Profiles', to: SSH_SIGNING_TAB }, { label: title }]}
+            title={title}
+            status={isNew ? undefined : <span className="flex items-center gap-2">{p.allowUserCerts && <StatusBadge status="active" label="User" />}{p.allowHostCerts && <StatusBadge status="pending" label="Host" />}</span>}
+            subtitle={isNew ? undefined : caKeyName(p.sshCaKeyId)}
             backTo={SSH_SIGNING_TAB}
             editable
+            initialMode={isNew ? 'edit' : 'view'}
+            modeToggle={!isNew}
+            saveLabel={isNew ? 'Create' : 'Save'}
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name || !editForm.sshCaKeyId || signsNothing}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
+            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
-            {(mode) => mode === 'edit' ? (
-                <DetailSection title="Edit SSH Signing Profile">
-                    <div className="space-y-3 max-w-3xl">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
-                            <div>
-                                <label className={labelClass}>SSH CA Key</label>
-                                <select value={editForm.sshCaKeyId} onChange={(e) => setEditForm({ ...editForm, sshCaKeyId: e.target.value })} className={inputClass}>
-                                    <option value="">-- Select CA Key --</option>
-                                    {caKeys.map((k) => <option key={k.id} value={k.id}>{k.name} ({k.keyType})</option>)}
-                                </select>
-                            </div>
-                            <div><label className={labelClass}>Max Validity Hours</label><input type="text" inputMode="numeric" value={editForm.maxValidityHours} onChange={(e) => setEditForm({ ...editForm, maxValidityHours: e.target.value.replace(/\D/g, '') })} className={inputClass} /></div>
-                            <div>
-                                <label className={labelClass}>Force Command (optional)</label>
-                                <input type="text" value={editForm.forceCommand} onChange={(e) => setEditForm({ ...editForm, forceCommand: e.target.value })} className={inputClass} />
-                                <FieldHint tone={editForm.forceCommand.trim() ? 'warn' : 'muted'}>Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.</FieldHint>
-                            </div>
-                            <div>
-                                <label className={labelClass}>Source Address Restrictions (comma-separated)</label>
-                                <input type="text" value={editForm.sourceAddressRestrictions} onChange={(e) => setEditForm({ ...editForm, sourceAddressRestrictions: e.target.value })} className={inputClass} />
-                                <FieldHint>Addresses or CIDR ranges the certificate may be used from; the server rejects connections from anywhere else. Blank means no restriction.</FieldHint>
-                            </div>
-                        </div>
-                        <div>
-                            <div className="flex flex-wrap gap-4">
-                                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.allowUserCerts} onChange={(e) => setEditForm({ ...editForm, allowUserCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow User Certs</label>
-                                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.allowHostCerts} onChange={(e) => setEditForm({ ...editForm, allowHostCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow Host Certs</label>
-                            </div>
-                            {signsNothing && (
-                                <FieldHint tone="warn">This profile allows neither user nor host certificates, so it can sign nothing and will not appear in the signing form. Tick at least one before saving.</FieldHint>
-                            )}
-                        </div>
-                        <div><label className={labelClass}>Default Extensions</label><MultiToggle options={SSH_EXTENSION_OPTIONS} selected={editForm.defaultExtensions} onChange={(next) => setEditForm({ ...editForm, defaultExtensions: next })} /></div>
-                    </div>
+            {(viewMode) => viewMode === 'edit' ? (
+                <DetailSection title={isNew ? 'New SSH Signing Profile' : 'Edit SSH Signing Profile'}>
+                    <SubmitBlockedHint reasons={blockedReasons} />
+                    <SshSigningProfileForm value={editForm} onChange={setEditForm} mode={mode} caKeys={caKeys} />
                 </DetailSection>
             ) : (<>
                 <DetailSection title="SSH Signing Profile">

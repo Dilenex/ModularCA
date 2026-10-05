@@ -8,6 +8,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import DataCard from '../components/cards/DataCard';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
+import { StructuredValue } from '@shared/components/StructuredValue';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import ConfirmModal from '../components/ConfirmModal';
 import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
@@ -18,6 +19,7 @@ import {
     canonicalizeUsages, parseListField, keyUsageLabel,
     KEY_USAGE_OPTIONS, CeilingList,
 } from './profileHelpers';
+import { AlgorithmSummary, KeyPolicySummary } from './profiles/KeyPolicyEditor';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 
 function formatDate(d: string | null) {
@@ -29,16 +31,6 @@ function certStatus(cert: any): 'active' | 'revoked' | 'expired' {
     if (cert.revoked) return 'revoked';
     if (new Date(cert.notAfter) < new Date()) return 'expired';
     return 'active';
-}
-
-function parseJsonSafe(val: string | null | undefined): string {
-    if (!val) return '';
-    try {
-        const parsed = JSON.parse(val);
-        if (Array.isArray(parsed)) return parsed.join(', ');
-        if (typeof parsed === 'object') return Object.entries(parsed).map(([k, v]) => `${k}: ${v}`).join('\n');
-        return String(parsed);
-    } catch { return val; }
 }
 
 interface CertStats {
@@ -582,7 +574,12 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Source IP" value={log.sourceIp} />
                             <DetailField label="Success" value={log.success ? 'Yes' : 'No'} />
                             <DetailField label="Error" value={log.errorMessage} />
-                            {log.detailsJson && <DetailField label="Details" value={parseJsonSafe(log.detailsJson)} />}
+                            {log.detailsJson && (
+                                <div className="py-1">
+                                    <span className="label-caps">Details</span>
+                                    <StructuredValue className="mt-1" json={log.detailsJson} />
+                                </div>
+                            )}
                         </div>
                     )}
                 />
@@ -646,7 +643,7 @@ const Dashboard: React.FC = () => {
                         <div className="space-y-1">
                             <DetailField label="Name" value={p.name} />
                             <DetailField label="Description" value={p.description} />
-                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><AlgorithmSummary items={p.allowedAlgorithms} /></div>
                             <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
                             <DetailField label="Max Path Length" value={p.maxPathLength?.toString()} />
                             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
@@ -677,8 +674,7 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
                             <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                             <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
-                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Keys and signatures</span><KeyPolicySummary algorithms={p.allowedKeyAlgorithms} sizes={p.allowedKeySizes} signatures={p.allowedSignatureAlgorithms} /></div>
                             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
                         </div>
                     )}

@@ -1621,17 +1621,10 @@ builder.Services.AddScoped<TrustAnchorService>();
 // Http.EnableCors so a misset ASPNETCORE_ENVIRONMENT=Development cannot
 // enable broad cross-origin access in production.
 var corsOrigins = config.Http.CorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-foreach (var origin in corsOrigins)
-{
-    if (origin == "*")
-        throw new InvalidOperationException("[CORS] Wildcard origin '*' is not allowed. Specify exact origins in Http.CorsOrigins.");
-    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
-        throw new InvalidOperationException($"[CORS] Invalid origin '{origin}' in Http.CorsOrigins — must be an absolute URL.");
-    var isLocal = string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
-                  || uri.Host == "127.0.0.1" || uri.Host == "::1";
-    if (!isLocal && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-        throw new InvalidOperationException($"[CORS] Non-local origin '{origin}' must use https:// in Http.CorsOrigins.");
-}
+// Same rules PUT /admin/config/http applies at save, minus the bare-origin check, so a config
+// saved before that check existed still starts.
+if (ModularCA.Shared.Utils.ConfigInputRules.CorsOriginsError(config.Http.CorsOrigins, requireBareOrigin: false) is { } corsError)
+    throw new InvalidOperationException($"[CORS] {corsError}");
 
 // Wire UseHsts to the same Http.Hsts config that
 // SecurityHeadersMiddleware reads. Both middlewares agree on max-age /

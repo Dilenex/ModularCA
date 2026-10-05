@@ -172,14 +172,18 @@ public class AdminKeyCeremonyController : ControllerBase
 
     /// <summary>
     /// Null when CA-creation parameters would pass the checks execution applies, else the response
-    /// to send now, before anyone approves: 400 for a control character in a text field or an
-    /// invalid or reserved label, 409 for a label or name another CA has, 404 for a CA certificate
-    /// profile outside the new CA's scope.
+    /// to send now, before anyone approves: 400 for a control character in a text field, an
+    /// invalid or reserved label, or a name constraint <see cref="ModularCA.Shared.Utils.NameConstraintRules"/> refuses,
+    /// 409 for a label or name another CA has, 404 for a CA certificate profile outside the new
+    /// CA's scope.
     /// </summary>
     internal static async Task<IActionResult?> RefuseCaCreationParametersAsync(CaCreationService caCreation, KeyCeremonyParameters parameters)
     {
         if (parameters.ControlCharacterError() is string controlError)
             return new BadRequestObjectResult(new { error = controlError });
+        if ((ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsPermitted, nameof(parameters.NameConstraintsPermitted))
+            ?? ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsExcluded, nameof(parameters.NameConstraintsExcluded))) is string ncError)
+            return new BadRequestObjectResult(new { error = ncError });
         try
         {
             await caCreation.EnsureNamingAsync(parameters.SubjectCN, parameters.Label);

@@ -12,6 +12,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.CertProfiles;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -106,7 +107,8 @@ public class AdminCertProfileController(
     /// and optional inheritance configuration. Validates that the target
     /// CA (when supplied) is inside the caller's <see cref="SpaceFence"/> and
     /// populates <c>CertProfileEntity.SpaceId</c> from it (null for an instance CA). An
-    /// inheritance parent outside the fence is not found.
+    /// inheritance parent outside the fence is not found. <c>CtLogIds</c> that are not a JSON array
+    /// of existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -124,6 +126,9 @@ public class AdminCertProfileController(
             resolvedSpaceId = ca.SpaceId;
         }
 
+        if (await CtLogIdsErrorAsync(request.CtLogIds) is string ctError)
+            return BadRequest(new { error = ctError });
+
         var result = await certProfileService.CreateAsync(request, resolvedSpaceId, WriteFence.AllowsProfile);
         await currentUser.EnsureLoadedAsync();
         await audit.LogAsync(AuditActionType.CertProfileCreated, currentUser.User?.Id, currentUser.User?.Username,
@@ -138,7 +143,8 @@ public class AdminCertProfileController(
     /// and optional inheritance configuration. An inheritance parent outside the caller's
     /// <see cref="SpaceFence"/> is not found. Moving the profile to another CA, or unbinding it,
     /// needs cert.revoke on the new CA (or across the profile's scope) and a CA of the profile's
-    /// own scope (<see cref="CaBindingAccess"/>).
+    /// own scope (<see cref="CaBindingAccess"/>). <c>CtLogIds</c> that are not a JSON array of
+    /// existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -161,6 +167,9 @@ public class AdminCertProfileController(
             && CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(_authService, db, WriteFence, currentUser.User!.Id,
                 request.CertificateAuthorityId, current.SpaceId, Capabilities.CertRevoke)) is { } refused)
             return refused;
+
+        if (await CtLogIdsErrorAsync(request.CtLogIds) is string ctError)
+            return BadRequest(new { error = ctError });
 
         await certProfileService.UpdateAsync(id, request, WriteFence.AllowsProfile);
         await audit.LogAsync(AuditActionType.CertProfileUpdated, currentUser.User?.Id, currentUser.User?.Username,
@@ -235,6 +244,24 @@ public class AdminCertProfileController(
             return NotFound(new { message = "Profile not found" });
         var errors = await profileResolutionService.ValidateCertProfileInheritanceAsync(id);
         return Ok(new { isValid = errors.Count == 0, errors });
+    }
+
+    /// <summary>
+    /// Why <paramref name="ctLogIds"/> cannot be saved, or null: it must be blank or a JSON array of
+    /// GUIDs (<see cref="CtLogIdRules"/>), each naming an existing CT log. Issuance reads the field
+    /// as such a list, and a value it could not read used to turn off CT submission entirely.
+    /// </summary>
+    private async Task<string?> CtLogIdsErrorAsync(string? ctLogIds)
+    {
+        if (!CtLogIdRules.TryParse(ctLogIds, out var ids, out var error))
+            return error;
+        if (ids.Count == 0) return null;
+        var distinct = ids.Distinct().ToList();
+        var known = await db.CtLogs.AsNoTracking().Where(l => distinct.Contains(l.Id)).Select(l => l.Id).ToListAsync();
+        var unknown = distinct.Except(known).ToList();
+        return unknown.Count == 0
+            ? null
+            : $"CtLogIds names CT logs that do not exist: {string.Join(", ", unknown)}. Remove them, or pick logs from GET /api/v1/admin/ct-logs/options.";
     }
 
     private SpaceFence ReadFence => SpaceFence.From(HttpContext, Capabilities.CertView);

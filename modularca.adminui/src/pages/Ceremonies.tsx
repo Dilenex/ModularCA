@@ -15,8 +15,18 @@ import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 
 const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
+
+/** A CA-creation parameter, read in either case: stored parameters are PascalCase, API echoes may be camelCase. */
+const param = (params: any, camel: string): any => params?.[camel] ?? params?.[camel.charAt(0).toUpperCase() + camel.slice(1)];
+
+/** The subject parts besides the Common Name, which is shown first. */
+const SUBJECT_PARTS: [string, string][] = [
+    ['subjectO', 'Organization (O)'], ['subjectOU', 'Org Unit (OU)'], ['subjectL', 'Locality (L)'],
+    ['subjectST', 'State (ST)'], ['subjectC', 'Country (C)'],
+];
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -210,6 +220,22 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                     <DetailField label="Space ID" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(params.parentCaId || params.ParentCaId) && <DetailField label="Parent CA ID" value={params.parentCaId || params.ParentCaId} mono />}
                     {(params.label || params.Label) && <DetailField label="Label" value={params.label || params.Label} />}
+                    {SUBJECT_PARTS.map(([key, label]) => {
+                        const v = param(params, key);
+                        return v ? <DetailField key={key} label={label} value={v} /> : null;
+                    })}
+                    {/* Approvers vote on everything that ends up in the CA certificate, so these are
+                        shown even when empty: an absent value is a decision too. */}
+                    {param(params, 'parentCaId')
+                        ? <DetailField label="CA Cert Profile ID" value={param(params, 'certProfileId') || 'Not set: Main CA Certificate Profile'} mono={!!param(params, 'certProfileId')} />
+                        : param(params, 'certProfileId') && <DetailField label="CA Cert Profile ID" value={`${param(params, 'certProfileId')} (not used: a root CA is built without one)`} mono />}
+                    <DetailField label="Public Base URL" value={param(params, 'publicBaseUrl') || (param(params, 'parentCaId') ? "Not set: the parent CA's, else the instance default" : 'Not set: the instance default')} mono={!!param(params, 'publicBaseUrl')} />
+                    <div className="mt-2">
+                        <span className="text-xs font-semibold text-ink-muted">Name Constraints</span>
+                        <div className="mt-1">
+                            <NameConstraintsView permitted={param(params, 'nameConstraintsPermitted')} excluded={param(params, 'nameConstraintsExcluded')} />
+                        </div>
+                    </div>
                 </div>
             )}
 

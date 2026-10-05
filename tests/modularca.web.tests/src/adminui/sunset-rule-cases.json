@@ -1,0 +1,32 @@
+{
+  "_comment": "Algorithm sunset rules both ConfigInputRules.AlgorithmSunsetRuleError (server) and sunsetRules.ts (console) must accept or refuse alike. Read by tests/modularca.web.tests/src/adminui/sunsetRules.test.ts and tests/ModularCA.Tests/Shared/Utils/ConfigInputRulesTests.cs.",
+  "accept": [
+    "RSA-2048:2030-01-01",
+    "rsa-1024:2020-12-31",
+    "ECDSA-P-256:2035-06-30",
+    "RSA:2031-02-28",
+    "Ed25519:2040-01-01",
+    "ML-DSA-65:2045-01-01",
+    "SHA1withRSA:2016-01-01",
+    "1.2.840.113549.1.1.4:2010-01-01",
+    "RSA-2048 : 2030-01-01",
+    "SHA-256:2035-01-01",
+    "RSA:2028-02-29"
+  ],
+  "reject": [
+    "RSA-2048",
+    "RSA-2048:",
+    ":2030-01-01",
+    "RSA 2048:2030-01-01",
+    "RSA-2048:2030-1-1",
+    "RSA-2048:2030/01/01",
+    "RSA-2048:2030-02-30",
+    "RSA-2048:2029-02-29",
+    "RSA-2048:2030-13-01",
+    "RSA-2048:0000-01-01",
+    "RSA-2048:2030-01-01T00:00:00",
+    "RSA-2048:Jan 1 2030",
+    "RSA:2048:2030-01-01",
+    " "
+  ]
+}

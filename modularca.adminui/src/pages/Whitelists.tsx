@@ -11,6 +11,9 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { inputClass, labelClass } from '@shared/components/forms';
+import { ChipListInput } from '@shared/components/ChipListInput';
+import { invalidItems } from '@shared/components/chipList';
+import { validateIpOrCidr } from '@shared/validators';
 
 /// <summary>
 /// Represents a single whitelist rule returned by the admin whitelist API.
@@ -35,12 +38,8 @@ type WhitelistScope = Whitelist['scope'];
 const SCOPES: WhitelistScope[] = ['System', 'Setup', 'Admin', 'Auth', 'Api', 'ShortUrl', 'Ca', 'Protocol'];
 const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'MSAE', 'OCSP', 'TSA', 'CRL', 'CA'];
 
-/// <summary>
-/// Validates a single CIDR string. Accepts IPv4 (optionally with /prefix)
-/// and IPv6 (optionally with /prefix). Deliberately loose — the backend
-/// does the canonical parse.
-/// </summary>
-const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$|^[0-9a-fA-F:]+(\/\d{1,3})?$/;
+/** One whitelist entry: an address or a CIDR range. The whitelist matcher tolerates host bits (10.0.0.1/8). */
+const validateCidr = (value: string) => validateIpOrCidr(value);
 
 function formatDate(d: string | null): string {
     if (!d) return '-';
@@ -55,12 +54,12 @@ interface FormState {
     scope: WhitelistScope;
     certificateAuthorityId: string;
     protocol: string;
-    cidrsText: string;
+    cidrs: string[];
     isEnabled: boolean;
 }
 
 const emptyForm: FormState = {
-    name: '', description: '', scope: 'System', certificateAuthorityId: '', protocol: '', cidrsText: '', isEnabled: true,
+    name: '', description: '', scope: 'System', certificateAuthorityId: '', protocol: '', cidrs: [], isEnabled: true,
 };
 
 /// <summary>
@@ -128,16 +127,13 @@ const Whitelists: React.FC = () => {
 
     const closeModal = () => { setShowModal(false); setEditingId(null); setForm(emptyForm); setFormError(null); };
 
-    const parseCidrs = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-
     const validateForm = (): { ok: boolean; cidrs: string[] } => {
         if (!form.name.trim()) { setFormError('Name is required.'); return { ok: false, cidrs: [] }; }
         if (form.scope === 'Ca' && !form.certificateAuthorityId) { setFormError('Certificate Authority is required for Ca scope.'); return { ok: false, cidrs: [] }; }
         if (form.scope === 'Protocol' && !form.protocol) { setFormError('Protocol is required for Protocol scope.'); return { ok: false, cidrs: [] }; }
-        const cidrs = parseCidrs(form.cidrsText);
-        for (const cidr of cidrs) {
-            if (!CIDR_REGEX.test(cidr)) { setFormError(`Invalid CIDR: "${cidr}"`); return { ok: false, cidrs: [] }; }
-        }
+        const cidrs = form.cidrs;
+        const bad = invalidItems(cidrs, validateCidr);
+        if (bad.length > 0) { setFormError(`Fix the CIDRs marked invalid: ${bad.join(', ')}`); return { ok: false, cidrs: [] }; }
         setFormError(null);
         return { ok: true, cidrs };
     };
@@ -372,9 +368,9 @@ const Whitelists: React.FC = () => {
                                 )}
                             </div>
                             <div>
-                                <label className={labelClass}>CIDRs (one per line)</label>
-                                <textarea value={form.cidrsText} onChange={(e) => setForm({ ...form, cidrsText: e.target.value })} placeholder={'10.0.0.0/8\n192.168.0.0/16\n::1/128'} rows={6}
-                                    autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellCheck={false} className={`${inputClass} font-mono`} />
+                                <label htmlFor="wl-cidrs" className={labelClass}>CIDRs</label>
+                                <ChipListInput id="wl-cidrs" value={form.cidrs} onChange={(next) => { setForm({ ...form, cidrs: next }); setFormError(null); }}
+                                    validate={validateCidr} caseInsensitive mono placeholder="e.g. 10.0.0.0/8, then Enter" />
                                 <p className="text-[11px] text-ink-muted mt-1">An empty list means "block all" for a matched rule. Use <code>0.0.0.0/0</code> and <code>::/0</code> to allow any IP.</p>
                             </div>
                             <div className="flex items-center gap-2">

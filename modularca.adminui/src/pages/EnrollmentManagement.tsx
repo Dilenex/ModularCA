@@ -22,6 +22,14 @@ import {
     enrollmentKind, enrollmentProtocolMeta, EnrollmentFormState, showsQrResult,
     validateEnrollmentForm,
 } from '../components/enrollmentForm';
+import { SAN_RESTRICTION_TYPES, SUBJECT_RESTRICTION_TYPES, restrictionRowsFromText } from '../components/enrollmentRestriction';
+import { TypedEntryListEditor, TypedEntryListView, type TypedEntryType } from '@shared/components/TypedEntryListEditor';
+
+/** A stored restriction as the patterns the server reads from it, or null when unset. */
+function restrictionView(text: string | null | undefined, types: readonly TypedEntryType[]) {
+    if (!text || !text.trim()) return null;
+    return <TypedEntryListView entries={restrictionRowsFromText(text)} types={types} />;
+}
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -190,8 +198,8 @@ const EnrollmentManagement: React.FC = () => {
                 { label: 'Expires', value: (t) => formatDate(t.expiresAt) },
             ] },
             { title: 'Restrictions', fields: [
-                { label: 'Subject Restriction', value: (t) => t.subjectRestriction },
-                { label: 'SAN Restriction', value: (t) => t.sanRestriction },
+                { label: 'Subject Restriction', value: (t) => restrictionView(t.subjectRestriction, SUBJECT_RESTRICTION_TYPES) },
+                { label: 'SAN Restriction', value: (t) => restrictionView(t.sanRestriction, SAN_RESTRICTION_TYPES) },
             ] },
         ],
         audit: { tab: 'General', target: (t) => ({ type: 'EnrollmentToken', id: t.id }) },
@@ -267,14 +275,22 @@ const EnrollmentManagement: React.FC = () => {
                             {kind === 'token' && (
                                 <>
                                     <div>
-                                        <label className="text-xs text-ink-muted">Subject Restriction (optional)</label>
-                                        <input type="text" value={form.subjectRestriction} onChange={e => setForm({ ...form, subjectRestriction: e.target.value })}
-                                            className={inputClass} placeholder="e.g., example.com or O=Acme" />
+                                        <span id="enroll-subject-label" className="text-xs text-ink-muted">Subject Restriction (optional)</span>
+                                        <p id="enroll-subject-hint" className="text-[11px] text-ink-muted mb-1.5">
+                                            A CSR is accepted when its subject carries one of these DN attributes, or every Common Name is one of these domains or under it.
+                                        </p>
+                                        <TypedEntryListEditor id="enroll-subject" aria-label="Subject restriction" aria-describedby="enroll-subject-hint"
+                                            value={form.subjectRestriction} onChange={rows => setForm({ ...form, subjectRestriction: rows })}
+                                            types={SUBJECT_RESTRICTION_TYPES} addLabel="+ Add pattern" emptyText="No restriction: any subject." />
                                     </div>
                                     <div>
-                                        <label className="text-xs text-ink-muted">SAN Restriction (optional)</label>
-                                        <input type="text" value={form.sanRestriction} onChange={e => setForm({ ...form, sanRestriction: e.target.value })}
-                                            className={inputClass} placeholder="e.g., example.com, example.org" />
+                                        <span id="enroll-san-label" className="text-xs text-ink-muted">SAN Restriction (optional)</span>
+                                        <p id="enroll-san-hint" className="text-[11px] text-ink-muted mb-1.5">
+                                            Every SAN must be a DNS name equal to or under one of these domains; IP, email and URI SANs are refused.
+                                        </p>
+                                        <TypedEntryListEditor id="enroll-san" aria-label="SAN restriction" aria-describedby="enroll-san-hint"
+                                            value={form.sanRestriction} onChange={rows => setForm({ ...form, sanRestriction: rows })}
+                                            types={SAN_RESTRICTION_TYPES} check={{ allowedTypes: ['DNS'] }} addLabel="+ Add domain" emptyText="No restriction: any SAN." />
                                     </div>
                                 </>
                             )}

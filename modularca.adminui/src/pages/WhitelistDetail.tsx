@@ -11,6 +11,9 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { ChipListInput } from '@shared/components/ChipListInput';
+import { invalidItems } from '@shared/components/chipList';
+import { validateIpOrCidr } from '@shared/validators';
 
 interface Whitelist {
     id: string;
@@ -26,7 +29,8 @@ interface Whitelist {
     updatedAt: string;
 }
 
-const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$|^[0-9a-fA-F:]+(\/\d{1,3})?$/;
+/** One whitelist entry: an address or a CIDR range. The whitelist matcher tolerates host bits (10.0.0.1/8). */
+const validateCidr = (value: string) => validateIpOrCidr(value);
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -47,8 +51,8 @@ const WhitelistDetail: React.FC = () => {
     const [refresh, setRefresh] = useState(0);
 
     // edit form
-    const [form, setForm] = useState({ name: '', description: '', cidrsText: '', isEnabled: true });
-    const [initialForm, setInitialForm] = useState({ name: '', description: '', cidrsText: '', isEnabled: true });
+    const [form, setForm] = useState({ name: '', description: '', cidrs: [] as string[], isEnabled: true });
+    const [initialForm, setInitialForm] = useState({ name: '', description: '', cidrs: [] as string[], isEnabled: true });
     const [formError, setFormError] = useState<string | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -67,7 +71,7 @@ const WhitelistDetail: React.FC = () => {
             const found = items.find((w) => w.id === id) || null;
             setWl(found);
             if (found) {
-                const seeded = { name: found.name, description: found.description || '', cidrsText: (found.cidrs || []).join('\n'), isEnabled: found.isEnabled };
+                const seeded = { name: found.name, description: found.description || '', cidrs: found.cidrs || [], isEnabled: found.isEnabled };
                 setForm(seeded);
                 setInitialForm(seeded);
                 if (found.certificateAuthorityId) {
@@ -84,14 +88,13 @@ const WhitelistDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [id, refresh]);
 
-    const parseCidrs = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean);
-
     const dirty = JSON.stringify(form) !== JSON.stringify(initialForm);
+    const invalidCidrs = invalidItems(form.cidrs, validateCidr);
 
     const handleSave = async () => {
-        const cidrs = parseCidrs(form.cidrsText);
+        const cidrs = form.cidrs;
         if (!form.name.trim()) { setFormError('Name is required.'); throw new Error('Name is required.'); }
-        for (const c of cidrs) if (!CIDR_REGEX.test(c)) { const msg = `Invalid CIDR: "${c}"`; setFormError(msg); throw new Error(msg); }
+        if (invalidCidrs.length > 0) { const msg = `Fix the CIDRs marked invalid: ${invalidCidrs.join(', ')}`; setFormError(msg); throw new Error(msg); }
         setFormError(null);
         try {
             await apiPutWithMfa(`/api/v1/admin/whitelists/${id}`,
@@ -145,7 +148,7 @@ const WhitelistDetail: React.FC = () => {
             editable
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !form.name.trim()}
+            saveDisabled={!dirty || !form.name.trim() || invalidCidrs.length > 0}
             actions={!wl.isSystemDefault ? (
                 <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Delete</button>
             ) : undefined}
@@ -189,11 +192,10 @@ const WhitelistDetail: React.FC = () => {
                                 autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" className={inputCls} />
                         </div>
                         <div>
-                            <label className={labelCls}>CIDRs (one per line)</label>
-                            <textarea value={form.cidrsText} onChange={(e) => setForm({ ...form, cidrsText: e.target.value })} rows={8}
-                                autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellCheck={false}
-                                aria-describedby="whitelist-cidrs-hint"
-                                placeholder={'10.0.0.0/8\n::1/128'} className={`${inputCls} font-mono`} />
+                            <label htmlFor="whitelist-cidrs" className={labelCls}>CIDRs</label>
+                            <ChipListInput id="whitelist-cidrs" value={form.cidrs} onChange={(next) => setForm({ ...form, cidrs: next })}
+                                validate={validateCidr} caseInsensitive mono aria-describedby="whitelist-cidrs-hint"
+                                placeholder="e.g. 10.0.0.0/8, then Enter" />
                             <FieldHint id="whitelist-cidrs-hint" tone="warn">
                                 An empty list means block all for a matched rule; it is not 'no restriction'. Use 0.0.0.0/0 and ::/0 to allow any address. Make sure your own address is still covered before saving.
                             </FieldHint>
@@ -202,6 +204,7 @@ const WhitelistDetail: React.FC = () => {
                             <input type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
                             Enabled
                         </label>
+                        {invalidCidrs.length > 0 && <FieldHint tone="warn">Save is disabled until the CIDRs marked invalid are fixed or removed.</FieldHint>}
                         {formError && <p className="text-sm text-crit">{formError}</p>}
                     </div>
                 </DetailSection>

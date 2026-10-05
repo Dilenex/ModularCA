@@ -11,6 +11,7 @@ using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.SigningProfiles;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -74,6 +75,24 @@ public class AdminSigningProfileController(
     }
 
     /// <summary>
+    /// Why the request's name-constraint fields would not build, or null: each must be blank or a
+    /// JSON array of entries <see cref="NameConstraintRules"/> accepts, so a profile is never saved
+    /// with constraints the certificate builder would refuse when it issues a CA certificate.
+    /// </summary>
+    private static string? NameConstraintsError(CreateSigningProfileRequest r) =>
+        NameConstraintRules.JsonError(r.NameConstraintsPermitted, nameof(r.NameConstraintsPermitted))
+        ?? NameConstraintRules.JsonError(r.NameConstraintsExcluded, nameof(r.NameConstraintsExcluded));
+
+    /// <summary>
+    /// Why the request's certificate-policy fields would not build, or null: PolicyOids must be
+    /// blank or a JSON array of distinct OIDs BouncyCastle accepts, and PolicyQualifiersJson blank
+    /// or an object of the shape the certificate builder reads (<see cref="CertificatePolicyRules"/>).
+    /// One bad OID used to make every issuance under the profile throw.
+    /// </summary>
+    private static string? CertificatePoliciesError(CreateSigningProfileRequest r) =>
+        CertificatePolicyRules.Error(r.PolicyOids, r.PolicyQualifiersJson);
+
+    /// <summary>
     /// Returns the signing profiles inside the caller's <see cref="SpaceFence"/> (see
     /// <see cref="InFenceAsync"/>), including their allowed cert profile IDs and inheritance
     /// configuration. A caller who is not a system admin also sees only profiles they have a
@@ -104,7 +123,9 @@ public class AdminSigningProfileController(
     /// <summary>
     /// Creates a new signing profile with optional allowed cert profile links
     /// and inheritance configuration. The issuer's CA must be inside the caller's fence and the
-    /// caller must hold ca.manage on it (<see cref="AuthorizeIssuerAsync"/>).
+    /// caller must hold ca.manage on it (<see cref="AuthorizeIssuerAsync"/>). Invalid name
+    /// constraints (<see cref="NameConstraintsError"/>) and certificate policies
+    /// (<see cref="CertificatePoliciesError"/>) are refused with 400.
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -116,6 +137,10 @@ public class AdminSigningProfileController(
             return Unauthorized();
         if (await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
             return refused;
+        if (NameConstraintsError(r) is string ncError)
+            return BadRequest(new { error = ncError });
+        if (CertificatePoliciesError(r) is string cpError)
+            return BadRequest(new { error = cpError });
         var result = await service.CreateAsync(r);
         await audit.LogAsync(AuditActionType.SigningProfileCreated, currentUser.User?.Id, currentUser.User?.Username,
             "SigningProfile", null, new { r.Name },
@@ -127,7 +152,9 @@ public class AdminSigningProfileController(
     /// Updates an existing signing profile and replaces its allowed cert profile links
     /// and inheritance configuration. A profile outside the caller's fence is not found, and a new
     /// issuer, or none (unbinding, which needs system scope), is checked by
-    /// <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the current one.
+    /// <see cref="AuthorizeIssuerAsync"/>, since the policy checked only the current one. Invalid
+    /// name constraints (<see cref="NameConstraintsError"/>) and certificate policies
+    /// (<see cref="CertificatePoliciesError"/>) are refused with 400.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -144,6 +171,10 @@ public class AdminSigningProfileController(
             return NotFound(new { message = "Profile not found" });
         if (current.IssuerId != r.IssuerId && await AuthorizeIssuerAsync(currentUser.User.Id, r.IssuerId) is { } refused)
             return refused;
+        if (NameConstraintsError(r) is string ncError)
+            return BadRequest(new { error = ncError });
+        if (CertificatePoliciesError(r) is string cpError)
+            return BadRequest(new { error = cpError });
 
         // UpdateAsync also replaces the allowed-cert-profile links from r.AllowedCertProfileIds, so the
         // detail page's unified Save persists the profile and its links in this one step-up-gated call.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    DEFAULT_SAN_MAX_COUNT, emptyRules, parseRules, serializeRules,
+    DEFAULT_SAN_MAX_COUNT, checkRulesImport, emptyRules, parseRules, rulesToJsonText, serializeRules,
 } from '@adminui/components/requestProfileRules';
 
 /**
@@ -133,5 +133,104 @@ describe('serializeRules', () => {
         expect(twice).toEqual(once);
         expect(once.subjectDnRules[1]).toMatchObject({ field: 'O', fixedValue: 'Example Corp' });
         expect(once.sanRules).toMatchObject({ allowedTypes: ['DNS', 'IP'], required: true });
+    });
+});
+
+describe('rules JSON import and export', () => {
+    const stored = {
+        subjectDnRules: [
+            { field: 'CN', requirement: 'Required', regex: '^[a-z]+$', maxLength: 64 },
+            { field: 'O', requirement: 'Optional', fixedValue: 'Acme' },
+        ],
+        sanRules: { allowedTypes: ['DNS', 'IP'], required: true, rules: { DNS: { regex: '\\.example\\.com$', maxCount: 5 } } },
+    };
+    const err = (text: string) => {
+        const r = checkRulesImport(text, emptyRules());
+        if (r.ok) throw new Error('expected an error');
+        return r.error;
+    };
+
+    it('exports what the API stores, indented, and imports it back unchanged', () => {
+        const rules = parseRules(stored);
+        const text = rulesToJsonText(rules);
+        expect(JSON.parse(text)).toEqual(serializeRules(rules));
+        expect(text).toContain('\n  "subjectDnRules": [');
+        const back = checkRulesImport(text, rules);
+        expect(back.ok).toBe(true);
+        if (!back.ok) return;
+        expect(back.rules).toEqual(rules);
+        expect(back.unchanged).toBe(true);
+        expect(back.warnings).toEqual([]);
+    });
+
+    it('previews counts and types', () => {
+        const r = checkRulesImport(JSON.stringify(stored), emptyRules());
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.unchanged).toBe(false);
+        expect(r.summary).toEqual([
+            'Subject DN rules: 2 (CN Required, O Optional)',
+            'SAN types allowed: DNS, IP',
+            'SAN required: Yes',
+            'Per-type SAN constraints: DNS (regex, max 5)',
+        ]);
+    });
+
+    it('refuses text that is not JSON, or not the rules shape', () => {
+        expect(err('')).toBe('Paste the rules JSON.');
+        expect(err('{ subjectDnRules: [] }')).toMatch(/^Not valid JSON/);
+        expect(err('[1, 2]')).toMatch(/Expected an object/);
+        expect(err('{"name": "x"}')).toMatch(/Neither subjectDnRules nor sanRules/);
+        expect(err('{"subjectDnRules": {}}')).toBe('subjectDnRules must be an array.');
+        expect(err('{"subjectDnRules": ["CN"]}')).toBe('subjectDnRules[0] must be an object.');
+        expect(err('{"subjectDnRules": [{"requirement": "Required"}]}')).toMatch(/field must be a DN attribute/);
+        expect(err('{"subjectDnRules": [{"field": "CN", "maxLength": "64"}]}')).toMatch(/maxLength must be a whole number/);
+        expect(err('{"sanRules": {"allowedTypes": "DNS"}}')).toMatch(/allowedTypes must be an array/);
+        expect(err('{"sanRules": {"required": "yes"}}')).toMatch(/required must be true or false/);
+        expect(err('{"sanRules": {"rules": {"DNS": {"maxCount": -1}}}}')).toMatch(/maxCount must be a whole number/);
+    });
+
+    it('refuses a requirement parseRules would quietly read as Optional, and accepts any case', () => {
+        expect(err('{"subjectDnRules": [{"field": "CN", "requirement": "Mandatory"}]}')).toMatch(/requirement must be one of/);
+        const r = checkRulesImport('{"subjectDnRules": [{"field": "CN", "requirement": "required"}]}', emptyRules());
+        expect(r.ok && r.rules.subjectDnRules[0].requirement).toBe('Required');
+    });
+
+    it('keeps a section the JSON leaves out', () => {
+        const current = parseRules(stored);
+        const r = checkRulesImport('{"sanRules": {"allowedTypes": ["Email"], "required": false}}', current);
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.rules.subjectDnRules).toEqual(current.subjectDnRules);
+        expect(r.rules.sanRules.allowedTypes).toEqual(['Email']);
+        expect(r.summary[0]).toMatch(/current ones are kept/);
+    });
+
+    it('warns about what is ignored, coerced or dropped', () => {
+        const r = checkRulesImport(JSON.stringify({
+            name: 'Whole profile pasted',
+            subjectDnRules: [{ field: 'serialNumber', extra: 1 }],
+            sanRules: { allowedTypes: ['dns', 'X400'], rules: { IP: { maxCount: 2 } } },
+        }), emptyRules());
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.warnings).toEqual([
+            'Only the rules are imported; ignored: name.',
+            'subjectDnRules[0] (serialNumber) has no requirement, so it is Optional.',
+            'subjectDnRules[0]: serialNumber is not a field this editor lists; it is kept.',
+            'subjectDnRules[0]: ignored extra.',
+            'SAN types X400 are not among DNS, IP, Email, URI, UPN; they are kept.',
+            'sanRules.rules.IP is for a type that is not allowed; it is dropped on save.',
+        ]);
+        expect(r.rules.subjectDnRules[0]).toMatchObject({ field: 'serialNumber', requirement: 'Optional' });
+    });
+
+    it('spells SAN types as the editor does, since the server matches them ignoring case', () => {
+        const r = checkRulesImport('{"sanRules": {"allowedTypes": ["dns", "email"], "rules": {"Dns": {"maxCount": 3}}}}', emptyRules());
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.rules.sanRules.allowedTypes).toEqual(['DNS', 'Email']);
+        expect(r.rules.sanRules.rules).toEqual({ DNS: { regex: '', maxCount: 3 } });
+        expect(r.warnings).toEqual([]);
     });
 });

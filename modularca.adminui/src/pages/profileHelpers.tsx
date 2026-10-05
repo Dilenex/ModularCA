@@ -1,20 +1,15 @@
 import React from 'react';
-import { KEY_USAGE_NAMES, canonicalizeUsage } from '@shared/generated';
-import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+import { DEFAULT_EKU_OPTIONS, parseJsonArray, parseListField } from './profiles/profileFormCore';
+import { FieldHint } from '@shared/components/forms';
 import { formatIso8601Duration } from './validityCeiling';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
-/**
- * Every key usage the issuance path can emit a bit for, generated from
- * `KeyUsageFriendlyNames.Parse`.
- *
- * This was a hand-written list of four. Because `canonicalizeUsages` DROPS a stored value that
- * matches no option, a profile carrying any of the other five — keyAgreement, nonRepudiation,
- * dataEncipherment, encipherOnly, decipherOnly, all of which the server accepts and issues — lost
- * that usage the moment someone opened the profile and saved it. Deriving the list from the
- * server's own switch statement is what makes the two sets equal by construction.
- */
+export {
+    KEY_USAGE_OPTIONS, DEFAULT_EKU_OPTIONS, DEFAULT_EKU_ALIASES, normalizeUsageKey, canonicalizeUsages,
+    parseListField, parseJsonArray, inheritancePairInconsistent, sshRequiredNotAllowed,
+} from './profiles/profileFormCore';
+
 /**
  * A certificate authority has TWO ids, and picking the wrong one is silent.
  *
@@ -45,35 +40,6 @@ export const caCertId = (ca: any): string => ca?.certificateId ?? '';
 export const caDisplayName = (ca: any): string =>
     ca?.name || ca?.commonName || ca?.label || ca?.id || '';
 
-export const KEY_USAGE_OPTIONS: readonly string[] = KEY_USAGE_NAMES;
-
-/**
- * Extended-key-usage option values for a certificate profile.
- *
- * Both this list and KEY_USAGE_OPTIONS above are PERSISTED into
- * CertProfile.ExtendedKeyUsages / KeyUsages, so they must be the canonical forms the issuance
- * path resolves against OIDOptions — EKUs as OIDs, key usages as the catalog's friendly names.
- * They once held display labels ('Server Auth', 'Digital Signature'), which matched no catalog
- * row, so any cert profile edited in the admin UI was issued with NO ExtendedKeyUsage and NO
- * KeyUsage extension. Use the *_LABELS maps for presentation only.
- */
-/**
- * FALLBACK ONLY. The live vocabulary comes from the OID catalog via `useEkuCatalog()`, because
- * the catalog is extensible and this list is not: `canonicalizeUsages` drops what it does not
- * recognise and the result is saved back, so a stale list here silently strips usages from a
- * profile. These entries exist so the pages still render correctly before the catalog fetch
- * resolves, and if it fails.
- *
- * Smart Card Logon and KDC Authentication are included because both are seeded defaults and both
- * are load-bearing for Windows smart-card logon — the first on the card's certificate, the second
- * on the domain controller's.
- */
-export const DEFAULT_EKU_OPTIONS = [
-    '1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.3',
-    '1.3.6.1.5.5.7.3.4', '1.3.6.1.5.5.7.3.8', '1.3.6.1.5.5.7.3.9',
-    '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.5',
-];
-
 export const DEFAULT_EKU_LABELS: Record<string, string> = {
     '1.3.6.1.5.5.7.3.1': 'Server Auth',
     '1.3.6.1.5.5.7.3.2': 'Client Auth',
@@ -83,72 +49,6 @@ export const DEFAULT_EKU_LABELS: Record<string, string> = {
     '1.3.6.1.5.5.7.3.9': 'OCSP Signing',
     '1.3.6.1.4.1.311.20.2.2': 'Smart Card Logon',
     '1.3.6.1.5.2.3.5': 'KDC Authentication',
-};
-
-/**
- * Comparison key for a usage identifier.
- *
- * Re-exported from the generated port of `UsageCatalogResolver` rather than reimplemented. It
- * used to be a local one-liner whose comment claimed to mirror `IssuanceValidationService`;
- * that class no longer has its own copy, and hand-synchronised copies of this comparison are
- * exactly how a bootstrapped root CA once ended up with no KeyUsage extension at all.
- *
- * Note this folds word-level synonyms too, which plain normalisation cannot: "Key Certificate
- * Signing", "Key Cert Sign" and "keyCertSign" all reduce to the same key, as do "OCSP Signer"
- * and "OCSPSigning".
- */
-export const normalizeUsageKey = canonicalizeUsage;
-
-/**
- * Maps stored usage values onto the canonical option values, dropping anything unrecognisable.
- *
- * Necessary because a profile field can hold any of four things by now: the canonical value, the
- * catalog friendly name, an old display label, or — for rows written while the CSV/JSON parse bug
- * was live — fragments of a JSON array such as `["[]"` or `"Server Auth"`. Canonicalising
- * collapses all of those onto the same key, so the toggles show the real selection and the next
- * save rewrites the field in canonical form.
- *
- * Dropping the unresolvable is only safe while this function's vocabulary matches the server's,
- * because the result is written straight back on save — a value dropped here is a value REMOVED
- * from the profile. That is why both the option lists and the comparison now come from generated
- * code instead of hand-written tables.
- */
-export const canonicalizeUsages = (
-    values: string[],
-    canonical: readonly string[],
-    aliases: Record<string, string> = {},
-): string[] => {
-    const lookup = new Map<string, string>();
-    for (const c of canonical) lookup.set(canonicalizeUsage(c), c);
-    for (const [alias, target] of Object.entries(aliases)) lookup.set(canonicalizeUsage(alias), target);
-
-    const out: string[] = [];
-    for (const v of values) {
-        const hit = lookup.get(canonicalizeUsage(v));
-        if (hit && !out.includes(hit)) out.push(hit);
-    }
-    return out;
-};
-
-/**
- * Names that should resolve to an EKU OID.
- *
- * Still hand-written because this maps a NAME onto an OID, and the profile fields store OIDs —
- * `canonicalizeUsage` alone cannot bridge that. But it needs only one entry per OID now: the
- * lookup is keyed by the canonical form, which already folds every spelling of a given usage
- * together. The previous table carried two spellings per OID and still missed the two the
- * bootstrap seeder uses — "Server Authentication" and "OCSP Signer" — because neither is a
- * punctuation variant of "Server Auth" or "OCSP Signing"; they differ in words.
- */
-export const DEFAULT_EKU_ALIASES: Record<string, string> = {
-    serverAuth: '1.3.6.1.5.5.7.3.1',
-    clientAuth: '1.3.6.1.5.5.7.3.2',
-    codeSigning: '1.3.6.1.5.5.7.3.3',
-    emailProtection: '1.3.6.1.5.5.7.3.4',
-    timeStamping: '1.3.6.1.5.5.7.3.8',
-    ocspSigning: '1.3.6.1.5.5.7.3.9',
-    smartcardLogon: '1.3.6.1.4.1.311.20.2.2',
-    kdcAuthentication: '1.3.6.1.5.2.3.5',
 };
 
 /**
@@ -171,33 +71,6 @@ export const KEY_USAGE_LABELS: Record<string, string> = {
 
 export const keyUsageLabel = (v: string): string => KEY_USAGE_LABELS[v] ?? v;
 
-export const ALLOWED_KEY_ALGORITHM_OPTIONS = [
-    'RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F',
-];
-export const ALLOWED_KEY_SIZE_OPTIONS = [
-    '2048', '3072', '4096', '7680', '8192', 'P-256', 'P-384', 'P-521',
-];
-// The ...andMGF1 entries are RSASSA-PSS. They are NOT optional extras: CertPolicy
-// .RsaSignaturePadding defaults to "PSS", so KeyAlgorithmPolicy signs RSA requests as
-// SHA-n-withRSAandMGF1. Omitting them here meant a cert profile created through this UI could
-// never permit the signatures the server actually produces, and every RSA issuance against
-// such a profile failed. The seeded profiles and BootstrapModularCA always included them —
-// only this picker did not.
-export const ALLOWED_SIGNATURE_ALGORITHM_OPTIONS = [
-    'SHA256withRSA', 'SHA384withRSA', 'SHA512withRSA',
-    'SHA256withRSAandMGF1', 'SHA384withRSAandMGF1', 'SHA512withRSAandMGF1',
-    'SHA256withECDSA', 'SHA384withECDSA', 'SHA512withECDSA',
-    'Ed25519', 'Ed448',
-    'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F',
-];
-
-/** Labels the RSASSA-PSS entries so an author picking algorithms knows what MGF1 means. */
-export const formatSignatureAlgorithmLabel = (alg: string) =>
-    alg.endsWith('andMGF1') ? `${alg.replace('andMGF1', '')} (RSA-PSS)` : alg;
-
-export const SIGNING_ALLOWED_ALGORITHM_OPTIONS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
-
-/** Common EKU OIDs with display names for signing profile EKU picker */
 /**
  * Fallback signing-profile EKU options, derived from the same defaults. Live values come from
  * `useEkuCatalog()`; see DEFAULT_EKU_OPTIONS for why a hardcoded list cannot be the source.
@@ -213,42 +86,6 @@ export const SSH_EXTENSION_OPTIONS = [
     'no-X11-forwarding', 'no-user-rc',
 ];
 
-
-/** Parse a JSON array field from the API (could be string or array) into a string array */
-/**
- * Reads a list-valued profile field regardless of the shape the API returned it in.
- *
- * The backend canonicalises these to a JSON array string (CertProfileService.NormalizeJsonStringArray,
- * SigningProfileService), but that normaliser also ACCEPTS a comma-separated string on write and
- * converts it — so a field can legitimately arrive as `["a","b"]`, as `a, b`, or already as an array
- * depending on how it was last written and by which client.
- *
- * Parsing a JSON array with `.split(',')` yields tokens like `["a"` and `"b"]`, which then match no
- * option in a toggle list. That renders as "nothing selected", which reads to a user as "my changes
- * did not save" even though the write succeeded — the bug this helper exists to prevent.
- */
-export const parseListField = (val: any): string[] => {
-    if (Array.isArray(val)) return val.map(String);
-    if (typeof val !== 'string') return [];
-    const trimmed = val.trim();
-    if (!trimmed) return [];
-    if (trimmed.startsWith('[')) {
-        try {
-            const parsed = JSON.parse(trimmed);
-            if (Array.isArray(parsed)) return parsed.map(String);
-        } catch { /* fall through to comma-separated */ }
-    }
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
-};
-
-export const parseJsonArray = (val: any): string[] => {
-    if (Array.isArray(val)) return val.map(String);
-    if (typeof val === 'string') {
-        try { const parsed = JSON.parse(val); return Array.isArray(parsed) ? parsed.map(String) : []; }
-        catch { return []; }
-    }
-    return [];
-};
 
 /** Render an array (or JSON string) as comma-separated badges */
 export const BadgeList: React.FC<{ items: any }> = ({ items }) => {
@@ -309,7 +146,6 @@ export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = (
     return <BadgeList items={labelled.length === source.length ? labelled : source} />;
 };
 
-/** Multi-select toggle buttons for an array field */
 /**
  * Warns that the picker above is offering values the server's OID catalog does not hold.
  *
@@ -333,51 +169,8 @@ export const CatalogGapNotice: React.FC<{ missing: string[]; kind: string }> = (
     );
 };
 
-export const MultiToggle: React.FC<{
-    options: readonly string[];
-    selected: string[];
-    onChange: (next: string[]) => void;
-    formatLabel?: (opt: string) => string;
-    /** Native tooltip per chip, for options whose name alone does not say what they do. */
-    titleFor?: (opt: string) => string | undefined;
-    /**
-     * Helper text under the chips. Pass {@link CEILING_HINT} for every "Allowed …" list so the
-     * editor says the same thing {@link CeilingList} says on the read-only side: an empty
-     * selection is unrestricted, not empty.
-     */
-    hint?: React.ReactNode;
-    /** Warn-tone line under the hint, shown only when set. */
-    warning?: React.ReactNode;
-}> = ({ options, selected, onChange, formatLabel, titleFor, hint, warning }) => (
-    <>
-        <div className="flex flex-wrap gap-2">
-            {options.map((opt) => {
-                const active = selected.includes(opt);
-                return (
-                    <button key={opt} type="button" title={titleFor ? titleFor(opt) : undefined}
-                        onClick={() => onChange(active ? selected.filter((v) => v !== opt) : [...selected, opt])}
-                        className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>
-                        {formatLabel ? formatLabel(opt) : opt}
-                    </button>
-                );
-            })}
-        </div>
-        {hint && <FieldHint>{hint}</FieldHint>}
-        {warning && <FieldHint tone="warn">{warning}</FieldHint>}
-    </>
-);
-
 /**
- * The one sentence every "Allowed …" editor shows under its chips.
- *
- * It is the editing-side twin of the "Unrestricted — every … is permitted" line CeilingList
- * prints on the read-only side. The two were written together so an operator who reads one and
- * then the other is told the same thing about the same empty list.
- */
-export const CEILING_HINT = 'Leave every option off to allow all of them. These are ceilings: none selected means unrestricted, not none.';
-
-/**
- * Hint for a cert profile's Key Usages / Extended Key Usages pickers, which are NOT ceilings.
+ * Hint for a cert profile's Key Usages / Extended Key Usages lists, which are NOT ceilings.
  *
  * IssuanceValidationService stamps these into the issued certificate (after the signing
  * profile's Allowed EKUs ceiling has filtered them). An empty list therefore means the extension
@@ -448,16 +241,6 @@ export const DurationHint: React.FC<{ value: string; id?: string }> = ({ value, 
 };
 
 /**
- * True when the Inherits From / Enable Inheritance pair disagree.
- *
- * ProfileResolutionService applies a parent only when BOTH `InheritanceEnabled` is true and
- * `InheritsFromId` is set, so either half on its own is a no-op the server accepts silently. The
- * create and edit forms block Save on this instead of storing a setting that does nothing.
- */
-export const inheritancePairInconsistent = (inheritsFromId: string, inheritanceEnabled: boolean): boolean =>
-    (!!inheritsFromId && !inheritanceEnabled) || (!inheritsFromId && inheritanceEnabled);
-
-/**
  * The explanatory line under an "Enable Inheritance" checkbox, plus the warn line when the pair
  * above is inconsistent. Rendered once per form so the four X.509 profile surfaces say the same
  * thing.
@@ -486,28 +269,19 @@ export const SubmitBlockedHint: React.FC<{ reasons: (string | false | null | und
     return <FieldHint tone="warn">{active.join(' ')}</FieldHint>;
 };
 
-/**
- * Hint under a signing profile's single-line Name Constraints JSON inputs.
- *
- * CertificateBuilderService.ParseSubtrees reads a JSON array of "TYPE:value" strings, where TYPE
- * is DNS, IP, EMAIL, URI or DN. The old placeholder showed an object ({"permitted":[...]}), which
- * that parser cannot read at all.
- */
-export const NAME_CONSTRAINTS_HINT = 'A JSON array of "TYPE:value" strings, TYPE being DNS, IP, EMAIL, URI or DN, for example ["DNS:example.com", "EMAIL:example.com", "IP:10.0.0.0/255.0.0.0"]. Entries in any other shape are ignored. Leave blank for no constraint.';
-export const NAME_CONSTRAINTS_PLACEHOLDER = '["DNS:example.com", "EMAIL:example.com"]';
-
 /** Hint under a signing profile's Max Path Length input. */
 export const MAX_PATH_LENGTH_HINT = 'How many more CA levels may sit below this one; 0 means it may issue end-entity certificates only. Leave blank to omit the path length constraint.';
 
 /**
- * Hint under a cert profile's CT Log IDs input. CertificateIssuanceService passes an empty list
- * as null to CtSubmissionService, which then submits to every enabled CT log, and a submission
+ * Hint under a cert profile's CT Logs picker. A blank CtLogIds makes CtSubmissionService submit
+ * to every enabled log; a list is filtered to its enabled logs, so a list of disabled logs submits
+ * nothing. A blank child inherits its parent's list (ProfileResolutionService). A submission
  * failure is logged and never blocks issuance.
  */
-export const CT_LOG_IDS_HINT = 'JSON array of CT log IDs to submit to, for example ["<log-id>", "<log-id>"]. Only read when CT Enabled is on. Leave blank to submit to every enabled CT log; if no CT log is enabled, nothing is submitted and the certificate is still issued. A failed submission is logged and never blocks issuance.';
+export const CT_LOG_IDS_HINT = 'Every enabled log submits each issued certificate to every CT log enabled at the time; on a profile that inherits, the parent profile decides instead. Only these logs submits to the ticked logs that are enabled, skipping disabled ones, so if none of them is enabled nothing is submitted. A failed submission is logged and never blocks issuance.';
 
-/** Hint under a cert profile's CT Enabled checkbox; the read-only twin of {@link CT_LOG_IDS_HINT}. */
-export const CT_ENABLED_HINT = 'When on, each issued certificate is submitted to the CT logs listed in CT Log IDs, or to every enabled log if that field is blank. A parent profile with CT on cannot be turned off here.';
+/** Hint under a cert profile's CT Enabled checkbox; {@link CT_LOG_IDS_HINT} explains the log choice. */
+export const CT_ENABLED_HINT = 'When on, each issued certificate is submitted to the CT logs chosen below. A parent profile with CT on cannot be turned off here.';
 
 /** Hint under an SSH signing profile's Force Command input. */
 export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.';
@@ -520,15 +294,6 @@ export const FORCE_COMMAND_HINT = 'Every session using a certificate from this p
  * certificate while a caller who asks for it by name is refused. The forms block save on that.
  */
 export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree.';
-
-/** Returns the SSH extensions required but not allowed; empty when Allowed is unrestricted. */
-export const sshRequiredNotAllowed = (required: string[], allowed: string[]): string[] =>
-    allowed.length === 0 ? [] : required.filter((r) => !allowed.includes(r));
-
-/** Decorates RSA 7680 / 8192 with a "(high compute)" hint so profile authors and
- *  cert requesters know those sizes carry significant keygen overhead. */
-export const formatKeySizeLabel = (size: string) =>
-    (size === '7680' || size === '8192') ? `${size} (high compute)` : size;
 
 /** Field source indicator for resolved profile views */
 export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {

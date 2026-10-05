@@ -169,7 +169,7 @@ public class LdapGroupSyncService : ILdapGroupSyncService
         var targetGroups = new List<CaGroupEntity>();
         foreach (var group in candidates)
         {
-            if (group.IsSystemGroup || group.IsSystemTierSuper || await ControlledTierResolver.ClassifyGroupAsync(_db, group) != null)
+            if (IsRefusedMappingTarget(group.IsSystemGroup, group.IsSystemTierSuper, await ControlledTierResolver.ClassifyGroupAsync(_db, group) != null))
             {
                 _logger.LogWarning("LDAP sync: refusing to grant privileged group {GroupName} to user {Username}; privileged memberships change only through the admin ceremony path",
                     group.Name, user.Username);
@@ -281,6 +281,17 @@ public class LdapGroupSyncService : ILdapGroupSyncService
         _logger.LogInformation("LDAP group sync completed for {Count} users", users.Count);
     }
 
+    /// <summary>
+    /// Whether a group may never be an LDAP mapping target: a system group, the system-tier super
+    /// group, or a group membership in which confers a controlled tier
+    /// (<see cref="ControlledTierResolver.ClassifyGroupAsync"/>; GET /admin/groups reports it as
+    /// <c>isControlled</c>). Validation refuses a new or changed mapping to one, and sync never
+    /// grants one. The console applies the same rule to the groups it offers
+    /// (<c>modularca.adminui/src/pages/ldapMappings.ts</c>).
+    /// </summary>
+    public static bool IsRefusedMappingTarget(bool isSystemGroup, bool isSystemTierSuper, bool isControlled) =>
+        isSystemGroup || isSystemTierSuper || isControlled;
+
     /// <inheritdoc />
     public async Task<string?> ValidateMappingsAsync(string? mappingsJson, string? previousMappingsJson = null)
     {
@@ -323,7 +334,7 @@ public class LdapGroupSyncService : ILdapGroupSyncService
         var privileged = new List<string>();
         foreach (var g in groups)
         {
-            if (g.IsSystemGroup || g.IsSystemTierSuper || await ControlledTierResolver.ClassifyGroupAsync(_db, g) != null)
+            if (IsRefusedMappingTarget(g.IsSystemGroup, g.IsSystemTierSuper, await ControlledTierResolver.ClassifyGroupAsync(_db, g) != null))
                 privileged.Add(g.Name);
         }
         privileged = privileged.Distinct(StringComparer.OrdinalIgnoreCase).ToList();

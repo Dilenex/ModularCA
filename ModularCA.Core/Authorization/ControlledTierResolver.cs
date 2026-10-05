@@ -131,6 +131,38 @@ public static class ControlledTierResolver
         return ControlledTier.Covering(tiers);
     }
 
+    /// <summary>
+    /// <see cref="ClassifyGroupAsync"/> for many groups in two queries, keyed by group id: the same
+    /// grants, role capabilities and structural classification, read for all of them at once (for
+    /// a listing that marks each group controlled or not).
+    /// </summary>
+    public static async Task<Dictionary<Guid, ControlledTier?>> ClassifyGroupsAsync(ModularCADbContext db, IReadOnlyCollection<CaGroupEntity> groups)
+    {
+        var caps = ControlledCapabilities;
+        var ids = groups.Select(g => g.Id).ToList();
+        var granted = await db.CapabilityGrants.AsNoTracking()
+            .Where(g => ids.Contains(g.GroupId) && g.ResourceType == null && caps.Contains(g.Capability))
+            .Select(g => new { g.GroupId, g.Capability })
+            .ToListAsync();
+        var viaRoles = await db.RoleAssignments.AsNoTracking()
+            .Where(ra => ra.GroupId != null && ids.Contains(ra.GroupId.Value))
+            .Join(db.RoleCapabilities.AsNoTracking()
+                    .Where(rc => rc.ResourceType == null && caps.Contains(rc.Capability)),
+                ra => ra.RoleId, rc => rc.RoleId, (ra, rc) => new { GroupId = ra.GroupId!.Value, rc.Capability })
+            .ToListAsync();
+        var byGroup = granted.Concat(viaRoles).ToLookup(x => x.GroupId, x => x.Capability);
+
+        var result = new Dictionary<Guid, ControlledTier?>();
+        foreach (var group in groups)
+        {
+            var tiers = byGroup[group.Id]
+                .Select(c => TierForGroupCapability(c, group.IsSystemGroup, group.SpaceId, group.CertificateAuthorityId))
+                .Append(ControlledGroupClassifier.Classify(group));
+            result[group.Id] = ControlledTier.Covering(tiers);
+        }
+        return result;
+    }
+
     /// <summary>The distinct tiers <paramref name="userId"/> holds, from every grant source.</summary>
     public static async Task<IReadOnlyList<ControlledTier>> GetUserTiersAsync(ModularCADbContext db, Guid userId)
     {

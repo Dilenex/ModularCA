@@ -6,18 +6,12 @@ import { apiGet, apiPut, apiPost } from '../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { inputClass as inputCls, labelClass } from '@shared/components/forms';
+import { labelClass } from '@shared/components/forms';
 import { Capabilities } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-const validateEmails = (value: string): string | null => {
-    if (!value.trim()) return null;
-    const emails = value.split(',').map(e => e.trim()).filter(Boolean);
-    const invalid = emails.filter(e => !EMAIL_REGEX.test(e));
-    return invalid.length > 0 ? `Invalid email${invalid.length > 1 ? 's' : ''}: ${invalid.join(', ')}` : null;
-};
+import { ChipListInput } from '@shared/components/ChipListInput';
+import { invalidItems, listFromValue, listToCsv } from '@shared/components/chipList';
+import { validateEmail } from '@shared/validators';
 
 interface AlertConfig { enabled: boolean; minimumSeverity: string; cooldownMinutes: number; }
 
@@ -35,7 +29,7 @@ const NotificationManagement: React.FC = () => {
 
     // Single-row edit modal
     const [editTarget, setEditTarget] = useState<any | null>(null);
-    const [editForm, setEditForm] = useState<{ recipients: string; daysBeforeExpiry: string; enabled: boolean; hasDays: boolean }>({ recipients: '', daysBeforeExpiry: '', enabled: true, hasDays: false });
+    const [editForm, setEditForm] = useState<{ recipients: string[]; daysBeforeExpiry: string; enabled: boolean; hasDays: boolean }>({ recipients: [], daysBeforeExpiry: '', enabled: true, hasDays: false });
     const [editEmailError, setEditEmailError] = useState<NoticeInput | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -87,18 +81,19 @@ const NotificationManagement: React.FC = () => {
 
     const openEdit = (p: any) => {
         const hasDays = p.daysBeforeExpiry !== undefined && p.daysBeforeExpiry !== null;
-        setEditForm({ recipients: p.recipients ?? '', daysBeforeExpiry: hasDays ? String(p.daysBeforeExpiry) : '', enabled: !!p.enabled, hasDays });
+        setEditForm({ recipients: listFromValue(p.recipients), daysBeforeExpiry: hasDays ? String(p.daysBeforeExpiry) : '', enabled: !!p.enabled, hasDays });
         setEditEmailError(null);
         setEditTarget(p);
     };
 
+    const recipientsInvalid = invalidItems(editForm.recipients, validateEmail).length > 0;
+
     const saveEdit = async () => {
         if (!editTarget) return;
-        const emailErr = validateEmails(editForm.recipients);
-        if (emailErr) { setEditEmailError(emailErr); return; }
+        if (recipientsInvalid) return;
         setSaving(true);
         try {
-            const body: any = { enabled: editForm.enabled, recipients: editForm.recipients };
+            const body: any = { enabled: editForm.enabled, recipients: listToCsv(editForm.recipients) };
             if (editForm.hasDays && editForm.daysBeforeExpiry) body.daysBeforeExpiry = parseInt(editForm.daysBeforeExpiry, 10);
             await apiPut(`/api/v1/admin/notifications/${editTarget.eventType}`, body);
             setEditTarget(null);
@@ -272,16 +267,16 @@ const NotificationManagement: React.FC = () => {
                                 </div>
                             )}
                             <div>
-                                <label className={labelClass}>Override Recipients (comma-separated emails)</label>
-                                <input type="text" value={editForm.recipients} onChange={(e) => { setEditForm({ ...editForm, recipients: e.target.value }); setEditEmailError(validateEmails(e.target.value)); }}
-                                    placeholder="Leave empty to use admin defaults" autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore
-                                    className={`${inputCls} ${editEmailError ? 'border-crit' : ''}`} />
+                                <label htmlFor="notif-override-recipients" className={labelClass}>Override Recipients</label>
+                                <ChipListInput id="notif-override-recipients" value={editForm.recipients} onChange={(next) => { setEditForm({ ...editForm, recipients: next }); setEditEmailError(null); }}
+                                    validate={validateEmail} caseInsensitive placeholder="Leave empty to use admin defaults" />
+                                {recipientsInvalid && <p className="mt-1 text-xs text-warn">Fix the addresses marked invalid before saving.</p>}
                                 {editEmailError && <InlineNotice notice={editEmailError} variant="line" className="mt-1" />}
                             </div>
                         </div>
                         <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
                             <button onClick={() => setEditTarget(null)} disabled={saving} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover">Cancel</button>
-                            <button onClick={saveEdit} disabled={saving || !!editEmailError} className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+                            <button onClick={saveEdit} disabled={saving || recipientsInvalid} className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
                         </div>
                     </div>
                 </div>

@@ -11,47 +11,20 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
-import { caRowId, caDisplayName, InheritanceHint, inheritancePairInconsistent, SubmitBlockedHint } from './profileHelpers';
-import { inputClass, labelClass } from '@shared/components/forms';
-import {
-    RequestProfileRulesEditor, emptyRules, parseRules, serializeRules,
-    type RequestProfileRules,
-} from '../components/RequestProfileRulesEditor';
+import { SourceBorderedField as ReqSourceBorderedField, SubmitBlockedHint } from './profileHelpers';
+import { RequestProfileForm } from './profiles/RequestProfileForm';
+import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/requestProfile';
+import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 
-const REQUEST_TAB = `/profiles?tab=${encodeURIComponent('Request Profiles')}`;
-
-/** Field source indicator for resolved profile views */
-const ReqFieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
-    if (!source) return null;
-    const isOverridden = source === 'overridden';
-    return (
-        <span className={`ml-2 px-1.5 py-0.5 text-[10px] rounded border ${isOverridden
-            ? 'bg-ok-soft text-ok border-ok/40'
-            : 'bg-sunken text-ink-muted border-line-strong'}`}>
-            {isOverridden ? 'overridden' : 'inherited'}
-        </span>
-    );
-};
-
-const ReqSourceBorderedField: React.FC<{ source?: string; label: string; value?: string | null }> = ({ source, label, value }) => {
-    const borderColor = source === 'overridden' ? 'border-l-ok' : source === 'inherited' ? 'border-l-line-strong' : '';
-    return (
-        <div className={`pl-3 border-l-2 ${borderColor}`}>
-            <div className="flex items-center">
-                <span className="text-xs text-ink-muted">{label}</span>
-                <ReqFieldSourceBadge source={source} />
-            </div>
-            <span className="text-sm text-ink">{value || '-'}</span>
-        </div>
-    );
-};
+const REQUEST_TAB = PROFILE_TYPES.request.listPath;
 
 /// <summary>
-/// Editable detail page for a single enrollment request profile (a tab on Profile Management). View
-/// shows DN/SAN rules and inheritance; Edit changes metadata, JSON rule bodies, allowed cert profiles
-/// and inheritance (step-up MFA). Delete and the resolve/validate inheritance actions are in-page.
+/// Detail page for a single enrollment request profile (a tab on Profile Management), and with
+/// <c>isNew</c> the page that creates one. View shows DN/SAN rules and inheritance; edit and
+/// create share RequestProfileForm. Updates go through step-up MFA; the server does not ask for
+/// it on create. Delete and the resolve/validate inheritance actions are in-page.
 /// </summary>
-const RequestProfileDetail: React.FC = () => {
+const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { requireStepUp } = useStepUp();
@@ -70,24 +43,15 @@ const RequestProfileDetail: React.FC = () => {
     const [validationResult, setValidationResult] = useState<{ isValid: boolean; errors: string[] } | null>(null);
     const [validationLoading, setValidationLoading] = useState(false);
 
-    // Set by the rules editor's JSON escape hatch while its contents do not parse. Saving then
-    // would write the last valid value while the operator looks at the invalid text they typed.
-    const [rulesError, setRulesError] = useState<string | null>(null);
-
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
 
-    const emptyForm = {
-        name: '', description: '', requireApproval: false, defaultCertProfileId: '',
-        rules: emptyRules() as RequestProfileRules, allowedCertProfileIds: [] as string[],
-        inheritsFromId: '', inheritanceEnabled: false, certificateAuthorityId: '',
-    };
     const [editForm, setEditForm] = useState(emptyForm);
     const [initialForm, setInitialForm] = useState(emptyForm);
 
+    const mode = isNew ? 'create' : 'edit';
     const dirty = JSON.stringify(editForm) !== JSON.stringify(initialForm);
-    // Either half of the inheritance pair on its own is a setting the server accepts and ignores.
-    const inheritanceInconsistent = inheritancePairInconsistent(editForm.inheritsFromId, editForm.inheritanceEnabled);
+    const blockedReasons = validate(editForm, mode);
 
     useEffect(() => {
         let cancelled = false;
@@ -101,17 +65,10 @@ const RequestProfileDetail: React.FC = () => {
             if (cancelled) return;
             const list = Array.isArray(profData) ? profData : (profData.items || profData.profiles || []);
             setProfiles(list);
-            const p = list.find((x: any) => x.id === id) || null;
+            const p = isNew ? null : list.find((x: any) => x.id === id) || null;
             setProfile(p);
             if (p) {
-                const seeded = {
-                    name: p.name || '', description: p.description || '', requireApproval: !!p.requireApproval,
-                    defaultCertProfileId: p.defaultCertProfileId || '',
-                    rules: parseRules(p),
-                    allowedCertProfileIds: Array.isArray(p.allowedCertProfileIds) ? p.allowedCertProfileIds : [],
-                    inheritsFromId: p.inheritsFromId || '', inheritanceEnabled: !!p.inheritanceEnabled,
-                    certificateAuthorityId: p.certificateAuthorityId || '',
-                };
+                const seeded = formFromProfile(p);
                 setEditForm(seeded);
                 setInitialForm(seeded);
             }
@@ -120,7 +77,7 @@ const RequestProfileDetail: React.FC = () => {
             setLoading(false);
         }).catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load request profile')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [id, refresh]);
+    }, [id, refresh, isNew]);
 
     const resolveParentName = (pid: string | undefined | null) => {
         if (!pid) return undefined;
@@ -146,29 +103,25 @@ const RequestProfileDetail: React.FC = () => {
     };
 
     const handleSave = async () => {
-        // The rules are held structured now, so there is nothing left to parse here and no way to
-        // arrive at save with a body that will not serialize. The JSON escape hatch inside the
-        // editor reports its own parse failures through rulesError, which disables the button.
-        const body = {
-            name: editForm.name, description: editForm.description || undefined, requireApproval: editForm.requireApproval,
-            defaultCertProfileId: editForm.defaultCertProfileId || undefined,
-            ...serializeRules(editForm.rules),
-            allowedCertProfileIds: editForm.allowedCertProfileIds,
-            inheritsFromId: editForm.inheritsFromId || undefined, inheritanceEnabled: editForm.inheritanceEnabled,
-            certificateAuthorityId: editForm.certificateAuthorityId || undefined,
-        };
         try {
-            await apiPutWithMfa(`/api/v1/admin/request-profiles/${id}`, body, requireStepUp, StepUpOps.UpdateRequestProfile, id!);
+            if (isNew) {
+                const created = await apiPost<any>('/api/v1/admin/request-profiles', formToCreateBody(editForm));
+                showToast('success', 'Request profile created');
+                navigate(created?.id ? profileDetailPath('request', created.id) : REQUEST_TAB, { replace: true });
+                return;
+            }
+            await apiPutWithMfa(`/api/v1/admin/request-profiles/${id}`, formToUpdateBody(editForm), requireStepUp, StepUpOps.UpdateRequestProfile, id!);
             showToast('success', 'Request profile updated');
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to update request profile');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || (isNew ? 'Failed to create request profile' : 'Failed to update request profile'));
             throw err;
         }
     };
 
     const handleCancel = () => {
-        setEditForm(initialForm);
+        if (isNew) navigate(REQUEST_TAB);
+        else setEditForm(initialForm);
     };
 
     const doDelete = async () => {
@@ -187,88 +140,38 @@ const RequestProfileDetail: React.FC = () => {
 
     if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
-    if (!profile) return (
+    if (!isNew && !profile) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-ink-muted">Request profile not found.</p>
             <button onClick={() => navigate(REQUEST_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Request Profiles</button>
         </div>
     );
 
-    const p = profile;
+    const p = profile ?? {};
     const dnRules: any[] = p.subjectDnRules || [];
+    const title = isNew ? 'New request profile' : p.name;
 
     return (
         <DetailPage
-            breadcrumbs={[{ label: 'Profile Management', to: REQUEST_TAB }, { label: 'Request Profiles', to: REQUEST_TAB }, { label: p.name }]}
-            title={p.name}
-            subtitle={p.description || undefined}
+            breadcrumbs={[{ label: 'Profile Management', to: REQUEST_TAB }, { label: 'Request Profiles', to: REQUEST_TAB }, { label: title }]}
+            title={title}
+            subtitle={isNew ? undefined : (p.description || undefined)}
             backTo={REQUEST_TAB}
             editable
+            initialMode={isNew ? 'edit' : 'view'}
+            modeToggle={!isNew}
+            saveLabel={isNew ? 'Create' : 'Save'}
             onSave={handleSave}
             onCancel={handleCancel}
-            saveDisabled={!dirty || !editForm.name || !!rulesError || inheritanceInconsistent}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
+            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
-            {(mode) => mode === 'edit' ? (
-                <DetailSection title="Edit Request Profile">
-                    <div className="space-y-3 max-w-3xl">
-                        <SubmitBlockedHint reasons={[
-                            !editForm.name && 'A name is required before the profile can be saved.',
-                            inheritanceInconsistent && 'Save is disabled until the inheritance settings agree: either choose a parent and turn inheritance on, or clear both.',
-                        ]} />
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div><label className={labelClass}>Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={inputClass} /></div>
-                            <div><label className={labelClass}>Description</label><input type="text" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className={inputClass} /></div>
-                            <div>
-                                <label className={labelClass}>Default Certificate Profile</label>
-                                <select value={editForm.defaultCertProfileId} onChange={(e) => setEditForm({ ...editForm, defaultCertProfileId: e.target.value })} className={inputClass}>
-                                    <option value="">-- None --</option>
-                                    {certProfiles.map((cp) => { const cpId = cp.id || cp.certProfileId; return <option key={cpId} value={cpId}>{cp.name}</option>; })}
-                                </select>
-                            </div>
-                            <div>
-                                <label className={labelClass}>Inherits From</label>
-                                <select value={editForm.inheritsFromId} onChange={(e) => setEditForm({ ...editForm, inheritsFromId: e.target.value })} className={inputClass}>
-                                    <option value="">-- None (standalone) --</option>
-                                    {profiles.filter(pr => pr.id !== p.id).map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
-                                </select>
-                            </div>
-                            <div>
-                                <label className={labelClass}>CA Scope</label>
-                                <select value={editForm.certificateAuthorityId} onChange={(e) => setEditForm({ ...editForm, certificateAuthorityId: e.target.value })} className={inputClass}>
-                                    <option value="">-- System-wide --</option>
-                                    {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
-                                </select>
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
-                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
-                        </div>
-                        <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
-                        <RequestProfileRulesEditor
-                            value={editForm.rules}
-                            onChange={(rules) => setEditForm({ ...editForm, rules })}
-                            onErrorChange={setRulesError}
-                        />
-                        <div>
-                            <label className={labelClass}>Allowed Cert Profiles</label>
-                            <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
-                                {certProfiles.length === 0 && <span className="text-xs text-ink-muted">No cert profiles available</span>}
-                                {certProfiles.map((cp) => {
-                                    const cpId = cp.id || cp.certProfileId;
-                                    return (
-                                        <label key={cpId} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover px-1 rounded">
-                                            <input type="checkbox" checked={editForm.allowedCertProfileIds.includes(cpId)}
-                                                onChange={(e) => setEditForm({ ...editForm, allowedCertProfileIds: e.target.checked ? [...editForm.allowedCertProfileIds, cpId] : editForm.allowedCertProfileIds.filter((x) => x !== cpId) })}
-                                                className="accent-accent" />
-                                            <span>{cp.name}</span>
-                                        </label>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    </div>
+            {(viewMode) => viewMode === 'edit' ? (
+                <DetailSection title={isNew ? 'New Request Profile' : 'Edit Request Profile'}>
+                    <SubmitBlockedHint reasons={blockedReasons} />
+                    <RequestProfileForm value={editForm} onChange={setEditForm} mode={mode}
+                        profileId={isNew ? undefined : id} parentProfiles={profiles} certProfiles={certProfiles}
+                        authorities={authorities} />
                 </DetailSection>
             ) : (<>
                 <DetailSection title="Request Profile">

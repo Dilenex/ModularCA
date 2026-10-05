@@ -93,6 +93,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminCertProfileController.GetAll"] = "SpaceFence.ProfilePredicate, then profile.* grants",
         ["AdminCertProfileController.GetById"] = "SpaceFence.AllowsProfile (N1)",
         ["AdminCertProfileController.GetResolved"] = "SpaceFence.AllowsProfile (N1)",
+        ["AdminCtLogOptionsController.GetOptions"] = "instance-wide CT log catalog with no space binding; id, name, URL and enabled only; writes are SystemOperator",
         ["AdminCertSignRequestController.GetApprovals"] = "EnforceSpaceFenceAsync: SpaceFence.Allows on the CSR's CA",
         ["AdminCertSignRequestController.RetrievePendingRequests"] = "capability: GetAccessibleCaIdsAsync(cert.view)",
         ["AdminCertificateController.ExpiryHistogram"] = "capability: BuildAccessibleCertificatesQueryAsync",

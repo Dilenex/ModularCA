@@ -11,6 +11,8 @@ import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import type { ValidityCeilingPreflight } from '@shared/generated';
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from '../pages/validityCeiling';
 import { HeldKeyDownload } from './HeldKeyDownload';
+import { TypedEntryListEditor, type TypedEntryRowStatus } from '@shared/components/TypedEntryListEditor';
+import { SAN_TYPES as SAN_TYPE_DEFS } from '@shared/generalNames';
 
 /**
  * The certificate request form, rendered by both the admin Issue Certificate page and the user
@@ -185,7 +187,7 @@ const DN_FIELDS = ['CN', 'O', 'OU', 'L', 'ST', 'C'];
 // logon certificate to an Active Directory account. Unlike the others it names a principal rather
 // than a network endpoint, so a request profile has to list it in allowedTypes before it can be
 // used — see RequestProfiles.
-const SAN_TYPES = ['DNS', 'IP', 'Email', 'URI', 'UPN'];
+const SAN_TYPES = SAN_TYPE_DEFS.map(t => t.value);
 const ALL_KEY_ALGORITHMS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
 
 const TAB_ACTIVE = 'bg-accent-soft text-accent-ink border border-accent/40';
@@ -596,8 +598,6 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     };
 
     // --- SAN helpers ---
-    const addSan = () => setSanList([...sanList, { type: 'DNS', value: '' }]);
-    const removeSan = (idx: number) => setSanList(sanList.filter((_, i) => i !== idx));
     const updateSan = (idx: number, field: 'type' | 'value', val: string) => {
         const updated = [...sanList];
         updated[idx] = { ...updated[idx], [field]: val };
@@ -614,9 +614,14 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         return validationResult?.fieldResults.find(r => r.field === field);
     };
 
+    /**
+     * The server's result for row `idx`. The validate call sends only the rows with a value, so
+     * the results line up with those; a blank row has no result.
+     */
     const getSanValidation = (idx: number): SanValidationResult | undefined => {
-        // Match by index in the sanResults list
-        return validationResult?.sanResults[idx];
+        if (!sanList[idx]?.value.trim()) return undefined;
+        const filledIndex = sanList.slice(0, idx).filter(s => s.value.trim()).length;
+        return validationResult?.sanResults[filledIndex];
     };
 
     const getRuleForField = (field: string): SubjectDnFieldRule | undefined => {
@@ -628,6 +633,15 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     const upnBlocked = tab === 'generate' && !allowUpnWithGeneratedKey;
     const sanTypes = upnBlocked ? SAN_TYPES.filter(t => t !== 'UPN') : SAN_TYPES;
     const blockedUpnRows = upnBlocked ? sanList.filter(s => s.type === 'UPN' && s.value.trim()) : [];
+
+    /** A row's status for the SAN editor: a blocked UPN first, then the server's verdict. */
+    const sanRowStatus = (san: SanEntry, idx: number): TypedEntryRowStatus | undefined => {
+        if (upnBlocked && san.type === 'UPN') {
+            return { status: 'error', message: 'A UPN cannot be requested with a server-generated key from here. Paste or upload a CSR instead, or remove this name.' };
+        }
+        const result = getSanValidation(idx);
+        return result ? { status: result.status, message: result.message ?? undefined } : undefined;
+    };
 
     const cnValue = (subjectFields['CN'] ?? '').trim();
 
@@ -1061,61 +1075,23 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                         {/* SAN List */}
                         <div>
                             <h4 className="text-xs font-semibold text-ink mb-3 uppercase tracking-wide">Subject Alternative Names</h4>
-                            <div className="space-y-2">
-                                {sanList.map((san, idx) => {
-                                    const sanValidation = getSanValidation(idx);
-                                    const rowBlocked = upnBlocked && san.type === 'UPN';
-                                    return (
-                                        <div key={idx}>
-                                            <div className="flex items-center gap-2">
-                                                <select
-                                                    value={san.type}
-                                                    onChange={(e) => updateSan(idx, 'type', e.target.value)}
-                                                    onBlur={handleFieldBlur}
-                                                    className="px-2 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent w-24 flex-shrink-0"
-                                                >
-                                                    {(rowBlocked ? SAN_TYPES : sanTypes).map(t => (
-                                                        <option key={t} value={t}>{t}</option>
-                                                    ))}
-                                                </select>
-                                                <input
-                                                    type="text"
-                                                    value={san.value}
-                                                    onChange={(e) => updateSan(idx, 'value', e.target.value)}
-                                                    onBlur={handleFieldBlur}
-                                                    className={`${FIELD_INPUT} ${rowBlocked ? statusBorder('error') : statusBorder(sanValidation?.status)}`}
-                                                    placeholder={san.type === 'UPN' ? 'user@domain.example' : `${san.type} value`}
-                                                />
-                                                {statusIcon(rowBlocked ? 'error' : sanValidation?.status)}
-                                                <button
-                                                    onClick={() => removeSan(idx)}
-                                                    className="px-2 py-2 text-sm text-crit hover:text-crit hover:bg-crit-soft rounded transition-colors"
-                                                    title="Remove SAN"
-                                                >
-                                                    &#10005;
-                                                </button>
-                                            </div>
-                                            {rowBlocked ? (
-                                                <p className="text-xs mt-1 ml-28 text-crit">
-                                                    A UPN cannot be requested with a server-generated key from here. Paste or upload a CSR instead, or remove this name.
-                                                </p>
-                                            ) : sanValidation?.message && (
-                                                <p className={`text-xs mt-1 ml-28 ${statusText(sanValidation.status)}`}>
-                                                    {sanValidation.message}
-                                                </p>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <button
-                                        onClick={addSan}
-                                        className="px-3 py-1.5 text-xs text-accent-ink border border-accent/40 rounded hover:bg-accent-soft transition-colors"
-                                    >
-                                        + Add SAN
-                                    </button>
-                                    {canAddCnAsSan && (
+                            <div>
+                                {/* Validation is the server's (validate-against-profile on blur), so the
+                                    editor's own per-type checks are off and its status comes from there. */}
+                                <TypedEntryListEditor
+                                    aria-label="Subject Alternative Names"
+                                    value={sanList}
+                                    onChange={setSanList}
+                                    types={SAN_TYPE_DEFS}
+                                    offeredTypes={sanTypes}
+                                    defaultType="DNS"
+                                    validate={false}
+                                    rowStatus={sanRowStatus}
+                                    onBlur={handleFieldBlur}
+                                    addLabel="+ Add SAN"
+                                    actions={canAddCnAsSan && (
                                         <button
+                                            type="button"
                                             onClick={addCnAsSan}
                                             title={`Add ${cnValue} as a DNS Subject Alternative Name`}
                                             className="px-3 py-1.5 text-xs text-ok border border-ok/40 rounded hover:bg-ok-soft transition-colors"
@@ -1124,7 +1100,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                             <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
                                         </button>
                                     )}
-                                </div>
+                                />
                             </div>
 
                             {/* Clients have not used the CN for hostname verification since RFC 2818

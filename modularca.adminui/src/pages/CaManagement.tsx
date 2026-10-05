@@ -18,6 +18,8 @@ import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
+import { NameConstraintsEditor, type NameConstraintsValue } from '@shared/components/NameConstraintsEditor';
+import { nameConstraintRowsInvalid, nameConstraintRowsToList } from '@shared/generalNames';
 
 /** The CA list's space column was keyed 'tenant' before 0.4.0; a stored layout carries over. Remove in 0.5. */
 const RENAMED_CA_COLUMNS = { tenant: 'space' };
@@ -92,46 +94,11 @@ const CaManagement: React.FC = () => {
     const [createError, setCreateError] = useState<NoticeInput | null>(null);
     const [createSuccess, setCreateSuccess] = useState<string | null>(null);
 
-    // Name constraints — committed string[] arrays sent in the POST body
-    const [formNameConstraintsPermitted, setFormNameConstraintsPermitted] = useState<string[]>([]);
-    const [formNameConstraintsExcluded, setFormNameConstraintsExcluded] = useState<string[]>([]);
-    // Local raw-text state for the textareas so blank lines / trailing whitespace survive
-    // mid-edit. Parsing into the committed arrays only happens on blur.
-    const [nameConstraintsPermittedText, setNameConstraintsPermittedText] = useState('');
-    const [nameConstraintsExcludedText, setNameConstraintsExcludedText] = useState('');
-    const nameConstraintsPermittedFocused = React.useRef(false);
-    const nameConstraintsExcludedFocused = React.useRef(false);
-
-    // Re-sync raw text when the committed arrays change externally (e.g. reset after create).
-    React.useEffect(() => {
-        if (!nameConstraintsPermittedFocused.current) {
-            setNameConstraintsPermittedText(formNameConstraintsPermitted.join('\n'));
-        }
-    }, [formNameConstraintsPermitted]);
-    React.useEffect(() => {
-        if (!nameConstraintsExcludedFocused.current) {
-            setNameConstraintsExcludedText(formNameConstraintsExcluded.join('\n'));
-        }
-    }, [formNameConstraintsExcluded]);
-
-    const commitNameConstraintsPermitted = () => {
-        nameConstraintsPermittedFocused.current = false;
-        const entries = nameConstraintsPermittedText
-            .split('\n')
-            .map(s => s.trim())
-            .filter(Boolean);
-        setNameConstraintsPermittedText(entries.join('\n'));
-        setFormNameConstraintsPermitted(entries);
-    };
-    const commitNameConstraintsExcluded = () => {
-        nameConstraintsExcludedFocused.current = false;
-        const entries = nameConstraintsExcludedText
-            .split('\n')
-            .map(s => s.trim())
-            .filter(Boolean);
-        setNameConstraintsExcludedText(entries.join('\n'));
-        setFormNameConstraintsExcluded(entries);
-    };
+    // Name constraints, as typed rows; sent as List<string> of TYPE:value.
+    const [nameConstraints, setNameConstraints] = useState<NameConstraintsValue>({ permitted: [], excluded: [] });
+    const nameConstraintsInvalid = nameConstraintRowsInvalid(nameConstraints.permitted) || nameConstraintRowsInvalid(nameConstraints.excluded);
+    const permittedList = nameConstraintRowsToList(nameConstraints.permitted);
+    const excludedList = nameConstraintRowsToList(nameConstraints.excluded);
 
     const flattenCas = (cas: any[]): any[] => {
         const result: any[] = [];
@@ -294,8 +261,8 @@ const CaManagement: React.FC = () => {
                 label: formLabel || undefined,
                 certProfileId: formCertProfile || undefined,
                 publicBaseUrl: formPublicBaseUrl || undefined,
-                nameConstraintsPermitted: formNameConstraintsPermitted.length > 0 ? formNameConstraintsPermitted : null,
-                nameConstraintsExcluded: formNameConstraintsExcluded.length > 0 ? formNameConstraintsExcluded : null,
+                nameConstraintsPermitted: permittedList.length > 0 ? permittedList : null,
+                nameConstraintsExcluded: excludedList.length > 0 ? excludedList : null,
             };
 
             if (formCaType === 'intermediate') {
@@ -319,8 +286,7 @@ const CaManagement: React.FC = () => {
             setFormL('');
             setFormST('');
             setFormC('');
-            setFormNameConstraintsPermitted([]);
-            setFormNameConstraintsExcluded([]);
+            setNameConstraints({ permitted: [], excluded: [] });
             loadAuthorities();
         } catch (err: any) {
             setCreateError(errorNotice(err, 'Failed to create CA'));
@@ -538,58 +504,27 @@ const CaManagement: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Name Constraints — baked into the CA cert's NameConstraints extension and copied
-                            onto the per-CA signing profile. Each entry must be an RFC 5280 §4.2.1.10 general-name
-                            subtree; wildcards and regexes are NOT supported. */}
+                        {/* Name Constraints: baked into the CA cert's NameConstraints extension and copied onto
+                            the per-CA signing profile. The server checks them the same way before any ceremony. */}
                         <div className="border-t border-line pt-4 mt-2">
                             <span className="text-xs font-semibold text-ink-muted">Name Constraints</span>
-                            <p className="mt-1 text-xs text-ink-muted">
-                                Restricts what subject names the new CA (and its children) may issue. Each entry is one of:
-                                <code className="font-mono"> DNS:.example.com</code>,
-                                <code className="font-mono"> IP:10.0.0.0/8</code>,
-                                <code className="font-mono"> Email:@example.com</code>,
-                                <code className="font-mono"> URI:https://example.com</code>, or
-                                <code className="font-mono"> DN:CN=...,O=...</code>.
-                                Wildcards and regexes are not supported &mdash; only RFC 5280 §4.2.1.10 general-name subtrees.
-                                Leave empty for no constraints.
+                            <p className="mt-1 mb-2 text-xs text-ink-muted">
+                                Restricts the names the new CA, and every CA below it, may issue for.
                             </p>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
-                                <div>
-                                    <label className={labelClass}>Permitted name subtrees (one per line)</label>
-                                    <textarea
-                                        value={nameConstraintsPermittedText}
-                                        onChange={(e) => setNameConstraintsPermittedText(e.target.value)}
-                                        onFocus={() => { nameConstraintsPermittedFocused.current = true; }}
-                                        onBlur={commitNameConstraintsPermitted}
-                                        rows={5}
-                                        placeholder={'DNS:.example.com\nIP:10.0.0.0/8\nEmail:@example.com'}
-                                        className={`${inputClass} data-mono resize-y`}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Excluded name subtrees (one per line)</label>
-                                    <textarea
-                                        value={nameConstraintsExcludedText}
-                                        onChange={(e) => setNameConstraintsExcludedText(e.target.value)}
-                                        onFocus={() => { nameConstraintsExcludedFocused.current = true; }}
-                                        onBlur={commitNameConstraintsExcluded}
-                                        rows={5}
-                                        placeholder={'DNS:.test.example.com\nURI:https://legacy.example.com'}
-                                        className={`${inputClass} data-mono resize-y`}
-                                    />
-                                </div>
-                            </div>
+                            <NameConstraintsEditor idPrefix="create-ca-nc" permitted={nameConstraints.permitted} excluded={nameConstraints.excluded}
+                                onChange={setNameConstraints} disabled={createLoading} />
                         </div>
 
                         <div className="flex items-center gap-4 flex-wrap">
                             <button
                                 onClick={handleCreateCa}
-                                disabled={createLoading || !formCN.trim() || !formSpace}
+                                disabled={createLoading || !formCN.trim() || !formSpace || nameConstraintsInvalid}
                                 className="px-6 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {createCaButtonLabel(formCaType, targetCeremony, createLoading)}
                             </button>
                             {formSpace && targetCeremony === null && <FieldHint>{CEREMONY_UNKNOWN_HINT}</FieldHint>}
+                            {nameConstraintsInvalid && <FieldHint tone="warn">Fix the name constraints marked above to continue.</FieldHint>}
                         </div>
 
                         {createError && (

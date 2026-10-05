@@ -1,0 +1,59 @@
+{
+  "_comment": "CertificatePolicies values both CertificatePolicyRules (server) and certificatePolicies.ts / validateOid (console) must accept or refuse alike. Read by tests/modularca.web.tests/src/adminui/certificatePolicies.test.ts and tests/ModularCA.Tests/Shared/Utils/CertificatePolicyRulesTests.cs. Values are already trimmed.",
+  "oid": {
+    "accept": [
+      "2.5.29.32.0",
+      "2.23.140.1.2.1",
+      "2.23.140.1.1",
+      "1.3.6.1.4.1.66874.1.1",
+      "0.0",
+      "1.0",
+      "1.39.5",
+      "2.40.1",
+      "2.999.12345678901234567890"
+    ],
+    "reject": [
+      "1",
+      "1.",
+      ".1.2",
+      "1..2",
+      "1.2.a",
+      "1.2.03",
+      "01.2",
+      "3.1",
+      "1.40",
+      "0.40.1",
+      "2,23,140",
+      "anyPolicy"
+    ]
+  },
+  "cpsUri": {
+    "accept": [
+      "https://example.com/cps",
+      "http://pki.example.com/cps.html",
+      "https://example.com:8443/repository/cps?version=2#section-1",
+      "HTTPS://EXAMPLE.COM/CPS"
+    ],
+    "reject": [
+      "ftp://example.com/cps",
+      "example.com/cps",
+      "/cps",
+      "mailto:pki@example.com",
+      "https://exämple.com/cps",
+      "https://example.com/c ps",
+      "https://",
+      "https://example.com/cps\u0007"
+    ]
+  },
+  "userNotice": {
+    "maxLength": 200,
+    "accept": [
+      "Relying parties must accept the subscriber agreement.",
+      "Utilisé uniquement pour les tests — 試験用"
+    ],
+    "reject": [
+      "Line one\nline two",
+      "Tab\tseparated"
+    ]
+  }
+}

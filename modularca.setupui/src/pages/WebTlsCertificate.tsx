@@ -1,5 +1,8 @@
 import React from 'react';
 import { useAutoFocus } from '../hooks/useAutoFocus';
+import { TypedEntryListEditor } from '@shared/components/TypedEntryListEditor';
+import { type TypedEntry, entriesFromList, entriesToList, sameEntryLists } from '@shared/components/typedEntryList';
+import { INFRA_SAN_TYPES } from '@shared/generalNames';
 
 export type TlsKeyAlgorithm = 'ECDSA' | 'RSA' | 'Ed25519' | 'ML-DSA' | 'SLH-DSA';
 
@@ -29,26 +32,17 @@ interface WebTlsCertificateProps {
 /// </summary>
 const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, onResetFromNetwork }) => {
     const autoFocusRef = useAutoFocus<HTMLInputElement>();
-    // Local raw-text state so the textarea preserves blank lines, trailing whitespace, and
-    // mid-edit cursor position. Parsing into `data.sans` only happens on blur, when we trim
-    // each line and drop empty entries. Re-sync from the parent when `data.sans` changes by an
-    // external path (e.g. navigating back to this step), but skip the resync while focused so
-    // the user's in-progress edit isn't clobbered by our own commit round-trip.
-    const [sansText, setSansText] = React.useState(data.sans.join('\n'));
-    const isFocused = React.useRef(false);
-
+    // The rows are kept here so a blank row being filled in survives; `data.sans` holds only the
+    // entries with a value. They are rebuilt when `data.sans` changes from outside (re-derived
+    // from the Network step), not when it changes because of an edit here.
+    const [sanRows, setSanRows] = React.useState<TypedEntry[]>(() => entriesFromList(data.sans, INFRA_SAN_TYPES));
     React.useEffect(() => {
-        if (!isFocused.current) setSansText(data.sans.join('\n'));
+        setSanRows((rows) => (sameEntryLists(entriesToList(rows), data.sans, INFRA_SAN_TYPES) ? rows : entriesFromList(data.sans, INFRA_SAN_TYPES)));
     }, [data.sans]);
 
-    const commitSans = () => {
-        isFocused.current = false;
-        const sans = sansText
-            .split('\n')
-            .map(s => s.trim())
-            .filter(Boolean);
-        setSansText(sans.join('\n'));
-        onChange({ ...data, sans });
+    const changeSans = (rows: TypedEntry[]) => {
+        setSanRows(rows);
+        onChange({ ...data, sans: entriesToList(rows) });
     };
 
     return (
@@ -179,24 +173,19 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                 <h3 className="text-lg font-semibold text-ink">Subject Alternative Names</h3>
 
                 <div>
-                    <label htmlFor="webTlsSans" className="block text-sm font-medium text-ink mb-1">
-                        SANs (one per line)
-                    </label>
-                    <textarea
+                    <TypedEntryListEditor
                         id="webTlsSans"
-                        value={sansText}
-                        onChange={e => setSansText(e.target.value)}
-                        onFocus={() => { isFocused.current = true; }}
-                        onBlur={commitSans}
-                        rows={5}
-                        placeholder={'DNS:modularca.local\nDNS:localhost\nIP:127.0.0.1'}
-                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
+                        aria-label="Subject Alternative Names"
+                        aria-describedby="webTlsSans-hint"
+                        value={sanRows}
+                        onChange={changeSans}
+                        types={INFRA_SAN_TYPES}
+                        addLabel="+ Add name"
+                        emptyText="No names."
                     />
-                    <p className="text-xs text-ink-muted mt-1">
-                        Prefix DNS names with <code className="font-mono">DNS:</code> and IP addresses with{' '}
-                        <code className="font-mono">IP:</code> (for example{' '}
-                        <code className="font-mono">DNS:foo.example.com</code> or{' '}
-                        <code className="font-mono">IP:10.0.0.1</code>).
+                    <p id="webTlsSans-hint" className="text-xs text-ink-muted mt-1">
+                        DNS names and IP addresses only; the certificate is built from a request that carries no other SAN types.
+                        Paste several lines to add one row each.
                     </p>
                 </div>
             </div>

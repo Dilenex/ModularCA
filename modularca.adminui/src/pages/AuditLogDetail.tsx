@@ -8,6 +8,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { MsaeWhyNotice } from './AuditLogs';
+import { AuditFields } from '../components/AuditFields';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -16,7 +17,7 @@ function formatDate(d: string | null) {
 
 const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'msae', 'network']);
 // Keys rendered with their own formatting / not in the generic dump.
-const TIMESTAMP_KEYS = new Set(['timestamp']);
+const TIMESTAMP_KEYS: ReadonlySet<string> = new Set(['timestamp']);
 
 function auditTitle(type: string, log: any): string {
     if (type === 'network') return `${log.httpMethod || ''} ${log.requestPath || ''}`.trim() || 'Network event';
@@ -74,8 +75,6 @@ const AuditLogDetail: React.FC = () => {
     );
 
     const typeLabel = type === 'general' ? 'General' : type.toUpperCase();
-    // Dump every populated field; DetailField hides null/empty. Render objects as JSON.
-    const entries = Object.entries(log).filter(([k]) => !TIMESTAMP_KEYS.has(k.toLowerCase()));
 
     return (
         <DetailPage
@@ -90,14 +89,7 @@ const AuditLogDetail: React.FC = () => {
                     {type === 'msae' && <MsaeWhyNotice log={log} className="mb-4" />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
-                        {entries.map(([k, v]) => (
-                            <DetailField
-                                key={k}
-                                label={k}
-                                value={v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))}
-                                mono={typeof v === 'object' || /id$|serial|hash|ip$/i.test(k)}
-                            />
-                        ))}
+                        <AuditFields log={log} omit={TIMESTAMP_KEYS} wideClassName="md:col-span-2" />
                     </div>
                 </DetailSection>
             )}

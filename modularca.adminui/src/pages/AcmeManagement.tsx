@@ -8,6 +8,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import { AuditFields } from '../components/AuditFields';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
@@ -395,9 +396,7 @@ const AcmeAuditSection: React.FC = () => {
 
     const drawer = (entry: any) => (
         <div className="text-sm">
-            {Object.entries(entry).map(([k, v]) => (
-                <DetailField key={k} label={k} value={typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '-')} mono={typeof v === 'object'} />
-            ))}
+            <AuditFields log={entry} />
         </div>
     );
 

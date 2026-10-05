@@ -1,0 +1,20 @@
+{
+  "_comment": "How a stored enrollment-token restriction splits into patterns. Read by tests/modularca.web.tests/src/adminui/enrollmentRestriction.test.ts and tests/ModularCA.Tests/Shared/Utils/EnrollmentNameRestrictionTests.cs, so EnrollmentNameRestriction.ParsePatterns and the console agree.",
+  "cases": [
+    { "input": "O=Acme Corp", "patterns": ["O=Acme Corp"] },
+    { "input": "O = Acme Corp", "patterns": ["O = Acme Corp"] },
+    { "input": "a.com, b.com  c.com", "patterns": ["a.com", "b.com", "c.com"] },
+    { "input": "a.com\tb.com", "patterns": ["a.com", "b.com"] },
+    { "input": "example.com; O=Acme Corp", "patterns": ["example.com", "O=Acme Corp"] },
+    { "input": "CN=host\nexample.org", "patterns": ["CN=host", "example.org"] },
+    { "input": "O=Acme OU=Eng", "patterns": ["O=Acme", "OU=Eng"] },
+    { "input": "o=acme   corp,ou=eng", "patterns": ["o=acme   corp", "ou=eng"] },
+    { "input": "example.com O=Acme", "patterns": ["example.com", "O=Acme"] },
+    { "input": "O=Acme example.com", "patterns": ["O=Acme example.com"] },
+    { "input": "O=Foo Bar=Baz", "patterns": ["O=Foo Bar=Baz"] },
+    { "input": "O=Acme\\, Inc.; example.com", "patterns": ["O=Acme\\, Inc.", "example.com"] },
+    { "input": "O=Acme, Inc.", "patterns": ["O=Acme", "Inc."] },
+    { "input": "2.5.4.10=Acme Corp 2.5.4.11=Eng", "patterns": ["2.5.4.10=Acme Corp", "2.5.4.11=Eng"] },
+    { "input": "  ", "patterns": [] }
+  ]
+}

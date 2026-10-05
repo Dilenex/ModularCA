@@ -210,4 +210,84 @@ public class EnrollmentNameRestrictionTests
         Assert.False(EnrollmentNameRestriction.SubjectSatisfies(
             "CN=host.example.com,CN=svc.elsewhere.test", "example.com,internal.test", out _));
     }
+
+    // ---- a DN value with a space (L15) ----
+
+    /// <summary>
+    /// The parser split on whitespace, so the restriction <c>O=Acme Corp</c> became the patterns
+    /// <c>O=Acme</c> and <c>Corp</c>. Each was enough on its own: the token accepted any subject
+    /// with <c>O=Acme</c>, and any subject whose Common Names ended in <c>.corp</c>, while refusing
+    /// the subject it was written for.
+    /// </summary>
+    [Fact]
+    public void A_dn_value_with_a_space_is_one_pattern_and_does_not_widen_the_token()
+    {
+        Assert.Equal(new[] { "O=Acme Corp" }, EnrollmentNameRestriction.ParsePatterns("O=Acme Corp"));
+
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies("CN=host,O=Acme Corp,C=US", "O=Acme Corp", out _));
+        Assert.False(EnrollmentNameRestriction.SubjectSatisfies("CN=host,O=Acme,C=US", "O=Acme Corp", out _));
+        Assert.False(EnrollmentNameRestriction.SubjectSatisfies("CN=anything.corp", "O=Acme Corp", out _));
+        Assert.False(EnrollmentNameRestriction.SansSatisfy(["DNS:anything.corp"], "O=Acme Corp", out _));
+    }
+
+    [Fact]
+    public void Dn_values_compare_with_whitespace_collapsed_and_attribute_aliases()
+    {
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies("CN=host,O=Acme  Corp", "O = acme corp", out _));
+        Assert.False(EnrollmentNameRestriction.SubjectSatisfies("CN=host,O=AcmeCorp", "O=Acme Corp", out _));
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies("CN=host,E=pki@acme.example", "emailAddress=pki@acme.example", out _));
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies("CN=host,2.5.4.10=Acme Corp", "O=Acme Corp", out _));
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies(@"CN=host,O=Acme\, Inc.", @"O=Acme\, Inc.", out _));
+        Assert.True(EnrollmentNameRestriction.SubjectSatisfies("CN=host+O=Acme Corp", "O=Acme Corp", out _));
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "ModularCA.sln")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        return dir!.FullName;
+    }
+
+    /// <summary>The split cases the console's parser runs too (enrollment-restriction-cases.json).</summary>
+    public static IEnumerable<object[]> SharedSplitCases()
+    {
+        var path = Path.Combine(RepoRoot(), "tests", "modularca.web.tests", "src", "adminui", "enrollment-restriction-cases.json");
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        return doc.RootElement.GetProperty("cases").EnumerateArray()
+            .Select(c => new object[]
+            {
+                c.GetProperty("input").GetString()!,
+                c.GetProperty("patterns").EnumerateArray().Select(p => p.GetString()!).ToArray(),
+            })
+            .ToList();
+    }
+
+    [Theory]
+    [MemberData(nameof(SharedSplitCases))]
+    public void ParsePatterns_matches_the_shared_cases(string input, string[] expected)
+        => Assert.Equal(expected, EnrollmentNameRestriction.ParsePatterns(input));
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("example.com, example.org", false)]
+    [InlineData("O=Acme Corp; example.com", false)]
+    [InlineData(".example.com", false)]
+    [InlineData("example.com", true)]
+    public void Valid_restrictions_are_accepted(string? restriction, bool forSans)
+        => Assert.Null(EnrollmentNameRestriction.RestrictionError(restriction, forSans, 255));
+
+    [Theory]
+    [InlineData("O=Acme", true)]            // a SAN can never satisfy a DN pattern
+    [InlineData("*.example.com", false)]    // a pattern already covers subdomains
+    [InlineData("exa!mple.com", false)]
+    [InlineData("O=", false)]
+    [InlineData("=Acme", false)]
+    public void Invalid_restrictions_are_refused(string restriction, bool forSans)
+        => Assert.NotNull(EnrollmentNameRestriction.RestrictionError(restriction, forSans, 255));
+
+    [Fact]
+    public void A_restriction_longer_than_its_column_is_refused()
+        => Assert.NotNull(EnrollmentNameRestriction.RestrictionError(new string('a', 60) + "." + new string('b', 60) + ".com", false, 100));
 }

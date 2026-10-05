@@ -10,6 +10,8 @@
  *
  * Kept as pure data and functions so the branching is testable without rendering the page.
  */
+import { type TypedEntry, hasTypedEntryProblems } from '@shared/components/typedEntryList';
+import { SAN_RESTRICTION_TYPES, SUBJECT_RESTRICTION_TYPES, restrictionFromRows } from './enrollmentRestriction';
 
 /** How a chosen protocol is created and what it hands back. */
 export type EnrollmentKind =
@@ -62,8 +64,10 @@ export interface EnrollmentFormState {
     protocol: string;
     expiresInHours: number | '';
     maxUses: number | '';
-    subjectRestriction: string;
-    sanRestriction: string;
+    /** Rows of DNS domains and DN attributes; one restriction string on the wire. */
+    subjectRestriction: TypedEntry[];
+    /** Rows of DNS domains. */
+    sanRestriction: TypedEntry[];
     referenceValue: string;
     signingProfileId: string;
 }
@@ -74,8 +78,8 @@ export function emptyEnrollmentForm(): EnrollmentFormState {
         protocol: '',
         expiresInHours: 24,
         maxUses: 1,
-        subjectRestriction: '',
-        sanRestriction: '',
+        subjectRestriction: [],
+        sanRestriction: [],
         referenceValue: '',
         signingProfileId: '',
     };
@@ -99,16 +103,24 @@ export function validateEnrollmentForm(
         if (!form.signingProfileId) return 'Choose the signing profile; it decides which CA the credential belongs to.';
     }
 
+    if (kind === 'token' && (
+        hasTypedEntryProblems(form.subjectRestriction, SUBJECT_RESTRICTION_TYPES)
+        || hasTypedEntryProblems(form.sanRestriction, SAN_RESTRICTION_TYPES, { allowedTypes: ['DNS'] }))) {
+        return RESTRICTIONS_REASON;
+    }
+
     return null;
 }
+
+export const RESTRICTIONS_REASON = 'Fix the restrictions marked above.';
 
 /** The POST body for the bearer-token endpoint. Only called for token-kind protocols. */
 export function buildTokenRequest(form: EnrollmentFormState): Record<string, unknown> {
     return {
         expiresInHours: form.expiresInHours || null,
         maxUses: form.maxUses || 0,
-        subjectRestriction: form.subjectRestriction || null,
-        sanRestriction: form.sanRestriction || null,
+        subjectRestriction: restrictionFromRows(form.subjectRestriction) || null,
+        sanRestriction: restrictionFromRows(form.sanRestriction) || null,
         protocol: form.protocol,
     };
 }

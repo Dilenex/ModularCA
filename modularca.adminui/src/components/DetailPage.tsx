@@ -32,6 +32,10 @@ export interface DetailPageProps {
     onCancel?: () => void;
     /** Grey out Save (e.g. nothing changed, or a validation error). */
     saveDisabled?: boolean;
+    /** Label for the Save button, e.g. 'Create' on a page for a new entry. */
+    saveLabel?: string;
+    /** When false, the View/Edit toggle is hidden; a new entry has nothing to view yet. */
+    modeToggle?: boolean;
     /** Body renderer — receives the active mode and a `setMode` helper (e.g. to return to view after save). */
     children: (mode: DetailMode, api: { setMode: (m: DetailMode) => void }) => React.ReactNode;
 }
@@ -43,7 +47,7 @@ export interface DetailPageProps {
  */
 export const DetailPage: React.FC<DetailPageProps> = ({
     breadcrumbs, title, status, subtitle, actions, backTo, editable = false, initialMode = 'view',
-    onSave, onCancel, saveDisabled, children,
+    onSave, onCancel, saveDisabled, saveLabel = 'Save', modeToggle = true, children,
 }) => {
     const navigate = useNavigate();
     const [mode, setMode] = useState<DetailMode>(editable ? initialMode : 'view');
@@ -101,10 +105,12 @@ export const DetailPage: React.FC<DetailPageProps> = ({
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     {/* View/Edit toggle — Edit is blocked for read-only entries. */}
-                    <div className="inline-flex rounded border border-line-strong overflow-hidden">
-                        {segBtn('view', 'View')}
-                        {segBtn('edit', 'Edit', !editable)}
-                    </div>
+                    {modeToggle && (
+                        <div className="inline-flex rounded border border-line-strong overflow-hidden">
+                            {segBtn('view', 'View')}
+                            {segBtn('edit', 'Edit', !editable)}
+                        </div>
+                    )}
                     {actions}
                 </div>
             </div>
@@ -123,7 +129,7 @@ export const DetailPage: React.FC<DetailPageProps> = ({
                     <button onClick={handleSave} disabled={saveDisabled || saving}
                         title={saveDisabled ? 'No unsaved changes' : 'Save all changes'}
                         className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                        {saving ? 'Saving…' : 'Save'}
+                        {saving ? 'Saving…' : saveLabel}
                     </button>
                 </div>
             )}

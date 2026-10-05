@@ -213,7 +213,9 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the HTTP configuration (port, CORS, Swagger, trusted proxies).
-    /// Requires a restart to take full effect.
+    /// Requires a restart to take full effect. CORS origins are checked here with the startup rules
+    /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
+    /// startup rejects would otherwise be saved and stop the next start.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("http")]
@@ -225,6 +227,8 @@ public class AdminConfigController(
             return BadRequest(new { error = "Port must be between 1 and 65535." });
         if (update.PublicPort.HasValue && (update.PublicPort.Value < 1 || update.PublicPort.Value > 65535))
             return BadRequest(new { error = "PublicPort must be between 1 and 65535." });
+        if (ConfigInputRules.CorsOriginsError(update.CorsOrigins, requireBareOrigin: true) is { } corsError)
+            return BadRequest(new { error = corsError });
 
         _config.Http.CorsOrigins = update.CorsOrigins ?? _config.Http.CorsOrigins;
         _config.Http.SwaggerEnabled = update.SwaggerEnabled;
@@ -402,7 +406,7 @@ public class AdminConfigController(
     /// Updates the outbound email configuration. Changing the SMTP host or port, or turning TLS off,
     /// while a password is stored, or the OAuth2 token URL while a client secret is stored, needs that
     /// secret re-entered (400), so a stored secret is never delivered to a server the caller just
-    /// chose or sent in the clear.
+    /// chose or sent in the clear. Admin Recipients must each parse as a mail address (400).
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("email")]
@@ -421,6 +425,8 @@ public class AdminConfigController(
         if (tokenUrlChanged && !string.IsNullOrEmpty(_config.Email.OAuth2ClientSecret)
             && (update.OAuth2ClientSecret == null || IsRedactionSentinel(update.OAuth2ClientSecret)))
             return BadRequest(new { error = "Re-enter the OAuth2 client secret when changing the token URL." });
+        if (ConfigInputRules.EmailListError(update.AdminRecipients, "AdminRecipients") is { } recipientsError)
+            return BadRequest(new { error = recipientsError });
 
         _config.Email.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.SmtpHost)) _config.Email.SmtpHost = update.SmtpHost;
@@ -575,7 +581,9 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the certificate policy configuration (validity limits, key size requirements, SAN enforcement).
-    /// Requires step-up MFA verification.
+    /// An algorithm sunset rule that is not <c>ALG:YYYY-MM-DD</c>
+    /// (<see cref="ConfigInputRules.AlgorithmSunsetRuleError"/>) is refused with 400, rather than
+    /// saved and then skipped at issuance with a log line. Requires step-up MFA verification.
     /// </summary>
     [HttpPut("certificate-policy")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
@@ -584,6 +592,8 @@ public class AdminConfigController(
         // ICF-09: bounds validation
         if (update.MinRsaKeySize < 2048)
             return BadRequest(new { error = "MinRsaKeySize must be >= 2048." });
+        if (ConfigInputRules.AlgorithmSunsetRulesError(update.AlgorithmSunsetRules) is { } sunsetError)
+            return BadRequest(new { error = sunsetError });
 
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
@@ -711,13 +721,17 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Updates the certificate expiry notification configuration.
+    /// Updates the certificate expiry notification configuration. The marks arrive as
+    /// <c>WarningDays</c> and are stored as <c>WarningDaysBeforeExpiry</c>, the name GET returns;
+    /// each must be from 1 to <see cref="ConfigInputRules.MaxWarningDays"/> (400 otherwise).
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("cert-expiry-notifications")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertExpiryNotifications([FromBody] CertExpiryNotificationUpdateRequest request)
     {
+        if (ConfigInputRules.WarningDaysError(request.WarningDays) is { } daysError)
+            return BadRequest(new { error = daysError });
         _config.CertExpiryNotification.Enabled = request.Enabled;
         if (request.WarningDays != null) _config.CertExpiryNotification.WarningDaysBeforeExpiry = request.WarningDays;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.CertExpiryNotification.Schedule = request.Schedule;

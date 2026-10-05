@@ -141,7 +141,8 @@ public class AdminWebTlsController(
     /// MFA verification via the <c>X-MFA-Token</c> header, scoped to the <c>reissue-cert</c>
     /// operation with target <c>webtls</c>. Emits a
     /// <see cref="AuditActionType.CertificateReissued"/> record on both the success and failure
-    /// branches so SIEM can correlate Web TLS reissue attempts regardless of outcome.
+    /// branches so SIEM can correlate Web TLS reissue attempts regardless of outcome. A SAN that
+    /// is not <c>DNS:</c> or <c>IP:</c> is a 400: the infrastructure CSR builder would drop it.
     /// </summary>
     /// <remarks>
     /// True hot-reload (rebuilding <c>config/api-tls.pfx</c> and calling <c>SetCertificate</c>)
@@ -218,6 +219,15 @@ public class AdminWebTlsController(
             return BadRequest(new { error = $"Signing profile {signingProfileId} not found." });
 
         var sans = request.Sans ?? new List<string>();
+        // CsrService builds only DNS and IP names into an infrastructure CSR and skipped anything
+        // else without a word, so a requested Email or URI name, or an unprefixed line, vanished.
+        foreach (var san in sans)
+        {
+            var colon = san?.IndexOf(':') ?? -1;
+            var type = colon > 0 ? san![..colon].Trim() : string.Empty;
+            if (!type.Equals("DNS", StringComparison.OrdinalIgnoreCase) && !type.Equals("IP", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { error = $"SAN '{san}' is not supported on the Web TLS certificate; use DNS:name or IP:address." });
+        }
         var validityDays = request.ValidityDays ?? 397;
         var keyAlgorithm = request.KeyAlgorithm ?? "ECDSA";
         var keySize = request.KeySize > 0 ? request.KeySize : 256;

@@ -14,6 +14,15 @@ import { StepUpOps } from '@shared/generated';
 import ConfirmModal from '../components/ConfirmModal';
 import { ceremonyLink } from './ceremonyLinks';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+import { ChipListInput, type ChipSuggestion } from '@shared/components/ChipListInput';
+import { invalidItems, listFromValue, listToCsv } from '@shared/components/chipList';
+import {
+    type Validator, validateAbsoluteFilePath, validateEmail, validateOrigin, validatePathPrefix, validatePositiveInteger,
+} from '@shared/validators';
+import {
+    DEPRECATED_ALGORITHM_SUGGESTIONS, POLICY_SIGNATURE_ALGORITHMS, certExpiryNotificationBody, warningDaysFromConfig,
+} from './settingsLists';
+import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -89,11 +98,38 @@ const ConfigSelect: React.FC<{ label: string; value: string; options: string[]; 
     </div>
 );
 
-const SaveButton: React.FC<{ saving: boolean; onClick: () => void; label?: string; disabled?: boolean }> = ({ saving, onClick, label, disabled }) => (
-    <button onClick={onClick} disabled={saving || disabled} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
-        {saving ? 'Saving...' : (label || 'Save')}
-    </button>
+/* `blockedReason` disables the button and says why underneath it. */
+const SaveButton: React.FC<{ saving: boolean; onClick: () => void; label?: string; disabled?: boolean; blockedReason?: string | null }> = ({ saving, onClick, label, disabled, blockedReason }) => (
+    <div>
+        <button onClick={onClick} disabled={saving || disabled || !!blockedReason} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
+            {saving ? 'Saving...' : (label || 'Save')}
+        </button>
+        {blockedReason && <FieldHint tone="warn">{blockedReason}</FieldHint>}
+    </div>
 );
+
+/* A list setting edited as chips. Invalid entries stay visible and marked; the card's Save is
+   blocked on them through `listBlocked`. */
+const ConfigChips: React.FC<{ label: string; value: string[]; onChange: (v: string[]) => void; validate?: Validator; suggestions?: ChipSuggestion[]; placeholder?: string; hint?: React.ReactNode; numeric?: boolean; sort?: 'asc' | 'desc'; mono?: boolean; caseInsensitive?: boolean }> = ({ label, hint, ...chip }) => {
+    const id = React.useId();
+    return (
+        <div>
+            <label htmlFor={id} className={labelClass}>{label}</label>
+            <ChipListInput id={id} aria-describedby={hint ? `${id}-hint` : undefined} {...chip} />
+            {hint && <FieldHint id={`${id}-hint`}>{hint}</FieldHint>}
+        </div>
+    );
+};
+
+/* Why a card's Save is blocked: the labels of its list fields that hold invalid entries. */
+const listBlocked = (fields: [string, unknown, Validator][]): string | null => {
+    const bad = fields.filter(([, value, validate]) => invalidItems(listFromValue(value), validate).length > 0).map(([label]) => label);
+    return bad.length ? `Fix the entries marked invalid in ${bad.join(' and ')} before saving.` : null;
+};
+
+const FORBIDDEN_ALGORITHM_SUGGESTIONS: ChipSuggestion[] = POLICY_SIGNATURE_ALGORITHMS.map((value) => ({ value }));
+const DEPRECATED_SUGGESTIONS: ChipSuggestion[] = DEPRECATED_ALGORITHM_SUGGESTIONS.map((value) => ({ value }));
+const validateWarningDay: Validator = (v) => validatePositiveInteger(v, 3650);
 
 /* Note shown on cards whose cron schedule is owned by the scheduler job's detail page. The card's
    Save deliberately sends an empty `schedule`, which the backend patch-guards
@@ -119,14 +155,6 @@ const SectionHeader: React.FC<{ title: string; expanded: boolean; onToggle: () =
         <span className="ml-auto">{tag === 'live' ? <LiveTag /> : tag === 'restart' ? <RestartTag /> : tag === 'read-only' ? <ReadOnlyTag /> : null}</span>
     </button>
 );
-
-/** Convert a backend List<string> to a comma-separated display string */
-const listToStr = (value: any): string => (Array.isArray(value) ? value.join(', ') : (value ?? ''));
-/** Convert a comma-separated display string to a string array for the backend */
-const strToList = (value: string): string[] => value.split(',').map((s: string) => s.trim()).filter(Boolean);
-/** Same, for a textarea labelled "one per line" — accepts newlines and commas. */
-const listToLines = (value: any): string => (Array.isArray(value) ? value.join('\n') : (value ?? ''));
-const linesToList = (value: string): string[] => value.split(/[\n,]/).map((s: string) => s.trim()).filter(Boolean);
 
 /* --- Webhook Test Card --- */
 const WebhookTestCard: React.FC = () => {
@@ -202,6 +230,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
     const [restarting, setRestarting] = useState(false);
+    const [ldapMappingsInvalid, setLdapMappingsInvalid] = useState(false);
+    const [sunsetInvalid, setSunsetInvalid] = useState(false);
 
     // Restarting the server is the most destructive control on this page, and it was the
     // one place in adminui still using a native window.confirm — ConfirmModal is used in
@@ -320,6 +350,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
        stamps its own key; `dirty` is true when any live buffer differs from its snapshot. */
     const saved = useRef<Record<string, string>>({});
     const snap = (key: string, value: any) => { saved.current[key] = JSON.stringify(value); };
+    /** The config as the server last returned it, or null. */
+    const savedConfig = (): any => { try { return JSON.parse(saved.current.config ?? 'null'); } catch { return null; } };
     const differs = (key: string, value: any) => value != null && saved.current[key] !== undefined && saved.current[key] !== JSON.stringify(value);
 
     const load = () => {
@@ -501,6 +533,18 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
     const ocspTtlHint = 'Clients may cache this answer for this long (nextUpdate). Longer means less responder load and slower revocation visibility.';
 
+    /* Cards whose list fields hold invalid entries cannot be saved until they are fixed. */
+    const httpBlocked = listBlocked([['CORS Origins', config.http?.corsOrigins, validateOrigin]]);
+    const mtlsBlocked = listBlocked([
+        ['Required Paths', config.mtls?.requiredPaths, validatePathPrefix],
+        ['Trusted CA Cert Paths', config.mtls?.trustedCaCertPaths, validateAbsoluteFilePath],
+    ]);
+    const ipWhitelistBlocked = listBlocked([['Exempt Paths', config.ipWhitelist?.exemptPaths, validatePathPrefix]]);
+    const warningDays = warningDaysFromConfig(config.certExpiryNotification);
+    const expiryBlocked = listBlocked([['Warning Days', warningDays, validateWarningDay]]);
+    const emailBlocked = listBlocked([['Admin Recipients', config.email?.adminRecipients, validateEmail]]);
+    const networkAuditBlocked = listBlocked([['Exclude Paths', config.networkAudit?.excludePaths, validatePathPrefix]]);
+
     return (
         <div className="space-y-2">
             {successMsg && (
@@ -551,15 +595,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="Plain-HTTP listener for CRL, OCSP and AIA fetches, which relying parties make without TLS. 0 turns it off, and those URLs stop answering." />
                                     <ConfigNumber label="Public Port (behind proxy)" value={config.http.publicPort} onChange={(v) => update('http', 'publicPort', v)} fallback={0}
                                         hint="Port external clients connect to when a proxy sits in front (proxy on 80, this process on 8080). It is written into CRL/OCSP/AIA URLs. 0 uses the listener port." />
-                                    <ConfigInput label="CORS Origins (comma-separated)" value={config.http.corsOrigins} onChange={(v) => update('http', 'corsOrigins', v)}
-                                        hint="HTTPS origins whose browser scripts may call this API. Only read when Enable CORS is on." />
+                                    <ConfigChips label="CORS Origins" value={listFromValue(config.http.corsOrigins)} onChange={(v) => update('http', 'corsOrigins', listToCsv(v))}
+                                        validate={validateOrigin} caseInsensitive mono placeholder="https://app.example.com"
+                                        hint="HTTPS origins whose browser scripts may call this API, as scheme, host and optional port with no path. Plain http is accepted only for localhost. Only read when Enable CORS is on." />
                                     <ConfigToggle label="Enable CORS" checked={config.http.enableCors ?? false} onChange={(v) => update('http', 'enableCors', v)}
                                         hint="Allows browser pages on the listed origins to call the API. Off means every cross-origin browser request is refused, even in Development." />
                                     <ConfigToggle label="Swagger Enabled" checked={config.http.swaggerEnabled} onChange={(v) => update('http', 'swaggerEnabled', v)}
                                         hint="Publishes the interactive API documentation at /swagger to anyone who can reach the port. Leave off in production." />
                                 </div>
                                 <p className="text-[10px] text-ink-muted">Trusted Proxy CIDRs moved to the <strong>Reverse Proxy</strong> card (Security tab).</p>
-                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} />
+                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} blockedReason={httpBlocked} />
                             </div>
                         )}
                     </div>
@@ -802,7 +847,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 <SaveButton saving={saving === 'securityProxy'} onClick={() => saveSecurityFields(['behindReverseProxy'], 'securityProxy')} label="Save Proxy Mode" />
                                 <ConfigInput label="Trusted Proxy CIDRs" value={config.http.trustedProxyCidrs} onChange={(v) => update('http', 'trustedProxyCidrs', v)} placeholder="10.0.0.0/8, 172.16.0.0/12"
                                     hint="Only proxies in these ranges may set forwarded headers. Empty means loopback only. Name the actual proxy subnet, not RFC1918 wholesale." />
-                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" />
+                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" blockedReason={httpBlocked} />
                             </div>
                         )}
                     </div>
@@ -1023,14 +1068,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="Offers certificate-based login: connections to the auth subdomain are asked for a client certificate; every other hostname gets a normal handshake." />
                                     <ConfigInput label="Auth Subdomain" value={config.mtls?.authSubdomain} onChange={(v) => update('mtls', 'authSubdomain', v)} placeholder="mtls.ca.example.com"
                                         hint="Hostname whose TLS handshake requests a client certificate. Needs DNS pointing here and the Web TLS certificate's SANs must include it, or clients fail before login." />
-                                    <ConfigInput label="Required Paths (comma-separated)" value={listToStr(config.mtls?.requiredPaths)} onChange={(v) => update('mtls', 'requiredPaths', strToList(v))}
-                                        hint="Paths that refuse any request not carrying a valid client certificate, regardless of hostname." />
+                                    <ConfigChips label="Required Paths" value={listFromValue(config.mtls?.requiredPaths)} onChange={(v) => update('mtls', 'requiredPaths', v)}
+                                        validate={validatePathPrefix} mono placeholder="/api/v1/admin"
+                                        hint="Path prefixes that refuse any request not carrying a valid client certificate, regardless of hostname." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Trusted CA Cert Paths (comma-separated file paths)" value={listToStr(config.mtls?.trustedCaCertPaths)} onChange={(v) => update('mtls', 'trustedCaCertPaths', strToList(v))}
-                                            hint="PEM files of the CAs whose certificates count as a login. A certificate from any other issuer is rejected at the handshake." />
+                                        <ConfigChips label="Trusted CA Cert Paths" value={listFromValue(config.mtls?.trustedCaCertPaths)} onChange={(v) => update('mtls', 'trustedCaCertPaths', v)}
+                                            validate={validateAbsoluteFilePath} mono placeholder="/etc/modularca/client-ca.pem"
+                                            hint="Absolute paths of PEM files on the server, for the CAs whose certificates count as a login. A certificate from any other issuer is rejected at the handshake. Each file is checked when you save." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'mtls'} onClick={() => saveSection('mtls', config.mtls, 'mtls')} />
+                                <SaveButton saving={saving === 'mtls'} onClick={() => saveSection('mtls', config.mtls, 'mtls')} blockedReason={mtlsBlocked} />
                             </div>
                         )}
                     </div>
@@ -1052,17 +1099,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     hint={config.ipWhitelist?.enabled === false
                                         ? 'Off: every rule on the Whitelists page is ignored and all addresses reach every endpoint.'
                                         : 'On: each request is matched against the Whitelists rules. Turning this off bypasses all of them at once.'} />
-                                <ConfigInput label="Exempt Paths (comma-separated)" value={(config.ipWhitelist?.exemptPaths || []).join(', ')}
-                                    onChange={(v) => update('ipWhitelist', 'exemptPaths', v.split(',').map((s: string) => s.trim()).filter(Boolean))}
-                                    placeholder="/api/v1/auth, /api/v1/public/ca"
-                                    hint="Path prefixes that always pass, whatever the rules say. A prefix here undoes any tightening of that path on the Whitelists page." />
+                                <ConfigChips label="Exempt Paths" value={listFromValue(config.ipWhitelist?.exemptPaths)}
+                                    onChange={(v) => update('ipWhitelist', 'exemptPaths', v)}
+                                    validate={validatePathPrefix} mono placeholder="/api/v1/public/ca"
+                                    hint="Path prefixes that always pass, whatever the rules say. A prefix covers every path that starts with it, and undoes any tightening of those paths on the Whitelists page." />
                                 <div className="text-xs text-ink-muted">
                                     When the master switch is off, <code className="mono">IpWhitelistMiddleware</code> short-circuits to pass-through
                                     and no rule lookup happens. When on, the middleware consults the <code className="mono">Whitelists</code> table
                                     per request via the cached <code className="mono">IWhitelistService</code>. Exempt paths always pass through
                                     regardless of the master switch — they're the path-based exclusions that bypass rule evaluation entirely.
                                 </div>
-                                <SaveButton saving={saving === 'ipwhitelist'} onClick={() => saveSection('ip-whitelist', config.ipWhitelist, 'ipwhitelist')} />
+                                <SaveButton saving={saving === 'ipwhitelist'} onClick={() => saveSection('ip-whitelist', config.ipWhitelist, 'ipwhitelist')} blockedReason={ipWhitelistBlocked} />
                             </div>
                         )}
                     </div>
@@ -1147,11 +1194,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)} disabled={!user?.isSuper}
                                         hint="Attribute on the user entry listing its groups (memberOf on Active Directory)." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Group to Role Mappings (JSON)" value={config.ldapAuth.groupToRoleMappings} onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)} placeholder='{"CN=Admins,DC=...": "CaAdmin"}' disabled={!user?.isSuper}
-                                            hint="JSON object mapping an LDAP group DN to a local group name. LDAP groups not listed here grant nothing." />
+                                        <LdapMappingsEditor value={config.ldapAuth.groupToRoleMappings} savedValue={savedConfig()?.ldapAuth?.groupToRoleMappings}
+                                            onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)}
+                                            disabled={!user?.isSuper} onInvalidChange={setLdapMappingsInvalid} />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')} />
+                                <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')}
+                                    blockedReason={ldapMappingsInvalid ? 'Fix the group mappings marked in red before saving.' : null} />
                             </div>
                         )}
                     </div>
@@ -1178,22 +1227,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigToggle label="Require SANs" checked={config.certPolicy?.requireSans ?? false} onChange={(v) => update('certPolicy', 'requireSans', v)}
                                         hint="Requests without a Subject Alternative Name are refused. Browsers ignore the Common Name, so a certificate without SANs fails hostname checks anyway." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Forbidden Algorithms (comma-separated)" value={listToStr(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', strToList(v))} placeholder="MD5, SHA1"
-                                            hint="Signature algorithms refused at issuance, e.g. SHA1WithRSA, MD5WithRSA." />
+                                        <ConfigChips label="Forbidden Algorithms" value={listFromValue(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', v)}
+                                            suggestions={FORBIDDEN_ALGORITHM_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1withRSA"
+                                            hint="A request whose signature algorithm has exactly one of these names is refused at issuance (case does not matter). Use the full name, such as SHA1withRSA; a fragment like SHA1 matches nothing. An algorithm the server has no name for is matched by its OID, e.g. 1.2.840.113549.1.1.4 for MD5withRSA." />
                                     </div>
                                     <div className="md:col-span-2">
-                                        <label className={labelClass}>Algorithm Sunset Rules (one per line: &quot;RSA-2048:2030-01-01&quot;)</label>
-                                        <textarea
-                                            value={listToLines(config.certPolicy?.algorithmSunsetRules)}
-                                            onChange={(e) => update('certPolicy', 'algorithmSunsetRules', linesToList(e.target.value))}
-                                            placeholder={"RSA-2048:2030-01-01\nSHA-256:2035-01-01"}
-                                            rows={4}
-                                            className={`${inputClass} data-mono`}
-                                        />
-                                        <FieldHint>From the date onward, issuance with that algorithm (or algorithm-keysize pair) is refused. Until then the rule does nothing, so sunsets can be entered years ahead.</FieldHint>
+                                        <SunsetRulesEditor value={config.certPolicy?.algorithmSunsetRules}
+                                            onChange={(v) => update('certPolicy', 'algorithmSunsetRules', v)} onInvalidChange={setSunsetInvalid} />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'certPolicy'} onClick={() => saveSection('certificate-policy', config.certPolicy, 'certPolicy')} />
+                                <SaveButton saving={saving === 'certPolicy'} onClick={() => saveSection('certificate-policy', config.certPolicy, 'certPolicy')}
+                                    blockedReason={sunsetInvalid ? 'Fix the sunset rules marked in red before saving.' : null} />
                             </div>
                         )}
                     </div>
@@ -1221,17 +1265,18 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Cert Expiry Notifications */}
                     <div className={cardClass}>
                         <SectionHeader title="Cert Expiry Notifications" expanded={expanded === 'certExpiryNotification'} onToggle={() => toggle('certExpiryNotification')}
-                            description={config.certExpiryNotification?.enabled ? `Warn at ${config.certExpiryNotification.warningDays || '90,60,30,14,7'}d` : 'Disabled'} tag="live" />
+                            description={config.certExpiryNotification?.enabled ? (warningDays.length ? `Warn at ${warningDays.join(', ')} days` : 'No warning days set') : 'Disabled'} tag="live" />
                         {expanded === 'certExpiryNotification' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certExpiryNotification?.enabled ?? false} onChange={(v) => update('certExpiryNotification', 'enabled', v)}
                                         hint="The CertExpiryNotification job emails and webhooks a warning as certificates approach expiry. Needs Email or Webhook configured under Integrations to reach anyone." />
-                                    <ConfigInput label="Warning Days (comma-separated)" value={config.certExpiryNotification?.warningDays} onChange={(v) => update('certExpiryNotification', 'warningDays', v)} placeholder="90,60,30,14,7"
-                                        hint="A notice is sent once as a certificate crosses each of these day marks before expiry. The list is checked in order and the first match fires." />
+                                    <ConfigChips label="Warning Days" value={warningDays} onChange={(v) => update('certExpiryNotification', 'warningDaysBeforeExpiry', v)}
+                                        validate={validateWarningDay} numeric sort="desc" placeholder="e.g. 30"
+                                        hint="Days before expiry, from 1 to 3650. A notice is sent once as a certificate crosses each mark; the order does not matter. Empty means no notices are sent." />
                                 </div>
                                 <ScheduleMovedNote job="CertExpiryNotification" />
-                                <SaveButton saving={saving === 'certExpiryNotification'} onClick={() => saveSection('cert-expiry-notifications', { ...config.certExpiryNotification, schedule: '' }, 'certExpiryNotification')} />
+                                <SaveButton saving={saving === 'certExpiryNotification'} onClick={() => saveSection('cert-expiry-notifications', certExpiryNotificationBody(config.certExpiryNotification, warningDays), 'certExpiryNotification')} blockedReason={expiryBlocked} />
                             </div>
                         )}
                     </div>
@@ -1261,9 +1306,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <p className="text-[10px] text-ink-muted mt-1">Reports only — it never blocks issuance. The enforced ceiling is per space, under Spaces &amp; Quotas.</p>
                                     </div>
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Deprecated Algorithms (comma-separated)" value={listToStr(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', strToList(v))} placeholder="MD5, SHA1, RSA-1024"
-                                            hint="Issued certificates signed with these are flagged." />
-                                        <p className="text-[10px] text-ink-muted mt-1">Policy forbids at issuance: {listToStr(config.certPolicy?.forbiddenAlgorithms) || 'none'}</p>
+                                        <ConfigChips label="Deprecated Algorithms" value={listFromValue(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', v)}
+                                            suggestions={DEPRECATED_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1"
+                                            hint="Issued certificates whose signature algorithm name contains one of these are flagged, ignoring case and hyphens: SHA1 matches SHA-1withRSA and SHA-1withECDSA." />
+                                        <p className="text-[10px] text-ink-muted mt-1">Policy forbids at issuance: {listFromValue(config.certPolicy?.forbiddenAlgorithms).join(', ') || 'none'}</p>
                                     </div>
                                 </div>
                                 <ScheduleMovedNote job="Compliance" />
@@ -1322,11 +1368,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="Must be an address the mail server allows this account to send as, or messages are rejected." />
                                     <ConfigInput label="From Name" value={config.email.fromName} onChange={(v) => update('email', 'fromName', v)} />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Admin Recipients (comma-separated)" value={config.email.adminRecipients} onChange={(v) => update('email', 'adminRecipients', v)} placeholder="admin@example.com"
+                                        <ConfigChips label="Admin Recipients" value={listFromValue(config.email.adminRecipients)} onChange={(v) => update('email', 'adminRecipients', listToCsv(v))}
+                                            validate={validateEmail} caseInsensitive placeholder="admin@example.com"
                                             hint="Addresses that receive system alerts (backup failures, scheduler failures, security changes). Empty means alerts reach nobody by mail." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'email'} onClick={() => saveSection('email', config.email, 'email')} />
+                                <SaveButton saving={saving === 'email'} onClick={() => saveSection('email', config.email, 'email')} blockedReason={emailBlocked} />
                             </div>
                         )}
                     </div>
@@ -1548,13 +1595,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         )}
                                     </div>
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Exclude Paths (comma-separated)" value={listToStr(config.networkAudit?.excludePaths)}
-                                            onChange={(v) => update('networkAudit', 'excludePaths', strToList(v))}
-                                            placeholder="/health,/metrics"
+                                        <ConfigChips label="Exclude Paths" value={listFromValue(config.networkAudit?.excludePaths)}
+                                            onChange={(v) => update('networkAudit', 'excludePaths', v)}
+                                            validate={validatePathPrefix} mono placeholder="/health"
                                             hint="Path prefixes never recorded, typically health checks and metrics scrapes that would otherwise dominate the log." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'networkAudit'} onClick={() => saveSection('network-audit', config.networkAudit, 'networkAudit')} />
+                                <SaveButton saving={saving === 'networkAudit'} onClick={() => saveSection('network-audit', config.networkAudit, 'networkAudit')} blockedReason={networkAuditBlocked} />
                             </div>
                         )}
                     </div>

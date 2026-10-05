@@ -6,6 +6,7 @@ import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
+import { AuditFields } from '../components/AuditFields';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { useTableQuery } from '@shared/hooks/useTableQuery';
 import { formatSort, parseSort, viewQuery, type TableQueryValues } from '@shared/tableQuery';
@@ -144,14 +145,14 @@ function isMsaeRow(log: any, tab?: Tab): boolean {
     return tab ? tab === 'MSAE' : (log != null && typeof log === 'object' && ('authMethod' in log || 'callerPrincipal' in log));
 }
 
-/* read-only drawer — dumps every populated field (DetailField hides null/empty); an MSAE refusal is explained first */
+const TIMESTAMP_ONLY: ReadonlySet<string> = new Set(['timestamp']);
+
+/* read-only drawer — every populated field, JSON details as nested rows; an MSAE refusal is explained first */
 export const AuditDrawer: React.FC<{ log: any; tab?: Tab }> = ({ log, tab }) => (
     <div className="text-sm">
         {isMsaeRow(log, tab) && <MsaeWhyNotice log={log} className="mb-3" />}
         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
-        {Object.entries(log).filter(([k]) => k.toLowerCase() !== 'timestamp').map(([k, v]) => (
-            <DetailField key={k} label={k} value={v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))} mono={typeof v === 'object' || /id$|serial|hash|ip$/i.test(k)} />
-        ))}
+        <AuditFields log={log} omit={TIMESTAMP_ONLY} />
     </div>
 );
 

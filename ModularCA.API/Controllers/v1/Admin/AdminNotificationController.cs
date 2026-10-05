@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 using Serilog;
 using ModularCA.API.Startup;
 
@@ -45,11 +46,18 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
         },
     });
 
+    /// <summary>
+    /// Updates one notification preference. Recipients, when sent, is a comma-separated list whose
+    /// entries must each parse as a mail address (400); empty falls back to the admin recipients.
+    /// </summary>
     [HttpPut("{eventType}")]
     public async Task<IActionResult> UpdatePreference(string eventType, [FromBody] UpdateNotificationRequest request)
     {
         var pref = await db.NotificationPreferences.FirstOrDefaultAsync(p => p.EventType == eventType);
         if (pref == null) return NotFound(new { error = $"Notification preference '{eventType}' not found" });
+
+        if (ConfigInputRules.EmailListError(request.Recipients, "Recipients") is { } recipientsError)
+            return BadRequest(new { error = recipientsError });
 
         if (request.Enabled.HasValue) pref.Enabled = request.Enabled.Value;
         if (request.Recipients != null) pref.Recipients = request.Recipients;

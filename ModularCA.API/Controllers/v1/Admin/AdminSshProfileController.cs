@@ -9,6 +9,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -173,6 +174,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// any row is written so a space-A operator cannot bind a new profile to a space-B
     /// CA. Failure paths emit a failure audit row. Step-up MFA is required because creating
     /// a signing profile binds it to an SSH CA key whose material can mint host/user certs.
+    /// SourceAddressRestrictions must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
     [HttpPost("signing")]
     [Authorize]
@@ -189,6 +191,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 new { request.Name, request.SshCaKeyId });
             return NotFound();
         }
+
+        if (SshProfileFieldRules.ValidateSourceAddressRestrictions(request.SourceAddressRestrictions) is { } sourceError)
+            return BadRequest(new { error = sourceError });
 
         var entity = new SshSigningProfileEntity
         {
@@ -223,6 +228,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// they cannot read; a new key's CA also needs cert.revoke and the profile's own scope
     /// (<see cref="RefuseRebindAsync"/>). Failure paths emit a failure audit row. Step-up MFA is required
     /// because mutations alter validity, extensions, or CA-key binding for SSH issuance.
+    /// SourceAddressRestrictions, when sent, must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
     [HttpPut("signing/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -257,6 +263,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 return refused;
             fence = newFence;
         }
+
+        if (SshProfileFieldRules.ValidateSourceAddressRestrictions(request.SourceAddressRestrictions) is { } sourceError)
+            return BadRequest(new { error = sourceError });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;
@@ -374,6 +383,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// system admins so a space operator cannot inject globally-visible profiles.
     /// Non-admin callers receive 404 and a failure audit row is emitted. Step-up MFA is
     /// required because cert profiles constrain SSH issuance globally across spaces.
+    /// AllowedPrincipalPatterns must be a JSON array of .NET regexes that compile (400).
     /// </summary>
     [HttpPost("cert")]
     [Authorize]
@@ -389,6 +399,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 new { request.Name });
             return NotFound();
         }
+
+        if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
+            return BadRequest(new { error = patternError });
 
         var entity = new SshCertProfileEntity
         {
@@ -417,6 +430,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// system-wide (no space FK), so mutation is restricted to system admins. Non-admin
     /// callers receive 404 and a failure audit row is emitted. Step-up MFA is required
     /// because changes affect issuance constraints applied to every space.
+    /// AllowedPrincipalPatterns, when sent, must be a JSON array of .NET regexes that compile (400).
     /// </summary>
     [HttpPut("cert/{id:guid}")]
     [Authorize]
@@ -434,6 +448,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         var entity = await _db.SshCertProfiles.FindAsync(id);
         if (entity == null) return NotFound();
+
+        if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
+            return BadRequest(new { error = patternError });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;

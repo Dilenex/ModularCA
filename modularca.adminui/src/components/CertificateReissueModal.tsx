@@ -5,6 +5,9 @@ import { looksLikeHostname } from '@shared/hostname';
 import { StepUpOps } from '@shared/generated';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import { FieldNotices, hasFieldNotice } from '@shared/components/FieldNotice';
+import { TypedEntryListEditor } from '@shared/components/TypedEntryListEditor';
+import { type TypedEntry, entriesFromList, entriesToList, hasTypedEntryProblems, sameEntryLists } from '@shared/components/typedEntryList';
+import { SAN_TYPES } from '@shared/generalNames';
 import {
     mergeNotices, unclaimedNotices, worstSeverity,
     type Notice, type NoticeInput, type NoticeSeverity,
@@ -62,7 +65,7 @@ interface SubjectComponents {
 }
 
 interface ReissueForm extends SubjectComponents {
-    sansText: string;
+    sans: TypedEntry[];
     notBefore: string;
     notAfter: string;
 }
@@ -74,7 +77,7 @@ const EMPTY_FORM: ReissueForm = {
     L: '',
     ST: '',
     C: '',
-    sansText: '',
+    sans: [],
     notBefore: '',
     notAfter: '',
 };
@@ -140,7 +143,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
         const parts = parseSubjectDn(cert.subjectDN);
         setForm({
             ...parts,
-            sansText: (cert.sans ?? []).join('\n'),
+            sans: entriesFromList(cert.sans, SAN_TYPES),
             notBefore: '',
             notAfter: '',
         });
@@ -158,21 +161,22 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
 
     const cnValue = form.CN.trim();
 
-    // Entries are "DNS:host" here, but the server also accepts a bare host line, so check both
-    // spellings before offering to add what would be a duplicate.
-    const cnAlreadyASan = form.sansText
-        .split(/\r?\n/)
-        .map((l) => l.trim().toLowerCase())
-        .some((l) => l === 'dns:' + cnValue.toLowerCase() || l === cnValue.toLowerCase());
+    const cnAlreadyASan = form.sans.some((r) => r.type === 'DNS' && r.value.trim().toLowerCase() === cnValue.toLowerCase());
 
     const canAddCnAsSan = looksLikeHostname(cnValue) && !cnAlreadyASan;
 
     const addCnAsSan = () => {
         if (!canAddCnAsSan) return;
-        const kept = form.sansText.split(/\r?\n/).filter((l) => l.trim());
-        kept.push('DNS:' + cnValue);
-        updateField('sansText', kept.join(String.fromCharCode(10)));
+        setForm((prev) => ({ ...prev, sans: [...prev.sans.filter((r) => r.value.trim()), { type: 'DNS', value: cnValue }] }));
     };
+
+    // Compared in canonical spelling, so `email:` read back as `Email:` is not a change.
+    const editedSans = entriesToList(form.sans);
+    const sansChanged = !sameEntryLists(editedSans, cert.sans ?? [], SAN_TYPES);
+    const sansInvalid = sansChanged && hasTypedEntryProblems(form.sans, SAN_TYPES);
+    // ApplySanOverrides treats an empty override list as "no override", so clearing every name
+    // reissues with the original SANs; say so rather than let the operator expect otherwise.
+    const clearsAllSans = sansChanged && editedSans.length === 0;
 
     const handleClose = () => {
         if (submitting) return;
@@ -185,24 +189,14 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
 
     const handleSubmit = async () => {
         if (!cert) return;
-        if (validityInverted) return;
+        if (validityInverted || sansInvalid) return;
         setSubmitting(true);
         setNotices([]);
         try {
             const body: any = { serialNumber: cert.serialNumber };
             const newDn = buildSubjectDn(form);
             if (newDn && newDn !== cert.subjectDN) body.newSubjectDn = newDn;
-            // Send whenever the list CHANGED, including when it was cleared. This was
-            // `if (form.sansText)`, which is falsy for an empty textarea — so emptying the box
-            // omitted newSans entirely, the server's `if (newSans != null)` never fired, and the
-            // reissued certificate silently kept its original SANs. The operator saw a success
-            // toast for a removal that did not happen. An empty array is meaningful here: the
-            // server serializes it to "[]", which correctly means "no SANs".
-            const originalSans = (cert.sans ?? []).map((s) => s.trim()).filter(Boolean);
-            const editedSans = form.sansText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-            const sansChanged =
-                editedSans.length !== originalSans.length ||
-                editedSans.some((v, i) => v !== originalSans[i]);
+            // Send whenever the list changed, including when it was cleared (see clearsAllSans).
             if (sansChanged) body.newSans = editedSans;
             if (form.notBefore) body.notBefore = new Date(form.notBefore).toISOString();
             if (form.notAfter) body.notAfter = new Date(form.notAfter).toISOString();
@@ -376,21 +370,19 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
 
                     {/* SANs */}
                     <div>
-                        <label htmlFor="reissue-sans" className={labelClass}>Subject Alternative Names</label>
-                        <textarea
+                        <span id="reissue-sans-label" className={labelClass}>Subject Alternative Names</span>
+                        <TypedEntryListEditor
                             id="reissue-sans"
-                            value={form.sansText}
-                            onChange={(e) => updateField('sansText', e.target.value)}
-                            disabled={submitting}
-                            rows={4}
-                            placeholder={'DNS:example.com\nDNS:www.example.com\nIP:10.0.0.1'}
-                            aria-invalid={hasFieldNotice(notices, SAN_FIELDS)}
+                            aria-label="Subject Alternative Names"
                             aria-describedby={describedBy('reissue-sans-notice', SAN_FIELDS)}
-                            className={`${inputClass} resize-none font-mono${invalidClass(SAN_FIELDS)}`}
-                        />
-                        <FieldNotices id="reissue-sans-notice" notices={notices} field={SAN_FIELDS} />
-                        {canAddCnAsSan && (
-                            <div className="mt-2">
+                            value={form.sans}
+                            onChange={(sans) => setForm((prev) => ({ ...prev, sans }))}
+                            types={SAN_TYPES}
+                            validate={sansChanged}
+                            addLabel="+ Add SAN"
+                            emptyText="No Subject Alternative Names."
+                            disabled={submitting}
+                            actions={canAddCnAsSan && (
                                 <button
                                     type="button"
                                     onClick={addCnAsSan}
@@ -400,16 +392,23 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                     + Use CN as DNS SAN
                                     <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
                                 </button>
-                                <p className="text-xs text-warn mt-2">
-                                    <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
-                                    Clients ignore the Common Name for hostname verification, so this
-                                    certificate would not validate for that name.
-                                </p>
-                            </div>
+                            )}
+                        />
+                        <FieldNotices id="reissue-sans-notice" notices={notices} field={SAN_FIELDS} />
+                        {canAddCnAsSan && (
+                            <p className="text-xs text-warn mt-2">
+                                <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
+                                Clients ignore the Common Name for hostname verification, so this
+                                certificate would not validate for that name.
+                            </p>
+                        )}
+                        {clearsAllSans && (
+                            <p className="text-xs text-warn mt-2">
+                                An empty list is not applied: the server reissues with the certificate&apos;s current names when no SAN is given.
+                            </p>
                         )}
                         <div className={helperClass}>
-                            One per line. Prefix with <span className="font-mono">DNS:</span>, <span className="font-mono">IP:</span>,{' '}
-                            <span className="font-mono">email:</span>, or <span className="font-mono">URI:</span> to indicate the SAN type.
+                            Unchanged names are reissued as they are; each name is checked against the certificate&apos;s request profile when you reissue.
                         </div>
                     </div>
 
@@ -490,8 +489,8 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                     </button>
                     <button
                         onClick={handleSubmit}
-                        disabled={submitting || validityInverted}
-                        title={validityInverted ? 'Valid To must be later than Valid From' : undefined}
+                        disabled={submitting || validityInverted || sansInvalid}
+                        title={validityInverted ? 'Valid To must be later than Valid From' : sansInvalid ? 'Fix the Subject Alternative Names marked above' : undefined}
                         className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-2"
                     >
                         {submitting && (

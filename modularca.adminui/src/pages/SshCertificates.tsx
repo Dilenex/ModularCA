@@ -11,6 +11,7 @@ import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/compone
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
+import { ChipListInput } from '@shared/components/ChipListInput';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -370,7 +371,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     const [error, setError] = useState<NoticeInput | null>(null);
     const [showSignForm, setShowSignForm] = useState(false);
     const [confirmRevoke, setConfirmRevoke] = useState<any[] | null>(null);
-    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' });
+    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' });
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [signing, setSigning] = useState(false);
     const [signResult, setSignResult] = useState<any>(null);
@@ -456,7 +457,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     useEffect(() => {
         if (!showSignForm || !signForm.sshRequestProfileId) { setValidationErrors([]); return; }
         const errors: string[] = [];
-        const principals = signForm.principals.split(',').map(s => s.trim()).filter(Boolean);
+        const principals = signForm.principals;
 
         // Validity hours
         const hours = parseInt(signForm.validityHours);
@@ -490,7 +491,15 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
 
     // An empty principal list is the most dangerous value the form can send: OpenSSH treats it as
     // "valid for every principal". It is only accepted behind an explicit opt-in.
-    const principalsEmpty = signForm.principals.split(',').map(s => s.trim()).filter(Boolean).length === 0;
+    const principalsEmpty = signForm.principals.length === 0;
+
+    // Marks a chip that no allowed principal pattern of the selected cert profile matches.
+    const principalPatterns = selectedCertProfile ? parseJsonArray(selectedCertProfile.allowedPrincipalPatterns) : [];
+    const validatePrincipal = (principal: string): string | null => {
+        if (principalPatterns.length === 0) return null;
+        const matches = principalPatterns.some((p: string) => { try { return new RegExp(p).test(principal); } catch { return false; } });
+        return matches ? null : `"${principal}" does not match any allowed principal pattern of the cert profile.`;
+    };
     const principalsMissing = principalsEmpty && !signForm.allowAnyPrincipal;
 
     const handleSign = async (e: React.FormEvent) => {
@@ -514,15 +523,15 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             };
 
             if (signForm.certType === 'user') {
-                body.principals = signForm.principals.split(',').map((p: string) => p.trim()).filter(Boolean);
+                body.principals = signForm.principals;
             } else {
-                body.hostnames = signForm.principals.split(',').map((p: string) => p.trim()).filter(Boolean);
+                body.hostnames = signForm.principals;
             }
 
             const result = await apiPost(endpoint, body);
             setSignResult(result);
             setShowSignForm(false);
-            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' });
+            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' });
             onRefresh();
         } catch (err: any) {
             showToast('error', err.message || 'Signing failed');
@@ -762,19 +771,19 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs text-ink-muted mb-1">
-                                        {signForm.certType === 'user' ? 'Principals' : 'Hostnames'} (comma-separated)
+                                    <label htmlFor="ssh-sign-principals" className="block text-xs text-ink-muted mb-1">
+                                        {signForm.certType === 'user' ? 'Principals' : 'Hostnames'}
                                     </label>
-                                    <input
-                                        type="text"
-                                        placeholder={signForm.certType === 'user' ? 'root,admin' : 'web01.example.com'}
+                                    <ChipListInput
+                                        id="ssh-sign-principals"
+                                        placeholder={signForm.certType === 'user' ? 'e.g. alice, then Enter' : 'e.g. web01.example.com'}
                                         value={signForm.principals}
-                                        onChange={(e) => setSignForm({ ...signForm, principals: e.target.value })}
-                                        className={`w-full px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent ${
-                                            validationErrors.some(e => e.includes('principal') || e.includes('hostname')) || principalsMissing ? 'border-crit' : 'border-line-strong'
-                                        }`}
+                                        onChange={(next) => setSignForm({ ...signForm, principals: next })}
+                                        validate={validatePrincipal}
+                                        invalid={principalsMissing || validationErrors.some(e => e.includes('principal') || e.includes('hostname'))}
+                                        aria-describedby="ssh-sign-principals-hint"
                                     />
-                                    <FieldHint tone="warn">
+                                    <FieldHint id="ssh-sign-principals-hint" tone="warn">
                                         One or more names this certificate authorises. Leave it blank and OpenSSH treats the certificate as valid for every principal; for a user certificate that is a wildcard. For a host certificate these must match the hostname clients actually type.
                                     </FieldHint>
                                     <label className="mt-2 flex items-start gap-2 text-xs text-ink">
@@ -835,7 +844,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                         </button>
                         <button
                             type="button"
-                            onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' }); }}
+                            onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' }); }}
                             className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors"
                         >
                             Cancel

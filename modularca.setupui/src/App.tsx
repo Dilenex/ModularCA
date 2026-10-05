@@ -11,6 +11,8 @@ import NetworkAdvanced, { type NetworkData } from './pages/NetworkAdvanced';
 import WebTlsCertificate, { type WebTlsCertificateData } from './pages/WebTlsCertificate';
 import Review from './pages/Review';
 import { SourceNotice } from '@shared/components/SourceNotice';
+import { entriesFromList, hasTypedEntryProblems } from '@shared/components/typedEntryList';
+import { INFRA_SAN_TYPES } from '@shared/generalNames';
 
 // Helper used by Review.tsx after a successful initialization
 // to scrub the cleartext database superuser password and admin password from React
@@ -274,7 +276,8 @@ const WizardContent: React.FC = () => {
                 return true;
             }
             case STEP_NETWORK: return data.network.publicDomain.trim().length > 0;
-            case STEP_WEB_TLS: return data.webTlsCertificate.commonName.trim().length > 0;
+            case STEP_WEB_TLS: return data.webTlsCertificate.commonName.trim().length > 0
+                && !hasTypedEntryProblems(entriesFromList(data.webTlsCertificate.sans, INFRA_SAN_TYPES), INFRA_SAN_TYPES);
             case STEP_REVIEW: return true;
             default: return false;
         }
