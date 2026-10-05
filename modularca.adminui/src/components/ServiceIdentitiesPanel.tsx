@@ -116,33 +116,33 @@ const ServiceIdentitiesPanel: React.FC = () => {
 
     const columns: DataTableColumn<ServiceIdentity>[] = [
         { key: 'username', header: 'Identity', defaultWidth: 200, minWidth: 140, exportValue: (r) => r.username, render: (r) => (
-            <button type="button" onClick={() => setOpenId(r.id)} title="Open" className="font-mono text-xs text-gray-900 dark:text-white hover:underline text-left">{r.username}</button>
+            <button type="button" onClick={() => setOpenId(r.id)} title="Open" className="data-mono text-ink hover:underline text-left">{r.username}</button>
         ) },
-        { key: 'displayName', header: 'Display name', defaultWidth: 180, exportValue: (r) => r.displayName || '', render: (r) => <span className="text-xs text-gray-700 dark:text-gray-300">{r.displayName || '-'}</span> },
-        { key: 'scope', header: 'Scope', defaultWidth: 200, exportValue: scopeLabel, render: (r) => <span className="text-xs text-gray-600 dark:text-gray-400">{scopeLabel(r)}</span> },
+        { key: 'displayName', header: 'Display name', defaultWidth: 180, exportValue: (r) => r.displayName || '', render: (r) => <span className="text-xs text-ink">{r.displayName || '-'}</span> },
+        { key: 'scope', header: 'Scope', defaultWidth: 200, exportValue: scopeLabel, render: (r) => <span className="text-xs text-ink-muted">{scopeLabel(r)}</span> },
         { key: 'groups', header: 'Groups', defaultWidth: 260, truncate: false, exportValue: (r) => r.groups.map((g) => g.displayName || g.name).join(', '), render: (r) => (
             <span className="flex flex-wrap gap-1">
-                {r.groups.length === 0 && <span className="text-xs text-amber-700 dark:text-amber-400">no groups: holds nothing</span>}
-                {r.groups.map((g) => <span key={g.groupId} className="px-1.5 py-0.5 text-[10px] rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{g.displayName || g.name}</span>)}
+                {r.groups.length === 0 && <span className="text-xs text-warn">no groups: holds nothing</span>}
+                {r.groups.map((g) => <span key={g.groupId} className="px-1.5 py-0.5 text-[10px] rounded border border-line-strong text-ink">{g.displayName || g.name}</span>)}
             </span>
         ) },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (r) => (r.isActive ? 'Active' : 'Disabled'), render: (r) => <StatusBadge status={r.isActive ? 'enabled' : 'disabled'} label={r.isActive ? 'Active' : 'Disabled'} /> },
-        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (r) => r.createdAt, render: (r) => <span className="text-xs text-gray-600 dark:text-gray-400">{fmt(r.createdAt)}</span> },
+        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (r) => r.createdAt, render: (r) => <span className="text-xs text-ink-muted">{fmt(r.createdAt)}</span> },
     ];
 
     return (
         <div className="space-y-3">
             <div className="flex items-start justify-between gap-3 flex-wrap">
-                <p className="text-xs text-gray-600 dark:text-gray-400 max-w-3xl">
+                <p className="text-xs text-ink-muted max-w-3xl">
                     Accounts that hold permissions for something that is not a person: the identity a Kerberos realm acts as, an integration, a protocol credential. They have no password and can never sign in. Each is confined to the system, one space or one CA, and can only hold groups inside that scope. System groups are never available to them.
                 </p>
-                <button onClick={() => setCreating((v) => !v)} disabled={scopes.length === 0} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                <button onClick={() => setCreating((v) => !v)} disabled={scopes.length === 0} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors">
                     {creating ? 'Cancel' : 'New service identity'}
                 </button>
             </div>
 
             {creating && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Username *</label>
@@ -170,18 +170,18 @@ const ServiceIdentitiesPanel: React.FC = () => {
                                 const selected = form.groupIds.includes(g.id);
                                 return (
                                     <button key={g.id} type="button" onClick={() => setForm({ ...form, groupIds: selected ? form.groupIds.filter((x) => x !== g.id) : [...form.groupIds, g.id] })}
-                                        className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-400 border-gray-400 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                                        className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-sunken text-ink-muted border-line-strong hover:bg-hover'}`}>
                                         {selected ? '✓ ' : ''}{g.displayName || g.name}
                                     </button>
                                 );
                             })}
                             {groupsError
-                                ? <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load groups ({groupsError}). The identity can still be created and given groups later.</span>
-                                : offeredGroups.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
+                                ? <span className="text-xs text-crit" role="status">Unavailable: could not load groups ({groupsError}). The identity can still be created and given groups later.</span>
+                                : offeredGroups.length === 0 && <span className="text-xs text-ink-muted">No groups inside this scope.</span>}
                         </div>
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy || !form.username || !scope} onClick={create} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Create</button>
+                        <button disabled={busy || !form.username || !scope} onClick={create} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50">Create</button>
                     </div>
                 </div>
             )}
@@ -288,8 +288,8 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
     });
 
     const tabBtn = (k: DrawerTab) => (
-        <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-            {TAB_LABEL[k]}{dirty[k] && <span className="ml-1 text-amber-600 dark:text-amber-400" title="Unsaved changes" aria-label="unsaved changes">•</span>}
+        <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-accent text-accent-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}>
+            {TAB_LABEL[k]}{dirty[k] && <span className="ml-1 text-warn" title="Unsaved changes" aria-label="unsaved changes">•</span>}
         </button>
     );
 
@@ -299,7 +299,7 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
             {otherDirty.map((t) => (
                 <FieldHint key={t} tone="warn">
                     Unsaved changes on {TAB_LABEL[t]}.{' '}
-                    <button type="button" onClick={() => setTab(t)} className="underline hover:text-amber-950 dark:hover:text-amber-200">Go back to {TAB_LABEL[t]}</button>
+                    <button type="button" onClick={() => setTab(t)} className="underline hover:text-warn">Go back to {TAB_LABEL[t]}</button>
                 </FieldHint>
             ))}
         </div>
@@ -317,11 +317,11 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
             <div className="flex items-center justify-between gap-2 flex-wrap">
                 <StatusBadge status={identity.isActive ? 'enabled' : 'disabled'} label={identity.isActive ? 'Active' : 'Disabled'} />
                 <span className="flex items-center gap-1.5 flex-wrap">
-                    <button disabled={busy} onClick={() => setActive(!identity.isActive)} className="px-2.5 py-1 text-xs rounded border bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40">{identity.isActive ? 'Disable' : 'Enable'}</button>
-                    <button disabled={busy} onClick={() => setConfirmDelete(true)} className="px-2.5 py-1 text-xs rounded border bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-40">Delete</button>
+                    <button disabled={busy} onClick={() => setActive(!identity.isActive)} className="px-2.5 py-1 text-xs rounded border bg-sunken text-ink border-line-strong hover:bg-hover disabled:opacity-40">{identity.isActive ? 'Disable' : 'Enable'}</button>
+                    <button disabled={busy} onClick={() => setConfirmDelete(true)} className="px-2.5 py-1 text-xs rounded border bg-crit-soft text-crit border-crit/40 hover:bg-crit/15 disabled:opacity-40">Delete</button>
                 </span>
             </div>
-            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">{tabBtn('overview')}{tabBtn('groups')}{tabBtn('audit')}</div>
+            <div className="flex gap-1 border-b border-line">{tabBtn('overview')}{tabBtn('groups')}{tabBtn('audit')}</div>
             {unsavedNotes}
 
             {tab === 'overview' && (
@@ -343,30 +343,30 @@ const IdentityDrawer: React.FC<{ identity: ServiceIdentity; groups: GroupOption[
                         </div>
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy || !overviewDirty} onClick={save} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save</button>
+                        <button disabled={busy || !overviewDirty} onClick={save} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50">Save</button>
                     </div>
                 </div>
             )}
 
             {tab === 'groups' && (
                 <div className="space-y-3">
-                    <p className="text-xs text-gray-600 dark:text-gray-400">Only groups inside the identity's scope are offered. System groups never are.</p>
+                    <p className="text-xs text-ink-muted">Only groups inside the identity's scope are offered. System groups never are.</p>
                     <div className="flex flex-wrap gap-2">
                         {offered.map((g) => {
                             const on = selected.includes(g.id);
                             return (
                                 <button key={g.id} type="button" onClick={() => setSelected(on ? selected.filter((x) => x !== g.id) : [...selected, g.id])}
-                                    className={`px-2 py-1 text-xs rounded border transition-colors ${on ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-400 border-gray-400 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                                    className={`px-2 py-1 text-xs rounded border transition-colors ${on ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-sunken text-ink-muted border-line-strong hover:bg-hover'}`}>
                                     {on ? '✓ ' : ''}{g.displayName || g.name}
                                 </button>
                             );
                         })}
                         {groupsError
-                            ? <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load groups ({groupsError}). Saving now would drop the memberships this identity already has, so the button is disabled.</span>
-                            : offered.length === 0 && <span className="text-xs text-gray-500">No groups inside this scope.</span>}
+                            ? <span className="text-xs text-crit" role="status">Unavailable: could not load groups ({groupsError}). Saving now would drop the memberships this identity already has, so the button is disabled.</span>
+                            : offered.length === 0 && <span className="text-xs text-ink-muted">No groups inside this scope.</span>}
                     </div>
                     <div className="flex justify-end">
-                        <button disabled={busy || !!groupsError || !groupsDirty} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Save groups</button>
+                        <button disabled={busy || !!groupsError || !groupsDirty} onClick={saveGroups} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50">Save groups</button>
                     </div>
                 </div>
             )}

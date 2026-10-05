@@ -25,6 +25,7 @@ Inside `shared/common/src`:
 | `components/DataTable.tsx`, `components/Drawer.tsx`, `context/TablePrefsContext.tsx` | The sortable/resizable table, its column-visibility drawer, and the per-user preference store. `adminui` only — the anonymous SPAs never mount them. |
 | `validation/profileValidation.ts` | Client-side mirror of the server's request-profile rules. Pure — no imports at all. |
 | `context/ToastContext.tsx`, `components/cards/` | The toast provider and the `DetailField` / `StatusBadge` presentational pair. |
+| `theme/ledger.css`, `theme/fonts/` | The Ledger tokens (`bg-raised`, `text-ink-muted`, `border-line`, `bg-accent`, `text-crit` ...) and the vendored IBM Plex fonts (OFL, `fonts/OFL.txt`). Every SPA's `index.css` imports it; stock colour utilities are refused by `tests/modularca.web.tests/src/common/ledger-palette.test.ts`. |
 | `generated/` | **Machine-generated. Do not edit.** DTO interfaces, enums, `StepUpOps`, and the X.509 usage vocabulary, all derived from C#. See below. |
 
 The split is enforced by wiring: `@shared-auth/*` is only aliased in the SPAs entitled to it. `docsui`

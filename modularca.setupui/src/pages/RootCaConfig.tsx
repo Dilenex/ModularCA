@@ -54,16 +54,16 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Root CA Configuration</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Root CA Configuration</h2>
+                <p className="text-ink-muted mt-1">
                     Configure the root certificate authority that will anchor your PKI trust chain.
                 </p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="md:col-span-2">
-                    <label htmlFor="cn" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Common Name <span className="text-red-500">*</span>
+                    <label htmlFor="cn" className="block text-sm font-medium text-ink mb-1">
+                        Common Name <span className="text-crit">*</span>
                     </label>
                     <input
                         ref={autoFocusRef}
@@ -73,12 +73,12 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                         value={data.commonName}
                         onChange={e => onChange({ ...data, commonName: e.target.value })}
                         placeholder="My Root CA"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div className="md:col-span-2">
-                    <label htmlFor="ou" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="ou" className="block text-sm font-medium text-ink mb-1">
                         Organizational Unit
                     </label>
                     <input
@@ -87,12 +87,12 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                         value={data.organizationalUnit}
                         onChange={e => onChange({ ...data, organizationalUnit: e.target.value })}
                         placeholder="IT Security"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="locality" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="locality" className="block text-sm font-medium text-ink mb-1">
                         Location
                     </label>
                     <input
@@ -101,12 +101,12 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                         value={data.locality}
                         onChange={e => onChange({ ...data, locality: e.target.value })}
                         placeholder="San Francisco"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="state" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="state" className="block text-sm font-medium text-ink mb-1">
                         State
                     </label>
                     <input
@@ -115,12 +115,12 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                         value={data.state}
                         onChange={e => onChange({ ...data, state: e.target.value })}
                         placeholder="California"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="country" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="country" className="block text-sm font-medium text-ink mb-1">
                         Country
                     </label>
                     <input
@@ -130,25 +130,25 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                         onChange={e => onChange({ ...data, country: e.target.value.toUpperCase().slice(0, 2) })}
                         placeholder="US"
                         maxLength={2}
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
             </div>
 
             {/* Key configuration */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Key Configuration</h3>
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">Key Configuration</h3>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                        <label htmlFor="keyAlg" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="keyAlg" className="block text-sm font-medium text-ink mb-1">
                             Key Algorithm
                         </label>
                         <select
                             id="keyAlg"
                             value={data.keyAlgorithm}
                             onChange={e => handleAlgorithmChange(e.target.value as KeyAlgorithm)}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         >
                             <option value="ECDSA">ECDSA (recommended)</option>
                             <option value="RSA">RSA</option>
@@ -157,7 +157,7 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                             <option value="SLH-DSA">SLH-DSA (FIPS 205 — Post-Quantum, no browser support)</option>
                         </select>
                         {(data.keyAlgorithm === 'Ed25519' || data.keyAlgorithm === 'ML-DSA' || data.keyAlgorithm === 'SLH-DSA') && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                            <p className="text-xs text-warn mt-2">
                                 ⚠ Firefox, Chrome, and Safari reject this algorithm as a root trust anchor ({data.keyAlgorithm === 'Ed25519' ? 'SEC_ERROR_UNSUPPORTED_KEYALG on import' : 'no browser has shipped support yet'}). Pick <strong>ECDSA</strong> or <strong>RSA</strong> if end users will install this Root CA into their browser trust store.
                             </p>
                         )}
@@ -165,14 +165,14 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
 
                     {keySizeOptions[data.keyAlgorithm].length > 0 && (
                         <div>
-                            <label htmlFor="keySize" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label htmlFor="keySize" className="block text-sm font-medium text-ink mb-1">
                                 Key Size
                             </label>
                             <select
                                 id="keySize"
                                 value={data.keySize}
                                 onChange={e => onChange({ ...data, keySize: e.target.value })}
-                                className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                             >
                                 {keySizeOptions[data.keyAlgorithm].map(size => (
                                     <option key={size} value={size}>
@@ -181,7 +181,7 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                                 ))}
                             </select>
                             {(data.keySize === '7680' || data.keySize === '8192') && (
-                                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                <p className="text-xs text-warn mt-1">
                                     ⚠ High-compute RSA — key generation may take 30+ seconds.
                                 </p>
                             )}
@@ -189,7 +189,7 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                     )}
 
                     <div>
-                        <label htmlFor="validity" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="validity" className="block text-sm font-medium text-ink mb-1">
                             Validity Period (years)
                         </label>
                         <input
@@ -199,7 +199,7 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                             value={data.validityYears}
                             onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, validityYears: v === '' ? ('' as any) : parseInt(v) }); }}
                             onBlur={() => { if (!data.validityYears) onChange({ ...data, validityYears: 25 }); }}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                     </div>
                 </div>
@@ -207,9 +207,9 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
 
             {/* Subject DN preview */}
             {subjectDn && (
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                    <p className="text-xs font-medium text-blue-700 dark:text-blue-400 uppercase tracking-wide mb-1">Subject DN Preview</p>
-                    <p className="text-sm text-blue-900 dark:text-blue-200 font-mono break-all">{subjectDn}</p>
+                <div className="bg-info-soft border border-info/40 rounded-lg p-4">
+                    <p className="text-xs font-medium text-accent-ink uppercase tracking-wide mb-1">Subject DN Preview</p>
+                    <p className="text-ink data-mono break-all">{subjectDn}</p>
                 </div>
             )}
         </div>

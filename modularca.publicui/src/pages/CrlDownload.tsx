@@ -21,28 +21,28 @@ const CrlDownload: React.FC = () => {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">CRL Downloads</h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                <h1 className="text-xl font-semibold text-ink">CRL Downloads</h1>
+                <p className="text-sm text-ink-muted mt-1">
                     Download Certificate Revocation Lists (CRLs) to verify whether certificates have been revoked.
                 </p>
             </div>
 
-            {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>}
-            {error && <p className="text-sm text-red-800 dark:text-red-400">{error}</p>}
+            {loading && <p className="text-sm text-ink-muted">Loading...</p>}
+            {error && <p className="text-sm text-crit">{error}</p>}
 
             <div className="space-y-3">
                 {cas.map((ca) => {
                     const id = ca.serialNumber || ca.serial || ca.id;
                     return (
-                        <div key={id} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
+                        <div key={id} className="bg-raised border border-line rounded-lg p-5">
                             <div className="flex items-center justify-between">
                                 <div>
-                                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{ca.subjectDN || ca.name}</h3>
-                                    <p className="text-xs text-gray-600 mt-1">
+                                    <h3 className="text-sm font-semibold text-ink">{ca.subjectDN || ca.name}</h3>
+                                    <p className="text-xs text-ink-muted mt-1">
                                         Serial: <span className="font-mono">{id}</span>
                                     </p>
                                     {ca.lastCrlGenerated && (
-                                        <p className="text-xs text-gray-600 mt-0.5">
+                                        <p className="text-xs text-ink-muted mt-0.5">
                                             Last generated: {formatDate(ca.lastCrlGenerated)}
                                         </p>
                                     )}
@@ -52,13 +52,13 @@ const CrlDownload: React.FC = () => {
                                         supply the CN-based filename, matching the cert downloads. */}
                                     <a
                                         href={`/crl/${id}`}
-                                        className="px-3 py-1.5 text-xs bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors"
+                                        className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                                     >
                                         Full CRL
                                     </a>
                                     <a
                                         href={`/crl/${id}/delta`}
-                                        className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                        className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors"
                                     >
                                         Delta CRL
                                     </a>
@@ -70,13 +70,13 @@ const CrlDownload: React.FC = () => {
             </div>
 
             {!loading && !error && cas.length === 0 && (
-                <p className="text-sm text-gray-600 text-center py-8">No CAs available.</p>
+                <p className="text-sm text-ink-muted text-center py-8">No CAs available.</p>
             )}
 
             {/* CRL Distribution Points info */}
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">CRL Distribution Points</h2>
-                <p className="text-xs text-gray-600 dark:text-gray-400">
+            <div className="bg-raised border border-line rounded-lg p-5">
+                <h2 className="text-sm font-semibold text-ink mb-2">CRL Distribution Points</h2>
+                <p className="text-xs text-ink-muted">
                     Certificates issued by this CA include CRL Distribution Point (CDP) extensions
                     that point to these CRL URLs. Most applications will check CRLs automatically.
                 </p>

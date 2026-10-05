@@ -1,0 +1,32 @@
+{
+    "$comment": "Files copied into the source tree rather than installed from a package manager. scripts/generate-third-party-notices.mjs lists every entry, with its licence text, in THIRD-PARTY-NOTICES.md, and refuses a font file in an SPA source tree that no vendored.json lists.",
+    "assets": [
+        {
+            "name": "IBM Plex Sans",
+            "version": "5.3.0",
+            "source": "@fontsource/ibm-plex-sans 5.3.0, latin subset",
+            "project": "https://github.com/IBM/plex",
+            "license": "OFL-1.1",
+            "copyright": "Copyright 2019 IBM Corp.",
+            "licenseFile": "OFL.txt",
+            "files": [
+                "ibm-plex-sans-latin-400-normal.woff2",
+                "ibm-plex-sans-latin-500-normal.woff2",
+                "ibm-plex-sans-latin-600-normal.woff2"
+            ]
+        },
+        {
+            "name": "IBM Plex Mono",
+            "version": "5.3.0",
+            "source": "@fontsource/ibm-plex-mono 5.3.0, latin subset",
+            "project": "https://github.com/IBM/plex",
+            "license": "OFL-1.1",
+            "copyright": "Copyright 2017 IBM Corp.",
+            "licenseFile": "OFL.txt",
+            "files": [
+                "ibm-plex-mono-latin-400-normal.woff2",
+                "ibm-plex-mono-latin-500-normal.woff2"
+            ]
+        }
+    ]
+}

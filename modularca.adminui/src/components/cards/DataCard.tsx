@@ -126,21 +126,21 @@ export default function DataCard<T>({
     };
 
     const variantClasses: Record<string, string> = {
-        default: 'bg-gray-600 hover:bg-gray-400 dark:hover:bg-gray-500 text-gray-900 dark:text-white',
-        danger: 'bg-red-700 hover:bg-red-600 text-gray-900 dark:text-white',
-        success: 'bg-green-700 hover:bg-green-600 text-gray-900 dark:text-white',
+        default: 'bg-raised border border-line-strong hover:bg-hover text-ink',
+        danger: 'bg-crit hover:bg-crit-hover text-on-accent',
+        success: 'bg-ok hover:bg-ok-hover text-on-accent',
     };
 
     return (
         <>
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}</h3>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-raised">
+                    <h3 className="text-sm font-semibold text-ink">{title}</h3>
                     {onViewAll && (
                         <button
                             onClick={onViewAll}
-                            className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors"
+                            className="text-xs text-accent-ink hover:underline transition-colors"
                         >
                             View All
                         </button>
@@ -150,7 +150,7 @@ export default function DataCard<T>({
                 {/* Content */}
                 <div className="max-h-80 overflow-y-auto">
                     {loading && (
-                        <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>
+                        <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>
                     )}
 
                     {error && (
@@ -158,7 +158,7 @@ export default function DataCard<T>({
                     )}
 
                     {!loading && !error && items.length === 0 && (
-                        <div className="p-4 text-sm text-gray-600 text-center">{emptyMessage}</div>
+                        <div className="p-4 text-sm text-ink-muted text-center">{emptyMessage}</div>
                     )}
 
                     {!loading && !error && items.map((item) => {
@@ -168,13 +168,13 @@ export default function DataCard<T>({
                             return (
                                 <div
                                     key={key}
-                                    className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-200/50 dark:hover:bg-gray-700/50 transition-colors border-b border-gray-300 dark:border-gray-700 last:border-b-0"
+                                    className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-hover transition-colors border-b border-line last:border-b-0"
                                     onClick={() => handleItemClick(item, key)}
                                 >
-                                    <div className="flex-1 text-sm text-gray-800 dark:text-gray-200 truncate">
+                                    <div className="flex-1 text-sm text-ink truncate">
                                         {renderSummary(item)}
                                     </div>
-                                    <span className="text-gray-600 ml-2 text-xs">›</span>
+                                    <span className="text-ink-muted ml-2 text-xs">›</span>
                                 </div>
                             );
                         }
@@ -197,30 +197,30 @@ export default function DataCard<T>({
             {/* Modal overlay for detail view */}
             {detailMode === 'modal' && modalItem && (
                 <div
-                    className="fixed inset-0 bg-black/25 dark:bg-black/60 flex items-center justify-center z-50"
+                    className="fixed inset-0 bg-scrim flex items-center justify-center z-50"
                     onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
                 >
                     <div
-                        className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto"
+                        className="bg-raised border border-line rounded-lg shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto"
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Modal header */}
-                        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-300 dark:border-gray-700">
-                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-line">
+                            <h3 className="text-sm font-semibold text-ink truncate">
                                 {modalTitle ? modalTitle(modalItem) : title}
                             </h3>
                             <div className="flex items-center gap-3 flex-shrink-0">
                                 {modalFullViewUrl && (
                                     <button
                                         onClick={() => { setModalItem(null); navigate(modalFullViewUrl(modalItem)); }}
-                                        className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors whitespace-nowrap"
+                                        className="text-xs text-accent-ink hover:underline transition-colors whitespace-nowrap"
                                     >
                                         Go to full view →
                                     </button>
                                 )}
                                 <button
                                     onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
-                                    className="text-gray-600 hover:text-gray-900 dark:hover:text-white text-lg transition-colors"
+                                    className="text-ink-muted hover:text-ink text-lg transition-colors"
                                 >
                                     ✕
                                 </button>
@@ -228,15 +228,15 @@ export default function DataCard<T>({
                         </div>
 
                         {/* Modal body */}
-                        <div className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        <div className="px-5 py-4 text-sm text-ink">
                             {renderDetail(modalItem)}
                         </div>
 
                         {/* Modal actions */}
                         {actions && (
-                            <div className="px-5 py-4 border-t border-gray-300 dark:border-gray-700 space-y-3">
+                            <div className="px-5 py-4 border-t border-line space-y-3">
                                 {actionError && (
-                                    <div className="text-xs text-red-800 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded px-3 py-2">
+                                    <div className="text-xs text-crit bg-crit-soft border border-crit/40 rounded px-3 py-2">
                                         {actionError}
                                     </div>
                                 )}
@@ -245,7 +245,7 @@ export default function DataCard<T>({
                                 {confirmingAction && (() => {
                                     const pending = actions?.(modalItem)?.find((a) => a.label === confirmingAction);
                                     return pending?.confirm ? (
-                                        <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded px-3 py-2">
+                                        <div className="text-xs text-warn bg-warn-soft border border-warn/40 rounded px-3 py-2">
                                             {pending.confirm} — click again to continue.
                                         </div>
                                     ) : null;
@@ -253,7 +253,7 @@ export default function DataCard<T>({
                                 <div className="flex gap-2 justify-end">
                                     <button
                                         onClick={() => { if (!actionLoading) { setConfirmingAction(null); setModalItem(null); } }}
-                                        className="px-4 py-2 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                        className="px-4 py-2 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors"
                                         disabled={actionLoading}
                                     >
                                         Close

@@ -72,6 +72,11 @@ cp LICENSE THIRD-PARTY-NOTICES.md "$STAGE/" || {
     echo "  node scripts/generate-third-party-notices.mjs" >&2
     exit 1
 }
+grep -q 'SIL OPEN FONT LICENSE' "$STAGE/THIRD-PARTY-NOTICES.md" || {
+    echo "REFUSING: THIRD-PARTY-NOTICES.md lacks the vendored font licence (SIL OFL 1.1). Regenerate with:" >&2
+    echo "  node scripts/generate-third-party-notices.mjs" >&2
+    exit 1
+}
 
 # There is no install.sh or systemd unit here: Windows has neither. A short run guide instead,
 # covering the console run, the first-run setup wizard, and registering a service with sc.exe.

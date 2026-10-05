@@ -78,15 +78,15 @@ const CurrentCertCard: React.FC<{
         if (!status) return null;
         if (status.isExpired) {
             return (
-                <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-red-50 dark:bg-red-900/40 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300">
+                <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-crit-soft border border-crit/40 text-crit">
                     EXPIRED
                 </span>
             );
         }
         const days = status.daysUntilExpiry;
-        let cls = 'bg-green-50 dark:bg-green-900/40 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300';
-        if (days <= 7) cls = 'bg-red-50 dark:bg-red-900/40 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300';
-        else if (days <= 30) cls = 'bg-yellow-50 dark:bg-yellow-900/40 border border-yellow-300 dark:border-yellow-700 text-yellow-800 dark:text-yellow-300';
+        let cls = 'bg-ok-soft border border-ok/40 text-ok';
+        if (days <= 7) cls = 'bg-crit-soft border border-crit/40 text-crit';
+        else if (days <= 30) cls = 'bg-warn-soft border border-warn/40 text-warn';
         return (
             <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${cls}`}>
                 {days} day{days === 1 ? '' : 's'}
@@ -95,21 +95,21 @@ const CurrentCertCard: React.FC<{
     };
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
+        <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-gray-900 dark:text-white font-semibold">Current Web TLS Certificate</h3>
+                <h3 className="text-ink font-semibold">Current Web TLS Certificate</h3>
                 <button
                     onClick={onRefresh}
                     disabled={loading}
-                    className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:bg-gray-600 text-gray-700 dark:text-gray-300 text-xs font-medium rounded transition-colors"
+                    className="px-3 py-1.5 bg-sunken hover:bg-hover disabled:bg-ink-faint text-ink text-xs font-medium rounded transition-colors"
                 >
                     {loading ? 'Loading...' : 'Refresh'}
                 </button>
             </div>
 
             {loading && (
-                <div className="p-6 text-sm text-gray-600 dark:text-gray-400 text-center">
-                    <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                <div className="p-6 text-sm text-ink-muted text-center">
+                    <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
                     <div className="mt-2">Loading certificate details...</div>
                 </div>
             )}
@@ -119,74 +119,74 @@ const CurrentCertCard: React.FC<{
             )}
 
             {!loading && !error && status && (
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-4">
+                <div className="bg-ground border border-line rounded p-4">
                     <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Serial Number</dt>
-                            <dd className="font-mono text-xs text-gray-900 dark:text-white break-all">
+                            <dt className="text-xs text-ink-muted">Serial Number</dt>
+                            <dd className="data-mono text-ink break-all">
                                 {status.serialNumber}
                             </dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">HTTPS Port</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.httpsPort}</dd>
+                            <dt className="text-xs text-ink-muted">HTTPS Port</dt>
+                            <dd className="text-ink">{status.httpsPort}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Common Name (CN)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.commonName || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Common Name (CN)</dt>
+                            <dd className="text-ink">{status.commonName || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Organization (O)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.organization || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Organization (O)</dt>
+                            <dd className="text-ink">{status.organization || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Organizational Unit (OU)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.organizationalUnit || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Organizational Unit (OU)</dt>
+                            <dd className="text-ink">{status.organizationalUnit || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Locality (L)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.locality || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Locality (L)</dt>
+                            <dd className="text-ink">{status.locality || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">State (ST)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.state || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">State (ST)</dt>
+                            <dd className="text-ink">{status.state || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Country (C)</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.country || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Country (C)</dt>
+                            <dd className="text-ink">{status.country || '-'}</dd>
                         </div>
                         <div className="md:col-span-2">
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Subject Alternative Names</dt>
-                            <dd className="text-gray-900 dark:text-white">
+                            <dt className="text-xs text-ink-muted">Subject Alternative Names</dt>
+                            <dd className="text-ink">
                                 {status.sans && status.sans.length > 0 ? (
-                                    <ul className="font-mono text-xs space-y-0.5">
+                                    <ul className="data-mono space-y-0.5">
                                         {status.sans.map((san, i) => (
                                             <li key={i}>{san}</li>
                                         ))}
                                     </ul>
                                 ) : (
-                                    <span className="text-gray-600">(none)</span>
+                                    <span className="text-ink-muted">(none)</span>
                                 )}
                             </dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Signing Profile</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.signingProfileName || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Signing Profile</dt>
+                            <dd className="text-ink">{status.signingProfileName || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Key Algorithm</dt>
-                            <dd className="text-gray-900 dark:text-white">{status.keyAlgorithm || '-'}</dd>
+                            <dt className="text-xs text-ink-muted">Key Algorithm</dt>
+                            <dd className="text-ink">{status.keyAlgorithm || '-'}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Valid From</dt>
-                            <dd className="text-gray-900 dark:text-white">{formatDate(status.notBefore)}</dd>
+                            <dt className="text-xs text-ink-muted">Valid From</dt>
+                            <dd className="text-ink">{formatDate(status.notBefore)}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Valid To</dt>
-                            <dd className="text-gray-900 dark:text-white">{formatDate(status.notAfter)}</dd>
+                            <dt className="text-xs text-ink-muted">Valid To</dt>
+                            <dd className="text-ink">{formatDate(status.notAfter)}</dd>
                         </div>
                         <div className="md:col-span-2">
-                            <dt className="text-xs text-gray-600 dark:text-gray-400">Days Until Expiry</dt>
+                            <dt className="text-xs text-ink-muted">Days Until Expiry</dt>
                             <dd className="mt-1">{renderExpiryBadge()}</dd>
                         </div>
                     </dl>
@@ -305,10 +305,10 @@ const ReissueCard: React.FC<{
 
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
-            <h3 className="text-gray-900 dark:text-white font-semibold">Reissue Web TLS Certificate</h3>
+        <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
+            <h3 className="text-ink font-semibold">Reissue Web TLS Certificate</h3>
 
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded p-3 text-sm text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded p-3 text-sm text-info">
                 Reissuing the Web TLS certificate validates the new subject and SANs against the
                 "Web Server (ACME)" request profile and then hot-swaps the running certificate.
                 No restart is required if hot-reload succeeds; otherwise the UI will tell you to
@@ -319,7 +319,7 @@ const ReissueCard: React.FC<{
                 <InlineNotice notice={error} />
             )}
             {success && (
-                <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm">
+                <div className="p-3 bg-ok-soft border border-ok/40 rounded text-ok text-sm">
                     {success}
                 </div>
             )}
@@ -400,10 +400,10 @@ const ReissueCard: React.FC<{
                 {!consoleHostCovered && (
                     <FieldHint tone="warn">You are reaching this console as <span className="font-mono">{consoleHost}</span>, which is not in this list. Reissuing without it makes the console unreachable, and this page cannot undo that.</FieldHint>
                 )}
-                <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                <p className="mt-1 text-xs text-ink-muted">
                     One per line. Each entry must be prefixed with a type, e.g.{' '}
-                    <code className="px-1 bg-gray-200 dark:bg-gray-900 rounded">DNS:api.example.com</code>{' '}
-                    or <code className="px-1 bg-gray-200 dark:bg-gray-900 rounded">IP:10.0.0.5</code>.
+                    <code className="px-1 bg-sunken rounded">DNS:api.example.com</code>{' '}
+                    or <code className="px-1 bg-sunken rounded">IP:10.0.0.5</code>.
                 </p>
             </div>
 
@@ -418,7 +418,7 @@ const ReissueCard: React.FC<{
                         disabled={submitting || loading}
                         className={inputCls}
                     />
-                    <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                    <p className="mt-1 text-xs text-ink-muted">
                         Max 397 days for publicly-trusted certs.
                     </p>
                 </div>
@@ -482,7 +482,7 @@ const ReissueCard: React.FC<{
                         )}
                     </select>
                     {form.keyAlgorithm === 'RSA' && (form.keySize === '7680' || form.keySize === '8192') && (
-                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                        <p className="text-xs text-warn mt-1">
                             ⚠ High-compute RSA — key generation may take 30+ seconds.
                         </p>
                     )}
@@ -503,12 +503,12 @@ const ReissueCard: React.FC<{
                         <option key={sp.id} value={sp.id}>{sp.name || sp.id}</option>
                     ))}
                 </select>
-                <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                <p className="mt-1 text-xs text-ink-muted">
                     Change the issuing CA by selecting a different signing profile.
                 </p>
             </div>
 
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                 A fresh key pair is generated on every reissue. The previous certificate is automatically revoked as Superseded.
             </div>
 
@@ -516,7 +516,7 @@ const ReissueCard: React.FC<{
                 <button
                     onClick={() => setConfirmReissue(true)}
                     disabled={submitting || loading}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors"
+                    className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors"
                 >
                     {submitting ? 'Reissuing...' : 'Reissue Web TLS Certificate'}
                 </button>
@@ -526,7 +526,7 @@ const ReissueCard: React.FC<{
                 title="Reissue the console's TLS certificate?"
                 message={<>
                     <p>A new key pair is generated, the running certificate is swapped at once, and the current one is revoked as Superseded and stops validating.</p>
-                    {!consoleHostCovered && <p className="mt-2 text-amber-800 dark:text-amber-300 font-medium">The name you are connected as, {consoleHost}, is not among the requested names. You will lose access to this console.</p>}
+                    {!consoleHostCovered && <p className="mt-2 text-warn font-medium">The name you are connected as, {consoleHost}, is not among the requested names. You will lose access to this console.</p>}
                 </>}
                 confirmLabel={consoleHostCovered ? 'Reissue' : 'Reissue anyway'}
                 loading={submitting}
@@ -577,8 +577,8 @@ const WebTlsManagement: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Web TLS Certificate</h1>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
+            <h1 className="text-xl font-semibold text-ink">Web TLS Certificate</h1>
+            <p className="text-sm text-ink-muted">
                 View and reissue the TLS certificate that protects the ModularCA admin and public
                 HTTPS endpoints.
             </p>

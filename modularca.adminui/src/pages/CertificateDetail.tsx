@@ -79,7 +79,7 @@ export const RevocationReasonHint: React.FC<{ reason: string; id?: string }> = (
     </FieldHint>
 );
 
-const actBtn = 'px-3 py-1.5 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors';
+const actBtn = 'px-3 py-1.5 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors';
 
 /// <summary>
 /// Read-only detail page for a single certificate (fetched by serial). Shows identity, validity,
@@ -210,17 +210,17 @@ const CertificateDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/certificates')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Certificates</button>
+            <button onClick={() => navigate('/certificates')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Certificates</button>
         </div>
     );
     if (!cert) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Certificate not found.</p>
-            <button onClick={() => navigate('/certificates')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Certificates</button>
+            <p className="text-sm text-ink-muted">Certificate not found.</p>
+            <button onClick={() => navigate('/certificates')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Certificates</button>
         </div>
     );
 
@@ -259,31 +259,31 @@ const CertificateDetail: React.FC = () => {
             backTo="/certificates"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">Revoke</button>}
+                    {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Revoke</button>}
                     {/* Reissue builds a fresh request from the old subject, so an expired certificate can be replaced too; a revoked one only while it is merely on hold. */}
-                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Reissue</button>}
+                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors">Reissue</button>}
                     <button onClick={handleDownloadPem} className={actBtn}>PEM</button>
                     <button onClick={handleDownloadDer} className={actBtn}>DER</button>
-                    <button onClick={handleDownloadChain} className="px-3 py-1.5 text-xs bg-cyan-50 dark:bg-cyan-900/50 text-cyan-800 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-700 rounded hover:bg-cyan-900 transition-colors">Full Chain</button>
-                    <button onClick={handleCopySerial} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-400 dark:border-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Copy Serial</button>
+                    <button onClick={handleDownloadChain} className="px-3 py-1.5 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors">Full Chain</button>
+                    <button onClick={handleCopySerial} className="px-3 py-1.5 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">Copy Serial</button>
                 </div>
             }
         >
             {() => (<>
                 {status === 'revoked' && (
-                    <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded-md flex items-center gap-2 flex-wrap">
-                        <span className="inline-block px-2 py-0.5 text-xs font-semibold bg-red-600 text-white rounded">REVOKED</span>
-                        {cert.revocationReason && <span className="text-sm text-red-800 dark:text-red-300">Reason: {cert.revocationReason}</span>}
-                        {cert.revokedAt && <span className="text-xs text-red-800 dark:text-red-400 ml-auto">{formatDate(cert.revokedAt)}</span>}
+                    <div className="px-3 py-2 bg-crit-soft border border-crit/40 rounded-md flex items-center gap-2 flex-wrap">
+                        <span className="inline-block px-2 py-0.5 text-xs font-semibold bg-crit text-on-accent rounded">REVOKED</span>
+                        {cert.revocationReason && <span className="text-sm text-crit">Reason: {cert.revocationReason}</span>}
+                        {cert.revokedAt && <span className="text-xs text-crit ml-auto">{formatDate(cert.revokedAt)}</span>}
                         {isOnHold && (
-                            <button onClick={liftHold} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-red-400 text-red-800 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/60 disabled:opacity-50">
+                            <button onClick={liftHold} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-crit text-crit hover:bg-crit-soft disabled:opacity-50">
                                 {holdBusy ? 'Lifting…' : 'Lift hold'}
                             </button>
                         )}
                     </div>
                 )}
                 {isOnHold && (
-                    <p className="text-xs text-gray-600 dark:text-gray-400 -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer.</p>
+                    <p className="text-xs text-ink-muted -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer.</p>
                 )}
 
                 <DetailSection title="Certificate">
@@ -302,12 +302,12 @@ const CertificateDetail: React.FC = () => {
                 </DetailSection>
 
                 <DetailSection title="Extensions">
-                    <button onClick={toggleExtensions} className="px-3 py-1 text-xs bg-gray-200/50 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 border border-gray-400 dark:border-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                    <button onClick={toggleExtensions} className="px-3 py-1 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">
                         {extVisible ? 'Hide Extensions' : 'View Extensions'}
                     </button>
                     {extVisible && (
-                        <div className="mt-2 pl-2 border-l-2 border-gray-300 dark:border-gray-600 space-y-1">
-                            {extLoading && <div className="text-xs text-gray-600">Loading extensions...</div>}
+                        <div className="mt-2 pl-2 border-l-2 border-line-strong space-y-1">
+                            {extLoading && <div className="text-xs text-ink-muted">Loading extensions...</div>}
                             {extError && <InlineNotice notice={extError} />}
                             {ext && (<>
                                 {ext.basicConstraints && <DetailField label="Basic Constraints" value={`CA: ${ext.basicConstraints.isCA ? 'Yes' : 'No'}${ext.basicConstraints.pathLength != null ? `, Path Length: ${ext.basicConstraints.pathLength}` : ''}`} />}
@@ -316,9 +316,9 @@ const CertificateDetail: React.FC = () => {
                                 {ext.subjectAlternativeNames?.length > 0 && <DetailField label="SANs (ext)" value={ext.subjectAlternativeNames.join(', ')} />}
                                 {ext.subjectKeyIdentifier && <DetailField label="Subject Key ID" value={ext.subjectKeyIdentifier} mono />}
                                 {ext.authorityKeyIdentifier && <DetailField label="Authority Key ID" value={ext.authorityKeyIdentifier} mono />}
-                                {ext.authorityInformationAccess?.ocspUrls?.map((url: string, i: number) => <DetailField key={`ocsp-${i}`} label="OCSP" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 underline break-all">{url}</a>} />)}
-                                {ext.authorityInformationAccess?.caIssuerUrls?.map((url: string, i: number) => <DetailField key={`caissuer-${i}`} label="CA Issuer" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 underline break-all">{url}</a>} />)}
-                                {ext.crlDistributionPoints?.map((url: string, i: number) => <DetailField key={`cdp-${i}`} label="CRL Distribution Point" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 underline break-all">{url}</a>} />)}
+                                {ext.authorityInformationAccess?.ocspUrls?.map((url: string, i: number) => <DetailField key={`ocsp-${i}`} label="OCSP" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
+                                {ext.authorityInformationAccess?.caIssuerUrls?.map((url: string, i: number) => <DetailField key={`caissuer-${i}`} label="CA Issuer" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
+                                {ext.crlDistributionPoints?.map((url: string, i: number) => <DetailField key={`cdp-${i}`} label="CRL Distribution Point" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
                                 {ext.certificatePolicies?.length > 0 && <DetailField label="Certificate Policies" value={ext.certificatePolicies.join(', ')} mono />}
                             </>)}
                         </div>
@@ -326,58 +326,58 @@ const CertificateDetail: React.FC = () => {
                 </DetailSection>
 
                 <DetailSection title="Access Control (ACL)">
-                    <p className="text-[11px] text-gray-500 mb-3">
+                    <p className="text-[11px] text-ink-muted mb-3">
                         Per-certificate grants for individual users. Anyone with CA-wide access (or the original requestor) can already view/manage this certificate and isn't listed here. <strong>Manage</strong> allows revoke/reissue; <strong>View</strong> is read-only.
                     </p>
-                    {aclLoading && <div className="text-xs text-gray-600">Loading access…</div>}
+                    {aclLoading && <div className="text-xs text-ink-muted">Loading access…</div>}
                     {!aclLoading && acl && (<>
                         {acl.entries.length === 0 ? (
-                            <div className="text-xs text-gray-500 mb-3">No explicit ACL entries.</div>
+                            <div className="text-xs text-ink-muted mb-3">No explicit ACL entries.</div>
                         ) : (
-                            <div className="divide-y divide-gray-200 dark:divide-gray-700/60 mb-3 border border-gray-200 dark:border-gray-700/60 rounded">
+                            <div className="divide-y divide-line mb-3 border border-line rounded">
                                 {acl.entries.map((e: any) => (
                                     <div key={e.userId} className="flex items-center gap-2 px-3 py-2 text-sm">
                                         <div className="flex-1 min-w-0">
-                                            <span className="text-gray-900 dark:text-white">{e.username || e.userId}</span>
-                                            {e.email && <span className="text-xs text-gray-500 ml-2">{e.email}</span>}
-                                            {e.userId === acl.requestorUserId && <span className="text-[10px] text-gray-500 ml-2">(requestor)</span>}
+                                            <span className="text-ink">{e.username || e.userId}</span>
+                                            {e.email && <span className="text-xs text-ink-muted ml-2">{e.email}</span>}
+                                            {e.userId === acl.requestorUserId && <span className="text-[10px] text-ink-muted ml-2">(requestor)</span>}
                                         </div>
                                         <select value={e.accessLevel} disabled={aclBusy} onChange={(ev) => setAccess(e.userId, ev.target.value as 'View' | 'Manage')}
-                                            className="px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                            className="px-2 py-1 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                             <option value="View">View</option>
                                             <option value="Manage">Manage</option>
                                         </select>
                                         <button onClick={() => revokeAccess(e.userId)} disabled={aclBusy}
-                                            className="px-2 py-1 text-[10px] bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Remove</button>
+                                            className="px-2 py-1 text-[10px] bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Remove</button>
                                     </div>
                                 ))}
                             </div>
                         )}
                         <div className="flex items-center gap-2">
                             <select value={addUserId} onChange={(e) => setAddUserId(e.target.value)} disabled={aclBusy}
-                                className="flex-1 px-2 py-1.5 text-xs bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                className="flex-1 px-2 py-1.5 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                 <option value="">Grant access to a user…</option>
                                 {allUsers.filter((u) => !acl.entries.some((e: any) => e.userId === u.id)).map((u) => (
                                     <option key={u.id} value={u.id}>{u.username}{u.email ? ` (${u.email})` : ''}</option>
                                 ))}
                             </select>
                             <select value={addLevel} onChange={(e) => setAddLevel(e.target.value as 'View' | 'Manage')} disabled={aclBusy}
-                                className="px-2 py-1.5 text-xs bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                className="px-2 py-1.5 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                 <option value="View">View</option>
                                 <option value="Manage">Manage</option>
                             </select>
-                            <button onClick={addAccess} disabled={aclBusy || !addUserId} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Add</button>
+                            <button onClick={addAccess} disabled={aclBusy || !addUserId} className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50">Add</button>
                         </div>
 
                         {/* Read-only RBAC hint — who can already access via CA-scoped group capabilities. */}
-                        <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-700/60">
-                            <div className="text-[11px] font-semibold text-gray-600 dark:text-gray-400 mb-1">Also accessible via RBAC{acl.rbac?.caLabel ? ` — CA: ${acl.rbac.caLabel}` : ''}</div>
+                        <div className="mt-4 pt-3 border-t border-line">
+                            <div className="text-[11px] font-semibold text-ink-muted mb-1">Also accessible via RBAC{acl.rbac?.caLabel ? ` — CA: ${acl.rbac.caLabel}` : ''}</div>
                             {acl.rbac?.groups?.length ? (<>
-                                <p className="text-[10px] text-gray-500 mb-2">Members of these groups can already view/manage this certificate through CA-scoped capabilities — adjust on the Groups / Roles pages, not here. Direct per-user role grants aren't shown.</p>
+                                <p className="text-[10px] text-ink-muted mb-2">Members of these groups can already view/manage this certificate through CA-scoped capabilities — adjust on the Groups / Roles pages, not here. Direct per-user role grants aren't shown.</p>
                                 <div className="flex flex-wrap gap-1.5">
                                     {acl.rbac.groups.map((g: any) => (
                                         <span key={g.groupId} title={`${g.memberCount} member${g.memberCount === 1 ? '' : 's'}`}
-                                            className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border ${g.level === 'Manage' ? 'bg-orange-50 dark:bg-orange-900/40 text-orange-800 dark:text-orange-300 border-orange-300 dark:border-orange-700' : 'bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700'}`}>
+                                            className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border ${g.level === 'Manage' ? 'bg-warn-soft text-warn border-warn/40' : 'bg-info-soft text-info border-info/40'}`}>
                                             {g.displayName || g.name}
                                             <span className="opacity-70">· {g.level}</span>
                                             <span className="opacity-50">· {g.memberCount}</span>
@@ -385,7 +385,7 @@ const CertificateDetail: React.FC = () => {
                                     ))}
                                 </div>
                             </>) : (
-                                <p className="text-[10px] text-gray-500">No groups grant RBAC access on this certificate's CA scope — only the ACL above and the original requestor apply.</p>
+                                <p className="text-[10px] text-ink-muted">No groups grant RBAC access on this certificate's CA scope — only the ACL above and the original requestor apply.</p>
                             )}
                         </div>
                     </>)}
@@ -393,24 +393,24 @@ const CertificateDetail: React.FC = () => {
 
                 {/* Revoke modal */}
                 {revokeOpen && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 dark:bg-black/50" onClick={() => !revokeLoading && setRevokeOpen(false)}>
-                        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
-                            <div className="px-6 py-4 border-b border-gray-300 dark:border-gray-700"><h2 className="text-lg font-semibold text-gray-900 dark:text-white">Revoke Certificate</h2></div>
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !revokeLoading && setRevokeOpen(false)}>
+                        <div className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+                            <div className="px-6 py-4 border-b border-line"><h2 className="text-lg font-semibold text-ink">Revoke Certificate</h2></div>
                             <div className="px-6 py-4 space-y-4">
-                                <div className="space-y-1"><div className="text-xs text-gray-600 dark:text-gray-400">Serial Number</div><div className="font-mono text-sm text-gray-800 dark:text-gray-200 break-all">{cert.serialNumber}</div></div>
-                                <div className="space-y-1"><div className="text-xs text-gray-600 dark:text-gray-400">Subject</div><div className="text-sm text-gray-800 dark:text-gray-200 break-all">{cert.subjectDN}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serial Number</div><div className="data-mono text-ink break-all">{cert.serialNumber}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Subject</div><div className="text-sm text-ink break-all">{cert.subjectDN}</div></div>
                                 <div className="space-y-1">
-                                    <label htmlFor="revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400">Revocation Reason</label>
-                                    <select id="revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeLoading} className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                    <label htmlFor="revoke-reason" className="block text-xs text-ink-muted">Revocation Reason</label>
+                                    <select id="revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeLoading} className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                         {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                     </select>
                                     <RevocationReasonHint reason={revokeReason} />
                                 </div>
                                 {revokeError && <InlineNotice notice={revokeError} />}
                             </div>
-                            <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
-                                <button onClick={() => setRevokeOpen(false)} disabled={revokeLoading} className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">Cancel</button>
-                                <button onClick={handleRevokeConfirm} disabled={revokeLoading} className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors disabled:opacity-50">{revokeLoading ? 'Revoking...' : 'Revoke'}</button>
+                            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
+                                <button onClick={() => setRevokeOpen(false)} disabled={revokeLoading} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
+                                <button onClick={handleRevokeConfirm} disabled={revokeLoading} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeLoading ? 'Revoking...' : 'Revoke'}</button>
                             </div>
                         </div>
                     </div>

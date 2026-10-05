@@ -40,8 +40,8 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Features</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Features</h2>
+                <p className="text-ink-muted mt-1">
                     Enable the protocols and services your CA should support. These can be changed later.
                 </p>
             </div>
@@ -51,33 +51,33 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
                 {featureToggles.map(feature => (
                     <label
                         key={feature.key}
-                        className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                        className="flex items-start gap-3 p-3 bg-ground border border-line rounded-lg cursor-pointer hover:bg-hover transition-colors"
                     >
                         <div className="pt-0.5">
                             <input
                                 type="checkbox"
                                 checked={data[feature.key] as boolean}
                                 onChange={e => onChange({ ...data, [feature.key]: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-600 rounded focus:ring-blue-500"
+                                className="w-4 h-4 text-accent-ink bg-raised border-line-strong rounded focus:ring-accent"
                             />
                         </div>
                         <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium text-gray-900 dark:text-white">{feature.acronym}</span>
-                            <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">{feature.description}</p>
+                            <span className="text-sm font-medium text-ink">{feature.acronym}</span>
+                            <p className="text-xs text-ink-muted mt-0.5">{feature.description}</p>
                         </div>
                     </label>
                 ))}
             </div>
 
             {/* API Certificate */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">API Certificate</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">API Certificate</h3>
+                <p className="text-sm text-ink-muted">
                     Configure the TLS certificate that will be issued for the ModularCA API server.
                 </p>
 
                 <div>
-                    <label htmlFor="sans" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="sans" className="block text-sm font-medium text-ink mb-1">
                         Subject Alternative Names (one per line)
                     </label>
                     <textarea
@@ -85,12 +85,12 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
                         value={data.apiCertSans}
                         onChange={e => onChange({ ...data, apiCertSans: e.target.value })}
                         rows={4}
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white font-mono text-sm placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="apiValidity" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="apiValidity" className="block text-sm font-medium text-ink mb-1">
                         Validity Period (years)
                     </label>
                     <input
@@ -100,21 +100,21 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
                         value={data.apiCertValidityYears}
                         onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, apiCertValidityYears: v === '' ? ('' as any) : parseInt(v) }); }}
                         onBlur={() => { if (!data.apiCertValidityYears) onChange({ ...data, apiCertValidityYears: 2 }); }}
-                        className="w-32 px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-32 px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
             </div>
 
             {/* Network / Public Access */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Network</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">Network</h3>
+                <p className="text-sm text-ink-muted">
                     CRL, OCSP, and AIA endpoints must be reachable via plain HTTP (not HTTPS) per RFC 5280.
                     TLS clients cannot use HTTPS to validate the certificate they're checking.
                 </p>
 
                 <div>
-                    <label htmlFor="publicDomain" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="publicDomain" className="block text-sm font-medium text-ink mb-1">
                         Public Base URL
                     </label>
                     <input
@@ -123,15 +123,15 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
                         value={data.publicDomain}
                         onChange={e => onChange({ ...data, publicDomain: e.target.value })}
                         placeholder="http://ca.example.com"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-ink-muted mt-1">
                         Embedded in certificates for AIA/CDP URLs. Must be HTTP, not HTTPS. Leave blank to auto-detect from SANs.
                     </p>
                 </div>
 
                 <div>
-                    <label htmlFor="httpPort" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="httpPort" className="block text-sm font-medium text-ink mb-1">
                         HTTP Port (plain, for CRL/OCSP/AIA)
                     </label>
                     <input
@@ -141,9 +141,9 @@ const Features: React.FC<FeaturesProps> = ({ data, onChange }) => {
                         value={data.httpPort}
                         onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, httpPort: v === '' ? ('' as any) : parseInt(v) }); }}
                         onBlur={() => { if (!data.httpPort && data.httpPort !== 0) onChange({ ...data, httpPort: 80 }); }}
-                        className="w-32 px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-32 px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-ink-muted mt-1">
                         Set to 0 to disable. Default: 80.
                     </p>
                 </div>

@@ -27,7 +27,7 @@ const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | 
         <DetailField label="SAN Required" value={p.sanRules?.required ? 'Yes' : 'No'} />
         {p.inheritanceEnabled && <DetailField label="Inherits From" value={parentName(p.inheritsFromId) || 'None'} />}
         <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
-        <p className="text-[11px] text-gray-500 pt-3">Open the full page to view rules or edit.</p>
+        <p className="text-[11px] text-ink-muted pt-3">Open the full page to view rules or edit.</p>
     </div>
 );
 
@@ -135,17 +135,17 @@ const RequestProfiles: React.FC = () => {
             key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name,
             render: (p) => (
                 <span className="flex items-center gap-2 min-w-0">
-                    <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span>
+                    <span className="text-ink font-medium truncate">{p.name}</span>
                     {p.inheritanceEnabled && p.inheritsFromId && (
-                        <span className="px-2 py-0.5 text-[10px] rounded bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-700 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
+                        <span className="px-2 py-0.5 text-[10px] rounded bg-accent-soft text-accent-ink border border-accent/40 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
                     )}
                 </span>
             ),
         },
         { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <StatusBadge status={p.requireApproval ? 'pending' : 'enabled'} label={p.requireApproval ? 'Required' : 'Auto'} /> },
-        { key: 'dnRules', header: 'DN Rules', defaultWidth: 100, exportValue: (p) => (p.subjectDnRules?.length || 0), render: (p) => <span className="text-xs text-gray-700 dark:text-gray-300">{p.subjectDnRules?.length || 0} rules</span> },
+        { key: 'dnRules', header: 'DN Rules', defaultWidth: 100, exportValue: (p) => (p.subjectDnRules?.length || 0), render: (p) => <span className="text-xs text-ink">{p.subjectDnRules?.length || 0} rules</span> },
         { key: 'san', header: 'SAN', defaultWidth: 110, truncate: false, exportValue: (p) => (p.sanRules?.required ? 'Required' : 'Optional'), render: (p) => <StatusBadge status={p.sanRules?.required ? 'active' : 'disabled'} label={p.sanRules?.required ? 'Required' : 'Optional'} /> },
-        { key: 'maxValidity', header: 'Max Validity', defaultWidth: 130, exportValue: (p) => p.maxValidityPeriod || '', render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxValidityPeriod || '-'}</span> },
+        { key: 'maxValidity', header: 'Max Validity', defaultWidth: 130, exportValue: (p) => p.maxValidityPeriod || '', render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityPeriod || '-'}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -154,21 +154,21 @@ const RequestProfiles: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <p className="text-sm text-gray-600 dark:text-gray-400">
+            <p className="text-sm text-ink-muted">
                 Manage enrollment request profiles that define subject DN rules, SAN constraints, and approval requirements.
             </p>
 
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">All Profiles</h3>
-                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                <h3 className="text-sm font-semibold text-ink">All Profiles</h3>
+                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
             </div>
 
             {/* Create Form */}
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-4">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New Request Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-4">
+                    <h4 className="text-sm font-semibold text-ink">New Request Profile</h4>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
@@ -211,11 +211,11 @@ const RequestProfiles: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <label className="flex items-center gap-2 text-xs text-ink">
                             <input type="checkbox" checked={form.requireApproval} onChange={(e) => setForm({ ...form, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />
                             Require Approval
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <label className="flex items-center gap-2 text-xs text-ink">
                             <input type="checkbox" checked={form.inheritanceEnabled} onChange={(e) => setForm({ ...form, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />
                             Enable Inheritance
                         </label>
@@ -228,7 +228,7 @@ const RequestProfiles: React.FC = () => {
                     />
 
 
-                    <button onClick={handleCreate} disabled={creating || !form.name || inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                    <button onClick={handleCreate} disabled={creating || !form.name || inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                     <SubmitBlockedHint reasons={[
@@ -260,7 +260,7 @@ const RequestProfiles: React.FC = () => {
                 title="Delete Request Profile"
                 message={confirmDelete ? `Delete request profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}

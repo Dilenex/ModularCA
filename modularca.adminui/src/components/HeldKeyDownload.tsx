@@ -64,7 +64,7 @@ export const HeldKeyDownload: React.FC<HeldKeyDownloadProps> = ({ endpoint, requ
     const shownDeliveredAt = delivered || deliveredAt || null;
     if (shownDeliveredAt) {
         return (
-            <p className={`text-xs text-gray-600 dark:text-gray-400 ${className}`}>
+            <p className={`text-xs text-ink-muted ${className}`}>
                 Key delivered on {formatDeliveredAt(shownDeliveredAt)}. The CA no longer holds it.
             </p>
         );
@@ -102,7 +102,7 @@ export const HeldKeyDownload: React.FC<HeldKeyDownloadProps> = ({ endpoint, requ
 
     return (
         <div className={`space-y-2 ${className}`}>
-            <p className="text-xs text-gray-700 dark:text-gray-300">
+            <p className="text-xs text-ink">
                 The certificate is issued and the CA still holds its private key. Choose a password for the .pfx;
                 the key is deleted from the CA the moment the file is delivered, so keep the file.
             </p>
@@ -121,11 +121,11 @@ export const HeldKeyDownload: React.FC<HeldKeyDownloadProps> = ({ endpoint, requ
                 </div>
             </div>
             <button type="button" onClick={download} disabled={!canDownload}
-                className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                 {busy ? 'Preparing…' : 'Download certificate and key (.pfx)'}
             </button>
             {error && (
-                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
+                <div className="bg-crit-soft border border-crit/40 rounded p-3">
                     <InlineNotice notice={error} variant="line" />
                 </div>
             )}

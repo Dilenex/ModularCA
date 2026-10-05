@@ -16,8 +16,8 @@ export function DetailField({ label, value, mono }: DetailFieldProps) {
 
     return (
         <div className="flex gap-2 py-1">
-            <span className="text-gray-600 text-xs min-w-[120px] flex-shrink-0">{label}</span>
-            <span className={`text-gray-800 dark:text-gray-200 text-xs break-all ${mono ? 'font-mono' : ''}`}>
+            <span className="label-caps min-w-[120px] flex-shrink-0 pt-0.5">{label}</span>
+            <span className={`text-ink break-all ${mono ? 'data-mono' : 'text-xs'}`}>
                 {value}
             </span>
         </div>

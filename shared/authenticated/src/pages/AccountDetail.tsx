@@ -16,8 +16,8 @@ import { AccessBadgesPanel } from '../components/AccessBadgesPanel';
 import { StepUpOps } from '@shared/generated';
 
 const inputClass =
-    'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-const labelClass = 'block text-xs text-gray-600 dark:text-gray-400 mb-1';
+    'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
+const labelClass = 'block text-xs text-ink-muted mb-1';
 
 interface Account {
     id: string;
@@ -102,18 +102,18 @@ const GeneralTab: React.FC = () => {
         }
     };
 
-    if (loading && !acct) return <div className="text-sm text-gray-600 dark:text-gray-400">Loading account…</div>;
-    if (error && !acct) return <div className="text-sm text-red-800 dark:text-red-400">{error}</div>;
+    if (loading && !acct) return <div className="text-sm text-ink-muted">Loading account…</div>;
+    if (error && !acct) return <div className="text-sm text-crit">{error}</div>;
     if (!acct) return null;
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg">
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Account Details</h2>
+        <div className="bg-raised border border-line rounded-lg">
+            <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-ink">Account Details</h2>
                 {mode === 'view' && (
                     <button
                         onClick={() => setMode('edit')}
-                        className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                        className="px-3 py-1 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                     >
                         Edit
                     </button>
@@ -134,13 +134,13 @@ const GeneralTab: React.FC = () => {
                         <div className="md:col-span-2">
                             <label className={labelClass}>Username</label>
                             <input type="text" value={acct.username} disabled className={`${inputClass} opacity-60 cursor-not-allowed font-mono`} />
-                            <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-500">Your login identity — changed only by an administrator.</p>
+                            <p className="mt-1 text-[10px] text-ink-muted">Your login identity — changed only by an administrator.</p>
                         </div>
                         <div className="md:col-span-2">
                             <label className={labelClass}>Email</label>
                             <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={inputClass} />
                             {emailChanged && (
-                                <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">Changing your email requires step-up MFA verification on save.</p>
+                                <p className="mt-1 text-[10px] text-warn">Changing your email requires step-up MFA verification on save.</p>
                             )}
                         </div>
                         <div>
@@ -160,11 +160,11 @@ const GeneralTab: React.FC = () => {
             </div>
 
             {mode === 'edit' && (
-                <div className="px-4 py-3 border-t border-gray-300 dark:border-gray-700 flex items-center justify-end gap-2">
-                    <button onClick={cancel} disabled={saving} className="px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50">
+                <div className="px-4 py-3 border-t border-line flex items-center justify-end gap-2">
+                    <button onClick={cancel} disabled={saving} className="px-3 py-1.5 text-xs text-ink hover:bg-hover rounded transition-colors disabled:opacity-50">
                         Cancel
                     </button>
-                    <button onClick={save} disabled={!dirty || saving} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                    <button onClick={save} disabled={!dirty || saving} className="px-4 py-1.5 text-xs font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {saving ? 'Saving…' : 'Save'}
                     </button>
                 </div>
@@ -182,8 +182,8 @@ export const AccountDetail: React.FC = () => {
             onClick={() => setTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 tab === key
-                    ? 'border-blue-600 text-blue-700 dark:text-blue-400'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                    ? 'border-accent text-accent-ink'
+                    : 'border-transparent text-ink-muted hover:text-ink'
             }`}
         >
             {label}
@@ -193,11 +193,11 @@ export const AccountDetail: React.FC = () => {
     return (
         <div className="p-6 max-w-3xl mx-auto space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Account</h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Manage your account details and security settings.</p>
+                <h1 className="text-xl font-semibold text-ink">My Account</h1>
+                <p className="text-sm text-ink-muted mt-1">Manage your account details and security settings.</p>
             </div>
 
-            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
+            <div className="flex gap-1 border-b border-line">
                 {tabBtn('general', 'General')}
                 {tabBtn('security', 'Security')}
                 {tabBtn('badges', 'Badges')}

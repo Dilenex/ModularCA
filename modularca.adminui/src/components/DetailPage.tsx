@@ -67,9 +67,9 @@ export const DetailPage: React.FC<DetailPageProps> = ({
             onClick={() => { if (disabled) return; if (m === 'view') leaveEdit(); else setMode('edit'); }}
             disabled={disabled}
             title={disabled ? 'This entry is read-only' : undefined}
-            className={`px-3 py-1 text-xs transition-colors ${activeMode === m
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${activeMode === m
+                ? 'bg-accent text-on-accent'
+                : 'bg-raised text-ink hover:bg-hover'}
                 ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}>
             {label}
         </button>
@@ -77,15 +77,15 @@ export const DetailPage: React.FC<DetailPageProps> = ({
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+            <div className="flex items-center gap-2 text-xs text-ink-muted">
                 <button onClick={() => (backTo ? navigate(backTo) : navigate(-1))}
-                    className="px-2 py-1 rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">‹ Back</button>
+                    className="px-2 py-1 rounded border border-line-strong bg-raised text-ink hover:bg-hover transition-colors">‹ Back</button>
                 <nav className="flex items-center gap-1 min-w-0">
                     {breadcrumbs.map((b, i) => (
                         <span key={i} className="flex items-center gap-1 min-w-0">
-                            {i > 0 && <span className="text-gray-400">/</span>}
+                            {i > 0 && <span className="text-ink-faint">/</span>}
                             {b.to ? <Link to={b.to} className="hover:underline truncate">{b.label}</Link>
-                                : <span className="text-gray-900 dark:text-gray-200 truncate">{b.label}</span>}
+                                : <span className="text-ink truncate">{b.label}</span>}
                         </span>
                     ))}
                 </nav>
@@ -94,14 +94,14 @@ export const DetailPage: React.FC<DetailPageProps> = ({
             <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div className="min-w-0">
                     <div className="flex items-center gap-3 flex-wrap">
-                        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{title}</h1>
+                        <h1 className="text-xl font-semibold text-ink">{title}</h1>
                         {status}
                     </div>
-                    {subtitle && <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">{subtitle}</div>}
+                    {subtitle && <div className="text-sm text-ink-muted mt-1">{subtitle}</div>}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     {/* View/Edit toggle — Edit is blocked for read-only entries. */}
-                    <div className="inline-flex rounded border border-gray-300 dark:border-gray-700 overflow-hidden">
+                    <div className="inline-flex rounded border border-line-strong overflow-hidden">
                         {segBtn('view', 'View')}
                         {segBtn('edit', 'Edit', !editable)}
                     </div>
@@ -114,15 +114,15 @@ export const DetailPage: React.FC<DetailPageProps> = ({
             {/* Unified Save / Cancel — pinned at the bottom of the page in Edit mode when a save
                 handler is wired. Sticky so it stays reachable on long forms. */}
             {editable && activeMode === 'edit' && onSave && (
-                <div className="sticky bottom-0 -mx-3 sm:-mx-6 px-3 sm:px-6 py-3 flex items-center justify-end gap-2 border-t border-gray-300 dark:border-gray-700 bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80 dark:supports-[backdrop-filter]:bg-gray-900/80">
+                <div className="sticky bottom-0 -mx-3 sm:-mx-6 px-3 sm:px-6 py-3 flex items-center justify-end gap-2 border-t border-line bg-ground/95 backdrop-blur supports-[backdrop-filter]:bg-ground/80">
                     <button onClick={leaveEdit} disabled={saving}
                         title="Discard changes and return to view"
-                        className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-40 transition-colors">
+                        className="px-4 py-2 text-sm font-medium bg-raised border border-line-strong text-ink rounded hover:bg-hover disabled:opacity-40 transition-colors">
                         Cancel
                     </button>
                     <button onClick={handleSave} disabled={saveDisabled || saving}
                         title={saveDisabled ? 'No unsaved changes' : 'Save all changes'}
-                        className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                         {saving ? 'Saving…' : 'Save'}
                     </button>
                 </div>
@@ -133,10 +133,10 @@ export const DetailPage: React.FC<DetailPageProps> = ({
 
 /** A labelled section card for use inside a DetailPage body. */
 export const DetailSection: React.FC<{ title?: string; children: React.ReactNode }> = ({ title, children }) => (
-    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
         {title && (
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}</h3>
+            <div className="px-4 py-3 border-b border-line">
+                <h3 className="text-sm font-semibold text-ink">{title}</h3>
             </div>
         )}
         <div className="p-4">{children}</div>

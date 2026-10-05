@@ -38,16 +38,16 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Admin Account</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Admin Account</h2>
+                <p className="text-ink-muted mt-1">
                     Create the initial administrator account for managing ModularCA.
                 </p>
             </div>
 
             <div className="space-y-4">
                 <div>
-                    <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Username <span className="text-red-500">*</span>
+                    <label htmlFor="username" className="block text-sm font-medium text-ink mb-1">
+                        Username <span className="text-crit">*</span>
                     </label>
                     <input
                         ref={autoFocusRef}
@@ -57,12 +57,12 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                         value={data.username}
                         onChange={e => onChange({ ...data, username: e.target.value })}
                         placeholder="admin"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="email" className="block text-sm font-medium text-ink mb-1">
                         Email
                     </label>
                     <input
@@ -71,13 +71,13 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                         value={data.email}
                         onChange={e => onChange({ ...data, email: e.target.value })}
                         placeholder="admin@example.com"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div>
-                    <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Password <span className="text-red-500">*</span>
+                    <label htmlFor="password" className="block text-sm font-medium text-ink mb-1">
+                        Password <span className="text-crit">*</span>
                     </label>
                     <div className="relative">
                         <input
@@ -87,12 +87,12 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                             autoComplete="new-password"
                             value={data.password}
                             onChange={e => onChange({ ...data, password: e.target.value })}
-                            className="w-full px-3 py-2 pr-10 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 pr-10 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                         <button
                             type="button"
                             onClick={() => setShowPassword(!showPassword)}
-                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-600 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-ink-muted hover:text-ink"
                             aria-label={showPassword ? 'Hide password' : 'Show password'}
                         >
                             {showPassword ? (
@@ -112,8 +112,8 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                 </div>
 
                 <div>
-                    <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Confirm Password <span className="text-red-500">*</span>
+                    <label htmlFor="confirmPassword" className="block text-sm font-medium text-ink mb-1">
+                        Confirm Password <span className="text-crit">*</span>
                     </label>
                     <div className="relative">
                         <input
@@ -123,16 +123,16 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                             autoComplete="new-password"
                             value={data.confirmPassword}
                             onChange={e => onChange({ ...data, confirmPassword: e.target.value })}
-                            className={`w-full px-3 py-2 pr-10 bg-white dark:bg-gray-900 border rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            className={`w-full px-3 py-2 pr-10 bg-raised border rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent ${
                                 data.confirmPassword.length > 0 && !passwordsMatch
-                                    ? 'border-red-400 dark:border-red-600'
-                                    : 'border-gray-300 dark:border-gray-700'
+                                    ? 'border-crit'
+                                    : 'border-line-strong'
                             }`}
                         />
                         <button
                             type="button"
                             onClick={() => setShowConfirm(!showConfirm)}
-                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-600 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-ink-muted hover:text-ink"
                             aria-label={showConfirm ? 'Hide password' : 'Show password'}
                         >
                             {showConfirm ? (
@@ -150,33 +150,33 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                         </button>
                     </div>
                     {data.confirmPassword.length > 0 && !passwordsMatch && (
-                        <p className="text-sm text-red-500 mt-1">Passwords do not match</p>
+                        <p className="text-sm text-crit mt-1">Passwords do not match</p>
                     )}
                 </div>
             </div>
 
             {/* Password requirements */}
-            <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Password Requirements</p>
+            <div className="bg-ground border border-line rounded-lg p-4">
+                <p className="text-sm font-medium text-ink mb-2">Password Requirements</p>
                 <ul className="space-y-1">
                     {passwordRules.map((rule, i) => {
                         const met = rule.test(data.password);
                         return (
                             <li key={i} className="flex items-center gap-2 text-sm">
-                                <span className={met ? 'text-green-500' : 'text-gray-600 dark:text-gray-600'}>
+                                <span className={met ? 'text-ok' : 'text-ink-muted'}>
                                     {met ? '\u2713' : '\u25CB'}
                                 </span>
-                                <span className={met ? 'text-green-700 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'}>
+                                <span className={met ? 'text-ok' : 'text-ink-muted'}>
                                     {rule.label}
                                 </span>
                             </li>
                         );
                     })}
                     <li className="flex items-center gap-2 text-sm">
-                        <span className={passwordsMatch ? 'text-green-500' : 'text-gray-600 dark:text-gray-600'}>
+                        <span className={passwordsMatch ? 'text-ok' : 'text-ink-muted'}>
                             {passwordsMatch ? '\u2713' : '\u25CB'}
                         </span>
-                        <span className={passwordsMatch ? 'text-green-700 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'}>
+                        <span className={passwordsMatch ? 'text-ok' : 'text-ink-muted'}>
                             Passwords match
                         </span>
                     </li>

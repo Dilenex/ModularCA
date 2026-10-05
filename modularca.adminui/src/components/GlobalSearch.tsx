@@ -201,16 +201,16 @@ const GlobalSearch: React.FC = () => {
                 aria-expanded={open && lines.length > 0}
                 aria-controls="global-search-results"
                 aria-activedescendant={open && lines[active] ? `gs-${lines[active].key}` : undefined}
-                className="w-full px-3 py-1.5 text-sm rounded-md bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-1.5 text-sm rounded-md bg-raised border border-line-strong text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
             />
             {open && (query.trim().length > 0) && (
                 <ul
                     id="global-search-results"
                     role="listbox"
-                    className="absolute left-0 right-0 mt-1 max-h-96 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg z-50 text-sm"
+                    className="absolute left-0 right-0 mt-1 max-h-96 overflow-y-auto rounded-md border border-line bg-raised shadow-lg z-50 text-sm"
                 >
                     {lines.length === 0 && (
-                        <li className="px-3 py-2 text-gray-500 dark:text-gray-400">{busy ? 'Searching…' : 'No matches'}</li>
+                        <li className="px-3 py-2 text-ink-muted">{busy ? 'Searching…' : 'No matches'}</li>
                     )}
                     {lines.map((line, i) => (
                         <li
@@ -220,32 +220,32 @@ const GlobalSearch: React.FC = () => {
                             aria-selected={i === active}
                             onMouseDown={(e) => { e.preventDefault(); go(line.path); }}
                             onMouseEnter={() => setActive(i)}
-                            className={`px-3 py-2 cursor-pointer flex items-center gap-3 min-w-0 ${i === active ? 'bg-blue-50 dark:bg-blue-900/40' : ''}`}
+                            className={`px-3 py-2 cursor-pointer flex items-center gap-3 min-w-0 ${i === active ? 'bg-accent-soft' : ''}`}
                         >
                             <span className="flex-shrink-0 min-w-0">
-                                <span className="text-gray-900 dark:text-white">{line.title}</span>
-                                <span className="ml-1.5 text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">{line.section}</span>
+                                <span className="text-ink">{line.title}</span>
+                                <span className="ml-1.5 text-[10px] uppercase tracking-wider text-ink-muted">{line.section}</span>
                             </span>
                             {line.records.length > 0 && (
                                 <span className="flex items-center gap-1 min-w-0 overflow-hidden">
-                                    <span className="text-gray-400 dark:text-gray-500">·</span>
+                                    <span className="text-ink-faint">·</span>
                                     {line.records.map((r) => (
                                         <button
                                             key={r.key}
                                             type="button"
                                             title={r.subtitle ? `${r.title} — ${r.subtitle}` : r.title}
                                             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); go(r.path); }}
-                                            className="px-1.5 py-0.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:border-blue-400 hover:text-blue-800 dark:hover:text-blue-300 truncate max-w-[10rem]"
+                                            className="px-1.5 py-0.5 text-xs rounded border border-line-strong bg-sunken text-ink hover:border-accent hover:text-accent-hover truncate max-w-[10rem]"
                                         >
                                             {r.title}
                                         </button>
                                     ))}
-                                    {line.more > 0 && <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">+{line.more} more</span>}
+                                    {line.more > 0 && <span className="text-xs text-ink-muted whitespace-nowrap">+{line.more} more</span>}
                                 </span>
                             )}
                         </li>
                     ))}
-                    {busy && lines.length > 0 && <li className="px-3 py-1 text-xs text-gray-500 dark:text-gray-400">Searching records…</li>}
+                    {busy && lines.length > 0 && <li className="px-3 py-1 text-xs text-ink-muted">Searching records…</li>}
                 </ul>
             )}
         </div>

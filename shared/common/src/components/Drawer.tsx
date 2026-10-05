@@ -35,15 +35,15 @@ export const Drawer: React.FC<DrawerProps> = ({ open, onClose, title, widthClass
 
     return (
         <div className="fixed inset-0 z-50">
-            <div className="absolute inset-0 bg-black/30 dark:bg-black/50" onClick={onClose} aria-hidden="true" />
-            <div className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-white dark:bg-gray-900 border-l border-gray-300 dark:border-gray-700 shadow-2xl flex flex-col`}
+            <div className="absolute inset-0 bg-scrim" onClick={onClose} aria-hidden="true" />
+            <div className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-raised border-l border-line shadow-2xl flex flex-col`}
                 role="dialog" aria-modal="true">
-                <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                    <div className="text-sm font-semibold text-gray-900 dark:text-white min-w-0 truncate">{title}</div>
-                    <button onClick={onClose} title="Close" className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xl leading-none px-1">×</button>
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-line">
+                    <div className="text-sm font-semibold text-ink min-w-0 truncate">{title}</div>
+                    <button onClick={onClose} title="Close" className="text-ink-muted hover:text-ink text-xl leading-none px-1">×</button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-4">{children}</div>
-                {footer && <div className="border-t border-gray-300 dark:border-gray-700 p-3">{footer}</div>}
+                {footer && <div className="border-t border-line p-3">{footer}</div>}
             </div>
         </div>
     );

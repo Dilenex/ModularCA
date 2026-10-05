@@ -36,8 +36,8 @@ const Landing: React.FC = () => {
     <div className="space-y-12">
         {/* Hero */}
         <div className="text-center py-12">
-            <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">ModularCA</h1>
-            <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+            <h1 className="text-4xl font-bold text-ink mb-4">ModularCA</h1>
+            <p className="text-lg text-ink-muted max-w-2xl mx-auto">
                 An open-source Certificate Authority providing automated certificate management
                 via ACME, EST, SCEP, CMP, and Windows autoenrollment (MSAE) protocols.
             </p>
@@ -49,17 +49,17 @@ const Landing: React.FC = () => {
                 <Link
                     key={card.path}
                     to={card.path}
-                    className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 hover:border-blue-600 transition-colors group"
+                    className="bg-raised border border-line rounded-lg p-6 hover:border-accent transition-colors group"
                 >
                     <div className="flex items-start gap-4">
-                        <div className="w-10 h-10 bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-lg text-blue-800 dark:text-blue-400 group-hover:bg-blue-600/20 transition-colors">
+                        <div className="w-10 h-10 bg-sunken rounded-lg flex items-center justify-center text-lg text-accent-ink group-hover:bg-accent-soft transition-colors">
                             {card.icon}
                         </div>
                         <div>
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white group-hover:text-blue-300 transition-colors">
+                            <h2 className="text-lg font-semibold text-ink group-hover:text-accent-hover transition-colors">
                                 {card.title}
                             </h2>
-                            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{card.description}</p>
+                            <p className="text-sm text-ink-muted mt-1">{card.description}</p>
                         </div>
                     </div>
                 </Link>
@@ -68,12 +68,12 @@ const Landing: React.FC = () => {
 
         {/* Supported Protocols — only the ones actually enabled on this deployment */}
         {protocols.length > 0 && (
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Supported Protocols</h2>
+            <div className="bg-raised border border-line rounded-lg p-6">
+                <h2 className="text-lg font-semibold text-ink mb-4">Supported Protocols</h2>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     {protocols.map((p) => (
-                        <div key={p} className="bg-gray-50 dark:bg-gray-900 rounded-lg p-3 text-center">
-                            <span className="text-sm font-mono font-semibold text-blue-800 dark:text-blue-400">{p}</span>
+                        <div key={p} className="bg-ground rounded-lg p-3 text-center">
+                            <span className="data-mono font-semibold text-accent-ink">{p}</span>
                         </div>
                     ))}
                 </div>

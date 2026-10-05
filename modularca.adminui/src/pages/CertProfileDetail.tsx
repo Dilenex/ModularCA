@@ -169,12 +169,12 @@ const CertProfileDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Certificate profile not found.</p>
-            <button onClick={() => navigate(CERT_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Certificate Profiles</button>
+            <p className="text-sm text-ink-muted">Certificate profile not found.</p>
+            <button onClick={() => navigate(CERT_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Certificate Profiles</button>
         </div>
     );
 
@@ -190,7 +190,7 @@ const CertProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name || inheritanceInconsistent}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Certificate Profile">
@@ -233,15 +233,15 @@ const CertProfileDetail: React.FC = () => {
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.isCaProfile} onChange={(e) => setEditForm({ ...editForm, isCaProfile: e.target.checked })} className="w-4 h-4 rounded" />CA Profile</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.ctEnabled} onChange={(e) => setEditForm({ ...editForm, ctEnabled: e.target.checked })} className="w-4 h-4 rounded" />CT Enabled</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.isCaProfile} onChange={(e) => setEditForm({ ...editForm, isCaProfile: e.target.checked })} className="w-4 h-4 rounded" />CA Profile</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.ctEnabled} onChange={(e) => setEditForm({ ...editForm, ctEnabled: e.target.checked })} className="w-4 h-4 rounded" />CT Enabled</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
                         {editForm.ctEnabled && <FieldHint>{CT_ENABLED_HINT}</FieldHint>}
                         <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
                         <div>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowWildcard} onChange={(e) => setEditForm({ ...editForm, allowWildcard: e.target.checked })} className="w-4 h-4 rounded" />Allow wildcard SAN/CN entries</label>
-                            <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance. Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the leftmost label, and at least two labels.</p>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.allowWildcard} onChange={(e) => setEditForm({ ...editForm, allowWildcard: e.target.checked })} className="w-4 h-4 rounded" />Allow wildcard SAN/CN entries</label>
+                            <p className="text-[11px] text-ink-muted mt-1 ml-6">When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance. Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the leftmost label, and at least two labels.</p>
                         </div>
                         <div>
                             <label className={labelClass}>Key Usages</label>
@@ -265,9 +265,9 @@ const CertProfileDetail: React.FC = () => {
                     <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
                     <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                     <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><CeilingList items={p.allowedSignatureAlgorithms} noun="signature algorithm" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Key Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Signature Algorithms</span><CeilingList items={p.allowedSignatureAlgorithms} noun="signature algorithm" /></div>
                     <DetailField label="Validity Period Min" value={p.validityPeriodMin} />
                     <DetailField label="Validity Period Max" value={p.validityPeriodMax} />
                     <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
@@ -280,20 +280,20 @@ const CertProfileDetail: React.FC = () => {
                 {p.inheritanceEnabled && p.inheritsFromId && (
                     <DetailSection title="Inheritance">
                         <div className="flex gap-2">
-                            <button onClick={fetchResolvedProfile} disabled={resolvedLoading} className="px-3 py-1 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors disabled:opacity-50">{resolvedLoading ? 'Loading...' : 'Resolved Profile'}</button>
-                            <button onClick={fetchValidation} disabled={validationLoading} className="px-3 py-1 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors disabled:opacity-50">{validationLoading ? 'Validating...' : 'Validate Inheritance'}</button>
+                            <button onClick={fetchResolvedProfile} disabled={resolvedLoading} className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors disabled:opacity-50">{resolvedLoading ? 'Loading...' : 'Resolved Profile'}</button>
+                            <button onClick={fetchValidation} disabled={validationLoading} className="px-3 py-1 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 transition-colors disabled:opacity-50">{validationLoading ? 'Validating...' : 'Validate Inheritance'}</button>
                         </div>
                         {validationResult && (
-                            <div className={`mt-3 p-3 rounded border text-sm ${validationResult.isValid ? 'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700 text-green-800 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-300'}`}>
+                            <div className={`mt-3 p-3 rounded border text-sm ${validationResult.isValid ? 'bg-ok-soft border-ok/40 text-ok' : 'bg-crit-soft border-crit/40 text-crit'}`}>
                                 {validationResult.isValid ? <span>Inheritance is valid. No constraint violations found.</span> : (
                                     <div><span className="font-semibold">Validation errors:</span><ul className="mt-1 list-disc list-inside space-y-0.5">{validationResult.errors.map((err, i) => <li key={i} className="text-xs">{err}</li>)}</ul></div>
                                 )}
                             </div>
                         )}
                         {resolvedProfile && (
-                            <div className="mt-3 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-3 space-y-2">
-                                <h5 className="text-xs font-semibold text-gray-900 dark:text-white mb-2">Resolved (Effective) Profile</h5>
-                                {resolvedProfile.parentProfileId && <div className="text-xs text-gray-600 dark:text-gray-400 mb-2">Parent: {resolveParentName(resolvedProfile.parentProfileId)}</div>}
+                            <div className="mt-3 bg-raised border border-line rounded-lg p-3 space-y-2">
+                                <h5 className="text-xs font-semibold text-ink mb-2">Resolved (Effective) Profile</h5>
+                                {resolvedProfile.parentProfileId && <div className="text-xs text-ink-muted mb-2">Parent: {resolveParentName(resolvedProfile.parentProfileId)}</div>}
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.Name} label="Name" value={resolvedProfile.name} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.Description} label="Description" value={resolvedProfile.description} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.IsCaProfile} label="CA Profile" value={resolvedProfile.isCaProfile ? 'Yes' : 'No'} />
@@ -301,16 +301,16 @@ const CertProfileDetail: React.FC = () => {
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ExtendedKeyUsages} label="Extended Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMin} label="Validity Period Min" value={resolvedProfile.validityPeriodMin} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={resolvedProfile.validityPeriodMax} />
-                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeyAlgorithms === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
-                                    <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeyAlgorithms} /></div>
+                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeyAlgorithms === 'overridden' ? 'border-l-ok' : 'border-l-line-strong'}`}>
+                                    <div className="flex items-center"><span className="text-xs text-ink-muted">Allowed Key Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeyAlgorithms} /></div>
                                     <CeilingList items={resolvedProfile.allowedKeyAlgorithms} noun="key algorithm" />
                                 </div>
-                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeySizes === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
-                                    <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Sizes</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeySizes} /></div>
+                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedKeySizes === 'overridden' ? 'border-l-ok' : 'border-l-line-strong'}`}>
+                                    <div className="flex items-center"><span className="text-xs text-ink-muted">Allowed Key Sizes</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedKeySizes} /></div>
                                     <CeilingList items={resolvedProfile.allowedKeySizes} noun="key size" />
                                 </div>
-                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedSignatureAlgorithms === 'overridden' ? 'border-l-green-500' : 'border-l-gray-500'}`}>
-                                    <div className="flex items-center"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signature Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedSignatureAlgorithms} /></div>
+                                <div className={`pl-3 border-l-2 ${resolvedProfile.fieldSources?.AllowedSignatureAlgorithms === 'overridden' ? 'border-l-ok' : 'border-l-line-strong'}`}>
+                                    <div className="flex items-center"><span className="text-xs text-ink-muted">Allowed Signature Algorithms</span><FieldSourceBadge source={resolvedProfile.fieldSources?.AllowedSignatureAlgorithms} /></div>
                                     <CeilingList items={resolvedProfile.allowedSignatureAlgorithms} noun="signature algorithm" />
                                 </div>
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.CtEnabled} label="CT Enabled" value={resolvedProfile.ctEnabled ? 'Yes' : 'No'} />
@@ -325,7 +325,7 @@ const CertProfileDetail: React.FC = () => {
                     title="Delete Certificate Profile"
                     message={`Delete certificate profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

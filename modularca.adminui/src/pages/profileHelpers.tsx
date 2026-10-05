@@ -253,11 +253,11 @@ export const parseJsonArray = (val: any): string[] => {
 /** Render an array (or JSON string) as comma-separated badges */
 export const BadgeList: React.FC<{ items: any }> = ({ items }) => {
     const arr = parseJsonArray(items);
-    if (arr.length === 0) return <span className="text-gray-600 text-xs">None</span>;
+    if (arr.length === 0) return <span className="text-ink-muted text-xs">None</span>;
     return (
         <div className="flex flex-wrap gap-1">
             {arr.map((v, i) => (
-                <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{v}</span>
+                <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{v}</span>
             ))}
         </div>
     );
@@ -280,7 +280,7 @@ export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = (
     // claim during a fetch would flash a statement about policy that may be false once the data
     // arrives, so undefined/null is held back instead.
     if (items === undefined || items === null) {
-        return <span className="text-xs text-gray-600 dark:text-gray-400">—</span>;
+        return <span className="text-xs text-ink-muted">—</span>;
     }
 
     // Emptiness is decided from `raw` when supplied, because the labelled list is lossy:
@@ -297,7 +297,7 @@ export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = (
     const source = parseListField(raw !== undefined ? raw : items);
     if (source.length === 0) {
         return (
-            <span className="text-xs text-amber-600 dark:text-amber-400">
+            <span className="text-xs text-warn">
                 Unrestricted — every {noun} is permitted
             </span>
         );
@@ -323,7 +323,7 @@ export const CeilingList: React.FC<{ items: any; raw?: any; noun?: string }> = (
 export const CatalogGapNotice: React.FC<{ missing: string[]; kind: string }> = ({ missing, kind }) => {
     if (missing.length === 0) return null;
     return (
-        <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+        <p className="mt-1 text-xs text-warn">
             {missing.length} {kind}{missing.length === 1 ? '' : 's'} offered here{' '}
             {missing.length === 1 ? 'is' : 'are'} missing from the server&apos;s OID catalog
             ({missing.join(', ')}). A profile using {missing.length === 1 ? 'it' : 'them'} will be
@@ -356,7 +356,7 @@ export const MultiToggle: React.FC<{
                 return (
                     <button key={opt} type="button" title={titleFor ? titleFor(opt) : undefined}
                         onClick={() => onChange(active ? selected.filter((v) => v !== opt) : [...selected, opt])}
-                        className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
+                        className={`px-2 py-1 text-xs rounded border transition-colors ${active ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>
                         {formatLabel ? formatLabel(opt) : opt}
                     </button>
                 );
@@ -536,8 +536,8 @@ export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
     const isOverridden = source === 'overridden';
     return (
         <span className={`ml-2 px-1.5 py-0.5 text-[10px] rounded border ${isOverridden
-            ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-            : 'bg-gray-200 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400 border-gray-400 dark:border-gray-600'}`}>
+            ? 'bg-ok-soft text-ok border-ok/40'
+            : 'bg-sunken text-ink-muted border-line-strong'}`}>
             {isOverridden ? 'overridden' : 'inherited'}
         </span>
     );
@@ -545,14 +545,14 @@ export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
 
 /** Wrapper that adds a colored left border based on field source */
 export const SourceBorderedField: React.FC<{ source?: string; label: string; value?: string | null }> = ({ source, label, value }) => {
-    const borderColor = source === 'overridden' ? 'border-l-green-500' : source === 'inherited' ? 'border-l-gray-500' : '';
+    const borderColor = source === 'overridden' ? 'border-l-ok' : source === 'inherited' ? 'border-l-line-strong' : '';
     return (
         <div className={`pl-3 border-l-2 ${borderColor}`}>
             <div className="flex items-center">
-                <span className="text-xs text-gray-600 dark:text-gray-400">{label}</span>
+                <span className="text-xs text-ink-muted">{label}</span>
                 <FieldSourceBadge source={source} />
             </div>
-            <span className="text-sm text-gray-900 dark:text-white">{value || '-'}</span>
+            <span className="text-sm text-ink">{value || '-'}</span>
         </div>
     );
 };

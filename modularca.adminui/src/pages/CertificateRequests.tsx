@@ -205,10 +205,10 @@ const CertificateRequests: React.FC = () => {
         status: (c) => { const st = csrStatus(c); return { label: csrStatusLabel(c), tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'pending' ? 'warn' : 'neutral' }; },
         columns: [
             { key: 'status', header: 'Status', defaultWidth: 180, minWidth: 120, truncate: false, exportValue: (c) => csrStatusLabel(c), render: (c) => <StatusBadge status={csrStatus(c)} label={csrStatusLabel(c)} /> },
-            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectName || c.subject || '', render: (c) => <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{c.subjectName || c.subject}</span> },
-            { key: 'algorithm', header: 'Algorithm', defaultWidth: 110, sortable: true, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm}</span> },
-            { key: 'size', header: 'Size', defaultWidth: 80, exportValue: (c) => (c.keySize ?? ''), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keySize}</span> },
-            { key: 'submitted', header: 'Submitted', defaultWidth: 160, sortable: true, sortValue: (c) => c.submittedAt ? new Date(c.submittedAt) : null, exportValue: (c) => formatDate(c.submittedAt), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.submittedAt)}</span> },
+            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectName || c.subject || '', render: (c) => <span className="text-sm text-ink truncate">{c.subjectName || c.subject}</span> },
+            { key: 'algorithm', header: 'Algorithm', defaultWidth: 110, sortable: true, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-ink-muted">{c.keyAlgorithm}</span> },
+            { key: 'size', header: 'Size', defaultWidth: 80, exportValue: (c) => (c.keySize ?? ''), render: (c) => <span className="text-xs text-ink-muted">{c.keySize}</span> },
+            { key: 'submitted', header: 'Submitted', defaultWidth: 160, sortable: true, sortValue: (c) => c.submittedAt ? new Date(c.submittedAt) : null, exportValue: (c) => formatDate(c.submittedAt), render: (c) => <span className="text-xs text-ink-muted">{formatDate(c.submittedAt)}</span> },
         ],
         sections: [
             { fields: [
@@ -230,17 +230,17 @@ const CertificateRequests: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between flex-wrap gap-2">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Certificate Requests</h1>
+                <h1 className="text-xl font-semibold text-ink">Certificate Requests</h1>
                 <div className="flex gap-2 items-center">
-                    <div className="flex rounded overflow-hidden border border-gray-400 dark:border-gray-600">
+                    <div className="flex rounded overflow-hidden border border-line-strong">
                         {STATUS_FILTERS.map((f) => (
                             <button key={f} onClick={() => setStatusFilter(f)}
-                                className={`px-3 py-1.5 text-xs font-medium transition-colors ${statusFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'}`}>
+                                className={`px-3 py-1.5 text-xs font-medium transition-colors ${statusFilter === f ? 'bg-accent text-on-accent' : 'bg-sunken text-ink hover:bg-hover'}`}>
                                 {f}
                             </button>
                         ))}
                     </div>
-                    <button onClick={loadRequests} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Refresh</button>
+                    <button onClick={loadRequests} className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">Refresh</button>
                 </div>
             </div>
 
@@ -263,15 +263,15 @@ const CertificateRequests: React.FC = () => {
 
             {/* Bulk approve / deny — one message for the whole batch */}
             {bulk && (
-                <div className="fixed inset-0 bg-black/30 dark:bg-black/70 flex items-center justify-center z-[60]" onClick={() => !bulkBusy && setBulk(null)}>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-2xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
-                        <div className="px-5 py-4 border-b border-gray-300 dark:border-gray-700">
-                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                <div className="fixed inset-0 bg-scrim flex items-center justify-center z-[60]" onClick={() => !bulkBusy && setBulk(null)}>
+                    <div className="bg-raised border border-line rounded-lg shadow-2xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="px-5 py-4 border-b border-line">
+                            <h3 className="text-sm font-semibold text-ink">
                                 {bulk.type === 'approve' ? 'Approve' : bulk.type === 'deny' ? 'Deny' : 'Issue'} {bulk.rows.length} {bulk.type === 'issue' ? 'certificate' : 'request'}{bulk.rows.length === 1 ? '' : 's'}
                             </h3>
                         </div>
                         <div className="px-5 py-4 space-y-3">
-                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                            <p className="text-xs text-ink-muted">
                                 {bulk.type === 'approve'
                                     ? 'This records your approval on each selected request. Requests needing more approvers stay pending.'
                                     : bulk.type === 'deny'
@@ -280,42 +280,42 @@ const CertificateRequests: React.FC = () => {
                             </p>
                             {bulk.type !== 'issue' && (
                                 <div>
-                                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">
+                                    <label className="block text-xs font-semibold text-ink-muted mb-1">
                                         {bulk.type === 'approve' ? 'Approval comment (optional)' : 'Rejection reason *'}
                                     </label>
                                     <textarea value={bulkMessage} onChange={(e) => setBulkMessage(e.target.value)} rows={3}
                                         placeholder={bulk.type === 'approve' ? 'Applied to every approval…' : 'Applied to every rejection…'}
-                                        className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500" />
+                                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint resize-none focus:outline-none focus:border-accent" />
                                 </div>
                             )}
                             {bulk.type === 'issue' && (
                                 <div className="space-y-1.5">
                                     <div className="flex items-center justify-between px-1">
-                                        <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">Valid until (optional)</label>
-                                        <span className="text-[10px] text-gray-500">blank = profile default</span>
+                                        <label className="text-xs font-semibold text-ink-muted">Valid until (optional)</label>
+                                        <span className="text-[10px] text-ink-muted">blank = profile default</span>
                                     </div>
-                                    <div className="max-h-60 overflow-y-auto border border-gray-300 dark:border-gray-700 rounded divide-y divide-gray-200 dark:divide-gray-700/60">
+                                    <div className="max-h-60 overflow-y-auto border border-line rounded divide-y divide-line">
                                         {bulk.rows.map((c) => {
                                             const cid = csrId(c);
                                             const max = csrProfileMaxDate(c);
                                             return (
                                                 <div key={cid} className="flex items-center gap-2 px-3 py-2">
-                                                    <span className="flex-1 min-w-0 truncate text-xs text-gray-800 dark:text-gray-200" title={c.subjectName || c.subject}>{c.subjectName || c.subject}</span>
+                                                    <span className="flex-1 min-w-0 truncate text-xs text-ink" title={c.subjectName || c.subject}>{c.subjectName || c.subject}</span>
                                                     <input type="date" value={issueValidity[cid] || ''} min={today} max={max}
                                                         onChange={(e) => setIssueValidity((prev) => ({ ...prev, [cid]: e.target.value }))}
-                                                        className="px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                                                        className="px-2 py-1 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent" />
                                                 </div>
                                             );
                                         })}
                                     </div>
-                                    <p className="text-[10px] text-gray-500 px-1">Capped at each certificate's profile maximum; the server also clamps to the issuing CA and rejects anything below the profile minimum.</p>
+                                    <p className="text-[10px] text-ink-muted px-1">Capped at each certificate's profile maximum; the server also clamps to the issuing CA and rejects anything below the profile minimum.</p>
                                 </div>
                             )}
                         </div>
-                        <div className="px-5 py-4 border-t border-gray-300 dark:border-gray-700 flex gap-2 justify-end">
-                            <button onClick={() => setBulk(null)} disabled={bulkBusy} className="px-4 py-2 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">Cancel</button>
+                        <div className="px-5 py-4 border-t border-line flex gap-2 justify-end">
+                            <button onClick={() => setBulk(null)} disabled={bulkBusy} className="px-4 py-2 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
                             <button onClick={runBulk} disabled={bulkBusy || (bulk.type === 'deny' && !bulkMessage.trim())}
-                                className={`px-4 py-2 text-xs text-white rounded transition-colors disabled:opacity-50 ${bulk.type === 'deny' ? 'bg-red-600 hover:bg-red-700' : bulk.type === 'issue' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}>
+                                className={`px-4 py-2 text-xs text-on-accent rounded transition-colors disabled:opacity-50 ${bulk.type === 'deny' ? 'bg-crit hover:bg-crit-hover' : bulk.type === 'issue' ? 'bg-accent hover:bg-accent-hover' : 'bg-ok hover:bg-ok-hover'}`}>
                                 {bulkBusy
                                     ? (bulk.type === 'approve' ? 'Approving…' : bulk.type === 'deny' ? 'Denying…' : 'Issuing…')
                                     : `${bulk.type === 'approve' ? 'Approve' : bulk.type === 'deny' ? 'Deny' : 'Issue'} ${bulk.rows.length}`}

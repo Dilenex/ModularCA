@@ -44,11 +44,11 @@ export const QuorumRow: React.FC<{
     return (
         <div className={`flex items-center gap-3 px-3 py-2 ${className || ''}`}>
             <div className="min-w-0 flex-1">
-                <div className="text-sm text-gray-900 dark:text-white truncate">{label}</div>
-                {sublabel && <div className="text-[10px] text-gray-500 truncate">{sublabel}</div>}
+                <div className="text-sm text-ink truncate">{label}</div>
+                {sublabel && <div className="text-[10px] text-ink-muted truncate">{sublabel}</div>}
             </div>
             {readOnly ? (
-                <span className="w-24 text-xs text-right text-gray-700 dark:text-gray-300 shrink-0">
+                <span className="w-24 text-xs text-right text-ink shrink-0">
                     {override != null ? override : (allowInherit ? 'inherit' : effective)}
                 </span>
             ) : (
@@ -56,9 +56,9 @@ export const QuorumRow: React.FC<{
                     placeholder={allowInherit ? `inherit (${effective})` : ''}
                     title={tooHigh ? `Can't exceed ${maxLabel} (${max})` : allowInherit ? 'Blank = inherit the parent value' : undefined}
                     onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
-                    className={`w-24 px-2 py-1 text-xs bg-gray-50 dark:bg-gray-900 border rounded text-gray-900 dark:text-white focus:outline-none ${flagged ? 'border-red-500' : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
+                    className={`w-24 px-2 py-1 text-xs bg-raised border rounded text-ink focus:outline-none ${flagged ? 'border-crit' : 'border-line-strong focus:border-accent'}`} />
             )}
-            <span className="text-[11px] text-gray-500 w-28 shrink-0">
+            <span className="text-[11px] text-ink-muted w-28 shrink-0">
                 effective {effective}{allowInherit && override == null ? ' · inherited' : ''}
             </span>
             {!readOnly && trailing}
@@ -129,21 +129,21 @@ export const SystemQuorumCard: React.FC = () => {
     };
     const saveButton = (disabled: boolean, onClick: () => void) => (
         <button onClick={onClick} disabled={disabled || saving}
-            className="px-2.5 py-1 text-[11px] bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
+            className="px-2.5 py-1 text-[11px] bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
             {saving ? '…' : 'Save'}
         </button>
     );
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Controlled-User Approval Quorum</h3>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-line">
+                <h3 className="text-sm font-semibold text-ink">Controlled-User Approval Quorum</h3>
+                <p className="text-xs text-ink-muted mt-1">
                     Approvals required to promote/demote/delete a privileged user. The <strong>System</strong> quorum and the <strong>Instance</strong> quorum (for the instance's own CAs, which belong to no space) are set here; <strong>space</strong> and per-<strong>CA</strong> quorums (which inherit from System and may require fewer, never more) are set on each space's page. Separate from the space <em>key</em>-ceremony quorum.
                 </p>
             </div>
 
-            {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading…</div>}
+            {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading…</div>}
             {error && <InlineNotice notice={error} />}
             {!loading && !error && system && (<>
                 <QuorumRow
@@ -153,26 +153,26 @@ export const SystemQuorumCard: React.FC = () => {
                     readOnly={!isSuper} invalid={!!systemProblem}
                     trailing={
                         <button onClick={save} disabled={!changed || !!systemProblem || saving}
-                            className="px-2.5 py-1 text-[11px] bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
+                            className="px-2.5 py-1 text-[11px] bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
                             {saving ? '…' : 'Save'}
                         </button>
                     } />
                 {isSuper && systemProblem && <FieldHint tone="warn" className="px-3">{systemProblem}</FieldHint>}
                 <FieldHint className="px-3 pb-3">{INITIATOR_EXCLUDED}</FieldHint>
                 {!isSuper && (
-                    <p className="px-3 pb-3 -mt-1 text-[11px] text-gray-500">
+                    <p className="px-3 pb-3 -mt-1 text-[11px] text-ink-muted">
                         Only a system super-administrator can change the System quorum. Space and per-CA quorums are set on each space's page (and start a ceremony for non-super admins).
                     </p>
                 )}
                 {instance && (() => {
                     const instanceProblem = quorumProblem(instanceVal, { allowInherit: true });
                     return (
-                        <div className="border-t border-gray-300 dark:border-gray-700">
+                        <div className="border-t border-line">
                             <QuorumRow
                                 label="Instance" sublabel="Instance CA administrators / operators · ceiling for instance CAs"
                                 value={instanceVal} onChange={setInstanceVal}
                                 override={instance.override} effective={instance.effective} allowInherit invalid={!!instanceProblem}
-                                className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30"
+                                className="border-b border-line bg-sunken"
                                 trailing={saveButton(num(instanceVal) === instance.override || !!instanceProblem,
                                     () => saveScoped('/api/v1/admin/user-quorum/instance', num(instanceVal)))} />
                             {instanceProblem && <FieldHint tone="warn" className="px-3 pb-2">{instanceProblem}</FieldHint>}
@@ -185,7 +185,7 @@ export const SystemQuorumCard: React.FC = () => {
                                             value={caVals[ca.id] ?? ''} onChange={(v) => setCaVals((m) => ({ ...m, [ca.id]: v }))}
                                             override={ca.override} effective={ca.effective} allowInherit max={instance.effective}
                                             maxLabel="the instance's quorum" invalid={!!caProblem}
-                                            className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8"
+                                            className="border-b border-line last:border-b-0 bg-sunken pl-8"
                                             trailing={saveButton(num(caVals[ca.id] ?? '') === ca.override || !!caProblem,
                                                 () => saveScoped(`/api/v1/admin/user-quorum/ca/${ca.id}`, num(caVals[ca.id] ?? ''), ca.id))} />
                                         {caProblem && <FieldHint tone="warn" className="pl-8 pr-3 pb-2">{caProblem}</FieldHint>}
@@ -213,11 +213,11 @@ export const SpaceUserQuorumSection: React.FC<{
     caValues: Record<string, string>;
     onCaChange: (caId: string, next: string) => void;
 }> = ({ quorum, readOnly, spaceValue, onSpaceChange, caValues, onCaChange }) => {
-    if (!quorum) return <div className="py-3 text-xs text-gray-500 text-center border border-gray-300 dark:border-gray-700 rounded-lg">No quorum data for this space.</div>;
+    if (!quorum) return <div className="py-3 text-xs text-ink-muted text-center border border-line rounded-lg">No quorum data for this space.</div>;
 
     return (
-        <div className="border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-300 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40 text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
+        <div className="border border-line rounded-lg overflow-hidden">
+            <div className="flex items-center gap-3 px-3 py-2 border-b border-line bg-sunken text-[10px] text-ink-muted font-semibold uppercase tracking-wide">
                 <span className="flex-1">Scope</span>
                 <span className="w-24 text-right shrink-0">Required</span>
                 <span className="w-28 shrink-0">Effective</span>
@@ -226,17 +226,17 @@ export const SpaceUserQuorumSection: React.FC<{
                 label={quorum.name} sublabel="Space administrators / operators"
                 value={spaceValue} onChange={onSpaceChange}
                 override={quorum.override} effective={quorum.effective} allowInherit readOnly={readOnly}
-                className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30" />
+                className="border-b border-line bg-sunken" />
             {quorum.cas.length === 0 ? (
-                <div className="pl-8 pr-3 py-2 text-[11px] text-gray-500">No CAs in this space.</div>
+                <div className="pl-8 pr-3 py-2 text-[11px] text-ink-muted">No CAs in this space.</div>
             ) : quorum.cas.map((ca) => (
                 <QuorumRow key={ca.id}
                     label={ca.label || ca.name} sublabel="CA administrators / operators"
                     value={caValues[ca.id] ?? ''} onChange={(s) => onCaChange(ca.id, s)}
                     override={ca.override} effective={ca.effective} allowInherit max={quorum.effective} readOnly={readOnly}
-                    className="border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 bg-gray-50/40 dark:bg-gray-900/20 pl-8" />
+                    className="border-b border-line last:border-b-0 bg-sunken pl-8" />
             ))}
-            <div className="px-3 py-2 text-[11px] text-gray-500 border-t border-gray-200 dark:border-gray-700/60">
+            <div className="px-3 py-2 text-[11px] text-ink-muted border-t border-line">
                 {!readOnly && <>Blank = inherit the parent value. A CA can require fewer approvals than its space, never more. </>}
                 {INITIATOR_EXCLUDED}
             </div>

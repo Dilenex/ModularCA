@@ -35,7 +35,7 @@ export {
     type RequestProfileRules, type SanRulesModel, type SanTypeRule, type SubjectDnFieldRule,
 };
 
-const cellInput = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs';
+const cellInput = 'bg-raised border border-line rounded px-1 py-1 text-ink text-xs';
 
 interface Props {
     value: RequestProfileRules;
@@ -117,14 +117,14 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                 <div className="flex items-center justify-between mb-2">
                     <label className={labelClass}>Subject DN Rules</label>
                     <button type="button" onClick={addDnRule}
-                        className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        className="px-2 py-1 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">
                         + Add Rule
                     </button>
                 </div>
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded overflow-x-auto">
+                <div className="bg-ground border border-line rounded overflow-x-auto">
                     <table className="w-full min-w-[600px] text-xs">
                         <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
+                            <tr className="border-b border-line text-ink-muted">
                                 <th className="px-2 py-2 text-left">Field</th>
                                 <th className="px-2 py-2 text-left">Requirement</th>
                                 <th className="px-2 py-2 text-left">Fixed Value</th>
@@ -136,7 +136,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         </thead>
                         <tbody>
                             {value.subjectDnRules.map((rule, idx) => (
-                                <tr key={idx} className="border-b border-gray-200 dark:border-gray-800">
+                                <tr key={idx} className="border-b border-line">
                                     <td className="px-2 py-1">
                                         <select value={rule.field} onChange={(e) => updateDnRule(idx, { field: e.target.value })} className={`${cellInput} w-16`}>
                                             {DN_FIELD_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
@@ -171,7 +171,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                                     </td>
                                     <td className="px-2 py-1">
                                         <button type="button" onClick={() => removeDnRule(idx)} aria-label={`Remove ${rule.field} rule`}
-                                            className="text-red-800 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 text-xs px-1">
+                                            className="text-crit hover:text-crit text-xs px-1">
                                             X
                                         </button>
                                     </td>
@@ -185,17 +185,17 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
             {/* SAN rules */}
             <div>
                 <label className={labelClass}>SAN Rules</label>
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-3">
+                <div className="bg-ground border border-line rounded p-3 space-y-3">
                     <div>
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Types</span>
+                        <span className="text-xs text-ink-muted">Allowed Types</span>
                         <div className="flex flex-wrap gap-2 mt-1">
                             {SAN_TYPE_OPTIONS.map((type) => {
                                 const active = value.sanRules.allowedTypes.includes(type);
                                 return (
                                     <button key={type} type="button" onClick={() => toggleSanType(type)} aria-pressed={active}
                                         className={`px-2 py-1 text-xs rounded border transition-colors ${active
-                                            ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700'
-                                            : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
+                                            ? 'bg-accent-soft text-accent-ink border-accent/40'
+                                            : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>
                                         {type}
                                     </button>
                                 );
@@ -203,7 +203,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         </div>
                     </div>
 
-                    <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <label className="flex items-center gap-2 text-xs text-ink">
                         <input type="checkbox" checked={value.sanRules.required}
                             onChange={(e) => onChange({ ...value, sanRules: { ...value.sanRules, required: e.target.checked } })}
                             className="w-4 h-4 rounded" />
@@ -214,11 +214,11 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         profile forbids is never consulted, and showing it invites the belief that it is. */}
                     {value.sanRules.allowedTypes.length > 0 && (
                         <div>
-                            <span className="text-xs text-gray-600 dark:text-gray-400">Per-Type Constraints</span>
+                            <span className="text-xs text-ink-muted">Per-Type Constraints</span>
                             <div className="overflow-x-auto mt-1">
                                 <table className="w-full min-w-[420px] text-xs">
                                     <thead>
-                                        <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
+                                        <tr className="border-b border-line text-ink-muted">
                                             <th className="px-2 py-1.5 text-left">Type</th>
                                             <th className="px-2 py-1.5 text-left">Regex</th>
                                             <th className="px-2 py-1.5 text-left">Max Count</th>
@@ -228,8 +228,8 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                                         {value.sanRules.allowedTypes.map((type) => {
                                             const rule = value.sanRules.rules[type];
                                             return (
-                                                <tr key={type} className="border-b border-gray-200 dark:border-gray-800">
-                                                    <td className="px-2 py-1 text-gray-800 dark:text-gray-200">{type}</td>
+                                                <tr key={type} className="border-b border-line">
+                                                    <td className="px-2 py-1 text-ink">{type}</td>
                                                     <td className="px-2 py-1">
                                                         <input type="text" value={rule?.regex || ''} onChange={(e) => updateSanRule(type, { regex: e.target.value })}
                                                             className={`${cellInput} w-48`} placeholder="Any value"
@@ -258,19 +258,19 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
             {/* JSON escape hatch */}
             <div>
                 <button type="button" onClick={() => setJsonOpen(!jsonOpen)} aria-expanded={jsonOpen}
-                    className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors">
+                    className="text-xs text-ink-muted hover:text-ink transition-colors">
                     {jsonOpen ? '▾' : '▸'} Advanced (JSON)
                 </button>
                 {jsonOpen && (
                     <div className="mt-2 space-y-1">
                         <textarea rows={12} value={jsonDraft} onChange={(e) => applyJson(e.target.value)} spellCheck={false}
                             aria-label="Request profile rules as JSON"
-                            className={`w-full font-mono text-xs px-3 py-2 rounded bg-gray-50 dark:bg-gray-900 border text-gray-900 dark:text-white focus:outline-none ${jsonError
-                                ? 'border-red-400 dark:border-red-700 focus:border-red-500'
-                                : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
+                            className={`w-full data-mono px-3 py-2 rounded bg-raised border text-ink focus:outline-none ${jsonError
+                                ? 'border-crit focus:border-crit'
+                                : 'border-line-strong focus:border-accent'}`} />
                         {jsonError
-                            ? <p className="text-xs text-red-700 dark:text-red-400">{jsonError}</p>
-                            : <p className="text-xs text-gray-500 dark:text-gray-500">Edits here update the fields above as you type.</p>}
+                            ? <p className="text-xs text-crit">{jsonError}</p>
+                            : <p className="text-xs text-ink-muted">Edits here update the fields above as you type.</p>}
                     </div>
                 )}
             </div>

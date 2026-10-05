@@ -48,12 +48,12 @@ const CaCertificates: React.FC = () => {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">CA Certificates</h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Download root and intermediate CA certificates to establish trust with this CA.</p>
+                <h1 className="text-xl font-semibold text-ink">CA Certificates</h1>
+                <p className="text-sm text-ink-muted mt-1">Download root and intermediate CA certificates to establish trust with this CA.</p>
             </div>
 
-            {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>}
-            {error && <p className="text-sm text-red-800 dark:text-red-400">{error}</p>}
+            {loading && <p className="text-sm text-ink-muted">Loading...</p>}
+            {error && <p className="text-sm text-crit">{error}</p>}
 
             <div className="space-y-3">
                 {cas.map((ca) => {
@@ -61,27 +61,27 @@ const CaCertificates: React.FC = () => {
                     const friendlyName = ca.label || ca.name || extractCn(ca.subjectDN) || id;
                     const isExpanded = expanded === id;
                     return (
-                        <div key={id} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+                        <div key={id} className="bg-raised border border-line rounded-lg overflow-hidden">
                             <button
                                 onClick={() => setExpanded(isExpanded ? null : id)}
-                                className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-gray-200/50 dark:bg-gray-700/50 dark:hover:bg-gray-700 transition-colors"
+                                className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-hover bg-sunken transition-colors"
                             >
                                 <div>
-                                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{ca.subjectDN || ca.name}</h3>
-                                    <p className="text-xs text-gray-600 mt-1">
+                                    <h3 className="text-sm font-semibold text-ink">{ca.subjectDN || ca.name}</h3>
+                                    <p className="text-xs text-ink-muted mt-1">
                                         Serial: <span className="font-mono">{id}</span>
                                         {ca.notAfter && <> &middot; Valid until {formatDate(ca.notAfter)}</>}
                                     </p>
                                 </div>
-                                <Chevron open={isExpanded} className="w-2.5 h-2.5 text-gray-600" />
+                                <Chevron open={isExpanded} className="w-2.5 h-2.5 text-ink-muted" />
                             </button>
                             {isExpanded && (
-                                <div className="px-5 pb-4 border-t border-gray-300 dark:border-gray-700 pt-3 space-y-3">
+                                <div className="px-5 pb-4 border-t border-line pt-3 space-y-3">
                                     <div className="grid grid-cols-2 gap-2 text-xs">
-                                        <div><span className="text-gray-600">Issuer:</span> <span className="text-gray-700 dark:text-gray-300">{ca.issuerDN || ca.issuer || '-'}</span></div>
-                                        <div><span className="text-gray-600">Not Before:</span> <span className="text-gray-700 dark:text-gray-300">{formatDate(ca.notBefore)}</span></div>
-                                        <div><span className="text-gray-600">Not After:</span> <span className="text-gray-700 dark:text-gray-300">{formatDate(ca.notAfter)}</span></div>
-                                        <div><span className="text-gray-600">Algorithm:</span> <span className="text-gray-700 dark:text-gray-300">{[ca.keyAlgorithm, ca.keySize].filter(Boolean).join(' ') || ca.signatureAlgorithm || '-'}</span></div>
+                                        <div><span className="text-ink-muted">Issuer:</span> <span className="text-ink">{ca.issuerDN || ca.issuer || '-'}</span></div>
+                                        <div><span className="text-ink-muted">Not Before:</span> <span className="text-ink">{formatDate(ca.notBefore)}</span></div>
+                                        <div><span className="text-ink-muted">Not After:</span> <span className="text-ink">{formatDate(ca.notAfter)}</span></div>
+                                        <div><span className="text-ink-muted">Algorithm:</span> <span className="text-ink">{[ca.keyAlgorithm, ca.keySize].filter(Boolean).join(' ') || ca.signatureAlgorithm || '-'}</span></div>
                                     </div>
                                     <div className="flex gap-2">
                                         <button
@@ -96,7 +96,7 @@ const CaCertificates: React.FC = () => {
                                                     a.click();
                                                 } catch { showToast('error', 'Download failed'); }
                                             }}
-                                            className="px-3 py-1.5 text-xs bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors"
+                                            className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                                         >
                                             Download PEM
                                         </button>
@@ -112,7 +112,7 @@ const CaCertificates: React.FC = () => {
                                                     a.click();
                                                 } catch { showToast('error', 'Download failed'); }
                                             }}
-                                            className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                            className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors"
                                         >
                                             Download DER
                                         </button>
@@ -125,7 +125,7 @@ const CaCertificates: React.FC = () => {
             </div>
 
             {!loading && !error && cas.length === 0 && (
-                <p className="text-sm text-gray-600 text-center py-8">No CA certificates available.</p>
+                <p className="text-sm text-ink-muted text-center py-8">No CA certificates available.</p>
             )}
         </div>
     );

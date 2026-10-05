@@ -50,7 +50,7 @@ const CaDrawer: React.FC<{ ca: any }> = ({ ca }) => {
             <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
             {cert && <DetailField label="Serial" value={cert.serialNumber} mono />}
             {cert && <DetailField label="Not After" value={formatDate(cert.notAfter)} />}
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page for certificate, protocol and service details.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page for certificate, protocol and service details.</p>
         </div>
     );
 };
@@ -332,18 +332,18 @@ const CaManagement: React.FC = () => {
 
     const caColumns: DataTableColumn<any>[] = [
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <StatusBadge status={b.status} label={b.label} />; } },
-        { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (ca) => ca.name || ca.subjectDN, render: (ca) => <span className="text-gray-900 dark:text-white truncate">{ca.name || ca.subjectDN}</span> },
-        { key: 'space', header: 'Space', defaultWidth: 140, exportValue: (ca) => ca.spaceName || '', render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{ca.spaceName || '-'}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (ca) => ca.name || ca.subjectDN, render: (ca) => <span className="text-ink truncate">{ca.name || ca.subjectDN}</span> },
+        { key: 'space', header: 'Space', defaultWidth: 140, exportValue: (ca) => ca.spaceName || '', render: (ca) => <span className="text-xs text-ink-muted truncate">{ca.spaceName || '-'}</span> },
         // Wire name is `isEnabled` (AdminCaController projects ca.IsEnabled). Reading `ca.enabled`
         // meant `undefined !== false` — every CA, including disabled ones, rendered as Enabled.
         { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (ca) => (ca.isEnabled ? 'Enabled' : 'Disabled'), render: (ca) => <StatusBadge status={ca.isEnabled ? 'enabled' : 'disabled'} label={ca.isEnabled ? 'Enabled' : 'Disabled'} /> },
-        { key: 'children', header: 'Children', defaultWidth: 90, exportValue: (ca) => (ca.children?.length || 0), render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400">{ca.children?.length || 0}</span> },
-        { key: 'expires', header: 'Expires', defaultWidth: 160, exportValue: (ca) => formatDate(ca.certificate?.notAfter || ca.notAfter), render: (ca) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(ca.certificate?.notAfter || ca.notAfter)}</span> },
+        { key: 'children', header: 'Children', defaultWidth: 90, exportValue: (ca) => (ca.children?.length || 0), render: (ca) => <span className="text-xs text-ink-muted">{ca.children?.length || 0}</span> },
+        { key: 'expires', header: 'Expires', defaultWidth: 160, exportValue: (ca) => formatDate(ca.certificate?.notAfter || ca.notAfter), render: (ca) => <span className="text-xs text-ink-muted">{formatDate(ca.certificate?.notAfter || ca.notAfter)}</span> },
     ];
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">CA Management</h1>
+            <h1 className="text-xl font-semibold text-ink">CA Management</h1>
 
             {/* Section 1: CA List */}
             <DataTable<any>
@@ -367,16 +367,16 @@ const CaManagement: React.FC = () => {
 
             {/* Section 2: Create Intermediate CA */}
             {canCreateCa && (
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
                 <button
                     onClick={() => setCreateExpanded(!createExpanded)}
-                    className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-gray-200/50 dark:bg-gray-700/50 transition-colors"
+                    className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors"
                 >
-                    <span className="text-gray-600 text-xs"><Chevron open={createExpanded} className="w-3 h-3" /></span>
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Create Certificate Authority</h3>
+                    <span className="text-ink-muted text-xs"><Chevron open={createExpanded} className="w-3 h-3" /></span>
+                    <h3 className="text-sm font-semibold text-ink">Create Certificate Authority</h3>
                 </button>
                 {createExpanded && (
-                    <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                    <div className="p-4 border-t border-line space-y-4">
                         {spacesError && <InlineNotice notice={spacesError} />}
                         {/* Space Selector */}
                         <div>
@@ -395,14 +395,14 @@ const CaManagement: React.FC = () => {
                             {isSystemAdmin && (
                             <button
                                 onClick={() => { setFormCaType('root'); setFormValidityYears('25'); }}
-                                className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'root' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                                className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'root' ? 'bg-accent text-on-accent' : 'bg-sunken text-ink-muted hover:bg-hover'}`}
                             >
                                 Root CA
                             </button>
                             )}
                             <button
                                 onClick={() => { setFormCaType('intermediate'); setFormValidityYears('10'); }}
-                                className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'intermediate' ? 'bg-blue-600 text-gray-900 dark:text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                                className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${formCaType === 'intermediate' ? 'bg-accent text-on-accent' : 'bg-sunken text-ink-muted hover:bg-hover'}`}
                             >
                                 Intermediate CA
                             </button>
@@ -472,7 +472,7 @@ const CaManagement: React.FC = () => {
                                     )}
                                 </select>
                                 {formKeyAlg === 'RSA' && (formKeySize === '7680' || formKeySize === '8192') && (
-                                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                    <p className="text-xs text-warn mt-1">
                                         ⚠ High-compute RSA — key generation may take 30+ seconds.
                                     </p>
                                 )}
@@ -521,9 +521,9 @@ const CaManagement: React.FC = () => {
                         </div>
 
                         {/* Public Base URL — CDP/OCSP/AIA endpoints are auto-generated from this */}
-                        <div className="border-t border-gray-300 dark:border-gray-700 pt-4 mt-2">
-                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Public Base URL</span>
-                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                        <div className="border-t border-line pt-4 mt-2">
+                            <span className="text-xs font-semibold text-ink-muted">Public Base URL</span>
+                            <p className="mt-1 text-xs text-ink-muted">
                                 The public host clients will use to fetch CRLs, OCSP responses, and the CA certificate (e.g.
                                 <code className="mono"> http://path2.ca.example.com</code>). The program auto-appends the
                                 standard short-URL paths at cert-build time to produce the CDP
@@ -541,9 +541,9 @@ const CaManagement: React.FC = () => {
                         {/* Name Constraints — baked into the CA cert's NameConstraints extension and copied
                             onto the per-CA signing profile. Each entry must be an RFC 5280 §4.2.1.10 general-name
                             subtree; wildcards and regexes are NOT supported. */}
-                        <div className="border-t border-gray-300 dark:border-gray-700 pt-4 mt-2">
-                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Name Constraints</span>
-                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                        <div className="border-t border-line pt-4 mt-2">
+                            <span className="text-xs font-semibold text-ink-muted">Name Constraints</span>
+                            <p className="mt-1 text-xs text-ink-muted">
                                 Restricts what subject names the new CA (and its children) may issue. Each entry is one of:
                                 <code className="font-mono"> DNS:.example.com</code>,
                                 <code className="font-mono"> IP:10.0.0.0/8</code>,
@@ -563,7 +563,7 @@ const CaManagement: React.FC = () => {
                                         onBlur={commitNameConstraintsPermitted}
                                         rows={5}
                                         placeholder={'DNS:.example.com\nIP:10.0.0.0/8\nEmail:@example.com'}
-                                        className={`${inputClass} font-mono text-xs resize-y`}
+                                        className={`${inputClass} data-mono resize-y`}
                                     />
                                 </div>
                                 <div>
@@ -575,7 +575,7 @@ const CaManagement: React.FC = () => {
                                         onBlur={commitNameConstraintsExcluded}
                                         rows={5}
                                         placeholder={'DNS:.test.example.com\nURI:https://legacy.example.com'}
-                                        className={`${inputClass} font-mono text-xs resize-y`}
+                                        className={`${inputClass} data-mono resize-y`}
                                     />
                                 </div>
                             </div>
@@ -585,7 +585,7 @@ const CaManagement: React.FC = () => {
                             <button
                                 onClick={handleCreateCa}
                                 disabled={createLoading || !formCN.trim() || !formSpace}
-                                className="px-6 py-2 text-sm font-semibold bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                className="px-6 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {createCaButtonLabel(formCaType, targetCeremony, createLoading)}
                             </button>
@@ -593,13 +593,13 @@ const CaManagement: React.FC = () => {
                         </div>
 
                         {createError && (
-                            <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
+                            <div className="bg-crit-soft border border-crit/40 rounded p-3">
                                 <InlineNotice notice={createError} variant="line" />
                             </div>
                         )}
                         {createSuccess && (
-                            <div className="bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded p-3">
-                                <p className="text-sm text-green-800 dark:text-green-300">{createSuccess}</p>
+                            <div className="bg-ok-soft border border-ok/40 rounded p-3">
+                                <p className="text-sm text-ok">{createSuccess}</p>
                             </div>
                         )}
                     </div>

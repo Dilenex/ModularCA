@@ -21,17 +21,17 @@ import { inputClass, labelClass } from '@shared/components/forms';
 type State = MsaeReadinessStep['state'];
 
 const STATE_STYLE: Record<string, { pill: string; label: string; ring: string }> = {
-    Pass: { pill: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300', label: 'OK', ring: 'border-green-300 dark:border-green-800' },
-    Warn: { pill: 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200', label: 'Check', ring: 'border-amber-300 dark:border-amber-800' },
-    Fail: { pill: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300', label: 'Missing', ring: 'border-red-300 dark:border-red-800' },
-    Skip: { pill: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400', label: 'Not yet', ring: 'border-gray-200 dark:border-gray-700' },
+    Pass: { pill: 'bg-ok-soft text-ok', label: 'OK', ring: 'border-ok/40' },
+    Warn: { pill: 'bg-warn-soft text-warn', label: 'Check', ring: 'border-warn/40' },
+    Fail: { pill: 'bg-crit-soft text-crit', label: 'Missing', ring: 'border-crit/40' },
+    Skip: { pill: 'bg-raised text-ink-muted', label: 'Not yet', ring: 'border-line' },
 };
 
 const Copy: React.FC<{ value: string; label: string }> = ({ value, label }) => {
     const [done, setDone] = useState(false);
     return (
         <button type="button" aria-label={`Copy ${label}`} onClick={async () => { if (await copyText(value)) { setDone(true); window.setTimeout(() => setDone(false), 1500); } }}
-            className="px-1.5 py-0.5 text-[11px] rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+            className="px-1.5 py-0.5 text-[11px] rounded border border-line-strong text-ink hover:bg-hover">
             {done ? 'Copied' : 'Copy'}
         </button>
     );
@@ -49,17 +49,17 @@ const flattenCas = (cas: any[]): any[] => {
 const StepCard: React.FC<{ step: MsaeReadinessStep; index: number }> = ({ step, index }) => {
     const style = STATE_STYLE[step.state as string] ?? STATE_STYLE.Skip;
     return (
-        <li className={`rounded-lg border ${style.ring} bg-white dark:bg-gray-800 p-4`}>
+        <li className={`rounded-lg border ${style.ring} bg-raised p-4`}>
             <div className="flex items-start gap-3">
-                <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-gray-200 dark:bg-gray-700 text-xs font-semibold flex items-center justify-center text-gray-700 dark:text-gray-200 tabular-nums">{index + 1}</span>
+                <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-sunken text-xs font-semibold flex items-center justify-center text-ink tabular-nums">{index + 1}</span>
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{step.title}</h3>
+                        <h3 className="text-sm font-semibold text-ink">{step.title}</h3>
                         <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${style.pill}`}>{style.label}</span>
                     </div>
-                    <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{step.detail}</p>
+                    <p className="mt-1 text-sm text-ink">{step.detail}</p>
                     {step.items.length > 0 && (
-                        <ul className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-400">
+                        <ul className="mt-2 space-y-1 text-xs text-ink-muted">
                             {step.items.map((item, i) => {
                                 const [head, ...rest] = item.includes(': ') ? item.split(': ') : [item];
                                 const value = rest.join(': ');
@@ -67,7 +67,7 @@ const StepCard: React.FC<{ step: MsaeReadinessStep; index: number }> = ({ step, 
                                 return (
                                     <li key={i} className="flex items-start gap-2">
                                         <span className="break-words">
-                                            {rest.length > 0 ? <><span className="font-medium text-gray-700 dark:text-gray-300">{head}:</span> <span className={copyable ? 'font-mono' : ''}>{value}</span></> : item}
+                                            {rest.length > 0 ? <><span className="font-medium text-ink">{head}:</span> <span className={copyable ? 'font-mono' : ''}>{value}</span></> : item}
                                         </span>
                                         {copyable && <Copy value={value} label={head} />}
                                     </li>
@@ -77,7 +77,7 @@ const StepCard: React.FC<{ step: MsaeReadinessStep; index: number }> = ({ step, 
                     )}
                 </div>
                 {step.fix && (
-                    <Link to={step.fix.path} className="shrink-0 px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700">{step.fix.label}</Link>
+                    <Link to={step.fix.path} className="shrink-0 px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover">{step.fix.label}</Link>
                 )}
             </div>
         </li>
@@ -147,8 +147,8 @@ const MsaeSetup: React.FC = () => {
     return (
         <div className="p-6 max-w-4xl space-y-5">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Windows Autoenrollment</h1>
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                <h1 className="text-xl font-semibold text-ink">Windows Autoenrollment</h1>
+                <p className="mt-1 text-sm text-ink-muted">
                     Everything a domain-joined Windows machine needs before it can enroll from this CA on its own, in the order it has to be done. Each step links to the page that sets it.
                 </p>
             </div>
@@ -163,23 +163,23 @@ const MsaeSetup: React.FC = () => {
                     </select>
                 </div>
                 <button type="button" onClick={check} disabled={checking || !selectedId}
-                    className="px-3 py-2 text-sm font-semibold rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50">
+                    className="px-3 py-2 text-sm font-semibold rounded bg-sunken text-ink hover:bg-hover disabled:opacity-50">
                     {checking ? 'Checking…' : 'Check again'}
                 </button>
-                {readiness && <span className="text-xs text-gray-500 dark:text-gray-400 pb-2">Checked {new Date(readiness.evaluatedAt).toLocaleTimeString()}</span>}
+                {readiness && <span className="text-xs text-ink-muted pb-2">Checked {new Date(readiness.evaluatedAt).toLocaleTimeString()}</span>}
             </div>
 
             <InlineNotice notice={checkError} />
 
             {readiness && (
                 <>
-                    <div className={`rounded-lg border px-4 py-3 ${readiness.ready ? 'border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-900/20' : 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'}`}>
-                        <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                    <div className={`rounded-lg border px-4 py-3 ${readiness.ready ? 'border-ok/40 bg-ok-soft' : 'border-warn/40 bg-warn-soft'}`}>
+                        <p className="text-sm font-semibold text-ink">
                             {readiness.ready
                                 ? `${readiness.caLabel} is ready for Windows autoenrollment${warning > 0 ? `, with ${warning} thing${warning === 1 ? '' : 's'} worth checking` : ''}.`
                                 : `${readiness.caLabel} is not ready: ${failing} step${failing === 1 ? '' : 's'} still missing.`}
                         </p>
-                        <div className="mt-2 grid gap-1 text-xs text-gray-700 dark:text-gray-300 sm:grid-cols-[auto_1fr_auto] items-center">
+                        <div className="mt-2 grid gap-1 text-xs text-ink sm:grid-cols-[auto_1fr_auto] items-center">
                             <span className="font-medium">Policy server URL</span>
                             <code className="font-mono break-all">{readiness.cepUrl}</code>
                             <Copy value={readiness.cepUrl} label="policy server URL" />
@@ -194,17 +194,17 @@ const MsaeSetup: React.FC = () => {
                     </ol>
 
                     {readiness.realms.length > 0 && (
-                        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-                            <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Setup kit for the customer's domain administrator</h2>
-                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                        <div className="rounded-lg border border-line bg-raised p-4">
+                            <h2 className="text-sm font-semibold text-ink">Setup kit for the customer's domain administrator</h2>
+                            <p className="mt-1 text-xs text-ink-muted">
                                 A zip with the service-account script, the Group Policy push for this policy server, the root CA certificate, a client self-check and a readme. It contains no secret: a generated account password was shown once at import and is not stored.
                             </p>
                             <ul className="mt-3 space-y-2">
                                 {readiness.realms.map((r) => (
                                     <li key={r.id} className="flex items-center justify-between gap-3 flex-wrap text-sm">
-                                        <span><span className="font-mono">{r.realm}</span> <span className="text-xs text-gray-500 dark:text-gray-400">({r.dnsDomain}, {r.servicePrincipal})</span></span>
+                                        <span><span className="font-mono">{r.realm}</span> <span className="text-xs text-ink-muted">({r.dnsDomain}, {r.servicePrincipal})</span></span>
                                         <button type="button" disabled={kitBusy !== null} onClick={() => downloadKit(r.id, r.realm)}
-                                            className="px-3 py-1.5 text-xs font-semibold rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50">
+                                            className="px-3 py-1.5 text-xs font-semibold rounded bg-sunken text-ink hover:bg-hover disabled:opacity-50">
                                             {kitBusy === r.id ? 'Building…' : 'Download setup kit'}
                                         </button>
                                     </li>
@@ -213,8 +213,8 @@ const MsaeSetup: React.FC = () => {
                         </div>
                     )}
 
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Once every step is green, run a policy refresh on a domain member and watch the MSAE tab under <Link to={`/audit?tab=MSAE&ca=${encodeURIComponent(readiness.caLabel)}`} className="text-blue-600 dark:text-blue-400 hover:underline">Audit Logs</Link>: an accepted ticket appears as an Enroll row, a refused one names its reason.
+                    <p className="text-xs text-ink-muted">
+                        Once every step is green, run a policy refresh on a domain member and watch the MSAE tab under <Link to={`/audit?tab=MSAE&ca=${encodeURIComponent(readiness.caLabel)}`} className="text-accent-ink hover:underline">Audit Logs</Link>: an accepted ticket appears as an Enroll row, a refused one names its reason.
                     </p>
                 </>
             )}

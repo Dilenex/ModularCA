@@ -55,8 +55,8 @@ const ExtensionToggle: React.FC<{
                     aria-pressed={active}
                     onClick={() => onChange(active ? selected.filter((v) => v !== opt) : [...selected, opt])}
                     className={`px-2 py-1 text-xs rounded border transition-colors ${conflict
-                        ? 'bg-amber-50 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border-amber-400 dark:border-amber-600'
-                        : active ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
+                        ? 'bg-warn-soft text-warn border-warn'
+                        : active ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>
                     {opt}
                 </button>
             );
@@ -157,12 +157,12 @@ const SshCertProfileDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">SSH cert profile not found.</p>
-            <button onClick={() => navigate(SSH_CERT_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Cert Profiles</button>
+            <p className="text-sm text-ink-muted">SSH cert profile not found.</p>
+            <button onClick={() => navigate(SSH_CERT_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Cert Profiles</button>
         </div>
     );
 
@@ -178,7 +178,7 @@ const SshCertProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name || requiredNotAllowed.length > 0}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit SSH Cert Profile">
@@ -212,9 +212,9 @@ const SshCertProfileDetail: React.FC = () => {
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Principal Patterns</span><CeilingList items={p.allowedPrincipalPatterns} noun="principal" /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Principal Patterns</span><CeilingList items={p.allowedPrincipalPatterns} noun="principal" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
                     {p.createdAt && <DetailField label="Created" value={new Date(p.createdAt).toLocaleString()} />}
                 </DetailSection>
 
@@ -223,7 +223,7 @@ const SshCertProfileDetail: React.FC = () => {
                     title="Delete SSH Cert Profile"
                     message={`Delete SSH cert profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

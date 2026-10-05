@@ -91,17 +91,17 @@ const SshCertDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Certificates</button>
+            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
         </div>
     );
     if (!cert) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">SSH certificate not found.</p>
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Certificates</button>
+            <p className="text-sm text-ink-muted">SSH certificate not found.</p>
+            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
         </div>
     );
 
@@ -120,10 +120,10 @@ const SshCertDetail: React.FC = () => {
             backTo="/ssh"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={handleDownload} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Download Certificate</button>
+                    <button onClick={handleDownload} className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">Download Certificate</button>
                     {!isRevoked && (
                         <button onClick={() => setConfirmOpen(true)} disabled={revoking}
-                            className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">
+                            className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">
                             {revoking ? 'Revoking…' : 'Revoke'}
                         </button>
                     )}
@@ -153,7 +153,7 @@ const SshCertDetail: React.FC = () => {
                     title="Revoke SSH Certificate"
                     message="Revoke this SSH certificate? This action cannot be undone."
                     confirmLabel="Revoke"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={revoking}
                     onConfirm={doRevoke}
                     onCancel={() => setConfirmOpen(false)}

@@ -129,6 +129,12 @@ for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NO
                 wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done
+# The interfaces bundle the vendored Plex fonts; SIL OFL 1.1 requires its text to travel with them.
+grep -q 'SIL OPEN FONT LICENSE' "$STAGE/THIRD-PARTY-NOTICES.md" || {
+    echo "REFUSING: THIRD-PARTY-NOTICES.md lacks the vendored font licence. Regenerate with:" >&2
+    echo "  node scripts/generate-third-party-notices.mjs" >&2
+    exit 1
+}
 if compgen -G "$STAGE/*.exe" > /dev/null; then
     echo "REFUSING: a Windows .exe leaked into a $RID payload" >&2
     exit 1

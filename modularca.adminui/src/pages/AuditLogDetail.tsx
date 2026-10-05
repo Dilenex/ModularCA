@@ -59,17 +59,17 @@ const AuditLogDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [type, id]);
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
+            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Audit Logs</button>
         </div>
     );
     if (!log) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Audit entry not found.</p>
-            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
+            <p className="text-sm text-ink-muted">Audit entry not found.</p>
+            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Audit Logs</button>
         </div>
     );
 

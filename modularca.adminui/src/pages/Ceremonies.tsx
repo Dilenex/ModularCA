@@ -49,9 +49,9 @@ function ceremonyFamily(c: any): Family {
 }
 
 const FAMILY_META: Record<Family, { label: string; cls: string }> = {
-    CaCreation: { label: 'CA', cls: 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
-    PolicyChange: { label: 'Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
-    ControlledUserChange: { label: 'Controlled User', cls: 'bg-purple-50 dark:bg-purple-900/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700' },
+    CaCreation: { label: 'CA', cls: 'bg-info-soft text-info border-info/40' },
+    PolicyChange: { label: 'Policy', cls: 'bg-warn-soft text-warn border-warn/40' },
+    ControlledUserChange: { label: 'Controlled User', cls: 'bg-accent-soft text-accent-ink border-accent/40' },
 };
 
 const TIER_LABELS: Record<number, string> = {
@@ -117,7 +117,7 @@ function splitDescription(c: any): { text: string; warnings: string[] } {
 }
 
 const CeremonyWarnings: React.FC<{ warnings: string[]; className?: string }> = ({ warnings, className = '' }) => warnings.length === 0 ? null : (
-    <div role="alert" className={`bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded p-3 text-xs text-amber-800 dark:text-amber-300 space-y-1 ${className}`}>
+    <div role="alert" className={`bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn space-y-1 ${className}`}>
         {warnings.map((w, i) => <p key={i} className="font-semibold">{w}</p>)}
     </div>
 );
@@ -147,7 +147,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
         <div className="text-sm space-y-4">
             <CeremonyWarnings warnings={warnings} />
             {approvalRefusal && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded p-3 text-xs text-gray-700 dark:text-gray-300">
+                <div className="bg-raised border border-line rounded p-3 text-xs text-ink">
                     <span className="font-semibold">You cannot approve this ceremony.</span> {approvalRefusal}
                 </div>
             )}
@@ -165,11 +165,11 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                 <DetailField label="ID" value={ceremony.id} mono />
             </div>
 
-            {loading && <div className="text-xs text-gray-500">Loading details…</div>}
+            {loading && <div className="text-xs text-ink-muted">Loading details…</div>}
 
             {params && family === 'ControlledUserChange' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Controlled-User Change</span>
+                    <span className="text-xs font-semibold text-ink-muted">Controlled-User Change</span>
                     <DetailField label="Action" value={controlledChangeLabel(params.changeType || params.ChangeType)} />
                     <DetailField label="Target user" value={params.targetUsername || params.TargetUsername || params.targetUserId || params.TargetUserId || '-'} mono />
                     <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + tierScope(detail, params)} />
@@ -185,7 +185,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
 
             {params && family === 'PolicyChange' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Policy Change</span>
+                    <span className="text-xs font-semibold text-ink-muted">Policy Change</span>
                     <DetailField label="Scope" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(() => {
                         const pReq = params.proposedRequireKeyCeremony ?? params.ProposedRequireKeyCeremony;
@@ -202,7 +202,7 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
 
             {params && family === 'CaCreation' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">CA Parameters</span>
+                    <span className="text-xs font-semibold text-ink-muted">CA Parameters</span>
                     <DetailField label="Common Name" value={params.subjectCN || params.SubjectCN || '-'} />
                     <DetailField label="Algorithm" value={params.keyAlgorithm || params.KeyAlgorithm || '-'} />
                     <DetailField label="Key Size" value={params.keySize || params.KeySize || '-'} />
@@ -215,20 +215,20 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
 
             {approvalLog.length > 0 && (
                 <div>
-                    <h4 className="text-xs text-gray-600 dark:text-gray-400 font-semibold mb-2">Approval Log</h4>
+                    <h4 className="text-xs text-ink-muted font-semibold mb-2">Approval Log</h4>
                     <div className="space-y-1">
                         {approvalLog.map((entry: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-3 py-1 px-2 bg-gray-100 dark:bg-gray-800 rounded text-xs">
+                            <div key={idx} className="flex items-center gap-3 py-1 px-2 bg-raised rounded text-xs">
                                 <StatusBadge status={entry.action === 'Approved' ? 'active' : entry.action === 'Rejected' ? 'revoked' : 'disabled'} label={entry.action || entry.type} />
-                                <span className="text-gray-700 dark:text-gray-300">{entry.Username || entry.userName || entry.user || '-'}</span>
-                                <span className="text-gray-600 ml-auto">{formatDate(entry.timestamp || entry.date)}</span>
+                                <span className="text-ink">{entry.Username || entry.userName || entry.user || '-'}</span>
+                                <span className="text-ink-muted ml-auto">{formatDate(entry.timestamp || entry.date)}</span>
                             </div>
                         ))}
                     </div>
                 </div>
             )}
 
-            <p className="text-[11px] text-gray-500">Select this ceremony in the table to approve, reject, cancel, or execute.</p>
+            <p className="text-[11px] text-ink-muted">Select this ceremony in the table to approve, reject, cancel, or execute.</p>
         </div>
     );
 };
@@ -285,8 +285,8 @@ const Ceremonies: React.FC = () => {
         return () => clearInterval(interval);
     }, [ceremonies, fetchCeremonies]);
 
-    const primaryConfirmClass = 'px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors';
-    const executeConfirmClass = 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors';
+    const primaryConfirmClass = 'px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors';
+    const executeConfirmClass = 'px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors';
 
     const handleApprove = (ceremony: any) => {
         const { text, warnings } = splitDescription(ceremony);
@@ -408,8 +408,8 @@ const Ceremonies: React.FC = () => {
 
     const segBtn = (active: boolean) =>
         `px-3 py-1.5 text-xs font-medium rounded border transition-colors ${active
-            ? 'bg-blue-600 text-white border-blue-600'
-            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700'}`;
+            ? 'bg-accent text-on-accent border-accent'
+            : 'bg-raised text-ink border-line hover:bg-hover'}`;
 
     const columns: DataTableColumn<any>[] = [
         { key: 'description', header: 'Description', defaultWidth: 300, minWidth: 200, exportValue: (c) => c.description || c.operationType,
@@ -418,9 +418,9 @@ const Ceremonies: React.FC = () => {
                 return (
                     <span className="inline-flex items-center gap-2">
                         {warnings.length > 0 && (
-                            <span title={warnings.join('\n')} className="inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded border bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700">Warning</span>
+                            <span title={warnings.join('\n')} className="inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded border bg-warn-soft text-warn border-warn/40">Warning</span>
                         )}
-                        <span className="font-medium text-gray-900 dark:text-white">{text}</span>
+                        <span className="font-medium text-ink">{text}</span>
                     </span>
                 );
             } },
@@ -429,7 +429,7 @@ const Ceremonies: React.FC = () => {
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
             render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status} /> },
         { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', headerTitle: APPROVALS_HINT, exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
-            render: (c) => <span className="text-gray-600 dark:text-gray-400" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
+            render: (c) => <span className="text-ink-muted" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
         { key: 'initiator', header: 'Initiator', defaultWidth: 140, exportValue: (c) => c.initiatedByUsername || '',
             render: (c) => c.initiatedByUsername || '-' },
         { key: 'created', header: 'Created', defaultWidth: 150, exportValue: (c) => c.createdAt, render: (c) => formatDate(c.createdAt) },
@@ -444,9 +444,9 @@ const Ceremonies: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Ceremonies</h1>
+            <h1 className="text-xl font-semibold text-ink">Ceremonies</h1>
 
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded-lg p-4 text-xs text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-xs text-info">
                 Ceremonies are created automatically when a multi-party action is required — you don't start one here.
                 They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
                 Space settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
@@ -461,7 +461,7 @@ const Ceremonies: React.FC = () => {
                     <button className={segBtn(filterStatus === 'all')} onClick={() => setFilterStatus('all')}>All</button>
                 </div>
                 <select value={filterType} onChange={(e) => setFilterType(e.target.value as any)}
-                    className="px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                    className="px-3 py-1.5 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent">
                     <option value="all">All types</option>
                     <option value="CaCreation">CA</option>
                     <option value="PolicyChange">Policy (space or instance)</option>
@@ -489,7 +489,7 @@ const Ceremonies: React.FC = () => {
                     ? <CeremonyDrawer ceremony={opened} />
                     : linkedError
                         ? <InlineNotice notice={linkedError} />
-                        : <div className="text-xs text-gray-500">Loading…</div>}
+                        : <div className="text-xs text-ink-muted">Loading…</div>}
             </Drawer>
 
             <ConfirmModal
@@ -497,7 +497,7 @@ const Ceremonies: React.FC = () => {
                 title={confirmAction?.title || ''}
                 message={confirmAction?.message || ''}
                 confirmLabel={confirmAction?.confirmLabel || 'Confirm'}
-                confirmClass={confirmAction?.confirmClass || 'px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors'}
+                confirmClass={confirmAction?.confirmClass || 'px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors'}
                 loading={confirmLoading}
                 onConfirm={async () => {
                     if (!confirmAction) return;

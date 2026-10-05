@@ -18,10 +18,10 @@ import { selectFieldNotices, type Notice, type NoticeSeverity } from '../notific
 
 /** Colour per severity. Muted relative to the toast palette: this sits inside a form, not over it. */
 const severityStyles: Record<NoticeSeverity, string> = {
-    success: 'text-green-700 dark:text-green-400',
-    error: 'text-red-700 dark:text-red-400',
-    warning: 'text-amber-700 dark:text-amber-400',
-    info: 'text-blue-700 dark:text-blue-400',
+    success: 'text-ok',
+    error: 'text-crit',
+    warning: 'text-warn',
+    info: 'text-accent-ink',
 };
 
 export interface FieldNoticesProps {

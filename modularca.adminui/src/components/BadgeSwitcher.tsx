@@ -79,10 +79,10 @@ const BadgeSwitcher: React.FC = () => {
 
     return (
         <div className="flex items-center min-w-0">
-            <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400 min-w-0" title={user?.badge ? `Wearing: ${user.badge.name}` : 'Badgeless: every right this account holds'}>
-                <span className="hidden md:inline">Badge:</span>
+            <label className="flex items-center gap-1.5 text-xs text-ink-muted min-w-0" title={user?.badge ? `Wearing: ${user.badge.name}` : 'Badgeless: every right this account holds'}>
+                <span className="hidden md:inline label-caps">Badge</span>
                 {badges.length === 0 ? (
-                    <span className="px-2 py-1 text-xs rounded border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400 whitespace-nowrap">Default (no badge)</span>
+                    <span className="px-2 py-1 text-xs rounded border border-dashed border-line text-ink-muted whitespace-nowrap">Default (no badge)</span>
                 ) : (
                     <select
                         id="badge-switcher"
@@ -90,10 +90,10 @@ const BadgeSwitcher: React.FC = () => {
                         value={worn}
                         disabled={busy}
                         onChange={(e) => { if (e.target.value !== worn) setPending(e.target.value); }}
-                        className={`max-w-[12rem] px-2 py-1 text-xs rounded border focus:outline-none focus:border-blue-500 disabled:opacity-60 ${
+                        className={`max-w-[12rem] px-2 py-1 text-xs rounded border focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent disabled:opacity-60 ${
                             user?.badge
-                                ? 'bg-violet-50 dark:bg-violet-900/40 border-violet-300 dark:border-violet-700 text-violet-900 dark:text-violet-100'
-                                : 'bg-gray-100 dark:bg-gray-900 border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white'
+                                ? 'bg-badge-worn-soft border-badge-worn/40 text-badge-worn font-medium'
+                                : 'bg-raised border-line-strong text-ink'
                         }`}
                     >
                         <option value={NONE}>No badge</option>
@@ -115,7 +115,7 @@ const BadgeSwitcher: React.FC = () => {
                     </>
                 )}
                 confirmLabel={busy ? 'Switching...' : 'Switch and reload'}
-                confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50"
+                confirmClass="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors disabled:opacity-50"
                 loading={busy}
                 onConfirm={() => { const next = pending; setPending(null); if (next !== null) void choose(next); }}
                 onCancel={() => setPending(null)}

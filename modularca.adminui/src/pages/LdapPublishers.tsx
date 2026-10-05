@@ -75,7 +75,7 @@ const LdapPublisherDrawer: React.FC<{ publisher: LdapPublisher }> = ({ publisher
         <DetailField label="Publish" value={publishFlags(p)} />
         <DetailField label="Last Updated" value={formatDate(p.lastUpdated)} />
         <DetailField label="Next Update" value={formatDate(p.nextUpdate)} />
-        <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit settings.</p>
+        <p className="text-[11px] text-ink-muted pt-3">Open the full page to edit settings.</p>
     </div>
 );
 
@@ -201,11 +201,11 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
         <label className="flex items-center gap-2 cursor-pointer text-sm">
             <div
                 onClick={() => onChange(!checked)}
-                className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${checked ? 'bg-blue-600' : 'bg-gray-400 dark:bg-gray-600'}`}
+                className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${checked ? 'bg-accent' : 'bg-ink-faint'}`}
             >
                 <div className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${checked ? 'translate-x-4' : ''}`} />
             </div>
-            <span className="text-gray-700 dark:text-gray-300">{label}</span>
+            <span className="text-ink">{label}</span>
         </label>
     );
 
@@ -270,24 +270,24 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
             <div className="pt-2">
                 <span className={`${labelClass} mb-2`}>Publish Options</span>
                 <div className="flex flex-wrap gap-4">
-                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
                         <input type="checkbox" checked={f.publishCACert} onChange={(e) => setF({ ...f, publishCACert: e.target.checked })}
-                            className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                            className="rounded border-line-strong text-accent-ink focus:ring-accent" />
                         CA Certificate
                     </label>
-                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
                         <input type="checkbox" checked={f.publishCRL} onChange={(e) => setF({ ...f, publishCRL: e.target.checked })}
-                            className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                            className="rounded border-line-strong text-accent-ink focus:ring-accent" />
                         CRL
                     </label>
-                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
                         <input type="checkbox" checked={f.publishDelta} onChange={(e) => setF({ ...f, publishDelta: e.target.checked })}
-                            className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                            className="rounded border-line-strong text-accent-ink focus:ring-accent" />
                         Delta CRL
                     </label>
-                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
                         <input type="checkbox" checked={f.publishUserCerts} onChange={(e) => setF({ ...f, publishUserCerts: e.target.checked })}
-                            className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                            className="rounded border-line-strong text-accent-ink focus:ring-accent" />
                         User Certificates
                     </label>
                 </div>
@@ -296,12 +296,12 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
     );
 
     const columns: DataTableColumn<LdapPublisher>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 170, minWidth: 130, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-gray-900 dark:text-white truncate">{p.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 170, minWidth: 130, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink truncate">{p.name}</span> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (p) => (p.enabled ? 'enabled' : 'disabled'), render: (p) => <StatusBadge status={p.enabled ? 'enabled' : 'disabled'} /> },
-        { key: 'host', header: 'Host', defaultWidth: 180, exportValue: (p) => `${p.host}:${p.port}`, render: (p) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300 truncate">{p.host}:{p.port}</span> },
-        { key: 'publishes', header: 'Publishes', defaultWidth: 180, exportValue: (p) => publishFlags(p), render: (p) => <span className="text-xs text-gray-700 dark:text-gray-300 truncate">{publishFlags(p)}</span> },
-        { key: 'update', header: 'Update', defaultWidth: 110, exportValue: (p) => p.updateInterval || '', render: (p) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{p.updateInterval || '-'}</span> },
-        { key: 'lastUpdated', header: 'Last Updated', defaultWidth: 160, exportValue: (p) => formatDate(p.lastUpdated), render: (p) => <span className="text-xs text-gray-700 dark:text-gray-300">{formatDate(p.lastUpdated)}</span> },
+        { key: 'host', header: 'Host', defaultWidth: 180, exportValue: (p) => `${p.host}:${p.port}`, render: (p) => <span className="data-mono text-ink truncate">{p.host}:{p.port}</span> },
+        { key: 'publishes', header: 'Publishes', defaultWidth: 180, exportValue: (p) => publishFlags(p), render: (p) => <span className="text-xs text-ink truncate">{publishFlags(p)}</span> },
+        { key: 'update', header: 'Update', defaultWidth: 110, exportValue: (p) => p.updateInterval || '', render: (p) => <span className="data-mono text-ink">{p.updateInterval || '-'}</span> },
+        { key: 'lastUpdated', header: 'Last Updated', defaultWidth: 160, exportValue: (p) => formatDate(p.lastUpdated), render: (p) => <span className="text-xs text-ink">{formatDate(p.lastUpdated)}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<LdapPublisher>[] = [
@@ -312,19 +312,19 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Publishers</h2>
+                <h2 className="text-lg font-semibold text-ink">Publishers</h2>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Add Publisher'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New LDAP Publisher</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New LDAP Publisher</h4>
                     {renderFormFields(form, setForm, false)}
                     <button onClick={handleCreate} disabled={creating || !form.name.trim() || !form.host.trim() || !form.baseDn.trim()}
-                        className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                 </div>

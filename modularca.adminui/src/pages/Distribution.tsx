@@ -37,7 +37,7 @@ const CrlScheduleDrawer: React.FC<{ schedule: any }> = ({ schedule: s }) => (
         <DetailField label="Description" value={s.description || '-'} />
         <DetailField label="Last Generated" value={formatDate(s.lastGenerated || s.lastRun)} />
         <DetailField label="Next Update" value={formatDate(s.nextUpdateUtc || s.nextUpdate)} />
-        <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit intervals.</p>
+        <p className="text-[11px] text-ink-muted pt-3">Open the full page to edit intervals.</p>
     </div>
 );
 
@@ -161,12 +161,12 @@ const CrlSchedulesSection: React.FC = () => {
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-gray-900 dark:text-white truncate">{s.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-ink truncate">{s.name}</span> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (s) => (s.enabled ? 'enabled' : 'disabled'), render: (s) => <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} /> },
-        { key: 'cron', header: 'Cron', defaultWidth: 140, exportValue: (s) => s.cronExpression || s.updateInterval, render: (s) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{s.cronExpression || s.updateInterval}</span> },
-        { key: 'ca', header: 'CA', defaultWidth: 160, exportValue: (s) => s.caName || s.caId || '', render: (s) => <span className="text-gray-700 dark:text-gray-300 truncate">{s.caName || s.caId || '-'}</span> },
-        { key: 'last', header: 'Last Generated', defaultWidth: 160, exportValue: (s) => formatDate(s.lastGenerated || s.lastRun), render: (s) => <span className="text-xs text-gray-700 dark:text-gray-300">{formatDate(s.lastGenerated || s.lastRun)}</span> },
-        { key: 'next', header: 'Next Update', defaultWidth: 160, exportValue: (s) => formatDate(s.nextUpdateUtc || s.nextUpdate), render: (s) => <span className="text-xs text-gray-700 dark:text-gray-300">{formatDate(s.nextUpdateUtc || s.nextUpdate)}</span> },
+        { key: 'cron', header: 'Cron', defaultWidth: 140, exportValue: (s) => s.cronExpression || s.updateInterval, render: (s) => <span className="data-mono text-ink">{s.cronExpression || s.updateInterval}</span> },
+        { key: 'ca', header: 'CA', defaultWidth: 160, exportValue: (s) => s.caName || s.caId || '', render: (s) => <span className="text-ink truncate">{s.caName || s.caId || '-'}</span> },
+        { key: 'last', header: 'Last Generated', defaultWidth: 160, exportValue: (s) => formatDate(s.lastGenerated || s.lastRun), render: (s) => <span className="text-xs text-ink">{formatDate(s.lastGenerated || s.lastRun)}</span> },
+        { key: 'next', header: 'Next Update', defaultWidth: 160, exportValue: (s) => formatDate(s.nextUpdateUtc || s.nextUpdate), render: (s) => <span className="text-xs text-ink">{formatDate(s.nextUpdateUtc || s.nextUpdate)}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -178,32 +178,32 @@ const CrlSchedulesSection: React.FC = () => {
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">CRL Schedules</h2>
+                <h2 className="text-lg font-semibold text-ink">CRL Schedules</h2>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Schedule'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New CRL Schedule</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New CRL Schedule</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Name</label>
+                            <label className="block text-xs text-ink-muted mb-1">Name</label>
                             <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent" />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Update interval (cron)</label>
+                            <label className="block text-xs text-ink-muted mb-1">Update interval (cron)</label>
                             <input type="text" placeholder="e.g. 0 */6 * * *" value={form.cronExpression} onChange={(e) => setForm({ ...form, cronExpression: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent" />
                             <FieldHint>A five-field cron expression saying when a fresh CRL is signed and published.</FieldHint>
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Certificate Authority</label>
+                            <label className="block text-xs text-ink-muted mb-1">Certificate Authority</label>
                             <select value={form.caId} onChange={(e) => setForm({ ...form, caId: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
                                 <option value="">Select CA...</option>
                                 {/* value is the CA's CERTIFICATE id — CrlConfiguration keys on
                                     CaCertificateId, not on the authority's own id. A CA that has
@@ -215,21 +215,21 @@ const CrlSchedulesSection: React.FC = () => {
                             {casError && <FieldHint tone="warn">Unavailable: could not load the CA list ({casError}). Reload the page to try again.</FieldHint>}
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Overlap Period</label>
+                            <label className="block text-xs text-ink-muted mb-1">Overlap Period</label>
                             <input type="text" placeholder="e.g. 1h, 30m, 1h30m" value={form.overlapPeriod} onChange={(e) => setForm({ ...form, overlapPeriod: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent" />
                             <FieldHint>{OVERLAP_HINT}</FieldHint>
                         </div>
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || !form.cronExpression || !form.caId}
-                        className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                 </div>
             )}
 
             {scopeCaId && casError && (
-                <div className="text-xs text-red-800 dark:text-red-400" role="status">
+                <div className="text-xs text-crit" role="status">
                     Unavailable: could not load the CA list ({casError}), so the schedules for {scopeLabel(scope)} cannot be picked out. The table below is not a statement that there are none.
                 </div>
             )}
@@ -279,12 +279,12 @@ const CurrentCrlsSection: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Current CRLs</h2>
+            <h2 className="text-lg font-semibold text-ink">Current CRLs</h2>
 
-            {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+            {loading && <div className="p-4 text-sm text-ink-muted">Loading...</div>}
             {error && <InlineNotice notice={error} />}
             {!loading && !error && cas.length === 0 && (
-                <div className="p-4 text-sm text-gray-600">No certificate authorities found</div>
+                <div className="p-4 text-sm text-ink-muted">No certificate authorities found</div>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -292,19 +292,19 @@ const CurrentCrlsSection: React.FC = () => {
                     const caId = ca.id || ca.caId;
                     const serial = ca.certificateSerial || ca.serialNumber || ca.certificate?.serialNumber || caId;
                     return (
-                        <div key={caId} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">{ca.name || ca.subjectDN}</h3>
+                        <div key={caId} className="bg-raised border border-line rounded-lg p-4">
+                            <h3 className="text-sm font-semibold text-ink mb-2">{ca.name || ca.subjectDN}</h3>
                             <DetailField label="Serial" value={serial} mono />
                             {ca.crlNumber != null && <DetailField label="CRL Number" value={String(ca.crlNumber)} />}
                             {ca.lastCrlGenerated && <DetailField label="Last Generated" value={formatDate(ca.lastCrlGenerated)} />}
                             {ca.crlEntryCount != null && <DetailField label="Entry Count" value={String(ca.crlEntryCount)} />}
                             <div className="flex gap-2 mt-3">
                                 <a href={`${API_BASE}/crl/${serial}`} target="_blank" rel="noopener noreferrer"
-                                    className="px-3 py-1 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors inline-block">
+                                    className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block">
                                     Download Full CRL
                                 </a>
                                 <a href={`${API_BASE}/crl/${serial}/delta`} target="_blank" rel="noopener noreferrer"
-                                    className="px-3 py-1 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors inline-block">
+                                    className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block">
                                     Download Delta CRL
                                 </a>
                             </div>
@@ -338,9 +338,9 @@ const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
     return (
         <div className="space-y-4">
             <div className="flex items-center gap-3 flex-wrap">
-                <label className="text-sm text-gray-700 dark:text-gray-300">Certificate Authority</label>
+                <label className="text-sm text-ink">Certificate Authority</label>
                 <select value={selectedCa} onChange={(e) => setSelectedCa(e.target.value)}
-                    className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 min-w-[240px]">
+                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent min-w-[240px]">
                     <option value="">Select CA...</option>
                     {cas.map((ca) => (
                         <option key={ca.id || ca.caId} value={ca.id || ca.caId}>{ca.name || ca.subjectDN}</option>
@@ -348,11 +348,11 @@ const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
                 </select>
             </div>
             {casError && (
-                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the CA list ({casError}). The selector above is empty because of that, not because there are no CAs.</div>
+                <div className="text-sm text-crit" role="status">Unavailable: could not load the CA list ({casError}). The selector above is empty because of that, not because there are no CAs.</div>
             )}
             {selectedCa
                 ? <LdapPublisherManager caId={selectedCa} />
-                : !casError && <div className="text-sm text-gray-600 dark:text-gray-400">Select a CA to manage its LDAP publishers.</div>}
+                : !casError && <div className="text-sm text-ink-muted">Select a CA to manage its LDAP publishers.</div>}
         </div>
     );
 };
@@ -426,42 +426,42 @@ const ServiceUrlsTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded-lg p-3 text-xs text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded-lg p-3 text-xs text-info">
                 The public base URL drives the <strong>CDP, OCSP, and AIA</strong> endpoints embedded in every certificate a CA
                 issues — the program appends <code className="mono">/crl/{'{label}'}</code>, <code className="mono">/ocsp</code>,
                 and <code className="mono">/ca/{'{label}'}</code> at issue time. Use plain <strong>HTTP</strong> so relying parties
                 can fetch CRLs/OCSP without a TLS chicken-and-egg. Leave empty to issue without CDP/AIA extensions.
             </div>
-            {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
             {hierarchyError && (
-                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the CA hierarchy ({hierarchyError}). Nothing is listed because of that, not because there are no CAs.</div>
+                <div className="text-sm text-crit" role="status">Unavailable: could not load the CA hierarchy ({hierarchyError}). Nothing is listed because of that, not because there are no CAs.</div>
             )}
             {urlsError && (
-                <div className="text-sm text-red-800 dark:text-red-400" role="status">Unavailable: could not load the saved public base URLs ({urlsError}). The fields below may show as empty even where a URL is set; saving now would overwrite it. Reload before editing.</div>
+                <div className="text-sm text-crit" role="status">Unavailable: could not load the saved public base URLs ({urlsError}). The fields below may show as empty even where a URL is set; saving now would overwrite it. Reload before editing.</div>
             )}
             {!loading && !hierarchyError && rows.length === 0 && (
-                <div className="text-sm text-gray-600 dark:text-gray-400">
+                <div className="text-sm text-ink-muted">
                     {scopeCaId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found.'}
                 </div>
             )}
             {rows.map((row) => (
-                <div key={row.caCertId} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{row.name}</h3>
+                <div key={row.caCertId} className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-ink">{row.name}</h3>
                     <div>
-                        <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Public Base URL</label>
+                        <label className="block text-xs text-ink-muted mb-1">Public Base URL</label>
                         <input type="text" value={row.publicBaseUrl} onChange={(e) => update(row.caCertId, e.target.value)}
                             placeholder="http://path2.ca.example.com"
-                            className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono" />
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:border-accent data-mono" />
                     </div>
                     {row.publicBaseUrl && (
-                        <div className="text-xs text-gray-600 dark:text-gray-400 space-y-0.5">
+                        <div className="text-xs text-ink-muted space-y-0.5">
                             <div>CDP: <span className="font-mono">{row.publicBaseUrl}/crl/{row.label}</span></div>
                             <div>OCSP: <span className="font-mono">{row.publicBaseUrl}/ocsp</span></div>
                             <div>CA Issuer: <span className="font-mono">{row.publicBaseUrl}/ca/{row.label}</span></div>
                         </div>
                     )}
                     <button onClick={() => save(row)} disabled={saving === row.caCertId}
-                        className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 transition-colors">
+                        className="px-4 py-1.5 text-xs font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 transition-colors">
                         {saving === row.caCertId ? 'Saving...' : 'Save'}
                     </button>
                 </div>
@@ -533,14 +533,14 @@ const Distribution: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">CA Distribution</h1>
+            <h1 className="text-xl font-semibold text-ink">CA Distribution</h1>
 
-            <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">
+            <div className="flex gap-1 border-b border-line">
                 {tabs.map((t) => (
                     <button key={t.key} onClick={() => selectTab(t.key)}
                         className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${tab === t.key
-                            ? 'text-blue-800 dark:text-blue-400 border-blue-400'
-                            : 'text-gray-600 dark:text-gray-400 border-transparent hover:text-gray-700 dark:hover:text-gray-300'}`}>
+                            ? 'text-accent-ink border-accent'
+                            : 'text-ink-muted border-transparent hover:text-ink'}`}>
                         {t.label}
                     </button>
                 ))}

@@ -28,12 +28,12 @@ const MfaVerify: React.FC = () => {
     // If there is no MFA state, redirect back to login
     if (!state?.mfaToken) {
         return (
-            <div className="flex justify-center items-center min-h-screen bg-gray-50 dark:bg-gray-900">
-                <div className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md border border-gray-300 dark:border-gray-700 text-center space-y-4">
-                    <p className="text-gray-700 dark:text-gray-300">MFA session expired or missing.</p>
+            <div className="flex justify-center items-center min-h-screen bg-ground">
+                <div className="bg-raised p-8 rounded-lg shadow-lg w-full max-w-md border border-line text-center space-y-4">
+                    <p className="text-ink">MFA session expired or missing.</p>
                     <Link
                         to="/login"
-                        className="inline-block text-blue-800 dark:text-blue-400 hover:text-blue-300"
+                        className="inline-block text-accent-ink hover:underline"
                     >
                         Back to Login
                     </Link>
@@ -209,15 +209,15 @@ const MfaVerify: React.FC = () => {
     };
 
     return (
-        <div className="flex justify-center items-center min-h-screen bg-gray-50 dark:bg-gray-900">
-            <div className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md space-y-6 border border-gray-300 dark:border-gray-700">
-                <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">
+        <div className="flex justify-center items-center min-h-screen bg-ground">
+            <div className="bg-raised p-8 rounded-lg shadow-lg w-full max-w-md space-y-6 border border-line">
+                <h2 className="text-2xl font-semibold text-center text-ink">
                     Two-Factor Authentication
                 </h2>
 
                 {/* Method selector tabs */}
                 {methods.length > 1 && (
-                    <div className="flex rounded overflow-hidden border border-gray-400 dark:border-gray-600">
+                    <div className="flex rounded overflow-hidden border border-line-strong">
                         {methods.map((m) => (
                             <button
                                 key={m}
@@ -227,8 +227,8 @@ const MfaVerify: React.FC = () => {
                                 }}
                                 className={`flex-1 py-2 text-sm font-medium transition-colors ${
                                     activeMethod === m
-                                        ? 'bg-blue-600 text-gray-900 dark:text-white'
-                                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                                        ? 'bg-accent text-on-accent'
+                                        : 'bg-sunken text-ink hover:bg-hover'
                                 }`}
                             >
                                 {m === 'totp' ? 'Authenticator App' : m === 'mtls' ? 'Client Certificate' : 'Security Key'}
@@ -238,7 +238,7 @@ const MfaVerify: React.FC = () => {
                 )}
 
                 {error && (
-                    <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">
+                    <div className="bg-crit-soft border border-crit/40 text-crit text-sm text-center p-2 rounded">
                         {error}
                     </div>
                 )}
@@ -246,7 +246,7 @@ const MfaVerify: React.FC = () => {
                 {/* TOTP verification */}
                 {activeMethod === 'totp' && (
                     <form onSubmit={handleTotpVerify} className="space-y-4">
-                        <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
+                        <p className="text-sm text-ink-muted text-center">
                             Enter the 6-digit code from your authenticator app.
                         </p>
                         <div>
@@ -256,7 +256,7 @@ const MfaVerify: React.FC = () => {
                                 pattern="[0-9]*"
                                 maxLength={6}
                                 autoComplete="one-time-code"
-                                className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-3 focus:border-blue-500 focus:outline-none text-center text-2xl tracking-widest"
+                                className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-3 focus:border-accent focus:outline-none text-center text-2xl tracking-widest"
                                 value={totpCode}
                                 onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
                                 placeholder="000000"
@@ -267,7 +267,7 @@ const MfaVerify: React.FC = () => {
                         <button
                             type="submit"
                             disabled={loading || totpCode.length !== 6}
-                            className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {loading ? 'Verifying...' : 'Verify'}
                         </button>
@@ -277,13 +277,13 @@ const MfaVerify: React.FC = () => {
                 {/* WebAuthn verification */}
                 {activeMethod === 'webauthn' && (
                     <div className="space-y-4">
-                        <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
+                        <p className="text-sm text-ink-muted text-center">
                             Use your security key to verify your identity.
                         </p>
                         <button
                             onClick={handleWebauthnVerify}
                             disabled={loading}
-                            className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {loading ? 'Waiting for security key...' : 'Verify with Security Key'}
                         </button>
@@ -293,17 +293,17 @@ const MfaVerify: React.FC = () => {
                 {/* mTLS verification */}
                 {activeMethod === 'mtls' && (
                     <div className="space-y-4">
-                        <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
+                        <p className="text-sm text-ink-muted text-center">
                             Your browser will prompt you to select a client certificate.
                         </p>
                         <button
                             onClick={handleMtlsVerify}
                             disabled={loading}
-                            className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {loading ? 'Verifying certificate...' : 'Verify with Client Certificate'}
                         </button>
-                        <p className="text-xs text-gray-600 text-center">
+                        <p className="text-xs text-ink-muted text-center">
                             Make sure your mTLS certificate (.pfx) is imported in your browser's certificate store.
                         </p>
                     </div>
@@ -312,7 +312,7 @@ const MfaVerify: React.FC = () => {
                 <div className="text-center">
                     <Link
                         to="/login"
-                        className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-700 dark:text-gray-300 transition-colors"
+                        className="text-sm text-ink-muted hover:text-ink transition-colors"
                     >
                         Back to Login
                     </Link>

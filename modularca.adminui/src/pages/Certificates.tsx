@@ -272,10 +272,10 @@ const Certificates: React.FC = () => {
         status: (c) => { const st = certStatus(c); return { label: st, tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'expired' ? 'warn' : 'neutral' }; },
         columns: [
             { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusBadge status={certStatus(c)} /> },
-            { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{c.serialNumber}</span> },
-            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{c.subjectDN}</span> },
-            { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm || '-'}</span> },
-            { key: 'notAfter', header: 'Expires', defaultWidth: 160, minWidth: 120, sortable: true, exportValue: (c) => formatDate(c.notAfter), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.notAfter)}</span> },
+            { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => c.serialNumber, render: (c) => <span className="data-mono text-ink-muted truncate">{c.serialNumber}</span> },
+            { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-ink truncate">{c.subjectDN}</span> },
+            { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-ink-muted">{c.keyAlgorithm || '-'}</span> },
+            { key: 'notAfter', header: 'Expires', defaultWidth: 160, minWidth: 120, sortable: true, exportValue: (c) => formatDate(c.notAfter), render: (c) => <span className="text-xs text-ink-muted">{formatDate(c.notAfter)}</span> },
         ],
         sections: [
             { fields: [
@@ -307,7 +307,7 @@ const Certificates: React.FC = () => {
                 title: (c) => c.subjectDN,
                 columns: [
                     { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, render: (c) => <StatusBadge status={certStatus(c)} /> },
-                    { key: 'serial', header: 'Serial', defaultWidth: 150, render: (c) => <span className="font-mono text-xs truncate">{c.serialNumber}</span> },
+                    { key: 'serial', header: 'Serial', defaultWidth: 150, render: (c) => <span className="data-mono truncate">{c.serialNumber}</span> },
                     { key: 'notAfter', header: 'Expires', defaultWidth: 140, render: (c) => <span className="text-xs">{formatDate(c.notAfter)}</span> },
                 ],
                 sections: [],
@@ -318,8 +318,8 @@ const Certificates: React.FC = () => {
         page: { path: (c) => `/certificates/${c.serialNumber}` },
     };
 
-    const advInput = 'w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
-    const advLabel = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
+    const advInput = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
+    const advLabel = 'block text-xs font-semibold text-ink-muted mb-1';
     const advancedActive = !!(serialFilter || sanFilter || issuerFilter || caIdFilter || keyAlgorithmFilter || notAfterFrom || notAfterTo || issuedFrom || issuedTo);
     const clearAdvanced = () => {
         setSerialFilter(''); setSanFilter(''); setIssuerFilter('');
@@ -328,28 +328,28 @@ const Certificates: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Certificates</h1>
+            <h1 className="text-xl font-semibold text-ink">Certificates</h1>
 
             {/* Search and Filter Bar */}
             <div className="flex flex-wrap gap-4 items-center">
                 <input type="text" placeholder="Search subject, serial, SAN, or issuer..." value={search} onChange={(e) => setSearch(e.target.value)}
-                    className="flex-1 min-w-[250px] px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    className="flex-1 min-w-[250px] px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
                 <select value={statusFilter} onChange={(e) => setQ({ status: e.target.value })}
-                    className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
                     <option value="all">All Statuses</option>
                     <option value="active">Active</option>
                     <option value="revoked">Revoked</option>
                     <option value="expired">Expired</option>
                 </select>
                 <button onClick={() => setShowAdvanced((v) => !v)}
-                    className={`px-3 py-2 text-sm rounded border transition-colors ${advancedActive ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                    className={`px-3 py-2 text-sm rounded border transition-colors ${advancedActive ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-raised text-ink border-line hover:bg-hover'}`}>
                     {showAdvanced ? 'Hide advanced' : 'Advanced filters'}{advancedActive ? ' •' : ''}
                 </button>
             </div>
 
             {/* Advanced filters (collapsible) */}
             {showAdvanced && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="bg-raised border border-line rounded-lg p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div><label className={advLabel}>Serial Number</label><input type="text" value={serialFilter} onChange={(e) => setSerialFilter(e.target.value)} placeholder="e.g. 01AB3F..." className={advInput} /></div>
                     <div><label className={advLabel}>Subject Alternative Name</label><input type="text" value={sanFilter} onChange={(e) => setSanFilter(e.target.value)} placeholder="e.g. *.example.com" className={advInput} /></div>
                     <div>
@@ -386,7 +386,7 @@ const Certificates: React.FC = () => {
                         {issuedRangeInverted && <FieldHint tone="warn">"Issued After" is later than "Issued Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
                     </div>
                     <div className="flex items-end">
-                        {advancedActive && <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 rounded transition-colors">Clear advanced</button>}
+                        {advancedActive && <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-ink-muted hover:text-ink border border-line rounded transition-colors">Clear advanced</button>}
                     </div>
                 </div>
             )}
@@ -426,25 +426,25 @@ const Certificates: React.FC = () => {
 
             {/* Bulk revoke — one reason, one step-up prompt */}
             {revokeOpen && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 dark:bg-black/50" onClick={() => !revokeBusy && setRevokeOpen(false)}>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-2xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
-                        <div className="px-6 py-4 border-b border-gray-300 dark:border-gray-700">
-                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Revoke {selectedKeys.size} certificate{selectedKeys.size === 1 ? '' : 's'}</h3>
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim" onClick={() => !revokeBusy && setRevokeOpen(false)}>
+                    <div className="bg-raised border border-line rounded-lg shadow-2xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="px-6 py-4 border-b border-line">
+                            <h3 className="text-sm font-semibold text-ink">Revoke {selectedKeys.size} certificate{selectedKeys.size === 1 ? '' : 's'}</h3>
                         </div>
                         <div className="px-6 py-4 space-y-3">
-                            <p className="text-xs text-gray-600 dark:text-gray-400">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. Only Certificate Hold can be lifted afterwards; every other reason is permanent.</p>
-                            {allMatching && <p className="text-[11px] text-amber-700 dark:text-amber-400">Note: this revokes the {selectedKeys.size} explicitly selected on loaded pages, not every match across all pages.</p>}
+                            <p className="text-xs text-ink-muted">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. Only Certificate Hold can be lifted afterwards; every other reason is permanent.</p>
+                            {allMatching && <p className="text-[11px] text-warn">Note: this revokes the {selectedKeys.size} explicitly selected on loaded pages, not every match across all pages.</p>}
                             <div className="space-y-1">
-                                <label htmlFor="bulk-revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400">Revocation reason</label>
-                                <select id="bulk-revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeBusy} className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                <label htmlFor="bulk-revoke-reason" className="block text-xs text-ink-muted">Revocation reason</label>
+                                <select id="bulk-revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeBusy} className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                     {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                 </select>
                                 <RevocationReasonHint reason={revokeReason} />
                             </div>
                         </div>
-                        <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
-                            <button onClick={() => setRevokeOpen(false)} disabled={revokeBusy} className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">Cancel</button>
-                            <button onClick={runBulkRevoke} disabled={revokeBusy || selectedKeys.size === 0} className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors disabled:opacity-50">{revokeBusy ? 'Revoking…' : `Revoke ${selectedKeys.size}`}</button>
+                        <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
+                            <button onClick={() => setRevokeOpen(false)} disabled={revokeBusy} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
+                            <button onClick={runBulkRevoke} disabled={revokeBusy || selectedKeys.size === 0} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeBusy ? 'Revoking…' : `Revoke ${selectedKeys.size}`}</button>
                         </div>
                     </div>
                 </div>

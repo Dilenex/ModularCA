@@ -64,17 +64,17 @@ const networkBadge = (log: any) =>
 /// </summary>
 export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     const cat = tabCategory(tab);
-    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(l.timestamp)}</span> };
+    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-ink-muted">{formatDate(l.timestamp)}</span> };
 
     if (cat === 'network') {
         return [
             timeCol,
             { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (l) => (l.blocked ? 'BLOCKED' : String(l.statusCode ?? '')), render: networkBadge },
-            { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className={`font-mono text-xs ${l.blocked ? 'text-red-800 dark:text-red-300' : 'text-gray-700 dark:text-gray-300'}`}>{l.sourceIp}</span> },
-            { key: 'method', header: 'Method', defaultWidth: 90, exportValue: (l) => l.httpMethod || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 font-medium">{l.httpMethod}</span> },
-            { key: 'path', header: 'Request Path', defaultWidth: 220, exportValue: (l) => l.requestPath || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.requestPath}</span> },
-            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, exportValue: (l) => l.protocol || '', render: (l) => l.protocol ? <StatusBadge status="pending" label={l.protocol} /> : <span className="text-xs text-gray-500">-</span> },
-            { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.caLabel || '-'}</span> },
+            { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className={`data-mono ${l.blocked ? 'text-crit' : 'text-ink'}`}>{l.sourceIp}</span> },
+            { key: 'method', header: 'Method', defaultWidth: 90, exportValue: (l) => l.httpMethod || '', render: (l) => <span className="text-xs text-ink-muted font-medium">{l.httpMethod}</span> },
+            { key: 'path', header: 'Request Path', defaultWidth: 220, exportValue: (l) => l.requestPath || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.requestPath}</span> },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, exportValue: (l) => l.protocol || '', render: (l) => l.protocol ? <StatusBadge status="pending" label={l.protocol} /> : <span className="text-xs text-ink-muted">-</span> },
+            { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.caLabel || '-'}</span> },
         ];
     }
 
@@ -82,25 +82,25 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
         // ACME identifies subjects by domain (identifiers), not Subject DN — which is empty
         // for everything but issuance. Swap in an Identifiers column so ACME rows are legible.
         const subjectOrIdentifiers: DataTableColumn<any> = tab === 'ACME'
-            ? { key: 'identifiers', header: 'Identifiers', defaultWidth: 240, exportValue: (l) => formatIdentifiers(l.identifiers) || l.subjectDN || '', render: (l) => { const v = formatIdentifiers(l.identifiers) || l.subjectDN; return <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{v || '-'}</span>; } }
-            : { key: 'subjectDN', header: 'Subject DN', defaultWidth: 220, exportValue: (l) => l.subjectDN || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.subjectDN || '-'}</span> };
+            ? { key: 'identifiers', header: 'Identifiers', defaultWidth: 240, exportValue: (l) => formatIdentifiers(l.identifiers) || l.subjectDN || '', render: (l) => { const v = formatIdentifiers(l.identifiers) || l.subjectDN; return <span className="text-xs text-ink-muted truncate">{v || '-'}</span>; } }
+            : { key: 'subjectDN', header: 'Subject DN', defaultWidth: 220, exportValue: (l) => l.subjectDN || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.subjectDN || '-'}</span> };
         return [
             timeCol,
             { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (l) => (l.success ? 'OK' : 'FAIL'), render: okFailBadge },
-            { key: 'operation', header: 'Operation', defaultWidth: 170, exportValue: (l) => l.operation || l.messageType || '', render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300">{l.operation || l.messageType || '-'}</span> },
+            { key: 'operation', header: 'Operation', defaultWidth: 170, exportValue: (l) => l.operation || l.messageType || '', render: (l) => <span className="text-xs text-ink">{l.operation || l.messageType || '-'}</span> },
             subjectOrIdentifiers,
-            { key: 'serial', header: 'Serial', defaultWidth: 140, exportValue: (l) => l.certificateSerial || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.certificateSerial || '-'}</span> },
-            { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.caLabel || '-'}</span> },
+            { key: 'serial', header: 'Serial', defaultWidth: 140, exportValue: (l) => l.certificateSerial || '', render: (l) => <span className="data-mono text-ink-muted truncate">{l.certificateSerial || '-'}</span> },
+            { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.caLabel || '-'}</span> },
             ...(tab === 'MSAE' ? [
-                { key: 'callerPrincipal', header: 'Caller', defaultWidth: 220, exportValue: (l: any) => l.callerPrincipal || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.callerPrincipal || '-'}</span> },
-                { key: 'realm', header: 'Realm', defaultWidth: 180, exportValue: (l: any) => l.realm || '', render: (l: any) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate">{l.realm || '-'}</span> },
-                { key: 'authMethod', header: 'Auth', defaultWidth: 110, exportValue: (l: any) => l.authMethod || '', render: (l: any) => <span className="text-xs text-gray-600 dark:text-gray-400">{l.authMethod || '-'}</span> },
+                { key: 'callerPrincipal', header: 'Caller', defaultWidth: 220, exportValue: (l: any) => l.callerPrincipal || '', render: (l: any) => <span className="data-mono text-ink-muted truncate">{l.callerPrincipal || '-'}</span> },
+                { key: 'realm', header: 'Realm', defaultWidth: 180, exportValue: (l: any) => l.realm || '', render: (l: any) => <span className="data-mono text-ink-muted truncate">{l.realm || '-'}</span> },
+                { key: 'authMethod', header: 'Auth', defaultWidth: 110, exportValue: (l: any) => l.authMethod || '', render: (l: any) => <span className="text-xs text-ink-muted">{l.authMethod || '-'}</span> },
                 // The refusal in one phrase; the drawer and the detail page carry the explanation and the fix.
                 { key: 'why', header: 'Why', headerTitle: 'What the refusal means. Open the row for the explanation and the fix.', defaultWidth: 210, exportValue: (l: any) => explainMsaeFailure(l)?.title || '', render: (l: any) => {
                     const why = explainMsaeFailure(l);
                     return why
-                        ? <span title={why.explanation} className="text-xs text-amber-800 dark:text-amber-300 truncate">{why.title}</span>
-                        : <span className="text-xs text-gray-500">-</span>;
+                        ? <span title={why.explanation} className="text-xs text-warn truncate">{why.title}</span>
+                        : <span className="text-xs text-ink-muted">-</span>;
                 } },
             ] as DataTableColumn<any>[] : []),
         ];
@@ -110,10 +110,10 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     return [
         timeCol,
         { key: 'success', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, exportValue: (l) => (l.success ? 'OK' : 'FAIL'), render: okFailBadge },
-        { key: 'actorUsername', header: 'Actor', defaultWidth: 150, sortable: true, exportValue: (l) => l.actorUsername || 'system', render: (l) => <span className="text-xs text-blue-800 dark:text-blue-300 truncate">{l.actorUsername || 'system'}</span> },
-        { key: 'actionType', header: 'Action', defaultWidth: 190, sortable: true, exportValue: (l) => l.actionType || '', render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300 truncate">{l.actionType}</span> },
-        { key: 'target', header: 'Target', defaultWidth: 180, exportValue: (l) => `${l.targetEntityType || ''}${l.targetEntityId ? ` #${l.targetEntityId}` : ''}`, render: (l) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{l.targetEntityType} {l.targetEntityId ? `#${String(l.targetEntityId).substring(0, 8)}` : ''}</span> },
-        { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{l.sourceIp || '-'}</span> },
+        { key: 'actorUsername', header: 'Actor', defaultWidth: 150, sortable: true, exportValue: (l) => l.actorUsername || 'system', render: (l) => <span className="text-xs text-accent-ink truncate">{l.actorUsername || 'system'}</span> },
+        { key: 'actionType', header: 'Action', defaultWidth: 190, sortable: true, exportValue: (l) => l.actionType || '', render: (l) => <span className="text-xs text-ink truncate">{l.actionType}</span> },
+        { key: 'target', header: 'Target', defaultWidth: 180, exportValue: (l) => `${l.targetEntityType || ''}${l.targetEntityId ? ` #${l.targetEntityId}` : ''}`, render: (l) => <span className="text-xs text-ink-muted truncate">{l.targetEntityType} {l.targetEntityId ? `#${String(l.targetEntityId).substring(0, 8)}` : ''}</span> },
+        { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className="data-mono text-ink-muted">{l.sourceIp || '-'}</span> },
     ];
 }
 
@@ -131,7 +131,7 @@ export const MsaeWhyNotice: React.FC<{ log: MsaeAuditRow; className?: string }> 
             <InlineNotice severity="warning" notice={{ title: why.title, detail: why.explanation, remediation: why.fix }} />
             {why.link && (
                 <Link to={why.link.path}
-                    className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors">
+                    className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-warn/40 bg-warn-soft text-warn hover:bg-warn/15 transition-colors">
                     {why.link.label}
                 </Link>
             )}
@@ -276,17 +276,17 @@ const AuditLogs: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Audit Logs</h1>
+            <h1 className="text-xl font-semibold text-ink">Audit Logs</h1>
 
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">
+            <div className="flex gap-1 border-b border-line">
                 {TABS.map((tab) => (
                     <button
                         key={tab}
                         onClick={() => handleTabChange(tab)}
                         className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === tab
-                            ? 'text-blue-800 dark:text-blue-400 border-blue-400'
-                            : 'text-gray-600 dark:text-gray-400 border-transparent hover:text-gray-700 dark:text-gray-300'
+                            ? 'text-accent-ink border-accent'
+                            : 'text-ink-muted border-transparent hover:text-ink'
                             }`}
                     >
                         {tab}
@@ -297,13 +297,13 @@ const AuditLogs: React.FC = () => {
             {/* CA Filter & Date Range Filters */}
             <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-600 dark:text-gray-400">CA:</label>
+                    <label className="text-xs text-ink-muted">CA:</label>
                     <select
                         value={filterCaId}
                         onChange={(e) => setQ({ caId: e.target.value })}
                         disabled={scopeLocked}
                         title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                     >
                         <option value="">All CAs</option>
                         {authorities.map((ca) => (
@@ -312,32 +312,32 @@ const AuditLogs: React.FC = () => {
                     </select>
                 </div>
                 <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-600 dark:text-gray-400">From:</label>
+                    <label className="text-xs text-ink-muted">From:</label>
                     <input
                         type="date"
                         value={dateFrom}
                         onChange={(e) => setQ({ from: e.target.value })}
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                     />
                 </div>
                 <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-600 dark:text-gray-400">To:</label>
+                    <label className="text-xs text-ink-muted">To:</label>
                     <input
                         type="date"
                         value={dateTo}
                         onChange={(e) => setQ({ to: e.target.value })}
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                     />
                 </div>
                 {activeTab === 'General' && (
                     <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-600 dark:text-gray-400" htmlFor="audit-action-filter">Action <span className="text-gray-500">(seen in the loaded entries)</span>:</label>
+                        <label className="text-xs text-ink-muted" htmlFor="audit-action-filter">Action <span className="text-ink-muted">(seen in the loaded entries)</span>:</label>
                         <select
                             id="audit-action-filter"
                             value={filterActionType}
                             onChange={(e) => setQ({ actionType: e.target.value })}
                             title="Actions seen in the loaded entries. This is not the full list of action types; an action that has not appeared on a page you have viewed is not offered here."
-                            className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                         >
                             <option value="">All actions</option>
                             {knownActionTypes.map((t) => (
@@ -347,19 +347,19 @@ const AuditLogs: React.FC = () => {
                     </div>
                 )}
                 <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-600 dark:text-gray-400">User:</label>
+                    <label className="text-xs text-ink-muted">User:</label>
                     <input
                         type="text"
                         value={filterUser}
                         onChange={(e) => setFilterUser(e.target.value)}
                         placeholder="Username"
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 w-36"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent w-36"
                     />
                 </div>
                 {(dateFrom || dateTo || filterCaId || filterActionType || filterUser) && (
                     <button
                         onClick={() => { setFilterUser(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '' }); }}
-                        className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                        className="text-xs text-ink-muted hover:text-ink transition-colors"
                     >
                         Clear filters
                     </button>

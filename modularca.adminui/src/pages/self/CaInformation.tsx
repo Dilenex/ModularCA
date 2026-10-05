@@ -156,7 +156,7 @@ const CaInformation: React.FC = () => {
             key: 'type', header: 'Type', defaultWidth: 120, truncate: false,
             exportValue: (c) => caType(c),
             render: (c) => (
-                <span className="px-2 py-0.5 text-xs rounded bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-600">
+                <span className="px-2 py-0.5 text-xs rounded bg-sunken text-ink-muted border border-line-strong">
                     {caType(c)}
                 </span>
             ),
@@ -164,7 +164,7 @@ const CaInformation: React.FC = () => {
         {
             key: 'name', header: 'Common Name', defaultWidth: 280,
             exportValue: (c) => parseCn(c.subjectDN),
-            render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{parseCn(c.subjectDN)}</span>,
+            render: (c) => <span className="text-sm text-ink truncate">{parseCn(c.subjectDN)}</span>,
         },
         {
             key: 'sha256', header: 'SHA-256 Fingerprint', defaultWidth: 260,
@@ -172,8 +172,8 @@ const CaInformation: React.FC = () => {
             render: (c) => {
                 const fp = sha256Thumbprint(c);
                 return fp
-                    ? <span className="font-mono text-xs text-gray-600 dark:text-gray-400 truncate" title={colonised(fp)}>{colonised(fp)}</span>
-                    : <span className="text-xs text-gray-500">not available</span>;
+                    ? <span className="data-mono text-ink-muted truncate" title={colonised(fp)}>{colonised(fp)}</span>
+                    : <span className="text-xs text-ink-muted">not available</span>;
             },
         },
         {
@@ -183,9 +183,9 @@ const CaInformation: React.FC = () => {
                 const s = caStatus(c);
                 const daysLeft = Math.ceil((new Date(c.notAfter).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
                 return (
-                    <span className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-2 whitespace-nowrap">
+                    <span className="text-xs text-ink-muted flex items-center gap-2 whitespace-nowrap">
                         {formatDate(c.notAfter)}
-                        {s === 'active' && daysLeft <= 90 && <span className="text-yellow-700 dark:text-yellow-400">{daysLeft}d left</span>}
+                        {s === 'active' && daysLeft <= 90 && <span className="text-warn">{daysLeft}d left</span>}
                     </span>
                 );
             },
@@ -201,19 +201,19 @@ const CaInformation: React.FC = () => {
         const fp = sha256Thumbprint(cert);
         return (
             <div className="space-y-3">
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-1">
+                <div className="bg-ground border border-line rounded p-3 space-y-1">
                     <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">SHA-256 fingerprint</span>
+                        <span className="text-xs font-semibold text-ink">SHA-256 fingerprint</span>
                         {fp && (
-                            <button onClick={() => copyFingerprint(fp)} className="px-2 py-0.5 text-[11px] bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Copy</button>
+                            <button onClick={() => copyFingerprint(fp)} className="px-2 py-0.5 text-[11px] bg-sunken text-ink rounded hover:bg-hover transition-colors">Copy</button>
                         )}
                     </div>
                     {fp ? (
-                        <code className="block font-mono text-xs text-gray-900 dark:text-white break-all select-all">{colonised(fp)}</code>
+                        <code className="block data-mono text-ink break-all select-all">{colonised(fp)}</code>
                     ) : (
-                        <span className="text-xs text-gray-500">The server did not include a fingerprint for this certificate.</span>
+                        <span className="text-xs text-ink-muted">The server did not include a fingerprint for this certificate.</span>
                     )}
-                    <p className="text-[11px] text-gray-500 dark:text-gray-400">Compare this with the value your administrator published through another channel before trusting the download. Run <code className="font-mono">openssl x509 -noout -fingerprint -sha256 -in file.pem</code> on the file to check it matches.</p>
+                    <p className="text-[11px] text-ink-muted">Compare this with the value your administrator published through another channel before trusting the download. Run <code className="font-mono">openssl x509 -noout -fingerprint -sha256 -in file.pem</code> on the file to check it matches.</p>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <DetailField label="Subject" value={cert.subjectDN} />
@@ -227,27 +227,27 @@ const CaInformation: React.FC = () => {
                 </div>
 
                 {status === 'revoked' && (
-                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded p-2">
-                        <span className="text-xs text-red-800 dark:text-red-400">This CA certificate has been revoked.</span>
+                    <div className="bg-crit-soft border border-crit/40 rounded p-2">
+                        <span className="text-xs text-crit">This CA certificate has been revoked.</span>
                     </div>
                 )}
 
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-300 dark:border-gray-700">
+                <div className="flex flex-wrap gap-2 pt-2 border-t border-line">
                     <button
                         onClick={() => handleDownloadPem(cert)}
-                        className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                        className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                     >
                         PEM
                     </button>
                     <button
                         onClick={() => handleDownloadDer(cert)}
-                        className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                        className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors"
                     >
                         DER
                     </button>
                     <button
                         onClick={() => handleDownloadChain(cert)}
-                        className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                        className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors"
                     >
                         Trust Chain
                     </button>
@@ -258,7 +258,7 @@ const CaInformation: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Trusted CAs</h1>
+            <h1 className="text-xl font-semibold text-ink">Trusted CAs</h1>
 
             <DataTable<CaCertificate>
                 tableId="trusted-cas"

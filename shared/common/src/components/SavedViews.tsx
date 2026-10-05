@@ -34,15 +34,15 @@ export const SavedViews: React.FC<{
 
     return (
         <div className="flex items-center gap-2 flex-wrap text-xs">
-            {prefs.views.length > 0 && <span className="text-gray-500 dark:text-gray-400">Views:</span>}
+            {prefs.views.length > 0 && <span className="text-ink-muted">Views:</span>}
             {prefs.views.map((v) => (
-                <span key={v.name} className={`inline-flex items-center rounded border ${active === v.name ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200' : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300'}`}>
+                <span key={v.name} className={`inline-flex items-center rounded border ${active === v.name ? 'border-accent bg-accent-soft text-accent-ink' : 'border-line-strong bg-ground text-ink'}`}>
                     <button type="button" onClick={() => onApply(v.query)} className="px-2 py-0.5 hover:underline" title={v.query || 'No filter'}>{v.name}</button>
-                    <button type="button" onClick={() => setPrefs({ views: removeView(prefs.views, v.name) })} aria-label={`Delete view ${v.name}`} className="px-1.5 py-0.5 border-l border-gray-300 dark:border-gray-600 text-gray-500 hover:text-red-600">×</button>
+                    <button type="button" onClick={() => setPrefs({ views: removeView(prefs.views, v.name) })} aria-label={`Delete view ${v.name}`} className="px-1.5 py-0.5 border-l border-line-strong text-ink-muted hover:text-crit">×</button>
                 </span>
             ))}
             {current && !naming && !active && (
-                <button type="button" onClick={() => setNaming(true)} className="px-2 py-0.5 rounded border border-dashed border-gray-400 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-blue-400 hover:text-blue-800 dark:hover:text-blue-300">
+                <button type="button" onClick={() => setNaming(true)} className="px-2 py-0.5 rounded border border-dashed border-line-strong text-ink-muted hover:border-accent hover:text-accent-hover">
                     Save current view…
                 </button>
             )}
@@ -54,10 +54,10 @@ export const SavedViews: React.FC<{
                         onChange={(e) => setName(e.target.value)}
                         placeholder="View name"
                         maxLength={60}
-                        className="px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-2 py-0.5 rounded border border-line-strong bg-raised text-ink focus:outline-none focus:border-accent"
                     />
-                    <button type="submit" className="px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
-                    <button type="button" onClick={() => { setNaming(false); setName(''); }} className="px-2 py-0.5 text-gray-600 dark:text-gray-400 hover:underline">Cancel</button>
+                    <button type="submit" className="px-2 py-0.5 rounded bg-accent text-on-accent hover:bg-accent-hover">Save</button>
+                    <button type="button" onClick={() => { setNaming(false); setName(''); }} className="px-2 py-0.5 text-ink-muted hover:underline">Cancel</button>
                 </form>
             )}
         </div>

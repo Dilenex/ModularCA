@@ -20,15 +20,15 @@ const Layout: React.FC = () => {
     }, [location.pathname]);
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white flex flex-col">
+        <div className="min-h-screen bg-ground text-ink flex flex-col">
             {/* Header */}
-            <header className="bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800">
+            <header className="bg-raised border-b border-line">
                 <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
                     <Link to="/" className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-sm">CA</div>
+                        <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center font-bold text-sm text-on-accent">CA</div>
                         <div>
-                            <h1 className="text-lg font-bold text-gray-900 dark:text-white leading-none">ModularCA</h1>
-                            <p className="text-[10px] text-gray-600 leading-none mt-0.5">Certificate Authority</p>
+                            <h1 className="text-lg font-bold text-ink leading-none">ModularCA</h1>
+                            <p className="text-[10px] text-ink-muted leading-none mt-0.5">Certificate Authority</p>
                         </div>
                     </Link>
                     <div className="flex items-center gap-2">
@@ -43,8 +43,8 @@ const Layout: React.FC = () => {
                                         to={item.path}
                                         className={`px-3 py-2 rounded text-sm transition-colors ${
                                             active
-                                                ? 'bg-blue-600/20 text-blue-800 dark:text-blue-300'
-                                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'
+                                                ? 'bg-accent-soft text-accent-ink font-medium'
+                                                : 'text-ink-muted hover:text-ink hover:bg-hover'
                                         }`}
                                     >
                                         {item.name}
@@ -54,7 +54,7 @@ const Layout: React.FC = () => {
                         </nav>
                         <button
                             onClick={toggleTheme}
-                            className="ml-2 p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors text-gray-600"
+                            className="ml-2 p-1.5 rounded hover:bg-hover transition-colors text-ink-muted"
                             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                         >
                             {theme === 'dark' ? (
@@ -65,7 +65,7 @@ const Layout: React.FC = () => {
                         </button>
                         <button
                             onClick={() => setMenuOpen(!menuOpen)}
-                            className="md:hidden p-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                            className="md:hidden p-1.5 rounded-md text-ink-muted hover:bg-hover"
                         >
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -76,13 +76,13 @@ const Layout: React.FC = () => {
             </header>
 
             {menuOpen && (
-                <div className="md:hidden border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950">
+                <div className="md:hidden border-b border-line bg-raised">
                     <div className="max-w-6xl mx-auto px-4 py-2 flex flex-col space-y-1">
                         {navItems.map((item) => {
                             const active = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path);
                             return (
                                 <Link key={item.path} to={item.path} onClick={() => setMenuOpen(false)}
-                                    className={`px-3 py-2 rounded text-sm transition-colors ${active ? 'bg-blue-600/20 text-blue-800 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+                                    className={`px-3 py-2 rounded text-sm transition-colors ${active ? 'bg-accent-soft text-accent-ink font-medium' : 'text-ink-muted hover:text-ink hover:bg-hover'}`}>
                                     {item.name}
                                 </Link>
                             );
@@ -99,8 +99,8 @@ const Layout: React.FC = () => {
             </main>
 
             {/* Footer */}
-            <footer className="bg-white dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800 py-6">
-                <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
+            <footer className="bg-raised border-t border-line py-6">
+                <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-muted">
                     <span>ModularCA - Open Source Certificate Authority</span>
                     {/* AGPL section 13. This is the unauthenticated surface, so this is the
                         placement that actually satisfies "all users interacting with it

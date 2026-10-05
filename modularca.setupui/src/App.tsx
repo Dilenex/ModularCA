@@ -435,11 +435,11 @@ const WizardContent: React.FC = () => {
     const showReviewNav = step === STEP_REVIEW;
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
+        <div className="min-h-screen bg-ground transition-colors">
             {/* Explicit warning if the wizard is reached over a
                 non-loopback hostname. */}
             {!isLoopback && (
-                <div className="bg-yellow-100 dark:bg-yellow-900/40 border-b-2 border-yellow-400 dark:border-yellow-700 text-yellow-900 dark:text-yellow-100 px-4 py-3 text-sm text-center">
+                <div className="bg-warn-soft border-b-2 border-warn text-warn px-4 py-3 text-sm text-center">
                     <strong>Warning:</strong> the setup wizard is being accessed from a non-loopback address ({window.location.hostname}). The wizard is intended to run only on the local console of the server. If this is unexpected, close this tab and verify access controls before continuing.
                 </div>
             )}
@@ -447,7 +447,7 @@ const WizardContent: React.FC = () => {
             <div className="fixed top-4 right-4 z-50">
                 <button
                     onClick={toggleTheme}
-                    className="p-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white shadow-sm transition-colors"
+                    className="p-2 rounded-lg bg-raised border border-line text-ink-muted hover:text-ink transition-colors"
                     aria-label="Toggle theme"
                 >
                     {theme === 'dark' ? (
@@ -487,7 +487,7 @@ const WizardContent: React.FC = () => {
                                         {showConnector && (
                                             <div
                                                 className={`h-0.5 w-8 sm:w-12 ${
-                                                    isCompleted ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
+                                                    isCompleted ? 'bg-accent' : 'bg-line'
                                                 }`}
                                             />
                                         )}
@@ -495,10 +495,10 @@ const WizardContent: React.FC = () => {
                                             <div
                                                 className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors ${
                                                     isCompleted
-                                                        ? 'bg-blue-600 text-white'
+                                                        ? 'bg-accent text-on-accent'
                                                         : isCurrent
-                                                        ? 'bg-blue-600 text-white ring-4 ring-blue-200 dark:ring-blue-900'
-                                                        : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                                                        ? 'bg-accent text-on-accent ring-4 ring-accent'
+                                                        : 'bg-sunken text-ink-muted'
                                                 }`}
                                             >
                                                 {isCompleted ? (
@@ -512,8 +512,8 @@ const WizardContent: React.FC = () => {
                                             <span
                                                 className={`text-xs mt-1.5 hidden sm:block ${
                                                     isFuture
-                                                        ? 'text-gray-600 dark:text-gray-500'
-                                                        : 'text-gray-700 dark:text-gray-300'
+                                                        ? 'text-ink-muted'
+                                                        : 'text-ink'
                                                 }`}
                                             >
                                                 {label}
@@ -527,7 +527,7 @@ const WizardContent: React.FC = () => {
                 )}
 
                 {/* Card */}
-                <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-6 sm:p-8">
+                <div className="bg-raised border border-line rounded-lg p-6 sm:p-8">
                     {renderStep()}
                 </div>
 
@@ -536,14 +536,14 @@ const WizardContent: React.FC = () => {
                     <div className="flex justify-between mt-6">
                         <button
                             onClick={handleBack}
-                            className="px-6 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-medium rounded-lg transition-colors"
+                            className="px-6 py-2 bg-sunken hover:bg-hover text-ink font-medium rounded-lg transition-colors"
                         >
                             Back
                         </button>
                         <button
                             onClick={handleNext}
                             disabled={!canProceed()}
-                            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
+                            className="px-6 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
                         >
                             Next
                         </button>
@@ -555,7 +555,7 @@ const WizardContent: React.FC = () => {
                     <div className="flex justify-start mt-6">
                         <button
                             onClick={handleBack}
-                            className="px-6 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-medium rounded-lg transition-colors"
+                            className="px-6 py-2 bg-sunken hover:bg-hover text-ink font-medium rounded-lg transition-colors"
                         >
                             Back
                         </button>

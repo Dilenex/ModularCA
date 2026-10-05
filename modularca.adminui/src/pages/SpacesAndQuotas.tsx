@@ -23,11 +23,11 @@ export function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 export const usagePercent = (used: number, max: number) => (!max || max <= 0 ? 0 : Math.min(100, Math.round((used / max) * 100)));
-export const usageBarColor = (p: number) => (p > 80 ? 'bg-red-500' : p >= 60 ? 'bg-yellow-500' : 'bg-green-500');
-export const usageTextColor = (p: number) => (p > 80 ? 'text-red-800 dark:text-red-400' : p >= 60 ? 'text-yellow-800 dark:text-yellow-400' : 'text-green-800 dark:text-green-400');
+export const usageBarColor = (p: number) => (p > 80 ? 'bg-crit' : p >= 60 ? 'bg-warn' : 'bg-ok');
+export const usageTextColor = (p: number) => (p > 80 ? 'text-crit' : p >= 60 ? 'text-warn' : 'text-ok');
 // 0 = unlimited by convention across space and CA quotas.
 
-export const numInput = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
+export const numInput = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent';
 
 export interface Quota {
     groupId: string | null;
@@ -94,45 +94,45 @@ export const CaQuotaRow: React.FC<{
     const pct = usagePercent(issued, liveMax);
 
     return (
-        <div className="px-3 py-2 grid grid-cols-[1fr_70px_70px_70px_150px_70px_70px] gap-2 items-center border-b border-gray-200 dark:border-gray-700/60 last:border-b-0 text-xs">
+        <div className="px-3 py-2 grid grid-cols-[1fr_70px_70px_70px_150px_70px_70px] gap-2 items-center border-b border-line last:border-b-0 text-xs">
             <div className="min-w-0">
-                <span className="text-gray-900 dark:text-white truncate block">{ca.label || ca.name}</span>
-                <span className="text-[10px] text-gray-500">{ca.type}{ca.isSshCa ? ' · SSH' : ''}{!ca.isEnabled ? ' · disabled' : ''}</span>
+                <span className="text-ink truncate block">{ca.label || ca.name}</span>
+                <span className="text-[10px] text-ink-muted">{ca.type}{ca.isSshCa ? ' · SSH' : ''}{!ca.isEnabled ? ' · disabled' : ''}</span>
             </div>
 
             {!q ? (
-                <span className="col-span-6 text-gray-500 italic">{ca.isSshCa ? 'Quota not applicable to SSH CA' : 'No admin group / quota'}</span>
+                <span className="col-span-6 text-ink-muted italic">{ca.isSshCa ? 'Quota not applicable to SSH CA' : 'No admin group / quota'}</span>
             ) : readOnly ? (
                 <>
-                    <span className="text-gray-600 dark:text-gray-400">{q.maxCertificates || 'Unlimited'}</span>
-                    <span className="text-gray-600 dark:text-gray-400">{issued}</span>
-                    <span className="text-gray-600 dark:text-gray-400">{q.maxCertificates ? q.remainingCount : '-'}</span>
+                    <span className="text-ink-muted">{q.maxCertificates || 'Unlimited'}</span>
+                    <span className="text-ink-muted">{issued}</span>
+                    <span className="text-ink-muted">{q.maxCertificates ? q.remainingCount : '-'}</span>
                     <div className="flex items-center gap-1">
-                        <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                        <div className="flex-1 bg-sunken rounded-full h-2 overflow-hidden">
                             <div className={`h-full rounded-full ${usageBarColor(pct)}`} style={{ width: `${pct}%` }} />
                         </div>
                         <span className={`font-mono w-9 text-right ${usageTextColor(pct)}`}>{q.maxCertificates ? `${pct}%` : '-'}</span>
                     </div>
-                    <span className="text-gray-600 dark:text-gray-400">{pending}</span>
-                    <span className="text-gray-600 dark:text-gray-400">{q.maxPendingRequests || '-'}</span>
+                    <span className="text-ink-muted">{pending}</span>
+                    <span className="text-ink-muted">{q.maxPendingRequests || '-'}</span>
                 </>
             ) : (
                 <>
                     <input inputMode="numeric" value={maxCerts}
                         onChange={(e) => onChange?.({ maxCertificates: parseInt(e.target.value.replace(/\D/g, '') || '0', 10), maxPendingRequests: maxPending })}
-                        className="px-2 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded w-full text-gray-900 dark:text-white" />
-                    <span className="text-gray-600 dark:text-gray-400">{issued}</span>
-                    <span className="text-gray-600 dark:text-gray-400">{Math.max(0, maxCerts - issued)}</span>
+                        className="px-2 py-1 bg-raised border border-line-strong rounded w-full text-ink" />
+                    <span className="text-ink-muted">{issued}</span>
+                    <span className="text-ink-muted">{Math.max(0, maxCerts - issued)}</span>
                     <div className="flex items-center gap-1">
-                        <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                        <div className="flex-1 bg-sunken rounded-full h-2 overflow-hidden">
                             <div className={`h-full rounded-full ${usageBarColor(pct)}`} style={{ width: `${pct}%` }} />
                         </div>
                         <span className={`font-mono w-9 text-right ${usageTextColor(pct)}`}>{maxCerts ? `${pct}%` : '-'}</span>
                     </div>
-                    <span className="text-gray-600 dark:text-gray-400">{pending}</span>
+                    <span className="text-ink-muted">{pending}</span>
                     <input inputMode="numeric" value={maxPending}
                         onChange={(e) => onChange?.({ maxCertificates: maxCerts, maxPendingRequests: parseInt(e.target.value.replace(/\D/g, '') || '0', 10) })}
-                        className="px-2 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded w-full text-gray-900 dark:text-white" />
+                        className="px-2 py-1 bg-raised border border-line-strong rounded w-full text-ink" />
                 </>
             )}
         </div>
@@ -204,12 +204,12 @@ const SpacesAndQuotas: React.FC = () => {
         {
             key: 'name', header: 'Name', defaultWidth: 240, minWidth: 140, truncate: false,
             exportValue: (t) => t.name,
-            render: (t) => <span className="text-gray-900 dark:text-white font-medium truncate">{t.name}</span>,
+            render: (t) => <span className="text-ink font-medium truncate">{t.name}</span>,
         },
-        { key: 'cas', header: 'CAs', defaultWidth: 100, exportValue: (t) => String(t.caCount), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.caCount}</span> },
-        { key: 'users', header: 'Users', defaultWidth: 100, exportValue: (t) => String(t.userCount), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.userCount}</span> },
-        { key: 'certs', header: 'Certs', defaultWidth: 120, headerTitle: 'Active certificates', exportValue: (t) => String(t.issuedCertificates), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{t.issuedCertificates}</span> },
-        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (t) => formatDate(t.createdAt), render: (t) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(t.createdAt)}</span> },
+        { key: 'cas', header: 'CAs', defaultWidth: 100, exportValue: (t) => String(t.caCount), render: (t) => <span className="text-xs text-ink-muted">{t.caCount}</span> },
+        { key: 'users', header: 'Users', defaultWidth: 100, exportValue: (t) => String(t.userCount), render: (t) => <span className="text-xs text-ink-muted">{t.userCount}</span> },
+        { key: 'certs', header: 'Certs', defaultWidth: 120, headerTitle: 'Active certificates', exportValue: (t) => String(t.issuedCertificates), render: (t) => <span className="text-xs text-ink-muted">{t.issuedCertificates}</span> },
+        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (t) => formatDate(t.createdAt), render: (t) => <span className="text-xs text-ink-muted">{formatDate(t.createdAt)}</span> },
     ];
 
     const drawer = (t: Space) => (
@@ -222,7 +222,7 @@ const SpacesAndQuotas: React.FC = () => {
             <DetailField label="Active Certs" value={t.issuedCertificates} />
             <DetailField label="Key Ceremony" value={t.requireKeyCeremony ? `Yes (${t.ceremonyRequiredApprovals} approval${t.ceremonyRequiredApprovals === 1 ? '' : 's'} from others; the initiator is never counted)` : 'No'} />
             <DetailField label="Created" value={formatDate(t.createdAt)} />
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit the validity ceiling, toggle status, or set per-CA quotas.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to edit the validity ceiling, toggle status, or set per-CA quotas.</p>
         </div>
     );
 
@@ -230,18 +230,18 @@ const SpacesAndQuotas: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Spaces &amp; Quotas</h1>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">A space groups CAs for delegated administration and carries their ceilings. Open a space to edit its ceilings and set per-CA issuance quotas.</p>
+                    <h1 className="text-xl font-semibold text-ink">Spaces &amp; Quotas</h1>
+                    <p className="text-sm text-ink-muted mt-1">A space groups CAs for delegated administration and carries their ceilings. Open a space to edit its ceilings and set per-CA issuance quotas.</p>
                 </div>
-                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Space'}
                 </button>
             </div>
 
             {createdRecommendation && (
-                <div role="status" className="flex items-start justify-between gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-3 text-xs text-amber-900 dark:text-amber-200">
+                <div role="status" className="flex items-start justify-between gap-3 bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
                     <span>The space was created. {createdRecommendation}</span>
-                    <button type="button" onClick={() => setCreatedRecommendation(null)} className="text-amber-900 dark:text-amber-200 hover:underline">Dismiss</button>
+                    <button type="button" onClick={() => setCreatedRecommendation(null)} className="text-warn hover:underline">Dismiss</button>
                 </div>
             )}
 
@@ -249,13 +249,13 @@ const SpacesAndQuotas: React.FC = () => {
             {totals && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {[
-                        { label: 'Spaces', value: totals.totalSpaces, cls: 'text-gray-900 dark:text-white' },
-                        { label: 'Total CAs', value: totals.totalCAs, cls: 'text-gray-900 dark:text-white' },
-                        { label: 'CAs at Limit', value: totals.casAtLimit, cls: 'text-red-800 dark:text-red-400' },
-                        { label: 'CAs Near Limit (>80%)', value: totals.casNearLimit, cls: 'text-yellow-800 dark:text-yellow-400' },
+                        { label: 'Spaces', value: totals.totalSpaces, cls: 'text-ink' },
+                        { label: 'Total CAs', value: totals.totalCAs, cls: 'text-ink' },
+                        { label: 'CAs at Limit', value: totals.casAtLimit, cls: 'text-crit' },
+                        { label: 'CAs Near Limit (>80%)', value: totals.casNearLimit, cls: 'text-warn' },
                     ].map((t) => (
-                        <div key={t.label} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-                            <div className="text-xs text-gray-600 uppercase tracking-wider">{t.label}</div>
+                        <div key={t.label} className="bg-raised border border-line rounded-lg p-4">
+                            <div className="text-xs text-ink-muted uppercase tracking-wider">{t.label}</div>
                             <div className={`text-2xl font-bold mt-1 ${t.cls}`}>{t.value}</div>
                         </div>
                     ))}
@@ -263,21 +263,21 @@ const SpacesAndQuotas: React.FC = () => {
             )}
 
             {showCreate && (
-                <form onSubmit={handleCreate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">New Space</h3>
-                    <p className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-900 dark:text-blue-200">{SPACE_INTERSTITIAL}</p>
+                <form onSubmit={handleCreate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-ink">New Space</h3>
+                    <p className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">{SPACE_INTERSTITIAL}</p>
                     {recommendation && (
-                        <p className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-3 text-xs text-amber-900 dark:text-amber-200">
+                        <p className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
                             This will be space {spaces.length + 1}. {recommendation} The space is created either way.
                         </p>
                     )}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <input type="text" placeholder="Space Name" required value={createForm.name}
                             onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
                         <input type="text" placeholder="Description" value={createForm.description}
                             onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
                         <div><label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
                             <input inputMode="numeric" value={createForm.maxValidityDays} onChange={(e) => setCreateForm({ ...createForm, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} /></div>
                         <div><label className={labelCls}>Over the ceiling</label>
@@ -287,9 +287,9 @@ const SpacesAndQuotas: React.FC = () => {
                                 <option value="Shorten">Shorten to the ceiling</option>
                                 <option value="Refuse">Refuse the request</option>
                             </select>
-                            <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">Refuse applies to admin issuance only; ACME/EST/SCEP/CMP enrollments and automatic renewals always shorten.</p></div>
+                            <p className="text-[11px] text-ink-muted mt-1">Refuse applies to admin issuance only; ACME/EST/SCEP/CMP enrollments and automatic renewals always shorten.</p></div>
                     </div>
-                    <button type="submit" disabled={creating} className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">{creating ? 'Creating…' : 'Create'}</button>
+                    <button type="submit" disabled={creating} className="px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50">{creating ? 'Creating…' : 'Create'}</button>
                 </form>
             )}
 
@@ -310,10 +310,10 @@ const SpacesAndQuotas: React.FC = () => {
             />
 
             {instance && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                    <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Instance</h3>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                    <div className="px-4 py-3 border-b border-line">
+                        <h3 className="text-sm font-semibold text-ink">Instance</h3>
+                        <p className="text-xs text-ink-muted mt-1">
                             The instance's own CAs belong to no space. Their policy is the instance's (Settings → Security Policy), independent of every space's.
                         </p>
                     </div>
@@ -324,9 +324,9 @@ const SpacesAndQuotas: React.FC = () => {
                         <DetailField label="Active Certs" value={String(instance.issuedCertificates)} />
                     </div>
                     {instance.certificateAuthorities.length === 0 ? (
-                        <div className="px-4 py-2 text-xs text-gray-500">No instance CAs.</div>
+                        <div className="px-4 py-2 text-xs text-ink-muted">No instance CAs.</div>
                     ) : instance.certificateAuthorities.map((ca) => <CaQuotaRow key={ca.id} ca={ca} readOnly />)}
-                    <div id={INSTANCE_REALMS_ANCHOR} className="scroll-mt-4 px-4 py-3 border-t border-gray-300 dark:border-gray-700">
+                    <div id={INSTANCE_REALMS_ANCHOR} className="scroll-mt-4 px-4 py-3 border-t border-line">
                         <KerberosRealmsPanel spaceId={null} spaceName="Instance" caLabels={instance.certificateAuthorities.filter((c) => !c.isSshCa && c.label).map((c) => c.label!)} />
                     </div>
                 </div>

@@ -87,12 +87,12 @@ const SpaceDetail: React.FC = () => {
 
     const resetEdits = useCallback(() => { if (space) seed(space, quorum); }, [space, quorum, seed]);
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!space) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Space not found.</p>
-            <button onClick={() => navigate('/spaces')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Spaces</button>
+            <p className="text-sm text-ink-muted">Space not found.</p>
+            <button onClick={() => navigate('/spaces')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Spaces</button>
         </div>
     );
 
@@ -162,8 +162,8 @@ const SpaceDetail: React.FC = () => {
                 : `Disable space "${t.name}"? Its CAs stop issuing. Nothing is deleted, and the space can be enabled again.`,
             confirmLabel: enabling ? 'Enable' : 'Disable',
             confirmClass: enabling
-                ? 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors'
-                : 'px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors',
+                ? 'px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors'
+                : 'px-4 py-2 text-sm bg-warn text-on-accent rounded hover:bg-warn-hover transition-colors',
             action: async () => {
                 if (enabling) await apiPutWithMfa(`/api/v1/admin/spaces/${t.id}`, { isEnabled: true }, requireStepUp, StepUpOps.EnableSpace, t.id);
                 else await apiDeleteWithMfa(`/api/v1/admin/spaces/${t.id}`, requireStepUp, StepUpOps.DisableSpace, t.id);
@@ -186,8 +186,8 @@ const SpaceDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {t.isEnabled !== false
-                        ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-100 dark:hover:bg-yellow-900/70 dark:hover:text-yellow-200 transition-colors">Disable</button>
-                        : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-100 dark:hover:bg-green-900/70 dark:hover:text-green-200 transition-colors">Enable</button>}
+                        ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 hover:text-warn transition-colors">Disable</button>
+                        : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 hover:text-ok transition-colors">Enable</button>}
                 </div>
             }
         >
@@ -201,7 +201,7 @@ const SpaceDetail: React.FC = () => {
                                 <div>
                                     <label className={labelCls}>Max Cert Validity (days, 0 = unlimited)</label>
                                     <input inputMode="numeric" value={form.maxValidityDays} onChange={(e) => setForm({ ...form, maxValidityDays: parseInt(e.target.value.replace(/[^0-9]/g, '') || '0', 10) })} className={numInput} />
-                                    <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">Infrastructure and CA certificates are exempt from this ceiling.</p>
+                                    <p className="text-[11px] text-ink-muted mt-1">Infrastructure and CA certificates are exempt from this ceiling.</p>
                                 </div>
                                 <div>
                                     <label className={labelCls}>When a request exceeds the ceiling</label>
@@ -211,15 +211,15 @@ const SpaceDetail: React.FC = () => {
                                         <option value="Shorten">Shorten it (warn with MCA-ISS-004)</option>
                                         <option value="Refuse">Refuse it (MCA-ISS-005)</option>
                                     </select>
-                                    <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">
+                                    <p className="text-[11px] text-ink-muted mt-1">
                                         Refuse governs admin and interactive issuance only. ACME, EST, SCEP and CMP enrollments and automatic renewals <strong>always shorten</strong>, whatever this is set to — an enrolling client can neither see this ceiling nor change its own request, so refusing it would fail enrollments nobody at the other end can fix.
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2 pt-2">
                                     <input type="checkbox" id={`cer-${t.id}`} checked={form.requireKeyCeremony}
                                         onChange={(e) => setForm({ ...form, requireKeyCeremony: e.target.checked })}
-                                        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
-                                    <label htmlFor={`cer-${t.id}`} className="text-xs text-gray-600">Require Key Ceremony for CA Creation</label>
+                                        className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
+                                    <label htmlFor={`cer-${t.id}`} className="text-xs text-ink-muted">Require Key Ceremony for CA Creation</label>
                                 </div>
                                 {form.requireKeyCeremony && (
                                     <div><label className={labelCls}>Required Approvals</label>
@@ -230,7 +230,7 @@ const SpaceDetail: React.FC = () => {
                                 )}
                             </div>
                             {downgrade && (
-                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-3 text-xs text-amber-900 dark:text-amber-200">
+                                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
                                     This change lowers space security policy. Saving will start a key ceremony requiring {t.ceremonyRequiredApprovals} approvals from space admins before the change takes effect. System admins can bypass this by using the direct API with step-up MFA.
                                 </div>
                             )}
@@ -253,16 +253,16 @@ const SpaceDetail: React.FC = () => {
 
                 <div className="space-y-3">
                     <div>
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Per-CA Issuance Quotas <span className="text-gray-500 font-normal">({cas.length})</span></h3>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                        <h3 className="text-sm font-semibold text-ink">Per-CA Issuance Quotas <span className="text-ink-muted font-normal">({cas.length})</span></h3>
+                        <p className="text-xs text-ink-muted mt-1">
                             Per-CA certificate issuance ceilings (0 = unlimited).{mode === 'view' ? ' Switch to Edit to change.' : ' Edit values and use Save above.'}
                         </p>
                     </div>
                     {cas.length === 0 ? (
-                        <div className="py-3 text-xs text-gray-500 text-center border border-gray-300 dark:border-gray-700 rounded-lg">No CAs in this space</div>
+                        <div className="py-3 text-xs text-ink-muted text-center border border-line rounded-lg">No CAs in this space</div>
                     ) : (
-                        <div className="border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                            <div className="px-3 py-2 border-b border-gray-300 dark:border-gray-700 grid grid-cols-[1fr_70px_70px_70px_150px_70px_70px] gap-2 text-[10px] text-gray-500 font-semibold uppercase tracking-wide bg-gray-50/60 dark:bg-gray-900/40">
+                        <div className="border border-line rounded-lg overflow-hidden">
+                            <div className="px-3 py-2 border-b border-line grid grid-cols-[1fr_70px_70px_70px_150px_70px_70px] gap-2 text-[10px] text-ink-muted font-semibold uppercase tracking-wide bg-sunken">
                                 <span>CA</span><span>Max</span><span>Issued</span><span>Left</span><span>Usage</span><span>Pend</span><span>Max Pend</span>
                             </div>
                             {cas.map((ca) => (
@@ -276,8 +276,8 @@ const SpaceDetail: React.FC = () => {
 
                 <div className="space-y-3">
                     <div>
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">User Approval Quorum</h3>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                        <h3 className="text-sm font-semibold text-ink">User Approval Quorum</h3>
+                        <p className="text-xs text-ink-muted mt-1">
                             Approvals required to promote/demote/delete a privileged user in this space and its CAs. Inherits from the System quorum; a CA may require fewer than its space, never more.{mode === 'view' ? ' Switch to Edit to change.' : ''}
                         </p>
                     </div>
@@ -286,7 +286,7 @@ const SpaceDetail: React.FC = () => {
                         spaceValue={spaceQuorum} onSpaceChange={setSpaceQuorum}
                         caValues={caQuorum} onCaChange={(caId, s) => setCaQuorum((prev) => ({ ...prev, [caId]: s }))} />
                     {mode === 'edit' && quorumInvalid && (
-                        <p className="text-xs text-red-700 dark:text-red-400">A CA quorum can't exceed its space's effective quorum ({quorum?.effective}). Fix the highlighted value to enable Save.</p>
+                        <p className="text-xs text-crit">A CA quorum can't exceed its space's effective quorum ({quorum?.effective}). Fix the highlighted value to enable Save.</p>
                     )}
                 </div>
 

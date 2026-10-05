@@ -332,28 +332,28 @@ const Dashboard: React.FC = () => {
             });
     }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const statCardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4';
-    const statLabelClass = 'text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide';
-    const statValueClass = 'text-2xl font-bold text-gray-900 dark:text-white mt-1';
+    const statCardClass = 'bg-raised border border-line rounded-lg p-4';
+    const statLabelClass = 'text-xs font-semibold text-ink-muted uppercase tracking-wide';
+    const statValueClass = 'text-2xl font-bold text-ink mt-1';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+            <h1 className="text-xl font-semibold text-ink">Dashboard</h1>
 
             {/* System Health Indicators */}
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">System Health</h3>
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                <div className="px-4 py-3 border-b border-line">
+                    <h3 className="text-sm font-semibold text-ink">System Health</h3>
                 </div>
                 <div className="p-4 flex flex-wrap gap-4">
                     {health.length === 0 && (
-                        <span className="text-sm text-gray-600 dark:text-gray-400">Checking...</span>
+                        <span className="text-sm text-ink-muted">Checking...</span>
                     )}
                     {health.map((h) => (
                         <div key={h.label} className="flex items-center gap-2">
-                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${h.ok ? 'bg-green-400' : 'bg-red-400'}`} />
-                            <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">{h.label}</span>
-                            {h.detail && <span className="text-xs text-gray-600">{h.detail}</span>}
+                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${h.ok ? 'bg-ok' : 'bg-crit'}`} />
+                            <span className="text-sm text-ink font-medium">{h.label}</span>
+                            {h.detail && <span className="text-xs text-ink-muted">{h.detail}</span>}
                         </div>
                     ))}
                 </div>
@@ -369,31 +369,31 @@ const Dashboard: React.FC = () => {
                 </div>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Active</div>
-                    <div className={`${statValueClass} text-green-800 dark:text-green-400`}>
+                    <div className={`${statValueClass} text-ok`}>
                         {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.active ?? 0}
                     </div>
                 </div>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Expiring (30d)</div>
-                    <div className={`${statValueClass} ${(certStats?.expiringSoon ?? 0) > 0 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'}`}>
+                    <div className={`${statValueClass} ${(certStats?.expiringSoon ?? 0) > 0 ? 'text-warn' : 'text-ink'}`}>
                         {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.expiringSoon ?? 0}
                     </div>
                 </div>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Expired</div>
-                    <div className={`${statValueClass} ${(certStats?.expired ?? 0) > 0 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'}`}>
+                    <div className={`${statValueClass} ${(certStats?.expired ?? 0) > 0 ? 'text-warn' : 'text-ink'}`}>
                         {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.expired ?? 0}
                     </div>
                 </div>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Revoked</div>
-                    <div className={`${statValueClass} ${(certStats?.revoked ?? 0) > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
+                    <div className={`${statValueClass} ${(certStats?.revoked ?? 0) > 0 ? 'text-crit' : 'text-ink'}`}>
                         {certStatsLoading ? '...' : certStatsError ? '-' : certStats?.revoked ?? 0}
                     </div>
                 </div>
                 <div className={statCardClass}>
                     <div className={statLabelClass}>Pending CSRs</div>
-                    <div className={`${statValueClass} ${pendingCount > 0 ? 'text-blue-800 dark:text-blue-400' : 'text-gray-900 dark:text-white'}`}>
+                    <div className={`${statValueClass} ${pendingCount > 0 ? 'text-accent-ink' : 'text-ink'}`}>
                         {pendingLoading ? '...' : pendingError ? '-' : pendingCount}
                     </div>
                 </div>
@@ -401,21 +401,21 @@ const Dashboard: React.FC = () => {
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* CA Overview */}
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">CA Overview</h3>
+                <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+                        <h3 className="text-sm font-semibold text-ink">CA Overview</h3>
                         <button
                             onClick={() => navigate('/authorities/manage')}
-                            className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors"
+                            className="text-xs text-accent-ink hover:underline transition-colors"
                         >
                             View All
                         </button>
                     </div>
                     <div className="max-h-80 overflow-y-auto">
-                        {caLoading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
+                        {caLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
                         {caError && <InlineNotice notice={caError} />}
                         {!caLoading && !caError && caList.length === 0 && (
-                            <div className="p-4 text-sm text-gray-600 text-center">No CAs configured</div>
+                            <div className="p-4 text-sm text-ink-muted text-center">No CAs configured</div>
                         )}
                         {!caLoading && !caError && caList.map((ca) => {
                             const caKey = ca.id || ca.serialNumber || ca.certificateId;
@@ -435,14 +435,14 @@ const Dashboard: React.FC = () => {
                             return (
                                 <div
                                     key={caKey}
-                                    className="flex items-center justify-between px-4 py-3 border-b border-gray-300 dark:border-gray-700 last:border-b-0 hover:bg-gray-200/50 dark:bg-gray-700/50 transition-colors"
+                                    className="flex items-center justify-between px-4 py-3 border-b border-line last:border-b-0 hover:bg-hover bg-sunken transition-colors"
                                 >
                                     <div className="flex items-center gap-2 min-w-0">
                                         <StatusBadge status={isEnabled ? 'active' : 'disabled'} label={ca.isRoot ? 'Root' : 'Sub'} />
-                                        <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{ca.name || ca.subjectDN}</span>
+                                        <span className="text-sm text-ink truncate">{ca.name || ca.subjectDN}</span>
                                     </div>
                                     <div className="flex items-center gap-3 flex-shrink-0">
-                                        <span className="text-xs text-gray-600">{count} cert{count !== 1 ? 's' : ''}</span>
+                                        <span className="text-xs text-ink-muted">{count} cert{count !== 1 ? 's' : ''}</span>
                                         <StatusBadge status={isEnabled ? 'enabled' : 'disabled'} label={isEnabled ? 'Enabled' : 'Disabled'} />
                                     </div>
                                 </div>
@@ -452,32 +452,32 @@ const Dashboard: React.FC = () => {
                 </div>
 
                 {/* Group Stats */}
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Group Stats</h3>
+                <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+                        <h3 className="text-sm font-semibold text-ink">Group Stats</h3>
                         <button
                             onClick={() => navigate('/groups')}
-                            className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors"
+                            className="text-xs text-accent-ink hover:underline transition-colors"
                         >
                             View All
                         </button>
                     </div>
                     <div className="p-4">
-                        {groupsLoading && <div className="text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
+                        {groupsLoading && <div className="text-sm text-ink-muted text-center">Loading...</div>}
                         {groupsError && <InlineNotice notice={groupsError} />}
                         {!groupsLoading && !groupsError && groupStats && (
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                                 <div>
-                                    <div className="text-2xl font-bold text-gray-900 dark:text-white">{groupStats.total}</div>
-                                    <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">Total Groups</div>
+                                    <div className="text-2xl font-bold text-ink">{groupStats.total}</div>
+                                    <div className="text-xs text-ink-muted mt-1">Total Groups</div>
                                 </div>
                                 <div>
-                                    <div className="text-2xl font-bold text-blue-800 dark:text-blue-400">{groupStats.system}</div>
-                                    <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">System</div>
+                                    <div className="text-2xl font-bold text-accent-ink">{groupStats.system}</div>
+                                    <div className="text-xs text-ink-muted mt-1">System</div>
                                 </div>
                                 <div>
-                                    <div className="text-2xl font-bold text-purple-400">{groupStats.caScoped}</div>
-                                    <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">CA-Scoped</div>
+                                    <div className="text-2xl font-bold text-accent-ink">{groupStats.caScoped}</div>
+                                    <div className="text-xs text-ink-muted mt-1">CA-Scoped</div>
                                 </div>
                             </div>
                         )}
@@ -499,7 +499,7 @@ const Dashboard: React.FC = () => {
                     renderSummary={(cert: any) => (
                         <div className="flex items-center gap-2">
                             <StatusBadge status={certStatus(cert)} />
-                            <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{cert.serialNumber?.substring(0, 12)}...</span>
+                            <span className="data-mono text-ink-muted">{cert.serialNumber?.substring(0, 12)}...</span>
                             <span className="truncate">{cert.subjectDN}</span>
                         </div>
                     )}
@@ -519,9 +519,9 @@ const Dashboard: React.FC = () => {
                         return (
                             <div className="space-y-1">
                                 {cert.revoked && (
-                                    <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded px-3 py-2 mb-3">
+                                    <div className="bg-crit-soft border border-crit/40 rounded px-3 py-2 mb-3">
                                         <StatusBadge status="revoked" label="REVOKED" />
-                                        <span className="text-xs text-red-800 dark:text-red-300 ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
+                                        <span className="text-xs text-crit ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
                                     </div>
                                 )}
                                 <DetailField label="Serial" value={cert.serialNumber} mono />
@@ -567,10 +567,10 @@ const Dashboard: React.FC = () => {
                     modalFullViewUrl={() => '/audit'}
                     renderSummary={(log: any) => (
                         <div className="flex items-center gap-2 text-xs">
-                            <span className="text-gray-600 min-w-[140px]">{formatDate(log.timestamp)}</span>
+                            <span className="text-ink-muted min-w-[140px]">{formatDate(log.timestamp)}</span>
                             <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'FAIL'} />
-                            <span className="text-blue-800 dark:text-blue-300">{log.actorUsername || 'system'}</span>
-                            <span className="text-gray-600 dark:text-gray-400">{log.actionType}</span>
+                            <span className="text-accent-ink">{log.actorUsername || 'system'}</span>
+                            <span className="text-ink-muted">{log.actionType}</span>
                         </div>
                     )}
                     renderDetail={(log: any) => (
@@ -613,7 +613,7 @@ const Dashboard: React.FC = () => {
                         <div className="flex items-center gap-2">
                             <StatusBadge status="pending" />
                             <span className="truncate">{csr.subjectName}</span>
-                            <span className="text-xs text-gray-600">{csr.keyAlgorithm} {csr.keySize}</span>
+                            <span className="text-xs text-ink-muted">{csr.keyAlgorithm} {csr.keySize}</span>
                         </div>
                     )}
                     renderDetail={(csr: any) => (
@@ -646,8 +646,8 @@ const Dashboard: React.FC = () => {
                         <div className="space-y-1">
                             <DetailField label="Name" value={p.name} />
                             <DetailField label="Description" value={p.description} />
-                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
-                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
                             <DetailField label="Max Path Length" value={p.maxPathLength?.toString()} />
                             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                         </div>
@@ -677,8 +677,8 @@ const Dashboard: React.FC = () => {
                             <DetailField label="Validity Max" value={p.validityPeriodMax} />
                             <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                             <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
-                            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
+                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Sizes</span><CeilingList items={p.allowedKeySizes} noun="key size" /></div>
                             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
                         </div>
                     )}
@@ -703,14 +703,14 @@ const Dashboard: React.FC = () => {
                 onCancel={() => setQuickRevoke(null)}
                 message={quickRevoke ? (
                     <div className="space-y-3 text-left">
-                        <div className="text-xs text-gray-600 dark:text-gray-400">
-                            <div className="break-all"><span className="font-semibold text-gray-700 dark:text-gray-300">Subject:</span> {quickRevoke.subjectDN}</div>
-                            <div className="font-mono break-all"><span className="font-sans font-semibold text-gray-700 dark:text-gray-300">Serial:</span> {quickRevoke.serialNumber}</div>
+                        <div className="text-xs text-ink-muted">
+                            <div className="break-all"><span className="font-semibold text-ink">Subject:</span> {quickRevoke.subjectDN}</div>
+                            <div className="font-mono break-all"><span className="font-sans font-semibold text-ink">Serial:</span> {quickRevoke.serialNumber}</div>
                         </div>
                         <div>
-                            <label htmlFor="dashboard-revoke-reason" className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Revocation reason</label>
+                            <label htmlFor="dashboard-revoke-reason" className="block text-xs text-ink-muted mb-1">Revocation reason</label>
                             <select id="dashboard-revoke-reason" value={quickRevokeReason} onChange={(e) => setQuickRevokeReason(e.target.value)} disabled={quickRevokeBusy}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50">
                                 {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                             </select>
                             <RevocationReasonHint reason={quickRevokeReason} />

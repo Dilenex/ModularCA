@@ -149,21 +149,21 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 200, minWidth: 140, truncate: false, exportValue: (k) => k.name || 'Unnamed', render: (k) => <span className="text-gray-900 dark:text-white font-medium truncate">{k.name || 'Unnamed'}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 200, minWidth: 140, truncate: false, exportValue: (k) => k.name || 'Unnamed', render: (k) => <span className="text-ink font-medium truncate">{k.name || 'Unnamed'}</span> },
         { key: 'status', header: 'Status', defaultWidth: 130, truncate: false, exportValue: keyStatusLabel, render: keyStatusBadge },
-        { key: 'algorithm', header: 'Algorithm', defaultWidth: 150, exportValue: (k) => `${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize})` : ''}`, render: (k) => <span className="text-xs text-gray-700 dark:text-gray-300">{k.keyType || k.algorithm}{k.keySize ? ` (${k.keySize})` : ''}</span> },
+        { key: 'algorithm', header: 'Algorithm', defaultWidth: 150, exportValue: (k) => `${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize})` : ''}`, render: (k) => <span className="text-xs text-ink">{k.keyType || k.algorithm}{k.keySize ? ` (${k.keySize})` : ''}</span> },
         {
             key: 'role', header: 'Role', defaultWidth: 120, truncate: false,
             exportValue: (k) => [k.isUserCa ? 'User' : null, k.isHostCa ? 'Host' : null].filter(Boolean).join(', '),
             render: (k) => (
                 <span className="flex gap-1">
-                    {k.isUserCa && <span className="px-1.5 py-0.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-400 rounded">User</span>}
-                    {k.isHostCa && <span className="px-1.5 py-0.5 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-400 rounded">Host</span>}
-                    {!k.isUserCa && !k.isHostCa && <span className="text-xs text-gray-500">-</span>}
+                    {k.isUserCa && <span className="px-1.5 py-0.5 text-xs bg-ok-soft text-ok rounded">User</span>}
+                    {k.isHostCa && <span className="px-1.5 py-0.5 text-xs bg-accent-soft text-accent-ink rounded">Host</span>}
+                    {!k.isUserCa && !k.isHostCa && <span className="text-xs text-ink-muted">-</span>}
                 </span>
             ),
         },
-        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (k) => formatDate(k.createdAt), render: (k) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(k.createdAt)}</span> },
+        { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (k) => formatDate(k.createdAt), render: (k) => <span className="text-xs text-ink-muted">{formatDate(k.createdAt)}</span> },
     ];
 
     // Disable is step-up MFA gated with no bulk endpoint, so it's single-select.
@@ -187,37 +187,37 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">SSH CA Keys</h2>
+                <h2 className="text-lg font-semibold text-ink">SSH CA Keys</h2>
                 {canGenerate && <button
                     onClick={() => setShowGenForm(!showGenForm)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors"
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                 >
                     {showGenForm ? 'Cancel' : 'Generate CA Key'}
                 </button>}
             </div>
 
             {canGenerate && showGenForm && (
-                <form onSubmit={handleGenerate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Generate New SSH CA Key</h3>
+                <form onSubmit={handleGenerate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-ink">Generate New SSH CA Key</h3>
                     <FieldHint>SSH CAs belong to the instance, not to a space.</FieldHint>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Name</label>
+                            <label className="block text-xs text-ink-muted mb-1">Name</label>
                             <input
                                 type="text"
                                 required
                                 placeholder="My SSH CA"
                                 value={genForm.name}
                                 onChange={(e) => setGenForm({ ...genForm, name: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
                             />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Key Type</label>
+                            <label className="block text-xs text-ink-muted mb-1">Key Type</label>
                             <select
                                 value={genForm.keyType}
                                 onChange={(e) => setGenForm({ ...genForm, keyType: e.target.value, keySize: '' })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                             >
                                 <option value="ed25519">ed25519</option>
                                 <option value="ecdsa">ecdsa</option>
@@ -226,11 +226,11 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                         </div>
                         {genForm.keyType !== 'ed25519' && (
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Key Size</label>
+                            <label className="block text-xs text-ink-muted mb-1">Key Size</label>
                             <select
                                 value={genForm.keySize}
                                 onChange={(e) => setGenForm({ ...genForm, keySize: e.target.value })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                             >
                                 {genForm.keyType === 'rsa' ? (
                                     <>
@@ -251,30 +251,30 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                                 )}
                             </select>
                             {genForm.keyType === 'rsa' && (genForm.keySize === '7680' || genForm.keySize === '8192') && (
-                                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                <p className="text-xs text-warn mt-1">
                                     ⚠ High-compute RSA — key generation may take 30+ seconds.
                                 </p>
                             )}
                         </div>
                         )}
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Max Validity (hours)</label>
+                            <label className="block text-xs text-ink-muted mb-1">Max Validity (hours)</label>
                             <input
                                 type="text"
                                 inputMode="numeric"
                                 value={genForm.maxValidityHours}
                                 onChange={(e) => setGenForm({ ...genForm, maxValidityHours: e.target.value.replace(/\D/g, '') })}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
                             />
                         </div>
                     </div>
                     <div>
                         <div className="flex gap-4">
-                            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                            <label className="flex items-center gap-2 text-sm text-ink">
                                 <input type="checkbox" checked={genForm.isUserCa} onChange={(e) => setGenForm({ ...genForm, isUserCa: e.target.checked })} className="rounded" />
                                 User CA
                             </label>
-                            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                            <label className="flex items-center gap-2 text-sm text-ink">
                                 <input type="checkbox" checked={genForm.isHostCa} onChange={(e) => setGenForm({ ...genForm, isHostCa: e.target.checked })} className="rounded" />
                                 Host CA
                             </label>
@@ -288,7 +288,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                     <button
                         type="submit"
                         disabled={generating || caRoleMissing}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                     >
                         {generating ? 'Generating...' : 'Generate'}
                     </button>
@@ -296,12 +296,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             )}
 
             {pendingCreateEntries.length > 0 && (
-                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg p-3 text-xs space-y-1">
-                    <p className="font-semibold text-amber-800 dark:text-amber-300">Pending CA key ceremonies</p>
+                <div className="bg-warn-soft border border-warn/40 rounded-lg p-3 text-xs space-y-1">
+                    <p className="font-semibold text-warn">Pending CA key ceremonies</p>
                     {pendingCreateEntries.map((c) => (
                         <div key={c.id} className="flex items-center gap-2">
                             <StatusBadge status="pending" label={`Ceremony (${c.currentApprovals}/${c.requiredApprovals})`} />
-                            <span className="text-gray-700 dark:text-gray-300">{c.name}</span>
+                            <span className="text-ink">{c.name}</span>
                         </div>
                     ))}
                 </div>
@@ -329,7 +329,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 title={confirmAction?.title || ''}
                 message={confirmAction?.message || ''}
                 confirmLabel={confirmAction?.confirmLabel || 'Confirm'}
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={confirmLoading}
                 onConfirm={async () => {
                     if (!confirmAction) return;
@@ -589,10 +589,10 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             exportValue: (c) => (c.isRevoked ? 'Revoked' : (certIsUser(c) ? 'User' : 'Host')),
             render: (c) => c.isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <StatusBadge status={certIsUser(c) ? 'pending' : 'active'} label={certIsUser(c) ? 'User' : 'Host'} />,
         },
-        { key: 'keyId', header: 'Key ID', defaultWidth: 180, minWidth: 130, truncate: false, exportValue: (c) => c.keyId || c.identity || '', render: (c) => <span className={`text-sm truncate ${c.isRevoked ? 'text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>{c.keyId || c.identity}</span> },
-        { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => c.serialNumber || c.serial || '', render: (c) => <span className="font-mono text-xs text-gray-600 dark:text-gray-400">#{c.serialNumber || c.serial}</span> },
-        { key: 'principals', header: 'Principals', defaultWidth: 200, exportValue: (c) => parsePrincipals(c.principals).join(', '), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{parsePrincipals(c.principals).join(', ')}</span> },
-        { key: 'validBefore', header: 'Expires', defaultWidth: 160, exportValue: (c) => formatDate(c.validBefore || c.expiresAt), render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(c.validBefore || c.expiresAt)}</span> },
+        { key: 'keyId', header: 'Key ID', defaultWidth: 180, minWidth: 130, truncate: false, exportValue: (c) => c.keyId || c.identity || '', render: (c) => <span className={`text-sm truncate ${c.isRevoked ? 'text-ink-muted line-through' : 'text-ink'}`}>{c.keyId || c.identity}</span> },
+        { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => c.serialNumber || c.serial || '', render: (c) => <span className="data-mono text-ink-muted">#{c.serialNumber || c.serial}</span> },
+        { key: 'principals', header: 'Principals', defaultWidth: 200, exportValue: (c) => parsePrincipals(c.principals).join(', '), render: (c) => <span className="text-xs text-ink-muted truncate">{parsePrincipals(c.principals).join(', ')}</span> },
+        { key: 'validBefore', header: 'Expires', defaultWidth: 160, exportValue: (c) => formatDate(c.validBefore || c.expiresAt), render: (c) => <span className="text-xs text-ink-muted">{formatDate(c.validBefore || c.expiresAt)}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -623,11 +623,11 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         <div className="space-y-4">
             {/* CA Key Selector */}
             <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-600 dark:text-gray-400 font-medium">CA Key:</label>
+                <label className="text-sm text-ink-muted font-medium">CA Key:</label>
                 <select
                     value={selectedCaKeyId}
                     onChange={(e) => setSelectedCaKeyId(e.target.value)}
-                    className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                 >
                     {caKeys.filter(k => k.isEnabled !== false).length === 0 && <option value="">No CA keys available</option>}
                     {caKeys.filter(k => k.isEnabled !== false).map((k: any) => (
@@ -637,11 +637,11 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             </div>
 
             <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">SSH Certificates</h2>
+                <h2 className="text-lg font-semibold text-ink">SSH Certificates</h2>
                 <button
                     onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }}
                     disabled={!selectedCaKeyId}
-                    className="px-4 py-2 text-sm bg-green-600 text-gray-900 dark:text-white rounded hover:bg-green-700 disabled:opacity-50 transition-colors"
+                    className="px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50 transition-colors"
                 >
                     {showSignForm ? 'Cancel' : 'Sign Key'}
                 </button>
@@ -649,18 +649,18 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
 
             {/* Sign Form */}
             {showSignForm && (
-                <form onSubmit={handleSign} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                <form onSubmit={handleSign} className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-ink">
                         Sign {signForm.certType === 'user' ? 'User' : 'Host'} Key
                     </h3>
 
                     {/* Certificate Type */}
                     <div>
-                        <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Certificate Type</label>
+                        <label className="block text-xs text-ink-muted mb-1">Certificate Type</label>
                         <select
                             value={signForm.certType}
                             onChange={(e) => setSignForm({ ...signForm, certType: e.target.value as 'user' | 'host', sshSigningProfileId: '', sshCertProfileId: '' })}
-                            className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                         >
                             <option value="user">User Certificate</option>
                             <option value="host">Host Certificate</option>
@@ -671,12 +671,12 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <div>
-                                <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Request Profile</label>
+                                <label className="block text-xs text-ink-muted mb-1">Request Profile</label>
                                 <select
                                     required
                                     value={signForm.sshRequestProfileId}
                                     onChange={(e) => setSignForm({ ...signForm, sshRequestProfileId: e.target.value, sshSigningProfileId: '', sshCertProfileId: '' })}
-                                    className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                                 >
                                     <option value="">Select request profile...</option>
                                     {requestProfiles.map((p) => (
@@ -685,13 +685,13 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Signing Profile</label>
+                                <label className="block text-xs text-ink-muted mb-1">Signing Profile</label>
                                 <select
                                     required
                                     disabled={!signForm.sshRequestProfileId}
                                     value={signForm.sshSigningProfileId}
                                     onChange={(e) => setSignForm({ ...signForm, sshSigningProfileId: e.target.value })}
-                                    className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50"
                                 >
                                     <option value="">Select signing profile...</option>
                                     {filteredSigningProfiles.map((p) => (
@@ -699,17 +699,17 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                     ))}
                                 </select>
                                 {signForm.sshRequestProfileId && filteredSigningProfiles.length === 0 && (
-                                    <p className="text-xs text-red-800 dark:text-red-400 mt-1">No {signForm.certType} signing profiles allowed by this request profile</p>
+                                    <p className="text-xs text-crit mt-1">No {signForm.certType} signing profiles allowed by this request profile</p>
                                 )}
                             </div>
                             <div>
-                                <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Cert Profile</label>
+                                <label className="block text-xs text-ink-muted mb-1">Cert Profile</label>
                                 <select
                                     required
                                     disabled={!signForm.sshRequestProfileId}
                                     value={signForm.sshCertProfileId}
                                     onChange={(e) => setSignForm({ ...signForm, sshCertProfileId: e.target.value })}
-                                    className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50"
                                 >
                                     <option value="">Select cert profile...</option>
                                     {filteredCertProfiles.map((p) => (
@@ -717,19 +717,19 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                     ))}
                                 </select>
                                 {signForm.sshRequestProfileId && filteredCertProfiles.length === 0 && (
-                                    <p className="text-xs text-red-800 dark:text-red-400 mt-1">No cert profiles allowed by this request profile</p>
+                                    <p className="text-xs text-crit mt-1">No cert profiles allowed by this request profile</p>
                                 )}
                             </div>
                         </div>
 
                         {/* Profile constraint summary */}
                         {profilesSelected && (
-                            <div className="p-2 bg-white dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded text-xs text-gray-600 dark:text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
-                                <span>Max validity: <span className="text-gray-900 dark:text-white font-medium">{effectiveMaxValidity === Infinity ? 'unlimited' : `${effectiveMaxValidity}h`}</span></span>
-                                {selectedCertProfile && <span>Max principals: <span className="text-gray-900 dark:text-white font-medium">{selectedCertProfile.maxPrincipals}</span></span>}
-                                {selectedSigningProfile?.forceCommand && <span>Force command: <span className="text-gray-900 dark:text-white font-medium font-mono">{selectedSigningProfile.forceCommand}</span></span>}
+                            <div className="p-2 bg-raised border border-line rounded text-xs text-ink-muted flex flex-wrap gap-x-4 gap-y-1">
+                                <span>Max validity: <span className="text-ink font-medium">{effectiveMaxValidity === Infinity ? 'unlimited' : `${effectiveMaxValidity}h`}</span></span>
+                                {selectedCertProfile && <span>Max principals: <span className="text-ink font-medium">{selectedCertProfile.maxPrincipals}</span></span>}
+                                {selectedSigningProfile?.forceCommand && <span>Force command: <span className="text-ink font-medium font-mono">{selectedSigningProfile.forceCommand}</span></span>}
                                 {selectedCertProfile && parseJsonArray(selectedCertProfile.allowedPrincipalPatterns).length > 0 && (
-                                    <span>Principal patterns: <span className="text-gray-900 dark:text-white font-medium font-mono">{parseJsonArray(selectedCertProfile.allowedPrincipalPatterns).join(', ')}</span></span>
+                                    <span>Principal patterns: <span className="text-ink font-medium font-mono">{parseJsonArray(selectedCertProfile.allowedPrincipalPatterns).join(', ')}</span></span>
                                 )}
                             </div>
                         )}
@@ -739,30 +739,30 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                     <fieldset disabled={!profilesSelected} className={!profilesSelected ? 'opacity-40' : ''}>
                         <div className="space-y-3">
                             <div>
-                                <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Public Key</label>
+                                <label className="block text-xs text-ink-muted mb-1">Public Key</label>
                                 <textarea
                                     required
                                     rows={3}
                                     placeholder="ssh-ed25519 AAAA..."
                                     value={signForm.publicKey}
                                     onChange={(e) => setSignForm({ ...signForm, publicKey: e.target.value })}
-                                    className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono placeholder-ink-faint focus:outline-none focus:border-accent"
                                 />
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 <div>
-                                    <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Identity (Key ID)</label>
+                                    <label className="block text-xs text-ink-muted mb-1">Identity (Key ID)</label>
                                     <input
                                         type="text"
                                         required
                                         placeholder={signForm.certType === 'user' ? 'username' : 'hostname'}
                                         value={signForm.identity}
                                         onChange={(e) => setSignForm({ ...signForm, identity: e.target.value })}
-                                        className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                    <label className="block text-xs text-ink-muted mb-1">
                                         {signForm.certType === 'user' ? 'Principals' : 'Hostnames'} (comma-separated)
                                     </label>
                                     <input
@@ -770,14 +770,14 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                         placeholder={signForm.certType === 'user' ? 'root,admin' : 'web01.example.com'}
                                         value={signForm.principals}
                                         onChange={(e) => setSignForm({ ...signForm, principals: e.target.value })}
-                                        className={`w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 ${
-                                            validationErrors.some(e => e.includes('principal') || e.includes('hostname')) || principalsMissing ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'
+                                        className={`w-full px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent ${
+                                            validationErrors.some(e => e.includes('principal') || e.includes('hostname')) || principalsMissing ? 'border-crit' : 'border-line-strong'
                                         }`}
                                     />
                                     <FieldHint tone="warn">
                                         One or more names this certificate authorises. Leave it blank and OpenSSH treats the certificate as valid for every principal; for a user certificate that is a wildcard. For a host certificate these must match the hostname clients actually type.
                                     </FieldHint>
-                                    <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+                                    <label className="mt-2 flex items-start gap-2 text-xs text-ink">
                                         <input
                                             type="checkbox"
                                             checked={signForm.allowAnyPrincipal}
@@ -800,7 +800,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                     )}
                                 </div>
                                 <div>
-                                    <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                    <label className="block text-xs text-ink-muted mb-1">
                                         Validity (hours){effectiveMaxValidity < Infinity ? ` (max ${effectiveMaxValidity})` : ''}
                                     </label>
                                     <input
@@ -809,8 +809,8 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                         placeholder={effectiveMaxValidity < Infinity ? String(effectiveMaxValidity) : '720'}
                                         value={signForm.validityHours}
                                         onChange={(e) => setSignForm({ ...signForm, validityHours: e.target.value.replace(/\D/g, '') })}
-                                        className={`w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 ${
-                                            validationErrors.some(e => e.includes('Validity')) ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'
+                                        className={`w-full px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent ${
+                                            validationErrors.some(e => e.includes('Validity')) ? 'border-crit' : 'border-line-strong'
                                         }`}
                                     />
                                 </div>
@@ -820,7 +820,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
 
                     {/* Validation errors */}
                     {validationErrors.length > 0 && (
-                        <div className="p-2 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded text-xs text-red-800 dark:text-red-400 space-y-0.5">
+                        <div className="p-2 bg-crit-soft border border-crit/40 rounded text-xs text-crit space-y-0.5">
                             {validationErrors.map((err, i) => <p key={i}>{err}</p>)}
                         </div>
                     )}
@@ -829,14 +829,14 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                         <button
                             type="submit"
                             disabled={signing || !profilesSelected || validationErrors.length > 0 || principalsMissing}
-                            className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {signing ? 'Signing...' : 'Sign Key'}
                         </button>
                         <button
                             type="button"
                             onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: '', allowAnyPrincipal: false, validityHours: '' }); }}
-                            className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                            className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors"
                         >
                             Cancel
                         </button>
@@ -846,14 +846,14 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
 
             {/* Sign Result */}
             {signResult && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-green-300 dark:border-green-700 rounded-lg p-4 space-y-3">
+                <div className="bg-raised border border-ok/40 rounded-lg p-4 space-y-3">
                     <div className="flex items-center gap-2">
-                        <span className="text-green-800 dark:text-green-400 font-semibold text-sm">Certificate Signed Successfully</span>
+                        <span className="text-ok font-semibold text-sm">Certificate Signed Successfully</span>
                     </div>
-                    <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
-                        <p><span className="text-gray-700 dark:text-gray-300">Key ID:</span> {signResult.keyId}</p>
-                        <p><span className="text-gray-700 dark:text-gray-300">Serial:</span> {signResult.serialNumber}</p>
-                        <p><span className="text-gray-700 dark:text-gray-300">Valid:</span> {formatDate(signResult.validAfter)} - {formatDate(signResult.validBefore)}</p>
+                    <div className="text-xs text-ink-muted space-y-1">
+                        <p><span className="text-ink">Key ID:</span> {signResult.keyId}</p>
+                        <p><span className="text-ink">Serial:</span> {signResult.serialNumber}</p>
+                        <p><span className="text-ink">Valid:</span> {formatDate(signResult.validAfter)} - {formatDate(signResult.validBefore)}</p>
                     </div>
                     {signResult.signedCertificate && (
                         <>
@@ -861,18 +861,18 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                 readOnly
                                 rows={3}
                                 value={signResult.signedCertificate}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-xs text-gray-700 dark:text-gray-300 font-mono focus:outline-none"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none"
                             />
                             <button
                                 onClick={() => downloadText(signResult.signedCertificate, `${signResult.keyId}-cert.pub`)}
-                                className="px-3 py-1.5 text-xs bg-green-700 text-gray-900 dark:text-white rounded hover:bg-green-600 transition-colors"
+                                className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors"
                             >
                                 Download Certificate (-cert.pub)
                             </button>
                         </>
                     )}
-                    <p className="text-xs text-gray-600">
-                        Save this as <code className="text-blue-800 dark:text-blue-400">~/.ssh/id_ed25519-cert.pub</code> alongside your private key.
+                    <p className="text-xs text-ink-muted">
+                        Save this as <code className="text-accent-ink">~/.ssh/id_ed25519-cert.pub</code> alongside your private key.
                     </p>
                 </div>
             )}
@@ -903,7 +903,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                     return `Revoke ${n} certificate${n !== 1 ? 's' : ''}? This cannot be undone.`;
                 })() : ''}
                 confirmLabel="Revoke"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={revoking === 'bulk'}
                 onConfirm={performBulkRevoke}
                 onCancel={() => setConfirmRevoke(null)}
@@ -929,7 +929,7 @@ const SshCertificates: React.FC = () => {
 
     return (
         <div className="p-6 space-y-8">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">SSH Certificates</h1>
+            <h1 className="text-xl font-semibold text-ink">SSH Certificates</h1>
             <SshCaKeys refreshTrigger={refreshTrigger} onRefresh={refresh} />
             <SshCerts refreshTrigger={refreshTrigger} onRefresh={refresh} caKeys={caKeys} />
         </div>

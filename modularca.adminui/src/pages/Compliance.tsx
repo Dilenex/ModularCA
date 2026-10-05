@@ -110,10 +110,10 @@ function toISODate(d: Date): string {
 
 function severityColor(severity: string): string {
     switch (severity) {
-        case 'Critical': return 'bg-red-600 text-gray-900 dark:text-white';
-        case 'Warning': return 'bg-amber-600 text-gray-900 dark:text-white';
-        case 'Info': return 'bg-blue-600 text-gray-900 dark:text-white';
-        default: return 'bg-gray-600 text-gray-900 dark:text-white';
+        case 'Critical': return 'bg-crit text-on-accent';
+        case 'Warning': return 'bg-warn text-on-accent';
+        case 'Info': return 'bg-info text-on-accent';
+        default: return 'bg-sunken text-ink-muted';
     }
 }
 
@@ -127,9 +127,9 @@ function truncate(text: string, max: number): string {
 // ---------------------------------------------------------------------------
 
 const Section: React.FC<{ title: string; children: React.ReactNode; right?: React.ReactNode }> = ({ title, children, right }) => (
-    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}</h3>
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-ink">{title}</h3>
             {right}
         </div>
         <div className="p-4">{children}</div>
@@ -141,8 +141,8 @@ const StatCard: React.FC<{
     value: number | string;
     color: string;
 }> = ({ label, value, color }) => (
-    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 flex flex-col">
-        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">{label}</span>
+    <div className="bg-raised border border-line rounded-lg p-4 flex flex-col">
+        <span className="text-xs font-semibold text-ink-muted uppercase tracking-wide">{label}</span>
         <span className={`text-2xl font-bold mt-1 ${color}`}>{value}</span>
     </div>
 );
@@ -294,55 +294,55 @@ const Compliance: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Compliance</h1>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    <h1 className="text-xl font-semibold text-ink">Compliance</h1>
+                    <p className="text-sm text-ink-muted mt-1">
                         Live certificate posture — inventory, algorithms, findings, and expiry. Export a point-in-time report below.
                     </p>
                 </div>
             </div>
 
             {/* Export panel — scopes the downloaded CSV only */}
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
+            <div className="bg-raised border border-line rounded-lg p-4">
                 <div className="flex flex-wrap gap-4 items-end">
                     <div className="flex flex-col gap-1">
-                        <label className="text-xs text-gray-600 dark:text-gray-400">Export from</label>
+                        <label className="text-xs text-ink-muted">Export from</label>
                         <input
                             type="date"
                             value={dateFrom}
                             max={dateTo || undefined}
                             onChange={(e) => setDateFrom(e.target.value)}
-                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
+                            className={`px-3 py-2 bg-raised border rounded text-sm text-ink focus:outline-none focus:border-accent ${rangeInverted ? 'border-warn' : 'border-line-strong'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
-                        <label className="text-xs text-gray-600 dark:text-gray-400">Export to</label>
+                        <label className="text-xs text-ink-muted">Export to</label>
                         <input
                             type="date"
                             value={dateTo}
                             min={dateFrom || undefined}
                             onChange={(e) => setDateTo(e.target.value)}
-                            className={`px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 ${rangeInverted ? 'border-amber-500' : 'border-gray-400 dark:border-gray-600'}`}
+                            className={`px-3 py-2 bg-raised border rounded text-sm text-ink focus:outline-none focus:border-accent ${rangeInverted ? 'border-warn' : 'border-line-strong'}`}
                         />
                     </div>
                     <div className="flex flex-col gap-1">
-                        <label className="text-xs text-gray-600 dark:text-gray-400">CA Filter (optional)</label>
+                        <label className="text-xs text-ink-muted">CA Filter (optional)</label>
                         <input
                             type="text"
                             placeholder="CA ID..."
                             value={caFilter}
                             onChange={(e) => setCaFilter(e.target.value)}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 min-w-[200px]"
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent min-w-[200px]"
                         />
                     </div>
                     <button
                         onClick={handleExportCsv}
                         disabled={exporting || rangeInverted}
                         title={rangeInverted ? 'The "from" date is after the "to" date' : undefined}
-                        className="px-4 py-2 text-sm bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors disabled:opacity-50"
+                        className="px-4 py-2 text-sm bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors disabled:opacity-50"
                     >
                         {exporting ? 'Exporting...' : 'Export Report (CSV)'}
                     </button>
-                    <span className="text-[11px] text-gray-500 dark:text-gray-500 self-center">
+                    <span className="text-[11px] text-ink-muted self-center">
                         Issuance/revocation history in the export is bounded by this range.
                     </span>
                 </div>
@@ -358,15 +358,15 @@ const Compliance: React.FC = () => {
 
             {/* Inventory Summary */}
             <div>
-                <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 uppercase tracking-wide">Inventory Summary</h2>
+                <h2 className="text-sm font-semibold text-ink mb-3 uppercase tracking-wide">Inventory Summary</h2>
                 {reportLoading ? (
-                    <div className="text-gray-600 dark:text-gray-400 text-sm">Loading inventory...</div>
+                    <div className="text-ink-muted text-sm">Loading inventory...</div>
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <StatCard label="Total" value={report?.inventory.total ?? 0} color="text-gray-900 dark:text-white" />
-                        <StatCard label="Active" value={report?.inventory.active ?? 0} color="text-green-800 dark:text-green-400" />
-                        <StatCard label="Expired" value={report?.inventory.expired ?? 0} color="text-orange-800 dark:text-orange-400" />
-                        <StatCard label="Revoked" value={report?.inventory.revoked ?? 0} color="text-red-800 dark:text-red-400" />
+                        <StatCard label="Total" value={report?.inventory.total ?? 0} color="text-ink" />
+                        <StatCard label="Active" value={report?.inventory.active ?? 0} color="text-ok" />
+                        <StatCard label="Expired" value={report?.inventory.expired ?? 0} color="text-warn" />
+                        <StatCard label="Revoked" value={report?.inventory.revoked ?? 0} color="text-crit" />
                     </div>
                 )}
             </div>
@@ -374,9 +374,9 @@ const Compliance: React.FC = () => {
             {/* Algorithm Distribution */}
             <Section title="Algorithm Distribution">
                 {reportLoading ? (
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
+                    <span className="text-sm text-ink-muted">Loading...</span>
                 ) : algoEntries.length === 0 ? (
-                    <span className="text-sm text-gray-600">No data</span>
+                    <span className="text-sm text-ink-muted">No data</span>
                 ) : (
                     <div className="space-y-1">
                         {algoEntries.map((entry) => {
@@ -385,11 +385,11 @@ const Compliance: React.FC = () => {
                             const label = entry.keySize ? `${entry.algorithm} ${entry.keySize}` : entry.algorithm;
                             return (
                                 <div key={label} className="flex items-center gap-3 py-1">
-                                    <span className="text-xs text-gray-700 dark:text-gray-300 w-36 truncate text-right">{label}</span>
-                                    <div className="flex-1 h-5 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
-                                        <div className="h-full bg-blue-500 rounded" style={{ width: `${pct}%` }} />
+                                    <span className="text-xs text-ink w-36 truncate text-right">{label}</span>
+                                    <div className="flex-1 h-5 bg-sunken rounded overflow-hidden">
+                                        <div className="h-full bg-accent rounded" style={{ width: `${pct}%` }} />
                                     </div>
-                                    <span className="text-xs text-gray-600 dark:text-gray-400 w-20 text-right tabular-nums">
+                                    <span className="text-xs text-ink-muted w-20 text-right tabular-nums">
                                         {entry.count} ({pctOfTotal}%)
                                     </span>
                                 </div>
@@ -402,22 +402,22 @@ const Compliance: React.FC = () => {
             {/* Expiry Forecast */}
             <Section title="Expiry Forecast">
                 {reportLoading ? (
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
+                    <span className="text-sm text-ink-muted">Loading...</span>
                 ) : (
                     <div className="space-y-1">
                         {/* Cumulative buckets: a certificate expiring in 20 days is counted in every row. The
                             inventory page uses exclusive bands (0–30, 31–60, 61–90), so the two pages word
                             their labels differently on purpose. */}
-                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-1">Each row is cumulative: "within 90 days" includes everything already counted within 30 and 60 days.</p>
+                        <p className="text-[11px] text-ink-muted mb-1">Each row is cumulative: "within 90 days" includes everything already counted within 30 and 60 days.</p>
                         {forecastEntries.map(item => {
                             const pct = forecastMax > 0 ? (item.count / forecastMax) * 100 : 0;
                             return (
                                 <div key={item.label} className="flex items-center gap-3 py-1">
-                                    <span className="text-xs text-gray-700 dark:text-gray-300 w-28 text-right">Within {item.label}</span>
-                                    <div className="flex-1 h-5 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
-                                        <div className="h-full bg-amber-500 rounded" style={{ width: `${pct}%` }} />
+                                    <span className="text-xs text-ink w-28 text-right">Within {item.label}</span>
+                                    <div className="flex-1 h-5 bg-sunken rounded overflow-hidden">
+                                        <div className="h-full bg-warn rounded" style={{ width: `${pct}%` }} />
                                     </div>
-                                    <span className="text-xs text-gray-600 dark:text-gray-400 w-10 text-right tabular-nums">{item.count}</span>
+                                    <span className="text-xs text-ink-muted w-10 text-right tabular-nums">{item.count}</span>
                                 </div>
                             );
                         })}
@@ -427,7 +427,7 @@ const Compliance: React.FC = () => {
 
             {/* Compliance findings — live interactive */}
             <div className="space-y-3">
-                <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Findings</h2>
+                <h2 className="text-sm font-semibold text-ink uppercase tracking-wide">Findings</h2>
 
                 {vulnError && (
                     <InlineNotice notice={vulnError} />
@@ -435,10 +435,10 @@ const Compliance: React.FC = () => {
 
                 {/* Summary cards */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <StatCard label="Critical" value={vulnSummary.critical} color="text-red-800 dark:text-red-400" />
-                    <StatCard label="Warning" value={vulnSummary.warning} color="text-amber-800 dark:text-amber-400" />
-                    <StatCard label="Info" value={vulnSummary.info} color="text-blue-800 dark:text-blue-400" />
-                    <StatCard label="Resolved" value={vulnSummary.resolved} color="text-green-800 dark:text-green-400" />
+                    <StatCard label="Critical" value={vulnSummary.critical} color="text-crit" />
+                    <StatCard label="Warning" value={vulnSummary.warning} color="text-warn" />
+                    <StatCard label="Info" value={vulnSummary.info} color="text-accent-ink" />
+                    <StatCard label="Resolved" value={vulnSummary.resolved} color="text-ok" />
                 </div>
 
                 {/* Filters */}
@@ -446,7 +446,7 @@ const Compliance: React.FC = () => {
                     <select
                         value={severityFilter}
                         onChange={(e) => setSeverityFilter(e.target.value)}
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                     >
                         <option value="all">All Severities</option>
                         <option value="Critical">Critical</option>
@@ -457,7 +457,7 @@ const Compliance: React.FC = () => {
                     <select
                         value={typeFilter}
                         onChange={(e) => setTypeFilter(e.target.value)}
-                        className="px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                     >
                         <option value="all">All Types</option>
                         {uniqueTypes.map(t => (
@@ -465,22 +465,22 @@ const Compliance: React.FC = () => {
                         ))}
                     </select>
 
-                    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                         <input
                             type="checkbox"
                             checked={showResolved}
                             onChange={(e) => setShowResolved(e.target.checked)}
-                            className="rounded bg-gray-200 dark:bg-gray-700 border-gray-400 dark:border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            className="rounded bg-raised border-line-strong text-accent-ink focus:ring-accent focus:ring-offset-0"
                         />
                         Show resolved
                     </label>
                 </div>
 
                 {/* Findings table */}
-                <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Findings</h3>
-                        <span className="text-xs text-gray-500 dark:text-gray-500">{filteredVulns.length} {filteredVulns.length === 1 ? 'finding' : 'findings'}</span>
+                <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                    <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-ink">Findings</h3>
+                        <span className="text-xs text-ink-muted">{filteredVulns.length} {filteredVulns.length === 1 ? 'finding' : 'findings'}</span>
                     </div>
 
                     <div className="overflow-auto max-h-[28rem]">
@@ -494,34 +494,34 @@ const Compliance: React.FC = () => {
                             renderExpanded={(v) => (
                                 <div className="space-y-2">
                                     <div>
-                                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Full Description</span>
-                                        <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.description}</p>
+                                        <span className="text-xs font-semibold text-ink-muted">Full Description</span>
+                                        <p className="text-sm text-ink mt-1">{v.description}</p>
                                     </div>
                                     <div className="flex gap-6 flex-wrap">
                                         <div>
-                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Type</span>
-                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.type}</p>
+                                            <span className="text-xs font-semibold text-ink-muted">Type</span>
+                                            <p className="text-sm text-ink mt-1">{v.type}</p>
                                         </div>
                                         <div>
-                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Severity</span>
-                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{v.severity}</p>
+                                            <span className="text-xs font-semibold text-ink-muted">Severity</span>
+                                            <p className="text-sm text-ink mt-1">{v.severity}</p>
                                         </div>
                                         <div>
-                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Detected</span>
-                                            <p className="text-sm text-gray-800 dark:text-gray-200 mt-1">{formatDateTime(v.detectedAt)}</p>
+                                            <span className="text-xs font-semibold text-ink-muted">Detected</span>
+                                            <p className="text-sm text-ink mt-1">{formatDateTime(v.detectedAt)}</p>
                                         </div>
                                         {v.resolvedAt && (
                                             <div>
-                                                <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Resolved</span>
-                                                <p className="text-sm text-green-800 dark:text-green-400 mt-1">{formatDateTime(v.resolvedAt)}</p>
+                                                <span className="text-xs font-semibold text-ink-muted">Resolved</span>
+                                                <p className="text-sm text-ok mt-1">{formatDateTime(v.resolvedAt)}</p>
                                             </div>
                                         )}
                                     </div>
                                     {v.certificateId && (
                                         <div>
-                                            <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Certificate</span>
+                                            <span className="text-xs font-semibold text-ink-muted">Certificate</span>
                                             <p className="text-sm mt-1">
-                                                <a href={`/admin/certificates?search=${encodeURIComponent(v.certificateSerial || v.certificateId)}`} className="text-blue-800 dark:text-blue-400 hover:text-blue-300 underline font-mono">
+                                                <a href={`/admin/certificates?search=${encodeURIComponent(v.certificateSerial || v.certificateId)}`} className="text-accent-ink hover:underline underline font-mono">
                                                     {v.certificateSerial || v.certificateId}
                                                 </a>
                                             </p>
@@ -531,13 +531,13 @@ const Compliance: React.FC = () => {
                             )}
                             columns={[
                                 { key: 'severity', header: 'Severity', defaultWidth: 100, truncate: false, sortable: true, exportValue: (v) => v.severity, render: (v) => <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${severityColor(v.severity)}`}>{v.severity}</span> },
-                                { key: 'type', header: 'Type', defaultWidth: 150, sortable: true, exportValue: (v) => v.type, render: (v) => <span className={`text-gray-800 dark:text-gray-200 whitespace-nowrap ${v.resolved ? 'opacity-60' : ''}`}>{v.type}</span> },
-                                { key: 'description', header: 'Description', flex: true, exportValue: (v) => v.description, render: (v) => <span className={`text-gray-600 dark:text-gray-400 truncate ${v.resolved ? 'opacity-60' : ''}`} title={v.description}>{truncate(v.description, 80)}</span> },
-                                { key: 'certificate', header: 'Certificate', defaultWidth: 150, exportValue: (v) => v.certificateSerial || '', render: (v) => <span className="font-mono text-gray-500 dark:text-gray-500 truncate" title={v.certificateSerial}>{v.certificateSerial ? v.certificateSerial.substring(0, 16) + '…' : '—'}</span> },
-                                { key: 'detected', header: 'Detected', defaultWidth: 160, sortable: true, sortValue: (v) => v.detectedAt ? new Date(v.detectedAt) : null, exportValue: (v) => formatDateTime(v.detectedAt), render: (v) => <span className="text-gray-500 dark:text-gray-500 whitespace-nowrap">{formatDateTime(v.detectedAt)}</span> },
+                                { key: 'type', header: 'Type', defaultWidth: 150, sortable: true, exportValue: (v) => v.type, render: (v) => <span className={`text-ink whitespace-nowrap ${v.resolved ? 'opacity-60' : ''}`}>{v.type}</span> },
+                                { key: 'description', header: 'Description', flex: true, exportValue: (v) => v.description, render: (v) => <span className={`text-ink-muted truncate ${v.resolved ? 'opacity-60' : ''}`} title={v.description}>{truncate(v.description, 80)}</span> },
+                                { key: 'certificate', header: 'Certificate', defaultWidth: 150, exportValue: (v) => v.certificateSerial || '', render: (v) => <span className="font-mono text-ink-muted truncate" title={v.certificateSerial}>{v.certificateSerial ? v.certificateSerial.substring(0, 16) + '…' : '—'}</span> },
+                                { key: 'detected', header: 'Detected', defaultWidth: 160, sortable: true, sortValue: (v) => v.detectedAt ? new Date(v.detectedAt) : null, exportValue: (v) => formatDateTime(v.detectedAt), render: (v) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(v.detectedAt)}</span> },
                                 { key: 'actions', header: '', defaultWidth: 110, align: 'right', truncate: false, hideable: false, exportValue: (v) => (v.resolved ? 'Resolved' : ''), render: (v) => v.resolved
-                                    ? <span className="text-[10px] text-green-600 dark:text-green-400">✓ Resolved</span>
-                                    : <button onClick={() => handleResolve(v.id)} disabled={resolvingIds.has(v.id)} className="px-2 py-1 text-[10px] font-medium text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40 border border-green-200 dark:border-green-800 rounded hover:bg-green-100 dark:hover:bg-green-900/70 transition-colors disabled:opacity-50">{resolvingIds.has(v.id) ? 'Resolving…' : 'Resolve'}</button> },
+                                    ? <span className="text-[10px] text-ok">✓ Resolved</span>
+                                    : <button onClick={() => handleResolve(v.id)} disabled={resolvingIds.has(v.id)} className="px-2 py-1 text-[10px] font-medium text-ok bg-ok-soft border border-ok/40 rounded hover:bg-ok/15 transition-colors disabled:opacity-50">{resolvingIds.has(v.id) ? 'Resolving…' : 'Resolve'}</button> },
                             ] as DataTableColumn<any>[]}
                         />
                     </div>
@@ -548,9 +548,9 @@ const Compliance: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Section title="Recent Issuances (30d)">
                     {reportLoading ? (
-                        <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
+                        <span className="text-sm text-ink-muted">Loading...</span>
                     ) : (!report?.issuanceHistory || report.issuanceHistory.length === 0) ? (
-                        <span className="text-sm text-gray-600">No recent issuances</span>
+                        <span className="text-sm text-ink-muted">No recent issuances</span>
                     ) : (
                         <div className="overflow-x-auto">
                             <DataTable<any>
@@ -559,10 +559,10 @@ const Compliance: React.FC = () => {
                                 rowKey={(c, ) => `${c.serialNumber || ''}-${c.notBefore || ''}-${c.subjectDN || ''}`}
                                 empty="No issuance in this period"
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
-                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-gray-600 dark:text-gray-400 truncate" title={c.issuer}>{c.issuer}</span> },
-                                    { key: 'validFrom', header: 'Valid From', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.notBefore ? new Date(c.notBefore) : null, exportValue: (c) => formatDateTime(c.notBefore), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.notBefore)}</span> },
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'validFrom', header: 'Valid From', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.notBefore ? new Date(c.notBefore) : null, exportValue: (c) => formatDateTime(c.notBefore), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.notBefore)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -571,9 +571,9 @@ const Compliance: React.FC = () => {
 
                 <Section title="Recent Revocations (30d)">
                     {reportLoading ? (
-                        <span className="text-sm text-gray-600 dark:text-gray-400">Loading...</span>
+                        <span className="text-sm text-ink-muted">Loading...</span>
                     ) : (!report?.revocationHistory || report.revocationHistory.length === 0) ? (
-                        <span className="text-sm text-gray-600">No recent revocations</span>
+                        <span className="text-sm text-ink-muted">No recent revocations</span>
                     ) : (
                         <div className="overflow-x-auto">
                             <DataTable<any>
@@ -582,10 +582,10 @@ const Compliance: React.FC = () => {
                                 rowKey={(c) => `${c.serialNumber || ''}-${c.revocationDate || ''}-${c.subjectDN || ''}`}
                                 empty="No revocations in this period"
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
-                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</span> },
-                                    { key: 'revoked', header: 'Revoked', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateTime(c.revocationDate), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateTime(c.revocationDate)}</span> },
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateTime(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.revocationDate)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>

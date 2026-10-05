@@ -123,7 +123,7 @@ function NavSectionGroup({ section, collapsed, onToggle, onNavigate }: {
         <div className="mb-1">
             <button
                 onClick={onToggle}
-                className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted hover:text-ink transition-colors"
             >
                 {section.title}
                 <svg
@@ -144,8 +144,8 @@ function NavSectionGroup({ section, collapsed, onToggle, onNavigate }: {
                                     onClick={onNavigate}
                                     className={`block px-3 py-1.5 pl-6 text-sm rounded-md transition-colors ${
                                         active
-                                            ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
-                                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
+                                            ? 'bg-accent-soft text-accent-ink font-medium'
+                                            : 'text-ink hover:bg-hover hover:text-ink'
                                     }`}
                                 >
                                     {item.label}
@@ -163,13 +163,13 @@ function ApiIndex() {
     const section = navSections.find((s) => s.title === 'API Reference')!;
     return (
         <div className="max-w-4xl mx-auto">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-6">API Reference</h1>
+            <h1 className="text-2xl font-semibold text-ink mb-6">API Reference</h1>
             <ul className="grid gap-2 sm:grid-cols-2">
                 {section.items.map((item) => (
                     <li key={item.to}>
                         <Link
                             to={item.to}
-                            className="block px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 text-gray-800 dark:text-gray-200 hover:border-blue-400 dark:hover:border-blue-500 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                            className="block px-4 py-3 rounded-lg border border-line bg-raised text-ink hover:border-accent hover:text-accent-hover transition-colors"
                         >
                             {item.label}
                         </Link>
@@ -206,13 +206,13 @@ function AppShell() {
 
     if (authState !== 'ok') {
         return (
-            <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-900 text-sm text-gray-600 dark:text-gray-400">
+            <div className="flex h-screen items-center justify-center bg-ground text-sm text-ink-muted">
                 {authState === 'checking' ? 'Checking your session...' : (
                     <div className="text-center">
                         <p className="mb-3">Could not reach the server to verify your session.</p>
                         <button
                             onClick={() => setAuthAttempt((n) => n + 1)}
-                            className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                            className="px-3 py-1.5 rounded-md bg-accent text-on-accent hover:bg-accent-hover"
                         >
                             Retry
                         </button>
@@ -229,20 +229,20 @@ function AppShell() {
     const closeSidebar = () => setSidebarOpen(false);
 
     const sidebar = (
-        <aside className="flex flex-col h-full bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800">
+        <aside className="flex flex-col h-full bg-raised border-r border-line">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 dark:border-gray-800">
+            <div className="flex items-center justify-between px-4 py-4 border-b border-line">
                 <Link to="/overview" onClick={closeSidebar} className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center">
-                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center">
+                        <svg className="w-4 h-4 text-on-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                         </svg>
                     </div>
-                    <span className="text-base font-bold text-gray-900 dark:text-white">ModularCA Docs</span>
+                    <span className="text-base font-bold text-ink">ModularCA Docs</span>
                 </Link>
                 <button
                     onClick={toggleTheme}
-                    className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    className="p-1.5 rounded-md text-ink-muted hover:bg-hover transition-colors"
                     title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
                 >
                     {theme === 'dark' ? (
@@ -273,7 +273,7 @@ function AppShell() {
     );
 
     return (
-        <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
+        <div className="flex h-screen overflow-hidden bg-ground">
             {/* Desktop sidebar */}
             <div className="hidden lg:block w-60 flex-shrink-0">
                 {sidebar}
@@ -282,7 +282,7 @@ function AppShell() {
             {/* Mobile overlay */}
             {sidebarOpen && (
                 <div className="fixed inset-0 z-40 lg:hidden">
-                    <div className="absolute inset-0 bg-black/50" onClick={closeSidebar} />
+                    <div className="absolute inset-0 bg-scrim" onClick={closeSidebar} />
                     <div className="relative w-60 h-full z-50">
                         {sidebar}
                     </div>
@@ -292,16 +292,16 @@ function AppShell() {
             {/* Main content */}
             <div className="flex-1 flex flex-col min-w-0">
                 {/* Mobile header */}
-                <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800">
+                <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-raised border-b border-line">
                     <button
                         onClick={() => setSidebarOpen(true)}
-                        className="p-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="p-1.5 rounded-md text-ink-muted hover:bg-hover"
                     >
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                         </svg>
                     </button>
-                    <span className="text-base font-bold text-gray-900 dark:text-white">ModularCA Docs</span>
+                    <span className="text-base font-bold text-ink">ModularCA Docs</span>
                 </header>
 
                 {/* Page content */}
@@ -337,7 +337,7 @@ function AppShell() {
 
             {/* AGPL section 13 source offer — see SourceNotice. Served same-origin with the
                 rest of the product, so docs readers are remote users of it too. */}
-            <footer className="border-t border-gray-200 dark:border-gray-800 py-4 px-4">
+            <footer className="border-t border-line py-4 px-4">
                 <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
             </footer>
         </div>

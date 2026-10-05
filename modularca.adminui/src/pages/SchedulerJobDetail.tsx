@@ -144,12 +144,12 @@ const SchedulerJobDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!job) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Job not found.</p>
-            <button onClick={() => navigate('/schedules')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Schedules</button>
+            <p className="text-sm text-ink-muted">Job not found.</p>
+            <button onClick={() => navigate('/schedules')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Schedules</button>
         </div>
     );
 
@@ -168,12 +168,12 @@ const SchedulerJobDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={() => setConfirmRun(true)} disabled={running}
-                        className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 disabled:opacity-50 transition-colors">
+                        className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 disabled:opacity-50 transition-colors">
                         {running ? 'Running…' : 'Run Now'}
                     </button>
                     {toggleable && (
                         <button onClick={() => (job.enabled ? setConfirmDisable(true) : toggle())} disabled={toggling}
-                            className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+                            className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover disabled:opacity-50 transition-colors">
                             {job.enabled ? 'Disable' : 'Enable'}
                         </button>
                     )}
@@ -196,8 +196,8 @@ const SchedulerJobDetail: React.FC = () => {
                         </div>
                         {job.lastError && (
                             <div className="mt-2">
-                                <span className="text-gray-600 text-xs">Last Error</span>
-                                <pre className="mt-1 text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{job.lastError}</pre>
+                                <span className="text-ink-muted text-xs">Last Error</span>
+                                <pre className="mt-1 text-[11px] text-crit whitespace-pre-wrap break-words">{job.lastError}</pre>
                             </div>
                         )}
                         <FieldHint className="mt-3">
@@ -211,7 +211,7 @@ const SchedulerJobDetail: React.FC = () => {
                             <div>
                                 <label className={labelCls}>Cron Expression</label>
                                 <input type="text" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 */6 * * *" className={`${inputCls} font-mono`} />
-                                {!cronShapeOk && cron.length > 0 && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be 5 space-separated fields.</p>}
+                                {!cronShapeOk && cron.length > 0 && <p className="text-[10px] text-crit mt-1">Must be 5 space-separated fields.</p>}
                                 <FieldHint>
                                     Five fields, UTC: <span className="font-mono">minute hour day-of-month month day-of-week</span>.
                                     Examples: <span className="font-mono">0 2 * * *</span> runs daily at 02:00;
@@ -223,7 +223,7 @@ const SchedulerJobDetail: React.FC = () => {
                             <div>
                                 <label className={labelCls}>Timeout (seconds)</label>
                                 <input type="text" inputMode="numeric" value={timeout} onChange={(e) => setTimeoutVal(e.target.value.replace(/\D/g, ''))} className={inputCls} />
-                                {!timeoutOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Timeout must be a positive integer.</p>}
+                                {!timeoutOk && <p className="text-[10px] text-crit mt-1">Timeout must be a positive integer.</p>}
                                 <FieldHint>1 to 86400. A run longer than this is cancelled and recorded as a failure. Overrides the scheduler's default timeout for this job only.</FieldHint>
                             </div>
                         </div>
@@ -235,7 +235,7 @@ const SchedulerJobDetail: React.FC = () => {
                     title="Run Job Now?"
                     message={`Trigger "${job.name}" out-of-band? It will run on the lease holder at the next poll tick.`}
                     confirmLabel="Run"
-                    confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    confirmClass="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                     loading={running}
                     onConfirm={doRun}
                     onCancel={() => setConfirmRun(false)}
@@ -250,7 +250,7 @@ const SchedulerJobDetail: React.FC = () => {
                         Nothing else will notice; whatever this job does simply stops happening.
                     </>}
                     confirmLabel="Disable"
-                    confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                    confirmClass="px-4 py-2 text-sm bg-warn text-on-accent rounded hover:bg-warn-hover transition-colors"
                     loading={toggling}
                     onConfirm={toggle}
                     onCancel={() => setConfirmDisable(false)}

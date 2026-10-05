@@ -31,7 +31,7 @@ function formatUptime(ms: number): string {
 
 /* ─── Health Check Status Indicator ─── */
 const HealthDot: React.FC<{ status: string }> = ({ status }) => {
-    const color = status === 'healthy' ? 'bg-green-500' : status === 'degraded' ? 'bg-yellow-500' : 'bg-red-500';
+    const color = status === 'healthy' ? 'bg-ok' : status === 'degraded' ? 'bg-warn' : 'bg-crit';
     return <span className={`inline-block w-2.5 h-2.5 rounded-full ${color}`} />;
 };
 
@@ -82,51 +82,51 @@ const HealthCheckCard: React.FC = () => {
         if (!check) return null;
         const status = check.status || 'unknown';
         return (
-            <div className="flex items-center gap-3 py-2 border-b border-gray-300 dark:border-gray-700 last:border-b-0">
+            <div className="flex items-center gap-3 py-2 border-b border-line last:border-b-0">
                 <HealthDot status={status} />
-                <span className="text-sm text-gray-900 dark:text-white min-w-[140px]">{label}</span>
+                <span className="text-sm text-ink min-w-[140px]">{label}</span>
                 <StatusBadge status={healthBadgeStatus(status)} label={status} />
                 {check.responseTimeMs !== undefined && (
-                    <span className="text-xs text-gray-600 ml-auto">{check.responseTimeMs}ms</span>
+                    <span className="text-xs text-ink-muted ml-auto">{check.responseTimeMs}ms</span>
                 )}
                 {check.daysRemaining !== undefined && (
-                    <span className={`text-xs ml-auto ${check.daysRemaining <= 30 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-600'}`}>
+                    <span className={`text-xs ml-auto ${check.daysRemaining <= 30 ? 'text-warn' : 'text-ink-muted'}`}>
                         {check.daysRemaining}d remaining
                     </span>
                 )}
                 {check.freeSpaceGb !== undefined && (
-                    <span className="text-xs text-gray-600 ml-auto">{check.freeSpaceGb} GB free</span>
+                    <span className="text-xs text-ink-muted ml-auto">{check.freeSpaceGb} GB free</span>
                 )}
                 {check.error && (
-                    <span className="text-xs text-red-800 dark:text-red-400 ml-auto truncate max-w-[200px]" title={check.error}>{check.error}</span>
+                    <span className="text-xs text-crit ml-auto truncate max-w-[200px]" title={check.error}>{check.error}</span>
                 )}
                 {check.warning && (
-                    <span className="text-xs text-yellow-800 dark:text-yellow-400 ml-auto truncate max-w-[200px]" title={check.warning}>{check.warning}</span>
+                    <span className="text-xs text-warn ml-auto truncate max-w-[200px]" title={check.warning}>{check.warning}</span>
                 )}
             </div>
         );
     };
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
+        <div className="bg-raised border border-line rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Health Checks</h2>
+                <h2 className="text-sm font-semibold text-ink">Health Checks</h2>
                 <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-600">Auto-refresh 30s</span>
-                    <button onClick={fetchHealth} className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors">Refresh</button>
+                    <span className="text-xs text-ink-muted">Auto-refresh 30s</span>
+                    <button onClick={fetchHealth} className="text-xs text-accent-ink hover:underline transition-colors">Refresh</button>
                 </div>
             </div>
 
-            {loading && !health && <div className="text-sm text-gray-600 dark:text-gray-400">Checking...</div>}
+            {loading && !health && <div className="text-sm text-ink-muted">Checking...</div>}
             {error && !health && <InlineNotice notice={error} />}
 
             {health && (
                 <div className="space-y-1">
                     <div className="flex items-center gap-2 mb-3">
                         <HealthDot status={health.status} />
-                        <span className="text-lg font-bold text-gray-900 dark:text-white capitalize">{health.status}</span>
+                        <span className="text-lg font-bold text-ink capitalize">{health.status}</span>
                         {health.totalDurationMs !== undefined && (
-                            <span className="text-xs text-gray-600 ml-2">({Math.round(health.totalDurationMs)}ms)</span>
+                            <span className="text-xs text-ink-muted ml-2">({Math.round(health.totalDurationMs)}ms)</span>
                         )}
                     </div>
 
@@ -139,9 +139,9 @@ const HealthCheckCard: React.FC = () => {
 
                     {/* TLS Certificate details */}
                     {health.checks?.tlsCertificate?.expiresAt && (
-                        <div className="mt-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded text-xs">
-                            <span className="text-gray-600 dark:text-gray-400">TLS Cert Expires: </span>
-                            <span className={health.checks.tlsCertificate.daysRemaining <= 30 ? 'text-yellow-800 dark:text-yellow-400 font-semibold' : 'text-gray-700 dark:text-gray-300'}>
+                        <div className="mt-2 p-2 bg-sunken rounded text-xs">
+                            <span className="text-ink-muted">TLS Cert Expires: </span>
+                            <span className={health.checks.tlsCertificate.daysRemaining <= 30 ? 'text-warn font-semibold' : 'text-ink'}>
                                 {formatDate(health.checks.tlsCertificate.expiresAt)}
                                 {health.checks.tlsCertificate.daysRemaining <= 30 && ' -- Renew soon!'}
                             </span>
@@ -150,10 +150,10 @@ const HealthCheckCard: React.FC = () => {
 
                     {/* Signer details: the signer's own account of its state. Locked means nothing can be issued. */}
                     {health.checks?.signer?.unlocked !== undefined && (
-                        <div className="mt-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded text-xs space-y-1">
+                        <div className="mt-2 p-2 bg-sunken rounded text-xs space-y-1">
                             <div>
-                                <span className="text-gray-600 dark:text-gray-400">Signer: </span>
-                                <span className={health.checks.signer.unlocked ? 'text-gray-700 dark:text-gray-300' : 'text-red-800 dark:text-red-400 font-semibold'}>
+                                <span className="text-ink-muted">Signer: </span>
+                                <span className={health.checks.signer.unlocked ? 'text-ink' : 'text-crit font-semibold'}>
                                     {health.checks.signer.unlocked
                                         ? `unlocked, ${health.checks.signer.keyCount} key(s) on the ${health.checks.signer.backend} backend`
                                         : 'locked -- the keystore did not unlock; enrollment answers 503 until it does'}
@@ -164,16 +164,16 @@ const HealthCheckCard: React.FC = () => {
 
                     {/* Keystore details */}
                     {health.checks?.keystore?.caSigners !== undefined && (
-                        <div className="mt-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded text-xs space-y-1">
-                            <div><span className="text-gray-600 dark:text-gray-400">CA Signers: </span><span className="text-gray-700 dark:text-gray-300">{health.checks.keystore.caSigners}</span></div>
-                            <div><span className="text-gray-600 dark:text-gray-400">Trusted Certs: </span><span className="text-gray-700 dark:text-gray-300">{health.checks.keystore.trustedCerts}</span></div>
+                        <div className="mt-2 p-2 bg-sunken rounded text-xs space-y-1">
+                            <div><span className="text-ink-muted">CA Signers: </span><span className="text-ink">{health.checks.keystore.caSigners}</span></div>
+                            <div><span className="text-ink-muted">Trusted Certs: </span><span className="text-ink">{health.checks.keystore.trustedCerts}</span></div>
                             {health.checks.keystore.expiringCaCerts > 0 && (
-                                <div className="text-yellow-800 dark:text-yellow-400">Warning: {health.checks.keystore.expiringCaCerts} CA cert(s) expiring within 30 days</div>
+                                <div className="text-warn">Warning: {health.checks.keystore.expiringCaCerts} CA cert(s) expiring within 30 days</div>
                             )}
                         </div>
                     )}
 
-                    <div className="text-xs text-gray-600 mt-2">
+                    <div className="text-xs text-ink-muted mt-2">
                         Last checked: {lastRefresh.toLocaleTimeString()}
                     </div>
                 </div>
@@ -212,8 +212,8 @@ const SystemStatusCard: React.FC = () => {
     const serverUptime = serverUptimeMs != null ? serverUptimeMs + (now - fetchedAt) : null;
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">System Status</h2>
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">System Status</h2>
             <DetailField label="Application" value={`ModularCA v${APP_VERSION}`} />
             <DetailField label="Server Uptime" value={serverUptime != null ? formatUptime(serverUptime) : uptimeError ? `Unavailable: could not load /health/ready (${uptimeError})` : '—'} />
             <DetailField label="Current Time" value={new Date(now).toLocaleString()} />
@@ -249,17 +249,17 @@ const CertStatsCard: React.FC = () => {
     }, []);
 
     const statItems = stats ? [
-        { label: 'Total', value: stats.total, color: 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
-        { label: 'Active', value: stats.active, color: 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' },
-        { label: 'Revoked', value: stats.revoked, color: 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700' },
-        { label: 'Expired', value: stats.expired, color: 'bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border-yellow-300 dark:border-yellow-700' },
-        { label: 'Expiring (30d)', value: stats.expiring30, color: 'bg-orange-50 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300 border-orange-300 dark:border-orange-700' },
+        { label: 'Total', value: stats.total, color: 'bg-info-soft text-info border-info/40' },
+        { label: 'Active', value: stats.active, color: 'bg-ok-soft text-ok border-ok/40' },
+        { label: 'Revoked', value: stats.revoked, color: 'bg-crit-soft text-crit border-crit/40' },
+        { label: 'Expired', value: stats.expired, color: 'bg-warn-soft text-warn border-warn/40' },
+        { label: 'Expiring (30d)', value: stats.expiring30, color: 'bg-warn-soft text-warn border-warn/40' },
     ] : [];
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Certificate Statistics</h2>
-            {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Certificate Statistics</h2>
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
             {error && <InlineNotice notice={error} />}
             {stats && (
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -287,7 +287,7 @@ function fetched<T>(p: Promise<T>): Promise<Fetched<T>> {
 }
 
 const Unavailable: React.FC<{ what: string; error: string }> = ({ what, error }) => (
-    <div className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load {what} ({error}).</div>
+    <div className="text-xs text-crit" role="status">Unavailable: could not load {what} ({error}).</div>
 );
 
 /* ─── Scheduler Status Card ─── */
@@ -311,31 +311,31 @@ const SchedulerStatusCard: React.FC = () => {
     const disabledCount = featureList.filter((f) => !f.enabled).length;
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Scheduler Status</h2>
-            {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Scheduler Status</h2>
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
             {!loading && (
                 <div className="space-y-3">
                     <div>
-                        <span className="text-xs text-gray-600 dark:text-gray-400">CRL Schedules</span>
+                        <span className="text-xs text-ink-muted">CRL Schedules</span>
                         {!schedules || !schedules.ok ? (
                             <div className="mt-1"><Unavailable what="CRL schedules" error={schedules?.error || 'no response'} /></div>
                         ) : schedules.value.length === 0 ? (
-                            <div className="text-sm text-gray-600 mt-1">No CRL schedules</div>
+                            <div className="text-sm text-ink-muted mt-1">No CRL schedules</div>
                         ) : (
                             <div className="mt-1 space-y-1">
                                 {schedules.value.map((s, i) => (
                                     <div key={i} className="flex items-center gap-2 text-xs">
                                         <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} />
-                                        <span className="text-gray-700 dark:text-gray-300">{s.name}</span>
-                                        <span className="text-gray-600 ml-auto">Last: {formatDate(s.lastGenerated || s.lastRun)}</span>
+                                        <span className="text-ink">{s.name}</span>
+                                        <span className="text-ink-muted ml-auto">Last: {formatDate(s.lastGenerated || s.lastRun)}</span>
                                     </div>
                                 ))}
                             </div>
                         )}
                     </div>
-                    <div className="border-t border-gray-300 dark:border-gray-700 pt-3">
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Feature Flags Summary</span>
+                    <div className="border-t border-line pt-3">
+                        <span className="text-xs text-ink-muted">Feature Flags Summary</span>
                         {!features || !features.ok ? (
                             <div className="mt-1"><Unavailable what="feature flags" error={features?.error || 'no response'} /></div>
                         ) : (
@@ -378,18 +378,18 @@ const ProtocolActivityCard: React.FC = () => {
     }, []);
 
     const protocols = counts ? [
-        { label: 'EST', value: counts.est, color: 'bg-purple-900/50 text-purple-300 border-purple-700' },
-        { label: 'SCEP', value: counts.scep, color: 'bg-indigo-900/50 text-indigo-300 border-indigo-700' },
-        { label: 'CMP', value: counts.cmp, color: 'bg-teal-900/50 text-teal-300 border-teal-700' },
-        { label: 'ACME', value: counts.acme, color: 'bg-cyan-900/50 text-cyan-300 border-cyan-700' },
-        { label: 'MSAE', value: counts.msae, color: 'bg-sky-900/50 text-sky-300 border-sky-700' },
+        { label: 'EST', value: counts.est, color: 'bg-series-2/10 text-series-2 border-series-2/40' },
+        { label: 'SCEP', value: counts.scep, color: 'bg-series-4/10 text-series-4 border-series-4/40' },
+        { label: 'CMP', value: counts.cmp, color: 'bg-series-1/10 text-series-1 border-series-1/40' },
+        { label: 'ACME', value: counts.acme, color: 'bg-series-3/10 text-series-3 border-series-3/40' },
+        { label: 'MSAE', value: counts.msae, color: 'bg-series-5/10 text-series-5 border-series-5/40' },
     ] : [];
     const failed = protocols.filter((p) => !p.value.ok);
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Protocol Activity</h2>
-            {loading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Protocol Activity</h2>
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
             {counts && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {protocols.map((p) => (
@@ -399,7 +399,7 @@ const ProtocolActivityCard: React.FC = () => {
                                 <div className="text-xs mt-1">{p.label}</div>
                             </div>
                         ) : (
-                            <div key={p.label} className="rounded border border-dashed border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-center text-red-800 dark:text-red-300" title={p.value.error}>
+                            <div key={p.label} className="rounded border border-dashed border-crit/40 bg-crit-soft p-3 text-center text-crit" title={p.value.error}>
                                 <div className="text-sm font-semibold">Unavailable</div>
                                 <div className="text-xs mt-1">{p.label}</div>
                             </div>
@@ -459,29 +459,29 @@ const DrStatusCard: React.FC = () => {
     };
 
     const readinessBadge = (readiness: string): { status: 'active' | 'expired' | 'revoked'; color: string } => {
-        if (readiness === 'Ready') return { status: 'active', color: 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' };
-        if (readiness === 'Warning') return { status: 'expired', color: 'bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border-yellow-300 dark:border-yellow-700' };
-        return { status: 'revoked', color: 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700' };
+        if (readiness === 'Ready') return { status: 'active', color: 'bg-ok-soft text-ok border-ok/40' };
+        if (readiness === 'Warning') return { status: 'expired', color: 'bg-warn-soft text-warn border-warn/40' };
+        return { status: 'revoked', color: 'bg-crit-soft text-crit border-crit/40' };
     };
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
+        <div className="bg-raised border border-line rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Disaster Recovery</h2>
+                <h2 className="text-sm font-semibold text-ink">Disaster Recovery</h2>
                 <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-600">Auto-refresh 30s</span>
-                    <button onClick={fetchDrStatus} className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 transition-colors">Refresh</button>
+                    <span className="text-xs text-ink-muted">Auto-refresh 30s</span>
+                    <button onClick={fetchDrStatus} className="text-xs text-accent-ink hover:underline transition-colors">Refresh</button>
                 </div>
             </div>
 
-            {loading && !drStatus && <div className="text-sm text-gray-600 dark:text-gray-400">Checking DR status...</div>}
+            {loading && !drStatus && <div className="text-sm text-ink-muted">Checking DR status...</div>}
             {error && !drStatus && <InlineNotice notice={error} />}
 
             {drStatus && (
                 <div className="space-y-3">
                     {/* Readiness Badge */}
                     <div className="flex items-center gap-3">
-                        <span className="text-xs text-gray-600 dark:text-gray-400">DR Readiness:</span>
+                        <span className="text-xs text-ink-muted">DR Readiness:</span>
                         <div className={`px-2.5 py-1 rounded border text-xs font-semibold ${readinessBadge(drStatus.readiness || drStatus.drReadiness || 'Unknown').color}`}>
                             {drStatus.readiness || drStatus.drReadiness || 'Unknown'}
                         </div>
@@ -489,34 +489,34 @@ const DrStatusCard: React.FC = () => {
 
                     {/* Backup Stats */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="bg-gray-50/50 dark:bg-gray-900/50 rounded p-3">
-                            <div className="text-xs text-gray-600 dark:text-gray-400">Last Backup</div>
-                            <div className="text-sm text-gray-900 dark:text-white mt-1">
+                        <div className="bg-sunken rounded p-3">
+                            <div className="text-xs text-ink-muted">Last Backup</div>
+                            <div className="text-sm text-ink mt-1">
                                 {drStatus.lastBackupTimestamp ? formatDate(drStatus.lastBackupTimestamp) : 'Never'}
                             </div>
                         </div>
-                        <div className="bg-gray-50/50 dark:bg-gray-900/50 rounded p-3">
-                            <div className="text-xs text-gray-600 dark:text-gray-400">Backup Age</div>
-                            <div className={`text-sm mt-1 ${drStatus.backupAgeHours > 24 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'}`}>
+                        <div className="bg-sunken rounded p-3">
+                            <div className="text-xs text-ink-muted">Backup Age</div>
+                            <div className={`text-sm mt-1 ${drStatus.backupAgeHours > 24 ? 'text-warn' : 'text-ink'}`}>
                                 {drStatus.backupAgeHours !== undefined && drStatus.backupAgeHours !== null
                                     ? `${drStatus.backupAgeHours}h`
                                     : drStatus.backupAge || '-'}
                             </div>
                         </div>
-                        <div className="bg-gray-50/50 dark:bg-gray-900/50 rounded p-3">
-                            <div className="text-xs text-gray-600 dark:text-gray-400">Backup Count</div>
-                            <div className="text-sm text-gray-900 dark:text-white mt-1">{drStatus.backupCount ?? '-'}</div>
+                        <div className="bg-sunken rounded p-3">
+                            <div className="text-xs text-ink-muted">Backup Count</div>
+                            <div className="text-sm text-ink mt-1">{drStatus.backupCount ?? '-'}</div>
                         </div>
                     </div>
 
                     {/* Issues List */}
                     {drStatus.issues && drStatus.issues.length > 0 && (
-                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded p-3">
-                            <div className="text-xs font-semibold text-red-800 dark:text-red-300 mb-1">Issues</div>
+                        <div className="bg-crit-soft border border-crit/40 rounded p-3">
+                            <div className="text-xs font-semibold text-crit mb-1">Issues</div>
                             <ul className="space-y-1">
                                 {drStatus.issues.map((issue: string, i: number) => (
-                                    <li key={i} className="text-xs text-red-800 dark:text-red-300 flex items-start gap-1.5">
-                                        <span className="text-red-500 mt-0.5">--</span>
+                                    <li key={i} className="text-xs text-crit flex items-start gap-1.5">
+                                        <span className="text-crit mt-0.5">--</span>
                                         {issue}
                                     </li>
                                 ))}
@@ -529,18 +529,18 @@ const DrStatusCard: React.FC = () => {
                         <button
                             onClick={handleCreateBackup}
                             disabled={creatingBackup}
-                            className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {creatingBackup ? 'Creating...' : 'Create Backup Now'}
                         </button>
                         {backupMsg && (
-                            <span className={`text-xs ${backupMsg.includes('Failed') || backupMsg.includes('fail') ? 'text-red-800 dark:text-red-400' : 'text-green-800 dark:text-green-400'}`}>
+                            <span className={`text-xs ${backupMsg.includes('Failed') || backupMsg.includes('fail') ? 'text-crit' : 'text-ok'}`}>
                                 {backupMsg}
                             </span>
                         )}
                     </div>
 
-                    <div className="text-xs text-gray-600">
+                    <div className="text-xs text-ink-muted">
                         Last checked: {lastRefresh.toLocaleTimeString()}
                     </div>
                 </div>
@@ -553,7 +553,7 @@ const DrStatusCard: React.FC = () => {
 const SystemHealth: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">System Health</h1>
+            <h1 className="text-xl font-semibold text-ink">System Health</h1>
             <HealthCheckCard />
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

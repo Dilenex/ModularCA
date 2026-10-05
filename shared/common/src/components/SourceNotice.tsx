@@ -84,7 +84,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
     const showCommit = !!commit && commit !== 'unknown';
 
     return (
-        <div className={`text-xs text-gray-600 dark:text-gray-400 ${className}`}>
+        <div className={`text-xs text-ink-muted ${className}`}>
             <span>ModularCA </span>
             <span className="font-mono">v{version}</span>
             <span aria-hidden="true"> · </span>
@@ -92,7 +92,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-gray-900 dark:hover:text-gray-100"
+                className="underline hover:text-ink"
             >
                 Source code
             </a>
@@ -116,7 +116,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
                 href={noticesUrlForCommit(sourceCodeUrl, commit ?? '')}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-gray-900 dark:hover:text-gray-100"
+                className="underline hover:text-ink"
             >
                 Third-party notices
             </a>

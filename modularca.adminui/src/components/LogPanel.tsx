@@ -10,11 +10,11 @@ const MAX_HEIGHT_RATIO = 0.6;
 // Per-source badge styling. Network is intentionally omitted — those events are not
 // surfaced in this panel (see fetchLogs).
 const SOURCE_STYLES: Record<string, string> = {
-    App: 'text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800',
-    EST: 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30',
-    SCEP: 'text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-900/30',
-    CMP: 'text-cyan-700 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-900/30',
-    ACME: 'text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/30',
+    App: 'text-ink-muted bg-sunken',
+    EST: 'text-series-2 bg-series-2/10',
+    SCEP: 'text-series-4 bg-series-4/10',
+    CMP: 'text-series-1 bg-series-1/10',
+    ACME: 'text-series-3 bg-series-3/10',
 };
 
 interface PanelPrefs {
@@ -139,24 +139,24 @@ const LogPanel: React.FC = () => {
     return (
         <div
             ref={panelRef}
-            className="flex-shrink-0 bg-white dark:bg-gray-950 border-t border-gray-300 dark:border-gray-700 flex flex-col"
+            className="flex-shrink-0 bg-raised border-t border-line flex flex-col"
             style={{ height: collapsed ? MIN_HEIGHT : height }}
         >
             {/* Resize handle */}
             {!collapsed && (
                 <div
                     onMouseDown={onMouseDown}
-                    className="h-1 cursor-ns-resize bg-gray-100 dark:bg-gray-800 hover:bg-blue-600 transition-colors flex-shrink-0"
+                    className="h-1 cursor-ns-resize bg-raised hover:bg-accent-hover transition-colors flex-shrink-0"
                 />
             )}
 
             {/* Header bar */}
-            <div className="flex items-center justify-between px-3 py-1.5 flex-shrink-0 border-b border-gray-200 dark:border-gray-800">
-                <button onClick={toggleCollapse} className="flex items-center gap-2 text-xs font-semibold text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
+            <div className="flex items-center justify-between px-3 py-1.5 flex-shrink-0 border-b border-line">
+                <button onClick={toggleCollapse} className="flex items-center gap-2 text-xs font-semibold text-ink-muted hover:text-ink transition-colors">
                     <span><Chevron direction={(collapsed) ? 'up' : 'down'} className="w-3 h-3" /></span>
                     <span>Events</span>
                     {logs.length > 0 && (
-                        <span className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[10px] text-gray-600">{logs.length}</span>
+                        <span className="px-1.5 py-0.5 bg-raised rounded text-[10px] text-ink-muted">{logs.length}</span>
                     )}
                 </button>
 
@@ -167,9 +167,9 @@ const LogPanel: React.FC = () => {
                             value={filter}
                             onChange={(e) => setFilter(e.target.value)}
                             placeholder="Filter..."
-                            className="px-2 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-xs text-gray-900 dark:text-white w-40 focus:outline-none focus:border-blue-500"
+                            className="px-2 py-1 bg-raised border border-line-strong rounded text-xs text-ink w-40 focus:outline-none focus:border-accent"
                         />
-                        <label className="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer">
+                        <label className="flex items-center gap-1 text-[10px] text-ink-muted cursor-pointer">
                             <input
                                 type="checkbox"
                                 checked={autoRefresh}
@@ -181,7 +181,7 @@ const LogPanel: React.FC = () => {
                         <button
                             onClick={fetchLogs}
                             disabled={loading}
-                            className="text-[10px] text-gray-600 hover:text-gray-900 dark:hover:text-white transition-colors"
+                            className="text-[10px] text-ink-muted hover:text-ink transition-colors"
                         >
                             {loading ? '⟳' : '↻'} Refresh
                         </button>
@@ -193,8 +193,8 @@ const LogPanel: React.FC = () => {
             {!collapsed && (
                 <div className="flex-1 overflow-auto text-[11px]">
                     <table className="w-full min-w-[640px] border-collapse">
-                        <thead className="sticky top-0 z-10 bg-gray-50 dark:bg-gray-900/95 backdrop-blur text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-500">
-                            <tr className="border-b border-gray-200 dark:border-gray-800">
+                        <thead className="sticky top-0 z-10 bg-sunken backdrop-blur text-[10px] uppercase tracking-wide text-ink-muted">
+                            <tr className="border-b border-line">
                                 <th className={`${thClass} w-[130px]`}>Time</th>
                                 <th className="px-1 py-1 text-center font-medium w-[24px]" aria-label="Status" />
                                 <th className={`${thClass} w-[56px]`}>Source</th>
@@ -207,7 +207,7 @@ const LogPanel: React.FC = () => {
                         <tbody className="font-mono">
                             {filteredLogs.length === 0 && !loading && (
                                 <tr>
-                                    <td colSpan={7} className="px-3 py-4 text-center text-gray-500 dark:text-gray-500 font-sans">
+                                    <td colSpan={7} className="px-3 py-4 text-center text-ink-muted font-sans">
                                         No events
                                     </td>
                                 </tr>
@@ -218,19 +218,19 @@ const LogPanel: React.FC = () => {
                                     <tr
                                         key={log.id}
                                         onClick={() => setSelectedLog(isSelected ? null : log)}
-                                        className={`cursor-pointer border-b border-gray-100 dark:border-gray-800/60 transition-colors ${
+                                        className={`cursor-pointer border-b border-line transition-colors ${
                                             isSelected
-                                                ? 'bg-blue-50 dark:bg-blue-900/20'
-                                                : 'hover:bg-gray-50 dark:hover:bg-gray-900/50'
+                                                ? 'bg-info-soft'
+                                                : 'hover:bg-hover'
                                         }`}
                                     >
-                                        <td className="px-2 py-1 text-gray-500 dark:text-gray-500 whitespace-nowrap">
+                                        <td className="px-2 py-1 text-ink-muted whitespace-nowrap">
                                             {formatDate(log.timestamp)}
                                         </td>
                                         <td className="px-1 py-1 text-center whitespace-nowrap">
                                             {log.success
-                                                ? <span className="text-green-600 dark:text-green-500">{'✓'}</span>
-                                                : <span className="text-red-600 dark:text-red-400">{'✗'}</span>
+                                                ? <span className="text-ok">{'✓'}</span>
+                                                : <span className="text-crit">{'✗'}</span>
                                             }
                                         </td>
                                         <td className="px-1 py-1 whitespace-nowrap">
@@ -238,19 +238,19 @@ const LogPanel: React.FC = () => {
                                                 {log._source}
                                             </span>
                                         </td>
-                                        <td className="px-2 py-1 text-blue-700 dark:text-blue-400 whitespace-nowrap max-w-[110px] truncate">
+                                        <td className="px-2 py-1 text-accent-ink whitespace-nowrap max-w-[110px] truncate">
                                             {log._actor || '-'}
                                         </td>
-                                        <td className="px-2 py-1 text-amber-700 dark:text-yellow-300 whitespace-nowrap max-w-[170px] truncate">
+                                        <td className="px-2 py-1 text-warn whitespace-nowrap max-w-[170px] truncate">
                                             {log._action}
                                         </td>
-                                        <td className="px-2 py-1 text-gray-600 dark:text-gray-400 truncate max-w-[220px]">
+                                        <td className="px-2 py-1 text-ink-muted truncate max-w-[220px]">
                                             {log._source === 'App'
                                                 ? `${log.targetEntityType || ''}${log.targetEntityId ? ` ${log.targetEntityId.substring(0, 8)}` : ''}`
                                                 : (log.certificateSerial || log.caLabel || '')
                                             }
                                         </td>
-                                        <td className="px-2 py-1 text-gray-500 dark:text-gray-500 whitespace-nowrap">
+                                        <td className="px-2 py-1 text-ink-muted whitespace-nowrap">
                                             {log.sourceIp}
                                         </td>
                                     </tr>
@@ -261,59 +261,59 @@ const LogPanel: React.FC = () => {
 
                     {/* Detail pane for selected log */}
                     {selectedLog && (
-                        <div className="border-t border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 space-y-1">
+                        <div className="border-t border-line bg-ground px-3 py-2 space-y-1">
                             <div className="flex justify-between items-start">
-                                <span className="text-xs font-semibold text-gray-900 dark:text-white">{selectedLog._source}: {selectedLog._action}</span>
-                                <button onClick={() => setSelectedLog(null)} className="text-gray-600 hover:text-gray-900 dark:hover:text-white text-xs">{'✕'}</button>
+                                <span className="text-xs font-semibold text-ink">{selectedLog._source}: {selectedLog._action}</span>
+                                <button onClick={() => setSelectedLog(null)} className="text-ink-muted hover:text-ink text-xs">{'✕'}</button>
                             </div>
                             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px]">
-                                <span className="text-gray-600">Source</span>
-                                <span className="text-gray-700 dark:text-gray-300">{selectedLog._source}</span>
-                                <span className="text-gray-600">Timestamp</span>
-                                <span className="text-gray-700 dark:text-gray-300">{new Date(selectedLog.timestamp).toISOString()}</span>
+                                <span className="text-ink-muted">Source</span>
+                                <span className="text-ink">{selectedLog._source}</span>
+                                <span className="text-ink-muted">Timestamp</span>
+                                <span className="text-ink">{new Date(selectedLog.timestamp).toISOString()}</span>
                                 {selectedLog._source === 'App' ? (
                                     <>
-                                        <span className="text-gray-600">Actor</span>
-                                        <span className="text-blue-800 dark:text-blue-400">{selectedLog.actorUsername || '-'}</span>
-                                        <span className="text-gray-600">Action</span>
-                                        <span className="text-gray-700 dark:text-gray-300">{selectedLog.actionType}</span>
-                                        <span className="text-gray-600">Target</span>
-                                        <span className="text-gray-700 dark:text-gray-300">{selectedLog.targetEntityType} {selectedLog.targetEntityId || ''}</span>
+                                        <span className="text-ink-muted">Actor</span>
+                                        <span className="text-accent-ink">{selectedLog.actorUsername || '-'}</span>
+                                        <span className="text-ink-muted">Action</span>
+                                        <span className="text-ink">{selectedLog.actionType}</span>
+                                        <span className="text-ink-muted">Target</span>
+                                        <span className="text-ink">{selectedLog.targetEntityType} {selectedLog.targetEntityId || ''}</span>
                                     </>
                                 ) : (
                                     <>
-                                        <span className="text-gray-600">Operation</span>
-                                        <span className="text-gray-700 dark:text-gray-300">{selectedLog._action}</span>
-                                        <span className="text-gray-600">Subject DN</span>
-                                        <span className="text-gray-700 dark:text-gray-300">{selectedLog.subjectDN || '-'}</span>
-                                        <span className="text-gray-600">Certificate</span>
-                                        <span className="text-gray-700 dark:text-gray-300 font-mono">{selectedLog.certificateSerial || '-'}</span>
+                                        <span className="text-ink-muted">Operation</span>
+                                        <span className="text-ink">{selectedLog._action}</span>
+                                        <span className="text-ink-muted">Subject DN</span>
+                                        <span className="text-ink">{selectedLog.subjectDN || '-'}</span>
+                                        <span className="text-ink-muted">Certificate</span>
+                                        <span className="text-ink font-mono">{selectedLog.certificateSerial || '-'}</span>
                                         {selectedLog.keyAlgorithm && (
                                             <>
-                                                <span className="text-gray-600">Key</span>
-                                                <span className="text-gray-700 dark:text-gray-300">{selectedLog.keyAlgorithm} {selectedLog.keySize}</span>
+                                                <span className="text-ink-muted">Key</span>
+                                                <span className="text-ink">{selectedLog.keyAlgorithm} {selectedLog.keySize}</span>
                                             </>
                                         )}
                                         {selectedLog.caLabel && (
                                             <>
-                                                <span className="text-gray-600">CA Label</span>
-                                                <span className="text-gray-700 dark:text-gray-300">{selectedLog.caLabel}</span>
+                                                <span className="text-ink-muted">CA Label</span>
+                                                <span className="text-ink">{selectedLog.caLabel}</span>
                                             </>
                                         )}
                                     </>
                                 )}
-                                <span className="text-gray-600">Source IP</span>
-                                <span className="text-gray-700 dark:text-gray-300">{selectedLog.sourceIp || '-'}</span>
-                                <span className="text-gray-600">Success</span>
-                                <span className={selectedLog.success ? 'text-green-800 dark:text-green-400' : 'text-red-800 dark:text-red-400'}>{selectedLog.success ? 'Yes' : 'No'}</span>
+                                <span className="text-ink-muted">Source IP</span>
+                                <span className="text-ink">{selectedLog.sourceIp || '-'}</span>
+                                <span className="text-ink-muted">Success</span>
+                                <span className={selectedLog.success ? 'text-ok' : 'text-crit'}>{selectedLog.success ? 'Yes' : 'No'}</span>
                                 {selectedLog.errorMessage && (
                                     <>
-                                        <span className="text-gray-600">Error</span>
-                                        <span className="text-red-800 dark:text-red-400">{selectedLog.errorMessage}</span>
+                                        <span className="text-ink-muted">Error</span>
+                                        <span className="text-crit">{selectedLog.errorMessage}</span>
                                     </>
                                 )}
-                                <span className="text-gray-600">ID</span>
-                                <span className="text-gray-600 font-mono">{selectedLog.id}</span>
+                                <span className="text-ink-muted">ID</span>
+                                <span className="text-ink-muted font-mono">{selectedLog.id}</span>
                             </div>
                         </div>
                     )}

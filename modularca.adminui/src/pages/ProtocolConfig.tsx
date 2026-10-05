@@ -171,19 +171,19 @@ const ProtocolConfig: React.FC = () => {
         }
     };
 
-    const selectClass = 'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
+    const selectClass = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Protocol Configuration</h1>
+            <h1 className="text-xl font-semibold text-ink">Protocol Configuration</h1>
 
             {/* CA Selector */}
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Select Certificate Authority</h3>
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                <div className="px-4 py-3 border-b border-line">
+                    <h3 className="text-sm font-semibold text-ink">Select Certificate Authority</h3>
                 </div>
                 <div className="p-4">
-                    {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading authorities...</p>}
+                    {loading && <p className="text-sm text-ink-muted">Loading authorities...</p>}
                     {error && <InlineNotice notice={error} variant="line" />}
                     {!loading && !error && (
                         <select
@@ -192,7 +192,7 @@ const ProtocolConfig: React.FC = () => {
                                 setSelectedCaId(e.target.value);
                                 setExpandedProtocol(null);
                             }}
-                            className="w-full max-w-md px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className="w-full max-w-md px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                         >
                             {allCasFlat.length === 0 && <option value="">No CAs available</option>}
                             {allCasFlat.map((ca) => {
@@ -208,7 +208,7 @@ const ProtocolConfig: React.FC = () => {
                 </div>
             </div>
 
-            {configLoading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading protocol configs...</div>}
+            {configLoading && <div className="p-4 text-sm text-ink-muted">Loading protocol configs...</div>}
 
             {/* Protocol Cards */}
             {selectedCaId && !configLoading && visibleProtocols.length === 0 && (
@@ -222,9 +222,9 @@ const ProtocolConfig: React.FC = () => {
                 />
             )}
             {selectedCaId && !configLoading && hiddenProtocols.length > 0 && visibleProtocols.length > 0 && (
-                <p className="text-xs text-gray-600 dark:text-gray-400">
+                <p className="text-xs text-ink-muted">
                     Not listed: {hiddenProtocols.join(', ')} &mdash; disabled system-wide under{' '}
-                    <Link to="/settings" className="text-blue-600 dark:text-blue-400 hover:underline">Settings &rarr; Features</Link>.
+                    <Link to="/settings" className="text-accent-ink hover:underline">Settings &rarr; Features</Link>.
                     Their configuration is kept and returns when the flag does.
                 </p>
             )}
@@ -252,8 +252,8 @@ const ProtocolConfig: React.FC = () => {
             })}
 
             {!selectedCaId && !loading && !error && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 text-center">
-                    <p className="text-sm text-gray-600">Select a Certificate Authority above to view protocol configurations.</p>
+                <div className="bg-raised border border-line rounded-lg p-6 text-center">
+                    <p className="text-sm text-ink-muted">Select a Certificate Authority above to view protocol configurations.</p>
                 </div>
             )}
         </div>
@@ -371,13 +371,13 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
     const needsProfiles = protocol !== 'OCSP';
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
             <button
                 onClick={onToggleExpand}
-                className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-200/50 dark:bg-gray-700/50 transition-colors"
+                className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-hover bg-sunken transition-colors"
             >
-                <span className="text-gray-600 text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
-                <span className="text-sm font-semibold text-gray-900 dark:text-white">{protocol}</span>
+                <span className="text-ink-muted text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
+                <span className="text-sm font-semibold text-ink">{protocol}</span>
                 {config ? (
                     <StatusBadge
                         status={config.enabled ? 'enabled' : 'disabled'}
@@ -387,14 +387,14 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                     <StatusBadge status="disabled" label="Not Configured" />
                 )}
                 {advisories.length > 0 && (
-                    <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Cannot run on this CA</span>
+                    <span className="text-xs font-medium text-warn">Cannot run on this CA</span>
                 )}
                 {config?.signingProfileName && (
-                    <span className="text-xs text-gray-600 ml-auto">Signing: {config.signingProfileName}</span>
+                    <span className="text-xs text-ink-muted ml-auto">Signing: {config.signingProfileName}</span>
                 )}
             </button>
             {expanded && (
-                <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                <div className="p-4 border-t border-line space-y-4">
                     {advisories.map((a) => (
                         <InlineNotice
                             key={a.reason}
@@ -441,8 +441,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                     </div>
 
                     {/* Visibility & Access Control */}
-                    <div className="border-t border-gray-300 dark:border-gray-700 pt-3">
-                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider mb-2">Visibility &amp; Access</h4>
+                    <div className="border-t border-line pt-3">
+                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wider mb-2">Visibility &amp; Access</h4>
                         <div className="space-y-3">
                             <ToggleField size="md" labelSide="left"
                                 label="Show on Public Portal"
@@ -454,8 +454,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                     </div>
 
                     {/* Protocol-specific fields */}
-                    <div className="border-t border-gray-300 dark:border-gray-700 pt-3">
-                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider mb-2">{protocol} Settings</h4>
+                    <div className="border-t border-line pt-3">
+                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wider mb-2">{protocol} Settings</h4>
 
                         {protocol === 'EST' && (
                             <div className="space-y-2">
@@ -473,8 +473,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'CMP' && (
                             <div className="space-y-3">
                                 {form.enabled && !form.cmpSignerConfigured && (
-                                    <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3">
-                                        <p className="text-xs text-amber-900 dark:text-amber-300">
+                                    <div className="rounded border border-warn/40 bg-warn-soft p-3">
+                                        <p className="text-xs text-warn">
                                             <strong>This CA has no CMP signing certificate.</strong> Signature-protected
                                             responses are signed with the CA certificate, which OpenSSL-based clients reject.
                                             Shared-secret (PBMAC) clients work without it. Issue one from the CA's detail page
@@ -483,9 +483,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                     </div>
                                 )}
                                 <ToggleField size="md" labelSide="left" label="Require Signature Protection" description="When enabled, only signature-based protection is accepted (client cert required). When disabled, PBMAC (shared secret) is also accepted." checked={form.cmpRequireSignature} onChange={(v) => setForm({ ...form, cmpRequireSignature: v })} />
-                                <p className="text-[10px] text-gray-600 mt-1">
+                                <p className="text-[10px] text-ink-muted mt-1">
                                     PBMAC shared secrets are issued per client from{' '}
-                                    <Link to="/enrollment" className="text-blue-600 dark:text-blue-400 hover:underline">Enrollment Management</Link>,
+                                    <Link to="/enrollment" className="text-accent-ink hover:underline">Enrollment Management</Link>,
                                     which replaced the old single per-CA secret. Generate one there rather than sharing a CA-wide password.
                                 </p>
                             </div>
@@ -502,17 +502,17 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                             const types = (form.acmeAllowedChallengeTypes || '').split(',').filter(Boolean);
                                             const checked = types.includes(ct);
                                             return (
-                                                <label key={ct} className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
+                                                <label key={ct} className="flex items-center gap-1.5 text-xs text-ink cursor-pointer">
                                                     <input type="checkbox" checked={checked} onChange={(e) => {
                                                         const next = e.target.checked ? [...types, ct] : types.filter((t: string) => t !== ct);
                                                         setForm({ ...form, acmeAllowedChallengeTypes: next.join(',') });
-                                                    }} className="w-3.5 h-3.5 accent-blue-500" />
+                                                    }} className="w-3.5 h-3.5 accent-accent" />
                                                     {ct}
                                                 </label>
                                             );
                                         })}
                                     </div>
-                                    <p className="text-[10px] text-gray-600 mt-1">Leave all unchecked to allow all challenge types.</p>
+                                    <p className="text-[10px] text-ink-muted mt-1">Leave all unchecked to allow all challenge types.</p>
                                 </div>
                             </div>
                         )}
@@ -524,8 +524,8 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         )}
 
                         {protocol === 'MSAE' && caId && (
-                            <p className="text-xs text-gray-600 dark:text-gray-400">
-                                Authentication is only one prerequisite. <Link to={`/authorities/windows/${caId}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks all of them for this CA.
+                            <p className="text-xs text-ink-muted">
+                                Authentication is only one prerequisite. <Link to={`/authorities/windows/${caId}`} className="text-accent-ink hover:underline">Windows Autoenrollment</Link> checks all of them for this CA.
                             </p>
                         )}
                         {protocol === 'MSAE' && (
@@ -533,7 +533,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                 <ToggleField size="md" labelSide="left" label="Username authentication" description="Accept the WS-Security UsernameToken (and HTTP Basic) a client configured for username authentication sends" checked={form.msaeAllowUsernameToken} onChange={(v) => setForm({ ...form, msaeAllowUsernameToken: v })} />
                                 <ToggleField size="md" labelSide="left" label="Windows integrated authentication (Kerberos)" description="Accept tickets from the Active Directory forests bound to this CA's space, and challenge credential-less clients with 401. Needs a realm bound on the space page." checked={form.msaeAllowKerberos} onChange={(v) => setForm({ ...form, msaeAllowKerberos: v })} />
                                 {!form.msaeAllowUsernameToken && !form.msaeAllowKerberos && (
-                                    <p className="text-xs text-amber-700 dark:text-amber-400">At least one authentication method must stay enabled.</p>
+                                    <p className="text-xs text-warn">At least one authentication method must stay enabled.</p>
                                 )}
                             </div>
                         )}
@@ -543,7 +543,7 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         <button
                             onClick={handleSubmit}
                             disabled={saving}
-                            className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {saving ? 'Saving...' : (config ? 'Update' : 'Create Configuration')}
                         </button>

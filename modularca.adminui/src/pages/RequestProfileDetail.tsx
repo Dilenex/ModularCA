@@ -26,22 +26,22 @@ const ReqFieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
     const isOverridden = source === 'overridden';
     return (
         <span className={`ml-2 px-1.5 py-0.5 text-[10px] rounded border ${isOverridden
-            ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-            : 'bg-gray-200 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400 border-gray-400 dark:border-gray-600'}`}>
+            ? 'bg-ok-soft text-ok border-ok/40'
+            : 'bg-sunken text-ink-muted border-line-strong'}`}>
             {isOverridden ? 'overridden' : 'inherited'}
         </span>
     );
 };
 
 const ReqSourceBorderedField: React.FC<{ source?: string; label: string; value?: string | null }> = ({ source, label, value }) => {
-    const borderColor = source === 'overridden' ? 'border-l-green-500' : source === 'inherited' ? 'border-l-gray-500' : '';
+    const borderColor = source === 'overridden' ? 'border-l-ok' : source === 'inherited' ? 'border-l-line-strong' : '';
     return (
         <div className={`pl-3 border-l-2 ${borderColor}`}>
             <div className="flex items-center">
-                <span className="text-xs text-gray-600 dark:text-gray-400">{label}</span>
+                <span className="text-xs text-ink-muted">{label}</span>
                 <ReqFieldSourceBadge source={source} />
             </div>
-            <span className="text-sm text-gray-900 dark:text-white">{value || '-'}</span>
+            <span className="text-sm text-ink">{value || '-'}</span>
         </div>
     );
 };
@@ -185,12 +185,12 @@ const RequestProfileDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Request profile not found.</p>
-            <button onClick={() => navigate(REQUEST_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Request Profiles</button>
+            <p className="text-sm text-ink-muted">Request profile not found.</p>
+            <button onClick={() => navigate(REQUEST_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Request Profiles</button>
         </div>
     );
 
@@ -207,7 +207,7 @@ const RequestProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name || !!rulesError || inheritanceInconsistent}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Request Profile">
@@ -242,8 +242,8 @@ const RequestProfileDetail: React.FC = () => {
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
                         <InheritanceHint inheritsFromId={editForm.inheritsFromId} inheritanceEnabled={editForm.inheritanceEnabled} />
                         <RequestProfileRulesEditor
@@ -253,15 +253,15 @@ const RequestProfileDetail: React.FC = () => {
                         />
                         <div>
                             <label className={labelClass}>Allowed Cert Profiles</label>
-                            <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-                                {certProfiles.length === 0 && <span className="text-xs text-gray-600">No cert profiles available</span>}
+                            <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+                                {certProfiles.length === 0 && <span className="text-xs text-ink-muted">No cert profiles available</span>}
                                 {certProfiles.map((cp) => {
                                     const cpId = cp.id || cp.certProfileId;
                                     return (
-                                        <label key={cpId} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 px-1 rounded">
+                                        <label key={cpId} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover px-1 rounded">
                                             <input type="checkbox" checked={editForm.allowedCertProfileIds.includes(cpId)}
                                                 onChange={(e) => setEditForm({ ...editForm, allowedCertProfileIds: e.target.checked ? [...editForm.allowedCertProfileIds, cpId] : editForm.allowedCertProfileIds.filter((x) => x !== cpId) })}
-                                                className="accent-blue-500" />
+                                                className="accent-accent" />
                                             <span>{cp.name}</span>
                                         </label>
                                     );
@@ -285,10 +285,10 @@ const RequestProfileDetail: React.FC = () => {
                     </div>
                     {p.allowedCertProfileIds && p.allowedCertProfileIds.length > 0 && (
                         <div className="py-2">
-                            <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Cert Profiles</span>
+                            <span className="text-xs text-ink-muted">Allowed Cert Profiles</span>
                             <div className="flex flex-wrap gap-1 mt-1">
                                 {p.allowedCertProfileIds.map((cpId: string, i: number) => (
-                                    <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{resolveProfileName(cpId)}</span>
+                                    <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{resolveProfileName(cpId)}</span>
                                 ))}
                             </div>
                         </div>
@@ -305,26 +305,26 @@ const RequestProfileDetail: React.FC = () => {
                                 empty="No DN rules"
                                 disableExport
                                 columns={[
-                                    { key: 'field', header: 'Field', defaultWidth: 120, sortable: true, exportValue: (rule) => rule.field, render: (rule) => <span className="text-gray-900 dark:text-white font-medium">{rule.field}</span> },
-                                    { key: 'requirement', header: 'Requirement', defaultWidth: 120, truncate: false, sortable: true, exportValue: (rule) => rule.requirement, render: (rule) => <span className={`px-2 py-0.5 rounded text-xs border ${rule.requirement === 'Required' ? 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' : rule.requirement === 'Forbidden' ? 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 border-gray-400 dark:border-gray-600'}`}>{rule.requirement}</span> },
-                                    { key: 'fixed', header: 'Fixed Value', defaultWidth: 160, exportValue: (rule) => rule.fixedValue || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 truncate">{rule.fixedValue || '-'}</span> },
-                                    { key: 'regex', header: 'Regex', flex: true, exportValue: (rule) => rule.regex || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 font-mono truncate">{rule.regex || '-'}</span> },
-                                    { key: 'maxLength', header: 'Max Length', defaultWidth: 100, align: 'right', exportValue: (rule) => rule.maxLength ?? '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 tabular-nums">{rule.maxLength ?? '-'}</span> },
-                                    { key: 'default', header: 'Default', defaultWidth: 140, exportValue: (rule) => rule.defaultValue || '', render: (rule) => <span className="text-gray-700 dark:text-gray-300 truncate">{rule.defaultValue || '-'}</span> },
+                                    { key: 'field', header: 'Field', defaultWidth: 120, sortable: true, exportValue: (rule) => rule.field, render: (rule) => <span className="text-ink font-medium">{rule.field}</span> },
+                                    { key: 'requirement', header: 'Requirement', defaultWidth: 120, truncate: false, sortable: true, exportValue: (rule) => rule.requirement, render: (rule) => <span className={`px-2 py-0.5 rounded text-xs border ${rule.requirement === 'Required' ? 'bg-ok-soft text-ok border-ok/40' : rule.requirement === 'Forbidden' ? 'bg-crit-soft text-crit border-crit/40' : 'bg-sunken text-ink border-line-strong'}`}>{rule.requirement}</span> },
+                                    { key: 'fixed', header: 'Fixed Value', defaultWidth: 160, exportValue: (rule) => rule.fixedValue || '', render: (rule) => <span className="text-ink truncate">{rule.fixedValue || '-'}</span> },
+                                    { key: 'regex', header: 'Regex', flex: true, exportValue: (rule) => rule.regex || '', render: (rule) => <span className="text-ink font-mono truncate">{rule.regex || '-'}</span> },
+                                    { key: 'maxLength', header: 'Max Length', defaultWidth: 100, align: 'right', exportValue: (rule) => rule.maxLength ?? '', render: (rule) => <span className="text-ink tabular-nums">{rule.maxLength ?? '-'}</span> },
+                                    { key: 'default', header: 'Default', defaultWidth: 140, exportValue: (rule) => rule.defaultValue || '', render: (rule) => <span className="text-ink truncate">{rule.defaultValue || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
-                    ) : <span className="text-xs text-gray-600">No DN rules defined</span>}
+                    ) : <span className="text-xs text-ink-muted">No DN rules defined</span>}
                 </DetailSection>
 
                 <DetailSection title="SAN Rules">
                     <div>
-                        <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">Allowed Types:</span>
+                        <span className="text-xs text-ink-muted mr-2">Allowed Types:</span>
                         <div className="inline-flex flex-wrap gap-1 mt-1">
                             {(p.sanRules?.allowedTypes || []).map((type: string, i: number) => (
-                                <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{type}</span>
+                                <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{type}</span>
                             ))}
-                            {(!p.sanRules?.allowedTypes || p.sanRules.allowedTypes.length === 0) && <span className="text-xs text-gray-600">None</span>}
+                            {(!p.sanRules?.allowedTypes || p.sanRules.allowedTypes.length === 0) && <span className="text-xs text-ink-muted">None</span>}
                         </div>
                         <div className="mt-2"><DetailField label="SAN Required" value={p.sanRules?.required ? 'Yes' : 'No'} /></div>
                     </div>
@@ -333,20 +333,20 @@ const RequestProfileDetail: React.FC = () => {
                 {p.inheritanceEnabled && p.inheritsFromId && (
                     <DetailSection title="Inheritance">
                         <div className="flex gap-2">
-                            <button onClick={fetchResolvedProfile} disabled={resolvedLoading} className="px-3 py-1 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors disabled:opacity-50">{resolvedLoading ? 'Loading...' : 'Resolved Profile'}</button>
-                            <button onClick={fetchValidation} disabled={validationLoading} className="px-3 py-1 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors disabled:opacity-50">{validationLoading ? 'Validating...' : 'Validate Inheritance'}</button>
+                            <button onClick={fetchResolvedProfile} disabled={resolvedLoading} className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors disabled:opacity-50">{resolvedLoading ? 'Loading...' : 'Resolved Profile'}</button>
+                            <button onClick={fetchValidation} disabled={validationLoading} className="px-3 py-1 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 transition-colors disabled:opacity-50">{validationLoading ? 'Validating...' : 'Validate Inheritance'}</button>
                         </div>
                         {validationResult && (
-                            <div className={`mt-3 p-3 rounded border text-sm ${validationResult.isValid ? 'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700 text-green-800 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-300'}`}>
+                            <div className={`mt-3 p-3 rounded border text-sm ${validationResult.isValid ? 'bg-ok-soft border-ok/40 text-ok' : 'bg-crit-soft border-crit/40 text-crit'}`}>
                                 {validationResult.isValid ? <span>Inheritance is valid. No constraint violations found.</span> : (
                                     <div><span className="font-semibold">Validation errors:</span><ul className="mt-1 list-disc list-inside space-y-0.5">{validationResult.errors.map((err, i) => <li key={i} className="text-xs">{err}</li>)}</ul></div>
                                 )}
                             </div>
                         )}
                         {resolvedProfile && (
-                            <div className="mt-3 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-3 space-y-2">
-                                <h5 className="text-xs font-semibold text-gray-900 dark:text-white mb-2">Resolved (Effective) Profile</h5>
-                                {resolvedProfile.parentProfileId && <div className="text-xs text-gray-600 dark:text-gray-400 mb-2">Parent: {resolveParentName(resolvedProfile.parentProfileId)}</div>}
+                            <div className="mt-3 bg-raised border border-line rounded-lg p-3 space-y-2">
+                                <h5 className="text-xs font-semibold text-ink mb-2">Resolved (Effective) Profile</h5>
+                                {resolvedProfile.parentProfileId && <div className="text-xs text-ink-muted mb-2">Parent: {resolveParentName(resolvedProfile.parentProfileId)}</div>}
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.Name} label="Name" value={resolvedProfile.name} />
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.Description} label="Description" value={resolvedProfile.description} />
                                 <ReqSourceBorderedField source={resolvedProfile.fieldSources?.RequireApproval} label="Require Approval" value={resolvedProfile.requireApproval ? 'Yes' : 'No'} />
@@ -361,7 +361,7 @@ const RequestProfileDetail: React.FC = () => {
                     title="Delete Request Profile"
                     message={`Delete request profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

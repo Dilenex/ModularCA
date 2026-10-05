@@ -83,18 +83,18 @@ const RoleDrawer: React.FC<{ role: RoleSummary }> = ({ role }) => {
             <DetailField label="Type" value={role.isBuiltIn ? 'Built-in' : 'Custom'} />
             {detail?.spaceId && <DetailField label="Space" value={detail.spaceId} mono />}
             <div className="mt-3">
-                <span className="text-xs text-gray-500">Capabilities ({detail ? caps.length : detailError ? 'unavailable' : '…'})</span>
+                <span className="text-xs text-ink-muted">Capabilities ({detail ? caps.length : detailError ? 'unavailable' : '…'})</span>
                 <div className="mt-1 space-y-0.5">
-                    {detailError && <span className="text-xs text-red-800 dark:text-red-400" role="status">Unavailable: could not load the capability list ({detailError}).</span>}
-                    {detail && caps.length === 0 && <span className="text-xs text-gray-500">No capabilities.</span>}
+                    {detailError && <span className="text-xs text-crit" role="status">Unavailable: could not load the capability list ({detailError}).</span>}
+                    {detail && caps.length === 0 && <span className="text-xs text-ink-muted">No capabilities.</span>}
                     {caps.map((c) => (
-                        <div key={c.id} className="text-xs text-gray-800 dark:text-gray-200 font-mono">
-                            {c.capability}{c.resourceType ? <span className="text-gray-500"> · {c.resourceType}</span> : null}
+                        <div key={c.id} className="text-ink data-mono">
+                            {c.capability}{c.resourceType ? <span className="text-ink-muted"> · {c.resourceType}</span> : null}
                         </div>
                     ))}
                 </div>
             </div>
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit or manage capabilities.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to edit or manage capabilities.</p>
         </div>
     );
 };
@@ -184,10 +184,10 @@ const RoleManagement: React.FC = () => {
     };
 
     const columns: DataTableColumn<RoleSummary>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 140, truncate: false, exportValue: (r) => r.name, render: (r) => <span className="text-gray-900 dark:text-white font-medium truncate">{r.name}</span> },
-        { key: 'description', header: 'Description', defaultWidth: 280, exportValue: (r) => r.description || '', render: (r) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{r.description || '-'}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 140, truncate: false, exportValue: (r) => r.name, render: (r) => <span className="text-ink font-medium truncate">{r.name}</span> },
+        { key: 'description', header: 'Description', defaultWidth: 280, exportValue: (r) => r.description || '', render: (r) => <span className="text-xs text-ink-muted truncate">{r.description || '-'}</span> },
         { key: 'type', header: 'Type', defaultWidth: 110, truncate: false, exportValue: (r) => (r.isBuiltIn ? 'Built-in' : 'Custom'), render: (r) => <StatusBadge status={r.isBuiltIn ? 'pending' : 'active'} label={r.isBuiltIn ? 'Built-in' : 'Custom'} /> },
-        { key: 'capabilities', header: 'Capabilities', defaultWidth: 120, exportValue: (r) => (r.capabilityCount ?? 0), render: (r) => <span className="text-xs text-gray-600 dark:text-gray-400">{r.capabilityCount ?? 0}</span> },
+        { key: 'capabilities', header: 'Capabilities', defaultWidth: 120, exportValue: (r) => (r.capabilityCount ?? 0), render: (r) => <span className="text-xs text-ink-muted">{r.capabilityCount ?? 0}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<RoleSummary>[] = [
@@ -197,10 +197,10 @@ const RoleManagement: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Roles</h1>
+                <h1 className="text-xl font-semibold text-ink">Roles</h1>
                 <button
                     onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                 >
                     {showCreate ? 'Cancel' : 'Create Role'}
                 </button>
@@ -208,8 +208,8 @@ const RoleManagement: React.FC = () => {
 
             {/* Create Role Form */}
             {showCreate && (
-                <form onSubmit={handleCreate} className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">New Role</h3>
+                <form onSubmit={handleCreate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-ink">New Role</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <input
                             type="text"
@@ -217,20 +217,20 @@ const RoleManagement: React.FC = () => {
                             required
                             value={createForm.name}
                             onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
                         />
                         <input
                             type="text"
                             placeholder="Description"
                             value={createForm.description}
                             onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
-                            className="px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
                         />
                     </div>
                     <button
                         type="submit"
                         disabled={creating}
-                        className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 transition-colors"
+                        className="px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50 transition-colors"
                     >
                         {creating ? 'Creating...' : 'Create'}
                     </button>
@@ -238,7 +238,7 @@ const RoleManagement: React.FC = () => {
             )}
 
             <input type="text" placeholder="Search by name or description..." value={search} onChange={(e) => setSearch(e.target.value)}
-                className="w-full max-w-md px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                className="w-full max-w-md px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
 
             <DataTable<RoleSummary>
                 tableId="roles"

@@ -82,9 +82,9 @@ export interface RecordDescriptor<T> {
 /** Tailwind classes for a status tone, matching the console's badges. */
 export function statusToneClass(tone: RecordStatus['tone']): string {
     switch (tone) {
-        case 'ok': return 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700';
-        case 'warn': return 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700';
-        case 'bad': return 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700';
-        default: return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600';
+        case 'ok': return 'bg-ok-soft text-ok border-ok/40';
+        case 'warn': return 'bg-warn-soft text-warn border-warn/40';
+        case 'bad': return 'bg-crit-soft text-crit border-crit/40';
+        default: return 'bg-sunken text-ink-muted border-line';
     }
 }

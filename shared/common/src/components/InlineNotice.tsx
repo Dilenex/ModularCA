@@ -26,17 +26,17 @@ export interface InlineNoticeProps {
 }
 
 const blockStyles: Record<NoticeSeverity, string> = {
-    error: 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-300',
-    warning: 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200',
-    info: 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 text-blue-900 dark:text-blue-200',
-    success: 'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700 text-green-900 dark:text-green-200',
+    error: 'bg-crit-soft border-crit/40',
+    warning: 'bg-warn-soft border-warn/40',
+    info: 'bg-info-soft border-info/40',
+    success: 'bg-ok-soft border-ok/40',
 };
 
 const lineStyles: Record<NoticeSeverity, string> = {
-    error: 'text-red-800 dark:text-red-400',
-    warning: 'text-amber-800 dark:text-amber-300',
-    info: 'text-blue-800 dark:text-blue-300',
-    success: 'text-green-800 dark:text-green-300',
+    error: 'text-crit',
+    warning: 'text-warn',
+    info: 'text-info',
+    success: 'text-ok',
 };
 
 const Token: React.FC<{ label: string; value: string }> = ({ label, value }) => {
@@ -52,7 +52,7 @@ const Token: React.FC<{ label: string; value: string }> = ({ label, value }) => 
             <span className="opacity-70">{label}</span>
             <code className="font-mono select-all break-all">{value}</code>
             <button type="button" onClick={copy} aria-label={`Copy ${label} ${value}`}
-                className="px-1.5 py-0.5 rounded bg-black/5 dark:bg-black/20 hover:bg-black/10 dark:hover:bg-black/40 transition-colors">
+                className="px-1.5 py-0.5 rounded border border-line bg-raised text-ink hover:bg-hover transition-colors">
                 {copied ? 'Copied' : 'Copy'}
             </button>
         </span>
@@ -76,17 +76,17 @@ export const InlineNotice: React.FC<InlineNoticeProps> = ({ notice, severity, va
                 {n.detail}
                 {n.items?.length ? ` ${n.items.join('; ')}` : ''}
                 {n.remediation && <span className="opacity-90"> {n.remediation}</span>}
-                {n.code && <span className="ml-1 font-mono text-xs select-all opacity-80">[{n.code}]</span>}
+                {n.code && <span className="ml-1 data-mono select-all opacity-80">[{n.code}]</span>}
             </p>
         );
     }
 
     return (
         <div role={urgent ? 'alert' : 'status'} aria-live={urgent ? 'assertive' : 'polite'}
-            className={`flex items-start gap-3 px-3 py-2 rounded-md border ${blockStyles[sev]} ${className}`}>
+            className={`flex items-start gap-3 px-3 py-2 rounded-md border text-ink ${blockStyles[sev]} ${className}`}>
             <div className="flex-1 min-w-0 space-y-1">
-                {showTitle && <p className="text-sm font-semibold break-words">{n.title}</p>}
-                {n.detail && <p className="text-sm break-words whitespace-pre-line">{n.detail}</p>}
+                {showTitle && <p className={`text-sm font-semibold break-words ${lineStyles[sev]}`}>{n.title}</p>}
+                {n.detail && <p className={`text-sm break-words whitespace-pre-line ${showTitle ? '' : lineStyles[sev]}`}>{n.detail}</p>}
                 {n.items && n.items.length > 0 && (
                     <ul className="text-xs list-disc list-outside pl-4 space-y-0.5">
                         {n.items.map((item, i) => <li key={i} className="break-words">{item}</li>)}
@@ -101,7 +101,7 @@ export const InlineNotice: React.FC<InlineNoticeProps> = ({ notice, severity, va
                 )}
             </div>
             {onDismiss && (
-                <button type="button" onClick={onDismiss} aria-label="Dismiss" className="text-current opacity-50 hover:opacity-100 flex-shrink-0">&times;</button>
+                <button type="button" onClick={onDismiss} aria-label="Dismiss" className="text-ink-muted hover:text-ink flex-shrink-0">&times;</button>
             )}
         </div>
     );

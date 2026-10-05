@@ -55,10 +55,10 @@ const BUCKET_OPTIONS: { label: string; value: BucketMode }[] = [
 
 // status colours (shared by histogram segments, calendar cells, legend)
 const SEG = {
-    expiringSoon: 'bg-amber-500',
-    active: 'bg-green-500',
-    expired: 'bg-gray-400 dark:bg-gray-500',
-    revoked: 'bg-rose-600',
+    expiringSoon: 'bg-warn',
+    active: 'bg-ok',
+    expired: 'bg-ink-muted',
+    revoked: 'bg-crit',
 };
 
 // pick the cell colour for a day by most-relevant status present
@@ -67,7 +67,8 @@ function cellColor(c: Counts): string {
     if (c.active > 0) return SEG.active;
     if (c.expired > 0) return SEG.expired;
     if (c.revoked > 0) return SEG.revoked;
-    return '';
+    // Only reached for an empty day, which renders no badge.
+    return SEG.expired;
 }
 
 interface DisplayUnit {
@@ -249,14 +250,14 @@ const ExpiryCalendar: React.FC = () => {
         navigate(`/certificates?${params.toString()}`);
     };
 
-    const selControl = 'px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500';
+    const selControl = 'px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent';
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-start justify-between flex-wrap gap-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Expiry Calendar</h1>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Renewal load over time — find the cliffs before they hit.</p>
+                    <h1 className="text-xl font-semibold text-ink">Expiry Calendar</h1>
+                    <p className="text-sm text-ink-muted mt-1">Renewal load over time — find the cliffs before they hit.</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : 'Filter by issuing CA'}>
@@ -268,12 +269,12 @@ const ExpiryCalendar: React.FC = () => {
                     <select value={rangeMonths} onChange={(e) => { setRangeMonths(parseInt(e.target.value)); setWindowOverride(null); }} className={selControl} title="Time range">
                         {RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
-                    <div className="inline-flex rounded border border-gray-300 dark:border-gray-700 overflow-hidden">
+                    <div className="inline-flex rounded border border-line overflow-hidden">
                         {BUCKET_OPTIONS.map((o) => (
                             <button key={o.value} onClick={() => changeBucket(o.value)}
                                 className={`px-3 py-2 text-sm transition-colors ${bucket === o.value
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                                    ? 'bg-accent text-on-accent'
+                                    : 'bg-raised text-ink hover:bg-hover'}`}>
                                 {o.label}
                             </button>
                         ))}
@@ -290,38 +291,38 @@ const ExpiryCalendar: React.FC = () => {
                         { label: 'Expired', value: windowTotals.expired, dot: SEG.expired },
                         { label: 'Revoked', value: windowTotals.revoked, dot: SEG.revoked },
                     ].map((t) => (
-                        <div key={t.label} className={`bg-gray-100 dark:bg-gray-800 border rounded-lg px-4 py-3 ${t.emphasis ? 'border-amber-400 dark:border-amber-500/60' : 'border-gray-300 dark:border-gray-700'}`}>
-                            <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                        <div key={t.label} className={`bg-raised border rounded-lg px-4 py-3 ${t.emphasis ? 'border-warn' : 'border-line'}`}>
+                            <div className="flex items-center gap-2 text-xs text-ink-muted">
                                 <span className={`w-2.5 h-2.5 rounded ${t.dot} inline-block`}></span>{t.label}
                             </div>
-                            <div className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{t.value}</div>
+                            <div className="text-2xl font-bold text-ink mt-1">{t.value}</div>
                         </div>
                     ))}
                 </div>
             )}
 
-            {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading expiry data…</div>}
+            {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading expiry data…</div>}
             {error && <InlineNotice notice={error} />}
 
             {/* Tier 1 — timeline histogram */}
             {!loading && !error && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
+                <div className="bg-raised border border-line rounded-lg p-4">
                     <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                        <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+                        <h2 className="text-sm font-semibold text-ink">
                             Expirations by {bucket}
-                            <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                            <span className="ml-2 text-xs font-normal text-ink-muted">
                                 {bucket === 'month' ? 'click a bar to open its calendar' : `click a bar to drill into ${bucket === 'year' ? 'quarters' : 'months'}`}
                             </span>
                         </h2>
                         {windowOverride && (
-                            <button onClick={resetView} className="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                            <button onClick={resetView} className="text-xs px-2 py-1 rounded bg-sunken text-ink hover:bg-hover transition-colors">
                                 ← Back to full range
                             </button>
                         )}
                     </div>
 
                     {units.length === 0 || windowTotals.total === 0 ? (
-                        <div className="py-10 text-center text-sm text-gray-500 dark:text-gray-400">No certificates expire in this window.</div>
+                        <div className="py-10 text-center text-sm text-ink-muted">No certificates expire in this window.</div>
                     ) : (
                         <div className="overflow-x-auto">
                             <div className="flex items-end gap-1 h-52 min-w-full" style={{ minWidth: units.length * 18 }}>
@@ -335,9 +336,9 @@ const ExpiryCalendar: React.FC = () => {
                                             className="group flex-1 min-w-[14px] h-full flex flex-col justify-end items-stretch cursor-pointer">
                                             <div className="relative w-full flex flex-col justify-end" style={{ height: '100%' }}>
                                                 {c.total > 0 && (
-                                                    <span className="text-[10px] text-center text-gray-500 dark:text-gray-400 mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">{c.total}</span>
+                                                    <span className="text-[10px] text-center text-ink-muted mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">{c.total}</span>
                                                 )}
-                                                <div className={`w-full flex flex-col rounded-t overflow-hidden ring-blue-400 group-hover:ring-2 ${u.isCurrent ? 'ring-2 ring-blue-500' : ''}`}
+                                                <div className={`w-full flex flex-col rounded-t overflow-hidden ring-accent group-hover:ring-2 ${u.isCurrent ? 'ring-2 ring-accent' : ''}`}
                                                     style={{ height: `${barPct}%`, minHeight: c.total > 0 ? 3 : 0 }}>
                                                     {c.expiringSoon > 0 && <div className={SEG.expiringSoon} style={{ height: `${seg(c.expiringSoon)}%`, minHeight: 2 }} />}
                                                     {c.active > 0 && <div className={SEG.active} style={{ height: `${seg(c.active)}%`, minHeight: 2 }} />}
@@ -345,7 +346,7 @@ const ExpiryCalendar: React.FC = () => {
                                                     {c.revoked > 0 && <div className={SEG.revoked} style={{ height: `${seg(c.revoked)}%`, minHeight: 2 }} />}
                                                 </div>
                                             </div>
-                                            <div className={`text-[10px] text-center mt-1 leading-tight truncate ${u.isCurrent ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-500 dark:text-gray-400'}`}>
+                                            <div className={`text-[10px] text-center mt-1 leading-tight truncate ${u.isCurrent ? 'text-accent-ink font-semibold' : 'text-ink-muted'}`}>
                                                 {u.label}{u.sublabel && <span className="block">{u.sublabel}</span>}
                                             </div>
                                         </button>
@@ -356,12 +357,12 @@ const ExpiryCalendar: React.FC = () => {
                     )}
 
                     {/* legend */}
-                    <div className="flex items-center gap-4 text-xs text-gray-600 dark:text-gray-400 mt-4 flex-wrap">
+                    <div className="flex items-center gap-4 text-xs text-ink-muted mt-4 flex-wrap">
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.expiringSoon} inline-block`} /> Expiring ≤30d</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.active} inline-block`} /> Active</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.expired} inline-block`} /> Expired</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.revoked} inline-block`} /> Revoked</span>
-                        <span className="flex items-center gap-1 ml-auto"><span className="w-3 h-3 rounded ring-2 ring-blue-500 inline-block" /> Current period</span>
+                        <span className="flex items-center gap-1 ml-auto"><span className="w-3 h-3 rounded ring-2 ring-accent inline-block" /> Current period</span>
                     </div>
                 </div>
             )}
@@ -418,47 +419,46 @@ const MonthGrid: React.FC<MonthGridProps> = ({ year, month, buckets, loading, on
     const monthTotal = (buckets ?? []).reduce((s, b) => s + b.total, 0);
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
+        <div className="bg-raised border border-line rounded-lg p-4">
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+                <h2 className="text-sm font-semibold text-ink">
                     {monthLabel}
-                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">{monthTotal} certificate{monthTotal !== 1 ? 's' : ''} expiring</span>
+                    <span className="ml-2 text-xs font-normal text-ink-muted">{monthTotal} certificate{monthTotal !== 1 ? 's' : ''} expiring</span>
                 </h2>
                 <div className="flex items-center gap-2">
-                    <button onClick={onViewMonth} className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors">View all in Certificates</button>
-                    <button onClick={onClose} className="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Close</button>
+                    <button onClick={onViewMonth} className="text-xs px-2 py-1 rounded bg-accent text-on-accent hover:bg-accent-hover transition-colors">View all in Certificates</button>
+                    <button onClick={onClose} className="text-xs px-2 py-1 rounded bg-sunken text-ink hover:bg-hover transition-colors">Close</button>
                 </div>
             </div>
 
             {loading ? (
-                <div className="py-10 text-center text-sm text-gray-500 dark:text-gray-400">Loading days…</div>
+                <div className="py-10 text-center text-sm text-ink-muted">Loading days…</div>
             ) : (
                 <>
                     <div className="grid grid-cols-7 gap-1 mb-1">
-                        {WEEKDAYS.map((w) => <div key={w} className="text-[11px] text-center text-gray-500 dark:text-gray-400 font-medium py-1">{w}</div>)}
+                        {WEEKDAYS.map((w) => <div key={w} className="text-[11px] text-center text-ink-muted font-medium py-1">{w}</div>)}
                     </div>
                     <div className="grid grid-cols-7 gap-1">
                         {cells.map((d, i) => {
                             if (d === null) return <div key={`b${i}`} />;
                             const c = dayMap.get(d);
                             const has = !!c && c.total > 0;
-                            const color = c ? cellColor(c) : '';
                             const tip = c ? `${monthLabel.split(' ')[0]} ${d}\nExpiring ≤30d: ${c.expiringSoon}\nActive: ${c.active}\nExpired: ${c.expired}\nRevoked: ${c.revoked}` : undefined;
                             return (
                                 <button key={d} disabled={!has} title={tip}
                                     onClick={() => has && onDay(new Date(year, month - 1, d))}
                                     className={`relative aspect-square rounded border flex flex-col items-center justify-center p-1 transition-colors
-                                        ${isToday(d) ? 'border-blue-500 ring-1 ring-blue-500' : 'border-gray-300 dark:border-gray-700'}
-                                        ${has ? 'cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700' : 'opacity-60 cursor-default'}`}>
-                                    <span className="text-[11px] text-gray-600 dark:text-gray-400 absolute top-1 left-1.5">{d}</span>
+                                        ${isToday(d) ? 'border-accent ring-1 ring-accent' : 'border-line'}
+                                        ${has ? 'cursor-pointer hover:bg-hover' : 'opacity-60 cursor-default'}`}>
+                                    <span className="text-[11px] text-ink-muted absolute top-1 left-1.5">{d}</span>
                                     {has && (
-                                        <span className={`mt-2 min-w-[1.4rem] px-1.5 py-0.5 rounded text-[11px] font-semibold text-white text-center ${color}`}>{c!.total}</span>
+                                        <span className={`mt-2 min-w-[1.4rem] px-1.5 py-0.5 rounded text-[11px] font-semibold text-on-accent text-center ${cellColor(c!)}`}>{c!.total}</span>
                                     )}
                                 </button>
                             );
                         })}
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">Click a day to see those certificates in the inventory.</p>
+                    <p className="text-xs text-ink-muted mt-3">Click a day to see those certificates in the inventory.</p>
                 </>
             )}
         </div>

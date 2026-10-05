@@ -103,14 +103,14 @@ const StatCard: React.FC<{
     to?: string;
 }> = ({ label, value, color, sub, to }) => {
     const body = (<>
-        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">{label}</span>
+        <span className="text-xs font-semibold text-ink-muted uppercase tracking-wide">{label}</span>
         <span className={`text-2xl font-bold mt-1 ${color}`}>{value}</span>
-        {sub && <span className="text-[10px] text-gray-600 dark:text-gray-400 mt-0.5">{sub}</span>}
+        {sub && <span className="text-[10px] text-ink-muted mt-0.5">{sub}</span>}
     </>);
-    const frame = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 flex flex-col';
+    const frame = 'bg-raised border border-line rounded-lg p-4 flex flex-col';
     if (!to) return <div className={frame}>{body}</div>;
     return (
-        <Link to={to} title="Open these certificates in the list" className={`${frame} hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}>
+        <Link to={to} title="Open these certificates in the list" className={`${frame} hover:border-accent hover:bg-hover transition-colors`}>
             {body}
         </Link>
     );
@@ -130,16 +130,16 @@ const HBar: React.FC<{
     max: number;
     total: number;
     barColor?: string;
-}> = ({ label, count, max, total, barColor = 'bg-blue-500' }) => {
+}> = ({ label, count, max, total, barColor = 'bg-accent' }) => {
     const pct = max > 0 ? (count / max) * 100 : 0;
     const pctOfTotal = total > 0 ? ((count / total) * 100).toFixed(1) : '0.0';
     return (
         <div className="flex items-center gap-3 py-1">
-            <span className="text-xs text-gray-700 dark:text-gray-300 w-28 truncate text-right">{label}</span>
-            <div className="flex-1 h-5 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden relative">
+            <span className="text-xs text-ink w-28 truncate text-right">{label}</span>
+            <div className="flex-1 h-5 bg-sunken rounded overflow-hidden relative">
                 <div className={`h-full ${barColor} rounded`} style={{ width: `${pct}%` }} />
             </div>
-            <span className="text-xs text-gray-600 dark:text-gray-400 w-20 text-right tabular-nums">
+            <span className="text-xs text-ink-muted w-20 text-right tabular-nums">
                 {count} ({pctOfTotal}%)
             </span>
         </div>
@@ -148,9 +148,9 @@ const HBar: React.FC<{
 
 /** Section wrapper */
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}</h3>
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-line">
+            <h3 className="text-sm font-semibold text-ink">{title}</h3>
         </div>
         <div className="p-4">{children}</div>
     </div>
@@ -168,19 +168,19 @@ interface HealthSummary {
 }
 
 const gradeColors: Record<string, string> = {
-    A: 'bg-green-500',
-    B: 'bg-blue-500',
-    C: 'bg-yellow-500',
-    D: 'bg-orange-500',
-    F: 'bg-red-500',
+    A: 'bg-ok text-on-accent',
+    B: 'bg-ok/40 text-ink',
+    C: 'bg-warn/40 text-ink',
+    D: 'bg-warn text-on-accent',
+    F: 'bg-crit text-on-accent',
 };
 
 const gradeLabelColors: Record<string, string> = {
-    A: 'text-green-800 dark:text-green-400',
-    B: 'text-blue-800 dark:text-blue-400',
-    C: 'text-yellow-800 dark:text-yellow-400',
-    D: 'text-orange-800 dark:text-orange-400',
-    F: 'text-red-800 dark:text-red-400',
+    A: 'text-ok',
+    B: 'text-ok',
+    C: 'text-warn',
+    D: 'text-warn',
+    F: 'text-crit',
 };
 
 const CertInventory: React.FC = () => {
@@ -357,8 +357,8 @@ const CertInventory: React.FC = () => {
     if (loading) {
         return (
             <div className="p-6">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Certificate Inventory</h1>
-                <div className="text-gray-600 dark:text-gray-400">Loading certificate data...</div>
+                <h1 className="text-xl font-semibold text-ink mb-4">Certificate Inventory</h1>
+                <div className="text-ink-muted">Loading certificate data...</div>
             </div>
         );
     }
@@ -366,7 +366,7 @@ const CertInventory: React.FC = () => {
     if (error) {
         return (
             <div className="p-6">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Certificate Inventory</h1>
+                <h1 className="text-xl font-semibold text-ink mb-4">Certificate Inventory</h1>
                 <InlineNotice notice={error} />
             </div>
         );
@@ -375,30 +375,30 @@ const CertInventory: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Certificate Inventory</h1>
+                <h1 className="text-xl font-semibold text-ink">Certificate Inventory</h1>
                 {caFilter && (
                     <button
                         onClick={() => setCaFilter(null)}
-                        className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300 border border-blue-400/40 rounded px-2 py-1"
+                        className="text-xs text-accent-ink hover:underline border border-accent/40 rounded px-2 py-1"
                     >
                         Clear CA filter: {caFilter.length > 50 ? caFilter.substring(0, 50) + '...' : caFilter}
                     </button>
                 )}
             </div>
             {truncated && (
-                <p className="text-xs text-amber-800 dark:text-amber-400">Showing the first {certs.length} certificates; the counts, charts and per-CA breakdown below cover only these. Health scores are computed over every certificate in scope.</p>
+                <p className="text-xs text-warn">Showing the first {certs.length} certificates; the counts, charts and per-CA breakdown below cover only these. Health scores are computed over every certificate in scope.</p>
             )}
 
             {/* 1. Summary Stats Bar. The expiry bands are exclusive (a certificate lands in exactly
                 one), unlike the cumulative "within N days" rows on Compliance, so the labels say so. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                <StatCard label="Total" value={stats.total} color="text-gray-900 dark:text-white" to={certListLink({})} />
-                <StatCard label="Active" value={stats.active} color="text-green-800 dark:text-green-400" to={certListLink({ status: 'active' })} />
-                <StatCard label="Expiring 0–30 days" value={stats.expiring30} sub="active, expires within 30 days" color={stats.expiring30 > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(0), notAfterTo: isoDateFromNow(30) })} />
-                <StatCard label="Expiring 31–60 days" value={stats.expiring60} sub="active, not counted above" color={stats.expiring60 > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(31), notAfterTo: isoDateFromNow(60) })} />
-                <StatCard label="Expiring 61–90 days" value={stats.expiring90} sub="active, not counted above" color={stats.expiring90 > 0 ? 'text-yellow-800 dark:text-yellow-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(61), notAfterTo: isoDateFromNow(90) })} />
-                <StatCard label="Expired" value={stats.expired} color={stats.expired > 0 ? 'text-orange-800 dark:text-orange-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'expired' })} />
-                <StatCard label="Revoked" value={stats.revoked} color={stats.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-900 dark:text-white'} to={certListLink({ status: 'revoked' })} />
+                <StatCard label="Total" value={stats.total} color="text-ink" to={certListLink({})} />
+                <StatCard label="Active" value={stats.active} color="text-ok" to={certListLink({ status: 'active' })} />
+                <StatCard label="Expiring 0–30 days" value={stats.expiring30} sub="active, expires within 30 days" color={stats.expiring30 > 0 ? 'text-crit' : 'text-ink'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(0), notAfterTo: isoDateFromNow(30) })} />
+                <StatCard label="Expiring 31–60 days" value={stats.expiring60} sub="active, not counted above" color={stats.expiring60 > 0 ? 'text-warn' : 'text-ink'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(31), notAfterTo: isoDateFromNow(60) })} />
+                <StatCard label="Expiring 61–90 days" value={stats.expiring90} sub="active, not counted above" color={stats.expiring90 > 0 ? 'text-warn' : 'text-ink'} to={certListLink({ status: 'active', notAfterFrom: isoDateFromNow(61), notAfterTo: isoDateFromNow(90) })} />
+                <StatCard label="Expired" value={stats.expired} color={stats.expired > 0 ? 'text-warn' : 'text-ink'} to={certListLink({ status: 'expired' })} />
+                <StatCard label="Revoked" value={stats.revoked} color={stats.revoked > 0 ? 'text-crit' : 'text-ink'} to={certListLink({ status: 'revoked' })} />
             </div>
 
             {/* Health Scores */}
@@ -406,25 +406,25 @@ const CertInventory: React.FC = () => {
                 <Section title="Health Scores">
                     <div className="flex items-center gap-6">
                         <div className="flex flex-col items-center">
-                            <span className="text-xs text-gray-600 dark:text-gray-400 mb-1">Average Score</span>
+                            <span className="text-xs text-ink-muted mb-1">Average Score</span>
                             <span className={`text-3xl font-bold ${
-                                healthSummary.averageScore >= 90 ? 'text-green-800 dark:text-green-400' :
-                                healthSummary.averageScore >= 80 ? 'text-blue-800 dark:text-blue-400' :
-                                healthSummary.averageScore >= 70 ? 'text-yellow-800 dark:text-yellow-400' :
-                                healthSummary.averageScore >= 60 ? 'text-orange-800 dark:text-orange-400' :
-                                'text-red-800 dark:text-red-400'
+                                healthSummary.averageScore >= 90 ? 'text-ok' :
+                                healthSummary.averageScore >= 80 ? 'text-accent-ink' :
+                                healthSummary.averageScore >= 70 ? 'text-warn' :
+                                healthSummary.averageScore >= 60 ? 'text-warn' :
+                                'text-crit'
                             }`}>
                                 {healthSummary.averageScore.toFixed(1)}
                             </span>
                         </div>
                         <div className="flex-1">
-                            <span className="text-xs text-gray-600 dark:text-gray-400 mb-2 block">Grade Distribution</span>
+                            <span className="text-xs text-ink-muted mb-2 block">Grade Distribution</span>
                             {(() => {
                                 const grades = ['A', 'B', 'C', 'D', 'F'];
                                 const raw = healthSummary.distribution || {};
                                 const dist: Record<string, number> = Object.fromEntries(grades.map(g => [g, raw[g.toLowerCase()] ?? raw[g] ?? 0]));
                                 const total = grades.reduce((s, g) => s + (dist[g] || 0), 0);
-                                if (total === 0) return <span className="text-sm text-gray-600">No data</span>;
+                                if (total === 0) return <span className="text-sm text-ink-muted">No data</span>;
                                 return (
                                     <div>
                                         <div className="flex h-6 rounded overflow-hidden">
@@ -435,7 +435,7 @@ const CertInventory: React.FC = () => {
                                                 return (
                                                     <div
                                                         key={g}
-                                                        className={`${gradeColors[g]} flex items-center justify-center text-[10px] font-bold text-gray-900 dark:text-white`}
+                                                        className={`${gradeColors[g]} flex items-center justify-center text-[10px] font-bold`}
                                                         style={{ width: `${pct}%` }}
                                                         title={`${g}: ${count} (${pct.toFixed(1)}%)`}
                                                     >
@@ -451,7 +451,7 @@ const CertInventory: React.FC = () => {
                                                 return (
                                                     <span key={g} className="text-xs">
                                                         <span className={`font-semibold ${gradeLabelColors[g]}`}>{g}</span>
-                                                        <span className="text-gray-600 dark:text-gray-400 ml-1">{count}</span>
+                                                        <span className="text-ink-muted ml-1">{count}</span>
                                                     </span>
                                                 );
                                             })}
@@ -468,7 +468,7 @@ const CertInventory: React.FC = () => {
                 {/* 2. Algorithm Distribution */}
                 <Section title="Algorithm Distribution">
                     {algoDist.length === 0 ? (
-                        <span className="text-sm text-gray-600">No data</span>
+                        <span className="text-sm text-ink-muted">No data</span>
                     ) : (
                         <div className="space-y-1">
                             {algoDist.map(([algo, count]) => (
@@ -479,16 +479,16 @@ const CertInventory: React.FC = () => {
                                     max={algoMax}
                                     total={stats.total}
                                     barColor={
-                                        algo.startsWith('RSA') ? 'bg-blue-500' :
-                                        algo.startsWith('ECDSA') ? 'bg-emerald-500' :
-                                        algo.startsWith('Ed') ? 'bg-purple-500' :
-                                        'bg-gray-500'
+                                        algo.startsWith('RSA') ? 'bg-series-1' :
+                                        algo.startsWith('ECDSA') ? 'bg-series-2' :
+                                        algo.startsWith('Ed') ? 'bg-series-3' :
+                                        'bg-ink-faint'
                                     }
                                 />
                             ))}
                         </div>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-2">
+                    <p className="text-[10px] text-ink-muted mt-2">
                         Algorithm data is estimated from available certificate metadata.
                     </p>
                 </Section>
@@ -496,7 +496,7 @@ const CertInventory: React.FC = () => {
                 {/* 5. Key Size Distribution */}
                 <Section title="Key Size Distribution">
                     {keySizeDist.length === 0 ? (
-                        <span className="text-sm text-gray-600">No data</span>
+                        <span className="text-sm text-ink-muted">No data</span>
                     ) : (
                         <div className="space-y-1">
                             {keySizeDist.map(([size, count]) => (
@@ -507,18 +507,18 @@ const CertInventory: React.FC = () => {
                                     max={keySizeMax}
                                     total={stats.total}
                                     barColor={
-                                        size.startsWith('P-') ? 'bg-emerald-500' :
-                                        size === 'Ed25519' ? 'bg-purple-500' :
-                                        parseInt(size) >= 4096 ? 'bg-blue-600' :
-                                        parseInt(size) >= 2048 ? 'bg-blue-400' :
-                                        parseInt(size) > 0 ? 'bg-amber-500' :
-                                        'bg-gray-500'
+                                        size.startsWith('P-') ? 'bg-series-2' :
+                                        size === 'Ed25519' ? 'bg-series-3' :
+                                        parseInt(size) >= 4096 ? 'bg-series-1' :
+                                        parseInt(size) >= 2048 ? 'bg-series-1/60' :
+                                        parseInt(size) > 0 ? 'bg-warn' :
+                                        'bg-ink-faint'
                                     }
                                 />
                             ))}
                         </div>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-2">
+                    <p className="text-[10px] text-ink-muted mt-2">
                         Key size data is estimated from available certificate metadata.
                     </p>
                 </Section>
@@ -527,27 +527,27 @@ const CertInventory: React.FC = () => {
             {/* 3. Expiry Timeline */}
             <Section title="Expiry Timeline (Next 12 Months)">
                 {expiryTimeline.every(m => m.count === 0) ? (
-                    <span className="text-sm text-gray-600">No certificates expiring in the next 12 months</span>
+                    <span className="text-sm text-ink-muted">No certificates expiring in the next 12 months</span>
                 ) : (
                     <div className="space-y-1">
                         {expiryTimeline.map(m => {
                             const isCurrentMonth = m.key === currentMonthKey;
                             const isNextMonth = m.key === nextMonthKey;
-                            let barColor = 'bg-blue-500';
-                            if (isCurrentMonth) barColor = 'bg-red-500';
-                            else if (isNextMonth) barColor = 'bg-amber-500';
+                            let barColor = 'bg-accent';
+                            if (isCurrentMonth) barColor = 'bg-crit';
+                            else if (isNextMonth) barColor = 'bg-warn';
                             return (
                                 <div key={m.key} className="flex items-center gap-3 py-1">
-                                    <span className={`text-xs w-28 text-right truncate ${isCurrentMonth ? 'text-red-800 dark:text-red-400 font-semibold' : isNextMonth ? 'text-amber-800 dark:text-amber-400 font-semibold' : 'text-gray-700 dark:text-gray-300'}`}>
+                                    <span className={`text-xs w-28 text-right truncate ${isCurrentMonth ? 'text-crit font-semibold' : isNextMonth ? 'text-warn font-semibold' : 'text-ink'}`}>
                                         {m.label}
                                     </span>
-                                    <div className="flex-1 h-5 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
+                                    <div className="flex-1 h-5 bg-sunken rounded overflow-hidden">
                                         <div
                                             className={`h-full ${barColor} rounded`}
                                             style={{ width: `${expiryMax > 0 ? (m.count / expiryMax) * 100 : 0}%` }}
                                         />
                                     </div>
-                                    <span className="text-xs text-gray-600 dark:text-gray-400 w-10 text-right tabular-nums">{m.count}</span>
+                                    <span className="text-xs text-ink-muted w-10 text-right tabular-nums">{m.count}</span>
                                 </div>
                             );
                         })}
@@ -558,7 +558,7 @@ const CertInventory: React.FC = () => {
             {/* 4. Per-CA Breakdown */}
             <Section title="Per-CA Breakdown">
                 {caBreakdown.length === 0 ? (
-                    <span className="text-sm text-gray-600">No CA data</span>
+                    <span className="text-sm text-ink-muted">No CA data</span>
                 ) : (
                     <div className="overflow-x-auto">
                         <DataTable<[string, any]>
@@ -568,13 +568,13 @@ const CertInventory: React.FC = () => {
                             empty="No certificates"
                             sort={{ key: 'total', dir: 'desc' }}
                             columns={[
-                                { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-gray-800 dark:text-gray-200 truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
-                                { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-gray-700 dark:text-gray-300 tabular-nums">{d.total}</span> },
-                                { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-green-800 dark:text-green-400 tabular-nums">{d.active}</span> },
-                                { key: 'expiring', header: 'Expiring Soon', defaultWidth: 120, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-amber-800 dark:text-amber-400' : 'text-gray-600'}`}>{d.expiring}</span> },
-                                { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-red-800 dark:text-red-400' : 'text-gray-600'}`}>{d.revoked}</span> },
+                                { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-ink truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
+                                { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-ink tabular-nums">{d.total}</span> },
+                                { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-ok tabular-nums">{d.active}</span> },
+                                { key: 'expiring', header: 'Expiring Soon', defaultWidth: 120, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-warn' : 'text-ink-muted'}`}>{d.expiring}</span> },
+                                { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-crit' : 'text-ink-muted'}`}>{d.revoked}</span> },
                                 { key: 'filter', header: '', defaultWidth: 80, align: 'right', truncate: false, hideable: false, exportValue: () => '', render: ([issuer]) => (
-                                    <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-blue-800 dark:text-blue-400 hover:text-blue-300 text-[10px] underline">
+                                    <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-accent-ink hover:underline text-[10px] underline">
                                         {caFilter === issuer ? 'Clear' : 'Filter'}
                                     </button>
                                 ) },
@@ -588,7 +588,7 @@ const CertInventory: React.FC = () => {
                 {/* 6. Recently Issued */}
                 <Section title="Recently Issued">
                     {recentlyIssued.length === 0 ? (
-                        <span className="text-sm text-gray-600">No certificates</span>
+                        <span className="text-sm text-ink-muted">No certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
                             <DataTable<any>
@@ -598,10 +598,10 @@ const CertInventory: React.FC = () => {
                                 empty="Nothing issued recently"
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
-                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-gray-600 dark:text-gray-400 truncate" title={c.issuer}>{c.issuer}</span> },
-                                    { key: 'issued', header: 'Issued', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.validFrom ? new Date(c.validFrom) : null, exportValue: (c) => formatDateShort(c.validFrom), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.validFrom)}</span> },
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'issued', header: 'Issued', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.validFrom ? new Date(c.validFrom) : null, exportValue: (c) => formatDateShort(c.validFrom), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.validFrom)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -611,7 +611,7 @@ const CertInventory: React.FC = () => {
                 {/* 7. Recently Revoked */}
                 <Section title="Recently Revoked">
                     {recentlyRevoked.length === 0 ? (
-                        <span className="text-sm text-gray-600">No revoked certificates</span>
+                        <span className="text-sm text-ink-muted">No revoked certificates</span>
                     ) : (
                         <div className="overflow-x-auto">
                             <DataTable<any>
@@ -621,10 +621,10 @@ const CertInventory: React.FC = () => {
                                 empty="Nothing revoked recently"
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-gray-800 dark:text-gray-200 truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-gray-600 dark:text-gray-400 truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
-                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-red-800 dark:text-red-400">{c.revocationReason || 'Unspecified'}</span> },
-                                    { key: 'revoked', header: 'Revoked', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
+                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>

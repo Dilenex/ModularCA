@@ -44,14 +44,14 @@ const ScopeSwitcher: React.FC = () => {
     };
 
     return (
-        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400 min-w-0" title={`Scope: ${scopeLabel(scope)}`}>
-            <span className="hidden md:inline">Scope:</span>
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted min-w-0" title={`Scope: ${scopeLabel(scope)}`}>
+            <span className="hidden md:inline label-caps">Scope</span>
             <select
                 id="scope-switcher"
                 aria-label="Scope"
                 value={value}
                 onChange={(e) => choose(e.target.value)}
-                className="max-w-[16rem] px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                className="max-w-[16rem] px-2 py-1 text-xs font-medium rounded bg-raised border border-line-strong text-ink hover:bg-hover focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
             >
                 {canScopeToAll && <option value={ALL_VALUE}>All CAs</option>}
                 {spaces.map(t => (

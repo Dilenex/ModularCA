@@ -232,14 +232,14 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
         }
     };
 
-    const helperClass = 'text-[11px] text-gray-600 dark:text-gray-500 mt-1';
+    const helperClass = 'text-[11px] text-ink-muted mt-1';
 
     // A control that carries a message is marked invalid and points at it, so a screen reader
     // announces the two together; `undefined` rather than a dangling id when there is no message.
     const describedBy = (id: string, fields: string[]) =>
         hasFieldNotice(notices, fields) ? id : undefined;
     const invalidClass = (fields: string[]) =>
-        hasFieldNotice(notices, fields) ? ' border-red-500 dark:border-red-500' : '';
+        hasFieldNotice(notices, fields) ? ' border-crit' : '';
 
     // Whatever no control claimed: the explanation itself, plus any field the server named that
     // this form has no box for. Dropping those would reintroduce the bug this is fixing.
@@ -247,21 +247,21 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
 
     return (
         <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 dark:bg-black/50"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-scrim"
             onClick={handleClose}
         >
             <div
-                className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col"
+                className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
-                <div className="px-6 py-4 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Reissue Certificate</h2>
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-ink">Reissue Certificate</h2>
                     <button
                         onClick={handleClose}
                         disabled={submitting}
                         aria-label="Close"
-                        className="text-gray-600 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-50"
+                        className="text-ink-muted hover:text-ink disabled:opacity-50"
                     >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
@@ -272,29 +272,29 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                 {/* Body */}
                 <div className="px-6 py-4 space-y-4 overflow-y-auto">
                     {/* Current cert reference */}
-                    <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-2">
+                    <div className="bg-sunken border border-line rounded p-3 space-y-2">
                         <div>
-                            <div className="text-xs text-gray-600 dark:text-gray-400">Current Serial</div>
-                            <div className="font-mono text-xs text-gray-800 dark:text-gray-200 break-all">{cert.serialNumber}</div>
+                            <div className="text-xs text-ink-muted">Current Serial</div>
+                            <div className="data-mono text-ink break-all">{cert.serialNumber}</div>
                         </div>
                         <div>
-                            <div className="text-xs text-gray-600 dark:text-gray-400">Current Subject</div>
-                            <div className="text-xs text-gray-800 dark:text-gray-200 break-all">{cert.subjectDN}</div>
+                            <div className="text-xs text-ink-muted">Current Subject</div>
+                            <div className="text-xs text-ink break-all">{cert.subjectDN}</div>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                             <div>
-                                <div className="text-xs text-gray-600 dark:text-gray-400">Current Not Before</div>
-                                <div className="text-xs text-gray-800 dark:text-gray-200">{formatRefDate(cert.notBefore)}</div>
+                                <div className="text-xs text-ink-muted">Current Not Before</div>
+                                <div className="text-xs text-ink">{formatRefDate(cert.notBefore)}</div>
                             </div>
                             <div>
-                                <div className="text-xs text-gray-600 dark:text-gray-400">Current Not After</div>
-                                <div className="text-xs text-gray-800 dark:text-gray-200">{formatRefDate(cert.notAfter)}</div>
+                                <div className="text-xs text-ink-muted">Current Not After</div>
+                                <div className="text-xs text-ink">{formatRefDate(cert.notAfter)}</div>
                             </div>
                         </div>
                     </div>
 
                     {/* Info banner */}
-                    <div className="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700/50 rounded text-xs text-blue-800 dark:text-blue-300">
+                    <div className="px-3 py-2 bg-info-soft border border-info/40 rounded text-xs text-info">
                         Reissue marks the current certificate as revoked (reason: Superseded) and issues a new
                         certificate using the same signing profile. Subject DN and SAN changes are validated
                         against the resolved request profile before signing.
@@ -395,12 +395,12 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                                     type="button"
                                     onClick={addCnAsSan}
                                     title={"Add " + cnValue + " as a DNS Subject Alternative Name"}
-                                    className="px-3 py-1.5 text-xs text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900/30 transition-colors"
+                                    className="px-3 py-1.5 text-xs text-ok border border-ok/40 rounded hover:bg-ok-soft transition-colors"
                                 >
                                     + Use CN as DNS SAN
                                     <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
                                 </button>
-                                <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">
+                                <p className="text-xs text-warn mt-2">
                                     <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
                                     Clients ignore the Common Name for hostname verification, so this
                                     certificate would not validate for that name.
@@ -457,7 +457,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                         is the reason the modal is still open; it does not move focus, so a caret
                         left in the Valid To box stays there. */}
                     {bannerNotices.length > 0 && (
-                        <div role="alert" className="px-3 py-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700/50 rounded text-sm text-red-800 dark:text-red-300 space-y-2 max-h-60 overflow-y-auto">
+                        <div role="alert" className="px-3 py-2 bg-crit-soft border border-crit/40 rounded text-sm text-crit space-y-2 max-h-60 overflow-y-auto">
                             {bannerNotices.map((n, i) => (
                                 <div key={i} className="space-y-1">
                                     {n.title && n.title !== n.detail && <p className="font-semibold break-words">{n.title}</p>}
@@ -480,11 +480,11 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
+                <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
                     <button
                         onClick={handleClose}
                         disabled={submitting}
-                        className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                        className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50"
                     >
                         Cancel
                     </button>
@@ -492,10 +492,10 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                         onClick={handleSubmit}
                         disabled={submitting || validityInverted}
                         title={validityInverted ? 'Valid To must be later than Valid From' : undefined}
-                        className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-2"
                     >
                         {submitting && (
-                            <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <svg className="animate-spin h-4 w-4 text-on-accent" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                             </svg>

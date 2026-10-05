@@ -54,29 +54,29 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Web TLS Certificate</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Web TLS Certificate</h2>
+                <p className="text-ink-muted mt-1">
                     Configure the TLS certificate that secures the ModularCA management UI and API.
                 </p>
             </div>
 
             {/* Info box */}
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 space-y-3">
-                <p className="text-sm text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded-lg p-4 space-y-3">
+                <p className="text-sm text-info">
                     This certificate is issued at the end of bootstrap using the Web TLS (Internal) request profile,
                     Main Certificate Profile, and your root CA's signing profile. The fields below will be validated
                     against the request profile's rules before the certificate is issued. Organization and
                     Organizational Unit are optional — leave them blank if the cert should not carry organizational
                     identity.
                 </p>
-                <div className="flex items-center justify-between gap-3 pt-1 border-t border-blue-200 dark:border-blue-800">
-                    <p className="text-xs text-blue-700 dark:text-blue-400">
+                <div className="flex items-center justify-between gap-3 pt-1 border-t border-accent/40">
+                    <p className="text-xs text-accent-ink">
                         Common Name and SANs were pre-filled from the Network step. If you've changed the Public Domain or mTLS subdomain since, re-derive them here.
                     </p>
                     <button
                         type="button"
                         onClick={onResetFromNetwork}
-                        className="shrink-0 px-3 py-1.5 text-xs font-medium bg-white dark:bg-gray-900 border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                        className="shrink-0 px-3 py-1.5 text-xs font-medium bg-raised border border-accent/40 text-accent-ink rounded hover:bg-accent-soft transition-colors"
                     >
                         Reset from Network settings
                     </button>
@@ -85,11 +85,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
 
             {/* Subject */}
             <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Subject</h3>
+                <h3 className="text-lg font-semibold text-ink">Subject</h3>
 
                 <div>
-                    <label htmlFor="webTlsCommonName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Common Name <span className="text-red-500">*</span>
+                    <label htmlFor="webTlsCommonName" className="block text-sm font-medium text-ink mb-1">
+                        Common Name <span className="text-crit">*</span>
                     </label>
                     <input
                         ref={autoFocusRef}
@@ -99,13 +99,13 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                         value={data.commonName}
                         onChange={e => onChange({ ...data, commonName: e.target.value })}
                         placeholder="modularca.local"
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label htmlFor="webTlsOrganization" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsOrganization" className="block text-sm font-medium text-ink mb-1">
                             Organization (O)
                         </label>
                         <input
@@ -115,11 +115,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             value={data.organization}
                             onChange={e => onChange({ ...data, organization: e.target.value })}
                             placeholder="(optional)"
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label htmlFor="webTlsOrganizationalUnit" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsOrganizationalUnit" className="block text-sm font-medium text-ink mb-1">
                             Organizational Unit (OU)
                         </label>
                         <input
@@ -129,11 +129,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             value={data.organizationalUnit}
                             onChange={e => onChange({ ...data, organizationalUnit: e.target.value })}
                             placeholder="(optional)"
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label htmlFor="webTlsLocality" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsLocality" className="block text-sm font-medium text-ink mb-1">
                             Locality / City
                         </label>
                         <input
@@ -141,11 +141,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             type="text"
                             value={data.locality}
                             onChange={e => onChange({ ...data, locality: e.target.value })}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label htmlFor="webTlsState" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsState" className="block text-sm font-medium text-ink mb-1">
                             State / Province
                         </label>
                         <input
@@ -153,11 +153,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             type="text"
                             value={data.state}
                             onChange={e => onChange({ ...data, state: e.target.value })}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label htmlFor="webTlsCountry" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsCountry" className="block text-sm font-medium text-ink mb-1">
                             Country
                         </label>
                         <input
@@ -167,19 +167,19 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             value={data.country}
                             onChange={e => onChange({ ...data, country: e.target.value.toUpperCase() })}
                             placeholder="US"
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent uppercase"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent uppercase"
                         />
-                        <p className="text-xs text-gray-600 mt-1">2-letter ISO country code.</p>
+                        <p className="text-xs text-ink-muted mt-1">2-letter ISO country code.</p>
                     </div>
                 </div>
             </div>
 
             {/* SANs */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Subject Alternative Names</h3>
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">Subject Alternative Names</h3>
 
                 <div>
-                    <label htmlFor="webTlsSans" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="webTlsSans" className="block text-sm font-medium text-ink mb-1">
                         SANs (one per line)
                     </label>
                     <textarea
@@ -190,9 +190,9 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                         onBlur={commitSans}
                         rows={5}
                         placeholder={'DNS:modularca.local\nDNS:localhost\nIP:127.0.0.1'}
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white font-mono text-sm placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
                     />
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-ink-muted mt-1">
                         Prefix DNS names with <code className="font-mono">DNS:</code> and IP addresses with{' '}
                         <code className="font-mono">IP:</code> (for example{' '}
                         <code className="font-mono">DNS:foo.example.com</code> or{' '}
@@ -202,11 +202,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
             </div>
 
             {/* Key Algorithm */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Key</h3>
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">Key</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label htmlFor="webTlsKeyAlgo" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsKeyAlgo" className="block text-sm font-medium text-ink mb-1">
                             Key Algorithm
                         </label>
                         <select
@@ -217,7 +217,7 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                                 const defaultSize = algo === 'ECDSA' ? '256' : algo === 'RSA' ? '2048' : algo === 'ML-DSA' ? '65' : algo === 'SLH-DSA' ? '128f' : '';
                                 onChange({ ...data, keyAlgorithm: algo, keySize: defaultSize });
                             }}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         >
                             <option value="ECDSA">ECDSA (recommended)</option>
                             <option value="RSA">RSA</option>
@@ -228,14 +228,14 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                     </div>
                     {data.keyAlgorithm !== 'Ed25519' && (
                     <div>
-                        <label htmlFor="webTlsKeySize" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label htmlFor="webTlsKeySize" className="block text-sm font-medium text-ink mb-1">
                             Key Size
                         </label>
                         <select
                             id="webTlsKeySize"
                             value={data.keySize}
                             onChange={e => onChange({ ...data, keySize: e.target.value })}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                         >
                             {data.keyAlgorithm === 'RSA' ? (
                                 <>
@@ -269,7 +269,7 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                             )}
                         </select>
                         {data.keyAlgorithm === 'RSA' && (data.keySize === '7680' || data.keySize === '8192') && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                            <p className="text-xs text-warn mt-1">
                                 ⚠ High-compute RSA — key generation may take 30+ seconds.
                             </p>
                         )}
@@ -279,11 +279,11 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
             </div>
 
             {/* Validity */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6 space-y-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Validity</h3>
+            <div className="border-t border-line pt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-ink">Validity</h3>
 
                 <div>
-                    <label htmlFor="webTlsValidityDays" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label htmlFor="webTlsValidityDays" className="block text-sm font-medium text-ink mb-1">
                         Validity (days)
                     </label>
                     <input
@@ -293,9 +293,9 @@ const WebTlsCertificate: React.FC<WebTlsCertificateProps> = ({ data, onChange, o
                         value={data.validityDays}
                         onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, validityDays: v === '' ? ('' as any) : parseInt(v) }); }}
                         onBlur={() => { if (!data.validityDays) onChange({ ...data, validityDays: 397 }); }}
-                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                     />
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-ink-muted mt-1">
                         CA/Browser Forum maximum is 397 days for publicly-trusted TLS server certificates.
                     </p>
                 </div>

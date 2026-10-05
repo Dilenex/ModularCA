@@ -113,12 +113,12 @@ const SshSigningProfileDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">SSH signing profile not found.</p>
-            <button onClick={() => navigate(SSH_SIGNING_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Signing Profiles</button>
+            <p className="text-sm text-ink-muted">SSH signing profile not found.</p>
+            <button onClick={() => navigate(SSH_SIGNING_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Signing Profiles</button>
         </div>
     );
 
@@ -135,7 +135,7 @@ const SshSigningProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name || !editForm.sshCaKeyId || signsNothing}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit SSH Signing Profile">
@@ -164,8 +164,8 @@ const SshSigningProfileDetail: React.FC = () => {
                         </div>
                         <div>
                             <div className="flex flex-wrap gap-4">
-                                <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowUserCerts} onChange={(e) => setEditForm({ ...editForm, allowUserCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow User Certs</label>
-                                <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.allowHostCerts} onChange={(e) => setEditForm({ ...editForm, allowHostCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow Host Certs</label>
+                                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.allowUserCerts} onChange={(e) => setEditForm({ ...editForm, allowUserCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow User Certs</label>
+                                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.allowHostCerts} onChange={(e) => setEditForm({ ...editForm, allowHostCerts: e.target.checked })} className="w-4 h-4 rounded" />Allow Host Certs</label>
                             </div>
                             {signsNothing && (
                                 <FieldHint tone="warn">This profile allows neither user nor host certificates, so it can sign nothing and will not appear in the signing form. Tick at least one before saving.</FieldHint>
@@ -184,8 +184,8 @@ const SshSigningProfileDetail: React.FC = () => {
                     <DetailField label="Allow User Certs" value={p.allowUserCerts ? 'Yes' : 'No'} />
                     <DetailField label="Allow Host Certs" value={p.allowHostCerts ? 'Yes' : 'No'} />
                     <DetailField label="Force Command" value={p.forceCommand || 'None'} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Source Address Restrictions</span><BadgeList items={p.sourceAddressRestrictions} /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Default Extensions</span><BadgeList items={p.defaultExtensions} /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Source Address Restrictions</span><BadgeList items={p.sourceAddressRestrictions} /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Default Extensions</span><BadgeList items={p.defaultExtensions} /></div>
                     {p.createdAt && <DetailField label="Created" value={new Date(p.createdAt).toLocaleString()} />}
                 </DetailSection>
 
@@ -194,7 +194,7 @@ const SshSigningProfileDetail: React.FC = () => {
                     title="Delete SSH Signing Profile"
                     message={`Delete SSH signing profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

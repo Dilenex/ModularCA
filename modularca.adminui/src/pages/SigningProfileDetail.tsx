@@ -174,12 +174,12 @@ const SigningProfileDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Signing profile not found.</p>
-            <button onClick={() => navigate(SIGNING_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Signing Profiles</button>
+            <p className="text-sm text-ink-muted">Signing profile not found.</p>
+            <button onClick={() => navigate(SIGNING_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Signing Profiles</button>
         </div>
     );
 
@@ -198,7 +198,7 @@ const SigningProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name || issuerMissing || inheritanceInconsistent}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit Signing Profile">
@@ -245,15 +245,15 @@ const SigningProfileDetail: React.FC = () => {
                             <div className="flex flex-wrap gap-2">
                                 {ekuCatalog.options.map((oid) => { const eku = { oid, label: ekuCatalog.label(oid) };
                                     const selected = editForm.allowedEkus.includes(eku.oid);
-                                    return <button key={eku.oid} type="button" onClick={() => toggleEku(eku.oid)} className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-blue-600/30 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-600' : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>{eku.label} <span className="text-[10px] text-gray-600 ml-1">{eku.oid}</span></button>;
+                                    return <button key={eku.oid} type="button" onClick={() => toggleEku(eku.oid)} className={`px-2 py-1 text-xs rounded border transition-colors ${selected ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>{eku.label} <span className="text-[10px] text-ink-muted ml-1">{eku.oid}</span></button>;
                                 })}
                             </div>
                             <FieldHint>{CEILING_HINT}</FieldHint>
                         </div>
                         <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.isDefault} onChange={(e) => setEditForm({ ...editForm, isDefault: e.target.checked })} className="w-4 h-4 rounded" />Default Profile</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inhibitAnyPolicy} onChange={(e) => setEditForm({ ...editForm, inhibitAnyPolicy: e.target.checked })} className="w-4 h-4 rounded" />Inhibit Any Policy</label>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.isDefault} onChange={(e) => setEditForm({ ...editForm, isDefault: e.target.checked })} className="w-4 h-4 rounded" />Default Profile</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.inhibitAnyPolicy} onChange={(e) => setEditForm({ ...editForm, inhibitAnyPolicy: e.target.checked })} className="w-4 h-4 rounded" />Inhibit Any Policy</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.inheritanceEnabled} onChange={(e) => setEditForm({ ...editForm, inheritanceEnabled: e.target.checked })} className="w-4 h-4 rounded" />Enable Inheritance</label>
                         </div>
                         <div>
                             <label className={labelClass}>Inherits From</label>
@@ -267,24 +267,24 @@ const SigningProfileDetail: React.FC = () => {
                             )}
                         </div>
                         <div>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={!!editForm.extendedKeyUsageCritical} onChange={(e) => setEditForm({ ...editForm, extendedKeyUsageCritical: e.target.checked })} className="w-4 h-4 rounded" />Mark Extended Key Usage extension as critical</label>
-                            <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">RFC 5280 §4.2.1.12 recommends marking the EKU extension critical when the certificate's purpose is restricted (e.g. a cert that must only be used for client auth).</p>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={!!editForm.extendedKeyUsageCritical} onChange={(e) => setEditForm({ ...editForm, extendedKeyUsageCritical: e.target.checked })} className="w-4 h-4 rounded" />Mark Extended Key Usage extension as critical</label>
+                            <p className="text-[11px] text-ink-muted mt-1 ml-6">RFC 5280 §4.2.1.12 recommends marking the EKU extension critical when the certificate's purpose is restricted (e.g. a cert that must only be used for client auth).</p>
                         </div>
                         <div>
                             <label className={labelClass}>Policy qualifiers (JSON)</label>
-                            <textarea value={editForm.policyQualifiersJson ?? '{}'} onChange={(e) => { setEditForm({ ...editForm, policyQualifiersJson: e.target.value }); if (qualifiersError) setQualifiersError(null); }} rows={8} placeholder={QUALIFIERS_PLACEHOLDER} className={`${inputClass} font-mono text-xs resize-y`} />
-                            {qualifiersError && <p className="text-[11px] text-red-800 dark:text-red-400 mt-1">{qualifiersError}</p>}
+                            <textarea value={editForm.policyQualifiersJson ?? '{}'} onChange={(e) => { setEditForm({ ...editForm, policyQualifiersJson: e.target.value }); if (qualifiersError) setQualifiersError(null); }} rows={8} placeholder={QUALIFIERS_PLACEHOLDER} className={`${inputClass} data-mono resize-y`} />
+                            {qualifiersError && <p className="text-[11px] text-crit mt-1">{qualifiersError}</p>}
                         </div>
                         <div><label className={labelClass}>Allowed Algorithms</label><MultiToggle options={SIGNING_ALLOWED_ALGORITHM_OPTIONS} selected={editForm.allowedAlgorithms} onChange={(next) => setEditForm({ ...editForm, allowedAlgorithms: next })} hint={CEILING_HINT} /></div>
                         <div className="last:mb-0">
                             <label className={labelClass}>Allowed Cert Profiles</label>
-                            <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-                                {certProfiles.length === 0 && <span className="text-xs text-gray-600">No cert profiles available</span>}
+                            <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+                                {certProfiles.length === 0 && <span className="text-xs text-ink-muted">No cert profiles available</span>}
                                 {certProfiles.map((cp) => {
                                     const cid = cp.id || cp.certProfileId;
                                     return (
-                                        <label key={cid} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 px-1 rounded">
-                                            <input type="checkbox" checked={editForm.allowedCertProfileIds.includes(cid)} onChange={(e) => setEditForm({ ...editForm, allowedCertProfileIds: e.target.checked ? [...editForm.allowedCertProfileIds, cid] : editForm.allowedCertProfileIds.filter((x) => x !== cid) })} className="accent-blue-500" />
+                                        <label key={cid} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover px-1 rounded">
+                                            <input type="checkbox" checked={editForm.allowedCertProfileIds.includes(cid)} onChange={(e) => setEditForm({ ...editForm, allowedCertProfileIds: e.target.checked ? [...editForm.allowedCertProfileIds, cid] : editForm.allowedCertProfileIds.filter((x) => x !== cid) })} className="accent-accent" />
                                             <span>{cp.name}</span>
                                             {cp.isCaProfile && <StatusBadge status="active" label="CA" />}
                                         </label>
@@ -300,22 +300,22 @@ const SigningProfileDetail: React.FC = () => {
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
                     <DetailField label="Issuer" value={authorityName(p.issuerId)} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
                     <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
                     <DetailField label="Name Constraints Permitted" value={typeof p.nameConstraintsPermitted === 'object' ? JSON.stringify(p.nameConstraintsPermitted) : p.nameConstraintsPermitted} />
                     <DetailField label="Name Constraints Excluded" value={typeof p.nameConstraintsExcluded === 'object' ? JSON.stringify(p.nameConstraintsExcluded) : p.nameConstraintsExcluded} />
-                    <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Policy OIDs</span><BadgeList items={p.policyOids} /></div>
+                    <div className="py-1"><span className="text-xs text-ink-muted">Policy OIDs</span><BadgeList items={p.policyOids} /></div>
                     <DetailField label="Inhibit Any Policy" value={p.inhibitAnyPolicy ? 'Yes' : 'No'} />
                     <DetailField label="EKU Extension Critical" value={p.extendedKeyUsageCritical ? 'Yes' : 'No'} />
                     <DetailField label="Policy Qualifiers (JSON)" value={typeof p.policyQualifiersJson === 'string' ? p.policyQualifiersJson : (p.policyQualifiersJson ? JSON.stringify(p.policyQualifiersJson) : undefined)} mono />
                     <div className="py-1">
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Cert Profiles</span>
+                        <span className="text-xs text-ink-muted">Allowed Cert Profiles</span>
                         {allowedCpIds.length > 0 ? (
                             <div className="flex flex-wrap gap-1 mt-1">
-                                {allowedCpIds.map((cid, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{cpName(cid)}</span>)}
+                                {allowedCpIds.map((cid, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{cpName(cid)}</span>)}
                             </div>
-                        ) : <span className="text-xs text-gray-600 ml-2">None</span>}
+                        ) : <span className="text-xs text-ink-muted ml-2">None</span>}
                     </div>
                 </DetailSection>
 
@@ -324,7 +324,7 @@ const SigningProfileDetail: React.FC = () => {
                     title="Delete Signing Profile"
                     message={`Delete signing profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

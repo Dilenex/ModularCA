@@ -188,12 +188,12 @@ const DN_FIELDS = ['CN', 'O', 'OU', 'L', 'ST', 'C'];
 const SAN_TYPES = ['DNS', 'IP', 'Email', 'URI', 'UPN'];
 const ALL_KEY_ALGORITHMS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
 
-const TAB_ACTIVE = 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700';
-const TAB_IDLE = 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border border-gray-400 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600';
-const CARD = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden';
-const CARD_HEAD = 'px-4 py-3 border-b border-gray-300 dark:border-gray-700';
-const CARD_TITLE = 'text-sm font-semibold text-gray-900 dark:text-white';
-const FIELD_INPUT = 'flex-1 px-3 py-2 bg-gray-50 dark:bg-gray-900 border rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500';
+const TAB_ACTIVE = 'bg-accent-soft text-accent-ink border border-accent/40';
+const TAB_IDLE = 'bg-sunken text-ink-muted border border-line-strong hover:bg-hover';
+const CARD = 'bg-raised border border-line rounded-lg overflow-hidden';
+const CARD_HEAD = 'px-4 py-3 border-b border-line';
+const CARD_TITLE = 'text-sm font-semibold text-ink';
+const FIELD_INPUT = 'flex-1 px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
 
 // --- Helpers ---
 
@@ -292,26 +292,26 @@ function downloadText(text: string, filename: string, mimeType: string) {
 
 function statusIcon(status?: string) {
     switch (status) {
-        case 'valid': return <span className="text-green-800 dark:text-green-400 text-sm ml-2" title="Valid">&#10003;</span>;
-        case 'warning': return <span className="text-yellow-800 dark:text-yellow-400 text-sm ml-2" title="Warning">&#9888;</span>;
-        case 'error': return <span className="text-red-800 dark:text-red-400 text-sm ml-2" title="Error">&#10007;</span>;
+        case 'valid': return <span className="text-ok text-sm ml-2" title="Valid">&#10003;</span>;
+        case 'warning': return <span className="text-warn text-sm ml-2" title="Warning">&#9888;</span>;
+        case 'error': return <span className="text-crit text-sm ml-2" title="Error">&#10007;</span>;
         default: return null;
     }
 }
 
 function statusBorder(status?: string) {
     switch (status) {
-        case 'valid': return 'border-green-300 dark:border-green-600';
-        case 'warning': return 'border-yellow-300 dark:border-yellow-600';
-        case 'error': return 'border-red-300 dark:border-red-600';
-        default: return 'border-gray-300 dark:border-gray-700';
+        case 'valid': return 'border-ok/40';
+        case 'warning': return 'border-warn/40';
+        case 'error': return 'border-crit/40';
+        default: return 'border-line';
     }
 }
 
 function statusText(status: string) {
-    return status === 'error' ? 'text-red-800 dark:text-red-400'
-        : status === 'warning' ? 'text-yellow-800 dark:text-yellow-400'
-        : 'text-green-800 dark:text-green-400';
+    return status === 'error' ? 'text-crit'
+        : status === 'warning' ? 'text-warn'
+        : 'text-ok';
 }
 
 // --- Component ---
@@ -806,7 +806,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Request Certificate</h1>
+            <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>
 
             {/* Step 1: CSR Input Card */}
             <div className={CARD}>
@@ -846,13 +846,13 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 type="file"
                                 accept=".pem,.csr,.req,.txt"
                                 onChange={handleFileUpload}
-                                className="block w-full text-sm text-gray-600 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border file:border-gray-400 dark:file:border-gray-600 file:text-sm file:bg-gray-200 dark:file:bg-gray-700 file:text-gray-700 dark:file:text-gray-300 hover:file:bg-gray-300 dark:hover:file:bg-gray-600"
+                                className="block w-full text-sm text-ink-muted file:mr-4 file:py-2 file:px-4 file:rounded file:border file:border-line-strong file:text-sm file:bg-sunken file:text-ink hover:file:bg-hover"
                             />
                             {fileName && (
-                                <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">Loaded: {fileName}</p>
+                                <p className="mt-2 text-xs text-ink-muted">Loaded: {fileName}</p>
                             )}
                             {csrPem && (
-                                <pre className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-xs text-gray-600 dark:text-gray-400 font-mono max-h-40 overflow-auto">
+                                <pre className="mt-2 p-2 bg-sunken border border-line rounded text-ink-muted data-mono max-h-40 overflow-auto">
                                     {csrPem.substring(0, 500)}{csrPem.length > 500 ? '...' : ''}
                                 </pre>
                             )}
@@ -906,14 +906,14 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                             )}
                                         </select>
                                         {keyAlgorithm === 'RSA' && (keySize === '7680' || keySize === '8192') && (
-                                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                            <p className="text-xs text-warn mt-1">
                                                 ⚠ High-compute RSA — key generation may take 30+ seconds.
                                             </p>
                                         )}
                                     </div>
                                 )}
                             </div>
-                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                            <p className="text-xs text-ink-muted">
                                 The server will generate a key pair and build a CSR automatically.
                             </p>
                             <FieldHint tone="warn">The CA holds the private key only until the certificate is issued and you download the .pfx; it is deleted on delivery.</FieldHint>
@@ -922,10 +922,10 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
                     {/* Parse status */}
                     {parsing && (
-                        <p className="text-xs text-gray-600 dark:text-gray-400">Parsing CSR...</p>
+                        <p className="text-xs text-ink-muted">Parsing CSR...</p>
                     )}
                     {parseError && (
-                        <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
+                        <div className="bg-crit-soft border border-crit/40 rounded p-3">
                             <InlineNotice notice={parseError} variant="line" />
                         </div>
                     )}
@@ -933,28 +933,28 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     {/* Key info badges */}
                     {parsedCsr && (
                         <div className="flex flex-wrap gap-2">
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-info-soft text-info border border-info/40">
                                 {parsedCsr.keyAlgorithm} {parsedCsr.keySize && `(${parsedCsr.keySize})`}
                             </span>
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-50 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-soft text-accent-ink border border-accent/40">
                                 {parsedCsr.signatureAlgorithm}
                             </span>
                             {parsedCsr.valid ? (
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-800">
+                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-ok-soft text-ok border border-ok/40">
                                     Signature Valid
                                 </span>
                             ) : (
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-50 dark:bg-red-900/40 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-800">
+                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-crit-soft text-crit border border-crit/40">
                                     Signature Invalid
                                 </span>
                             )}
                             {(parsedCsr.requestedExtensions?.keyUsage?.length ?? 0) > 0 && (
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-400 dark:border-gray-600" title={parsedCsr.requestedExtensions!.keyUsage.join(', ')}>
+                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-sunken text-ink border border-line-strong" title={parsedCsr.requestedExtensions!.keyUsage.join(', ')}>
                                     KU: {parsedCsr.requestedExtensions!.keyUsage.length}
                                 </span>
                             )}
                             {(parsedCsr.requestedExtensions?.extendedKeyUsage?.length ?? 0) > 0 && (
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-400 dark:border-gray-600" title={parsedCsr.requestedExtensions!.extendedKeyUsage.join(', ')}>
+                                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-sunken text-ink border border-line-strong" title={parsedCsr.requestedExtensions!.extendedKeyUsage.join(', ')}>
                                     EKU: {parsedCsr.requestedExtensions!.extendedKeyUsage.length}
                                 </span>
                             )}
@@ -968,11 +968,11 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 <div className={CARD}>
                     <div className={`${CARD_HEAD} flex items-center justify-between`}>
                         <h3 className={CARD_TITLE}>Step 2: Request Profile</h3>
-                        {validating && <span className="text-xs text-gray-600 dark:text-gray-400">Validating...</span>}
+                        {validating && <span className="text-xs text-ink-muted">Validating...</span>}
                         {validationResult && !validating && (
                             validationResult.valid
-                                ? <span className="text-xs text-green-800 dark:text-green-400">All checks passed</span>
-                                : <span className="text-xs text-red-800 dark:text-red-400">Validation errors found</span>
+                                ? <span className="text-xs text-ok">All checks passed</span>
+                                : <span className="text-xs text-crit">Validation errors found</span>
                         )}
                     </div>
                     <div className="p-4">
@@ -991,7 +991,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                         </select>
                         {selectedProfileObj?.requireApproval && (
                             <div className="mt-2 flex flex-wrap gap-2">
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-50 dark:bg-yellow-900/40 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-800">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-warn-soft text-warn border border-warn/40">
                                     Requires Approval{selectedProfileObj.requiredApprovalCount ? ` (${selectedProfileObj.requiredApprovalCount})` : ''}
                                 </span>
                             </div>
@@ -1008,19 +1008,19 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 <div className={CARD}>
                     <div className={CARD_HEAD}>
                         <h3 className={CARD_TITLE}>Step 3: Certificate Fields</h3>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{parsedCsr ? 'Pre-filled from CSR. Edit as needed.' : 'The server builds the CSR from these fields.'}</p>
+                        <p className="text-xs text-ink-muted mt-1">{parsedCsr ? 'Pre-filled from CSR. Edit as needed.' : 'The server builds the CSR from these fields.'}</p>
                     </div>
                     <div className="p-4 space-y-4">
                         {/* Subject DN Fields */}
                         <div>
-                            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-3 uppercase tracking-wide">Subject DN</h4>
+                            <h4 className="text-xs font-semibold text-ink mb-3 uppercase tracking-wide">Subject DN</h4>
                             <div className="space-y-3">
                                 {DN_FIELDS.map((field) => {
                                     const validation = getFieldValidation(field);
                                     const rule = getRuleForField(field);
                                     return (
                                         <div key={field} className="flex items-start gap-3">
-                                            <label className="w-12 pt-2 text-xs font-mono font-semibold text-gray-600 dark:text-gray-400 text-right flex-shrink-0">
+                                            <label className="w-12 pt-2 data-mono font-semibold text-ink-muted text-right flex-shrink-0">
                                                 {field}:
                                             </label>
                                             <div className="flex-1">
@@ -1044,7 +1044,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                                 )}
                                                 {/* Rule hint */}
                                                 {rule && !validation?.message && (
-                                                    <p className="text-xs mt-1 text-gray-600 dark:text-gray-400">
+                                                    <p className="text-xs mt-1 text-ink-muted">
                                                         {rule.requirement}
                                                         {rule.regex ? ` | Pattern: ${rule.regex}` : ''}
                                                         {rule.maxLength ? ` | Max: ${rule.maxLength}` : ''}
@@ -1060,7 +1060,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
                         {/* SAN List */}
                         <div>
-                            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-3 uppercase tracking-wide">Subject Alternative Names</h4>
+                            <h4 className="text-xs font-semibold text-ink mb-3 uppercase tracking-wide">Subject Alternative Names</h4>
                             <div className="space-y-2">
                                 {sanList.map((san, idx) => {
                                     const sanValidation = getSanValidation(idx);
@@ -1072,7 +1072,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                                     value={san.type}
                                                     onChange={(e) => updateSan(idx, 'type', e.target.value)}
                                                     onBlur={handleFieldBlur}
-                                                    className="px-2 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 w-24 flex-shrink-0"
+                                                    className="px-2 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent w-24 flex-shrink-0"
                                                 >
                                                     {(rowBlocked ? SAN_TYPES : sanTypes).map(t => (
                                                         <option key={t} value={t}>{t}</option>
@@ -1089,14 +1089,14 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                                 {statusIcon(rowBlocked ? 'error' : sanValidation?.status)}
                                                 <button
                                                     onClick={() => removeSan(idx)}
-                                                    className="px-2 py-2 text-sm text-red-800 dark:text-red-400 hover:text-red-900 hover:bg-red-100 dark:hover:text-red-300 dark:hover:bg-red-900/30 rounded transition-colors"
+                                                    className="px-2 py-2 text-sm text-crit hover:text-crit hover:bg-crit-soft rounded transition-colors"
                                                     title="Remove SAN"
                                                 >
                                                     &#10005;
                                                 </button>
                                             </div>
                                             {rowBlocked ? (
-                                                <p className="text-xs mt-1 ml-28 text-red-800 dark:text-red-400">
+                                                <p className="text-xs mt-1 ml-28 text-crit">
                                                     A UPN cannot be requested with a server-generated key from here. Paste or upload a CSR instead, or remove this name.
                                                 </p>
                                             ) : sanValidation?.message && (
@@ -1110,7 +1110,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 <div className="flex flex-wrap items-center gap-2">
                                     <button
                                         onClick={addSan}
-                                        className="px-3 py-1.5 text-xs text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                                        className="px-3 py-1.5 text-xs text-accent-ink border border-accent/40 rounded hover:bg-accent-soft transition-colors"
                                     >
                                         + Add SAN
                                     </button>
@@ -1118,7 +1118,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                         <button
                                             onClick={addCnAsSan}
                                             title={`Add ${cnValue} as a DNS Subject Alternative Name`}
-                                            className="px-3 py-1.5 text-xs text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors"
+                                            className="px-3 py-1.5 text-xs text-ok border border-ok/40 rounded hover:bg-ok-soft transition-colors"
                                         >
                                             + Use CN as DNS SAN
                                             <span className="ml-1.5 font-mono opacity-80">{cnValue}</span>
@@ -1133,7 +1133,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 looks correct here and is rejected by every browser. Say so before
                                 it is issued, not after. */}
                             {canAddCnAsSan && (
-                                <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">
+                                <p className="text-xs text-warn mt-2">
                                     <span className="font-semibold">{cnValue}</span> is not listed as a DNS SAN.
                                     Clients ignore the Common Name for hostname verification, so this
                                     certificate would not validate for that name.
@@ -1141,7 +1141,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                             )}
                             {/* SAN rules hint */}
                             {selectedProfileObj?.sanRules && (
-                                <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
+                                <p className="text-xs text-ink-muted mt-2">
                                     Allowed types: {selectedProfileObj.sanRules.allowedTypes?.join(', ') || 'Any'}
                                     {selectedProfileObj.sanRules.required ? ' | At least one SAN required' : ''}
                                 </p>
@@ -1217,13 +1217,13 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                     />
                                     {ceilingNotice && (
                                         <p className={`text-[11px] mt-1 ${ceilingNotice.tone === 'warn'
-                                            ? 'text-amber-700 dark:text-amber-400'
-                                            : 'text-gray-600 dark:text-gray-400'}`}>
+                                            ? 'text-warn'
+                                            : 'text-ink-muted'}`}>
                                             {ceilingNotice.text}
                                         </p>
                                     )}
                                     {notAfterExceedsCeiling && ceiling && (
-                                        <p className="text-[11px] mt-1 text-red-700 dark:text-red-400">
+                                        <p className="text-[11px] mt-1 text-crit">
                                             {ceiling.spaceBehavior === 'Refuse' && ceiling.spaceCeilingApplies && ceiling.resolution.boundBy === 'Space'
                                                 ? 'This exceeds the ceiling above and will be refused.'
                                                 : 'This exceeds the ceiling above and will be shortened at issuance.'}
@@ -1241,12 +1241,12 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 <button
                     onClick={handleSubmit}
                     disabled={!canSubmit}
-                    className="px-6 py-2 text-sm font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="px-6 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
                     {loading ? 'Submitting...' : (tab === 'generate' ? 'Generate Key & Request Certificate' : 'Request Certificate')}
                 </button>
                 {hasValidationErrors && (
-                    <span className="text-xs text-red-800 dark:text-red-400">Fix validation errors before submitting.</span>
+                    <span className="text-xs text-crit">Fix validation errors before submitting.</span>
                 )}
                 {!hasValidationErrors && selectedRequestProfile && missingProfiles.length > 0 && (
                     <FieldHint tone="warn">Choose {missingProfiles.join(' and ')} under Issuance Options before submitting.</FieldHint>
@@ -1258,15 +1258,15 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
             {/* Result */}
             {error && (
-                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4">
+                <div className="bg-crit-soft border border-crit/40 rounded-lg p-4">
                     <InlineNotice notice={error} variant="line" />
                 </div>
             )}
             {success && (
                 <div className={`${success.requiresApproval
-                    ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700'
-                    : 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700'} border rounded-lg p-4 space-y-3`}>
-                    <p className={`text-sm font-semibold ${success.requiresApproval ? 'text-yellow-800 dark:text-yellow-300' : 'text-green-800 dark:text-green-300'}`}>
+                    ? 'bg-warn-soft border-warn/40'
+                    : 'bg-ok-soft border-ok/40'} border rounded-lg p-4 space-y-3`}>
+                    <p className={`text-sm font-semibold ${success.requiresApproval ? 'text-warn' : 'text-ok'}`}>
                         {success.message}
                     </p>
                     {success.requiresApproval && success.requiredApprovalCount != null && (
@@ -1274,7 +1274,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     )}
                     {success.requestId && <DetailField label="Request" value={success.requestId} mono />}
                     {success.keyHeld && success.requestId && (
-                        <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded p-3 space-y-2">
+                        <div className="bg-warn-soft border border-warn/40 rounded p-3 space-y-2">
                             {success.certificateIssued ? (
                                 <HeldKeyDownload
                                     endpoint={endpoints.pkcs12(success.requestId)}
@@ -1284,9 +1284,9 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                     issued
                                 />
                             ) : (
-                                <p className="text-xs text-yellow-800 dark:text-yellow-300">
+                                <p className="text-xs text-warn">
                                     Your private key is held by the CA until the certificate is issued. Download the .pfx from{' '}
-                                    <Link to={requestsPath} className="underline hover:text-yellow-900 dark:hover:text-yellow-100">
+                                    <Link to={requestsPath} className="underline hover:text-warn">
                                         {mode === 'admin' ? 'the Requests page' : 'My Requests'}
                                     </Link>{' '}
                                     once it is approved.
@@ -1296,7 +1296,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 <div className="flex flex-wrap gap-2">
                                     <button type="button"
                                         onClick={() => downloadText(success.csrPem!, `request-${success.requestId || 'csr'}.csr`, 'application/pkcs10')}
-                                        className="px-3 py-1.5 text-xs font-medium rounded border border-yellow-400 dark:border-yellow-600 text-yellow-900 dark:text-yellow-200 hover:bg-yellow-100 dark:hover:bg-yellow-900/50 transition-colors">
+                                        className="px-3 py-1.5 text-xs font-medium rounded border border-warn text-warn hover:bg-warn-soft transition-colors">
                                         Download CSR
                                     </button>
                                 </div>
@@ -1304,11 +1304,11 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                         </div>
                     )}
                     <div className="flex flex-wrap gap-3 pt-2">
-                        <Link to={requestsPath} className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        <Link to={requestsPath} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors">
                             {mode === 'admin' ? 'View Requests' : 'View My Requests'}
                         </Link>
                         <button onClick={dismissSuccess}
-                            className="px-4 py-2 text-sm text-blue-800 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+                            className="px-4 py-2 text-sm text-accent-ink border border-accent/40 rounded hover:bg-accent-soft transition-colors">
                             Submit Another
                         </button>
                     </div>

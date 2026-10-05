@@ -232,12 +232,12 @@ const MyCertificates: React.FC = () => {
         {
             key: 'subject', header: 'Subject', defaultWidth: 280,
             exportValue: (c) => c.subjectDN || c.serialNumber,
-            render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{c.subjectDN || c.serialNumber}</span>,
+            render: (c) => <span className="text-sm text-ink truncate">{c.subjectDN || c.serialNumber}</span>,
         },
         {
             key: 'algorithm', header: 'Algorithm', defaultWidth: 150,
             exportValue: (c) => `${c.keyAlgorithm || ''} ${c.keySize || ''}`.trim(),
-            render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400">{c.keyAlgorithm || '-'} {c.keySize || ''}</span>,
+            render: (c) => <span className="text-xs text-ink-muted">{c.keyAlgorithm || '-'} {c.keySize || ''}</span>,
         },
         {
             key: 'expires', header: 'Expires', defaultWidth: 210, minWidth: 120, truncate: false,
@@ -246,9 +246,9 @@ const MyCertificates: React.FC = () => {
                 const s = certStatus(c);
                 const days = daysUntilExpiry(c.notAfter);
                 return (
-                    <span className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-2 whitespace-nowrap">
+                    <span className="text-xs text-ink-muted flex items-center gap-2 whitespace-nowrap">
                         {formatDate(c.notAfter)}
-                        {s === 'active' && days <= 30 && <span className="text-yellow-700 dark:text-yellow-400">{days}d left</span>}
+                        {s === 'active' && days <= 30 && <span className="text-warn">{days}d left</span>}
                     </span>
                 );
             },
@@ -277,50 +277,50 @@ const MyCertificates: React.FC = () => {
 
                 {cert.subjectAlternativeNames?.length > 0 && (
                     <div>
-                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">SANs</span>
+                        <span className="text-xs font-semibold text-ink-muted">SANs</span>
                         <div className="flex flex-wrap gap-1 mt-1">
                             {cert.subjectAlternativeNames.map((san: string, i: number) => (
-                                <span key={i} className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{san}</span>
+                                <span key={i} className="px-2 py-0.5 text-xs bg-sunken text-ink rounded">{san}</span>
                             ))}
                         </div>
                     </div>
                 )}
 
                 {status === 'revoked' && (
-                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded p-2">
-                        <span className="text-xs text-red-800 dark:text-red-400">Revoked{cert.revocationReason ? `: ${cert.revocationReason}` : ''}</span>
+                    <div className="bg-crit-soft border border-crit/40 rounded p-2">
+                        <span className="text-xs text-crit">Revoked{cert.revocationReason ? `: ${cert.revocationReason}` : ''}</span>
                     </div>
                 )}
 
                 {/* Action buttons */}
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-300 dark:border-gray-700">
+                <div className="flex flex-wrap gap-2 pt-2 border-t border-line">
                     <button onClick={() => handleDownloadPem(cert)}
-                        className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                        className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                         PEM
                     </button>
                     <button onClick={() => handleDownloadDer(cert)}
-                        className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">
                         DER
                     </button>
                     <button onClick={() => handleDownloadChain(cert)}
-                        className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">
                         Full Chain
                     </button>
                     {hasPrivateKey && (
                         <button onClick={() => handleExportPfx(cert)}
-                            className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors">
+                            className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                             Export PFX
                         </button>
                     )}
                     {status !== 'revoked' && (
                         <button onClick={() => handleRenew(cert)}
-                            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700 transition-colors">
+                            className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors">
                             Renew
                         </button>
                     )}
                     {status === 'active' && (
                         <button onClick={() => handleRevoke(cert)}
-                            className="px-3 py-1.5 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors ml-auto">
+                            className="px-3 py-1.5 text-xs bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors ml-auto">
                             Revoke
                         </button>
                     )}
@@ -332,8 +332,8 @@ const MyCertificates: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Certificates</h1>
-                <Link to="/request" className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                <h1 className="text-xl font-semibold text-ink">My Certificates</h1>
+                <Link to="/request" className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     Request New
                 </Link>
             </div>
@@ -363,20 +363,20 @@ const MyCertificates: React.FC = () => {
 
             {/* PFX Export Modal */}
             {pfxTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !pfxLoading && setPfxTarget(null)}>
-                    <div className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-lg font-bold text-gray-900 dark:text-white">Export PFX</h3>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Enter a password to protect the PFX file:</p>
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !pfxLoading && setPfxTarget(null)}>
+                    <div className="bg-raised border border-line rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-ink">Export PFX</h3>
+                        <p className="text-sm text-ink-muted">Enter a password to protect the PFX file:</p>
                         <input type="password" value={pfxPassword} onChange={e => setPfxPassword(e.target.value)}
                             autoComplete="new-password" placeholder="PFX password" autoFocus
-                            className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500" />
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent" />
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setPfxTarget(null)} disabled={pfxLoading}
-                                className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">
+                                className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">
                                 Cancel
                             </button>
                             <button onClick={handlePfxConfirm} disabled={!pfxPassword || pfxLoading}
-                                className="px-4 py-2 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-40 transition-colors">
+                                className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-40 transition-colors">
                                 {pfxLoading ? 'Exporting...' : 'Export'}
                             </button>
                         </div>
@@ -386,22 +386,22 @@ const MyCertificates: React.FC = () => {
 
             {/* Revocation Modal */}
             {revokeTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !revokeLoading && setRevokeTarget(null)}>
-                    <div className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-lg font-bold text-gray-900 dark:text-white">Revoke Certificate</h3>
-                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded p-3">
-                            <p className="text-xs text-red-800 dark:text-red-400">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !revokeLoading && setRevokeTarget(null)}>
+                    <div className="bg-raised border border-line rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-ink">Revoke Certificate</h3>
+                        <div className="bg-crit-soft border border-crit/40 rounded p-3">
+                            <p className="text-xs text-crit">
                                 Revocation is <span className="font-semibold">permanent</span> and cannot be undone. The
                                 certificate will stop being trusted once the next CRL is published.
                             </p>
                         </div>
-                        <div className="text-sm text-gray-600 dark:text-gray-400 break-words">
-                            <span className="font-semibold text-gray-700 dark:text-gray-300">Subject:</span> {revokeTarget.subjectDN || revokeTarget.serialNumber}
+                        <div className="text-sm text-ink-muted break-words">
+                            <span className="font-semibold text-ink">Subject:</span> {revokeTarget.subjectDN || revokeTarget.serialNumber}
                         </div>
                         <div>
-                            <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">Reason</label>
+                            <label className="block text-xs font-semibold text-ink-muted mb-1">Reason</label>
                             <select value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeLoading}
-                                className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
                                 {SELF_REVOKE_REASONS.map((r) => (
                                     <option key={r.value} value={r.value}>{r.label}</option>
                                 ))}
@@ -410,11 +410,11 @@ const MyCertificates: React.FC = () => {
                         </div>
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setRevokeTarget(null)} disabled={revokeLoading}
-                                className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">
+                                className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">
                                 Cancel
                             </button>
                             <button onClick={handleRevokeConfirm} disabled={revokeLoading}
-                                className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-40 transition-colors">
+                                className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover disabled:opacity-40 transition-colors">
                                 {revokeLoading ? 'Revoking...' : 'Revoke'}
                             </button>
                         </div>
@@ -424,24 +424,24 @@ const MyCertificates: React.FC = () => {
 
             {/* Renewal Modal */}
             {renewTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !renewLoading && setRenewTarget(null)}>
-                    <div className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-lg font-bold text-gray-900 dark:text-white">Renew Certificate</h3>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !renewLoading && setRenewTarget(null)}>
+                    <div className="bg-raised border border-line rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-ink">Renew Certificate</h3>
+                        <p className="text-sm text-ink-muted">
                             This submits a new certificate request reusing the same subject, SANs, and profile as the
                             existing certificate. Depending on the profile, it may require administrator approval before
                             a new certificate is issued. The existing certificate is left unchanged.
                         </p>
-                        <div className="text-sm text-gray-600 dark:text-gray-400 break-words">
-                            <span className="font-semibold text-gray-700 dark:text-gray-300">Subject:</span> {renewTarget.subjectDN || renewTarget.serialNumber}
+                        <div className="text-sm text-ink-muted break-words">
+                            <span className="font-semibold text-ink">Subject:</span> {renewTarget.subjectDN || renewTarget.serialNumber}
                         </div>
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setRenewTarget(null)} disabled={renewLoading}
-                                className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">
+                                className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">
                                 Cancel
                             </button>
                             <button onClick={handleRenewConfirm} disabled={renewLoading}
-                                className="px-4 py-2 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-40 transition-colors">
+                                className="px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-40 transition-colors">
                                 {renewLoading ? 'Submitting...' : 'Submit Renewal'}
                             </button>
                         </div>

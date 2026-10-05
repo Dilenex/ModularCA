@@ -100,17 +100,17 @@ const MySshCertificates: React.FC = () => {
         {
             key: 'keyId', header: 'Key ID', defaultWidth: 220,
             exportValue: (c) => c.keyId || c.id,
-            render: (c) => <span className="text-sm text-gray-900 dark:text-white truncate">{c.keyId || c.id}</span>,
+            render: (c) => <span className="text-sm text-ink truncate">{c.keyId || c.id}</span>,
         },
         {
             key: 'principals', header: 'Principals', defaultWidth: 180,
             exportValue: (c) => formatPrincipals(c.principals),
-            render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{formatPrincipals(c.principals)}</span>,
+            render: (c) => <span className="text-xs text-ink-muted truncate">{formatPrincipals(c.principals)}</span>,
         },
         {
             key: 'validBefore', header: 'Valid Until', defaultWidth: 200, truncate: false,
             exportValue: (c) => formatDate(c.validBefore),
-            render: (c) => <span className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{formatDate(c.validBefore)}</span>,
+            render: (c) => <span className="text-xs text-ink-muted whitespace-nowrap">{formatDate(c.validBefore)}</span>,
         },
     ];
 
@@ -127,15 +127,15 @@ const MySshCertificates: React.FC = () => {
                 </div>
 
                 {status === 'revoked' && (
-                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded p-2">
-                        <span className="text-xs text-red-800 dark:text-red-400">This certificate has been revoked.</span>
+                    <div className="bg-crit-soft border border-crit/40 rounded p-2">
+                        <span className="text-xs text-crit">This certificate has been revoked.</span>
                     </div>
                 )}
 
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-300 dark:border-gray-700">
+                <div className="flex flex-wrap gap-2 pt-2 border-t border-line">
                     <button
                         onClick={() => handleDownload(cert)}
-                        className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                        className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                     >
                         Download Certificate
                     </button>
@@ -146,11 +146,11 @@ const MySshCertificates: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">SSH Certificates</h1>
+            <h1 className="text-xl font-semibold text-ink">SSH Certificates</h1>
 
             {endpointUnavailable ? (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-                    <p className="text-gray-600">SSH certificates will appear here once issued.</p>
+                <div className="bg-raised border border-line rounded-lg p-8 text-center">
+                    <p className="text-ink-muted">SSH certificates will appear here once issued.</p>
                 </div>
             ) : (
                 <DataTable<SshCertificate>

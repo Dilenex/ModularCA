@@ -121,19 +121,19 @@ const WhitelistDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!wl) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Whitelist not found.</p>
-            <button onClick={() => navigate('/whitelists')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Whitelists</button>
+            <p className="text-sm text-ink-muted">Whitelist not found.</p>
+            <button onClick={() => navigate('/whitelists')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Whitelists</button>
         </div>
     );
 
     const statusBadge = (
         <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-            ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-            : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
+            ? 'bg-ok-soft text-ok border-ok/40'
+            : 'bg-sunken text-ink-muted border-line-strong'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
     );
 
     return (
@@ -147,7 +147,7 @@ const WhitelistDetail: React.FC = () => {
             onCancel={handleCancel}
             saveDisabled={!dirty || !form.name.trim()}
             actions={!wl.isSystemDefault ? (
-                <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">Delete</button>
+                <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Delete</button>
             ) : undefined}
         >
             {(mode) => (<>{mode === 'view' ? (
@@ -164,18 +164,18 @@ const WhitelistDetail: React.FC = () => {
                         <DetailField label="Updated" value={formatDate(wl.updatedAt)} />
                     </div>
                     <div className="mt-3">
-                        <span className="text-xs text-gray-500">CIDRs ({(wl.cidrs || []).length})</span>
-                        <div className="mt-1 max-h-72 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
+                        <span className="text-xs text-ink-muted">CIDRs ({(wl.cidrs || []).length})</span>
+                        <div className="mt-1 max-h-72 overflow-y-auto rounded border border-line bg-sunken p-2 data-mono space-y-0.5">
                             {(wl.cidrs || []).length === 0
-                                ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
-                                : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
+                                ? <span className="text-ink-muted">No CIDRs — blocks all for a matched rule.</span>
+                                : (wl.cidrs || []).map((c, i) => <div key={i} className="text-ink">{c}</div>)}
                         </div>
                     </div>
                 </DetailSection>
             ) : (
                 <DetailSection title="Edit Whitelist">
                     <div className="space-y-4 max-w-2xl">
-                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-2 text-xs text-blue-800 dark:text-blue-300">
+                        <div className="bg-info-soft border border-info/40 rounded p-2 text-xs text-info">
                             Scope, CA, and protocol are set at creation and can't be changed here — recreate the rule to change them.
                         </div>
                         <div>
@@ -198,11 +198,11 @@ const WhitelistDetail: React.FC = () => {
                                 An empty list means block all for a matched rule; it is not 'no restriction'. Use 0.0.0.0/0 and ::/0 to allow any address. Make sure your own address is still covered before saving.
                             </FieldHint>
                         </div>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-700 text-blue-600 focus:ring-blue-500" />
+                        <label className="flex items-center gap-2 text-sm text-ink">
+                            <input type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
                             Enabled
                         </label>
-                        {formError && <p className="text-sm text-red-800 dark:text-red-400">{formError}</p>}
+                        {formError && <p className="text-sm text-crit">{formError}</p>}
                     </div>
                 </DetailSection>
             )}

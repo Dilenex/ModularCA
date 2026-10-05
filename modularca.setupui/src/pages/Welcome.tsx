@@ -21,7 +21,7 @@ interface WelcomeProps {
     onSetupTokenChange: (token: string) => void;
 }
 
-const inputClass = "w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500";
+const inputClass = "w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent";
 
 /// <summary>
 /// Welcome step: logo, server status check, setup token validation.
@@ -100,60 +100,60 @@ const Welcome: React.FC<WelcomeProps> = ({ onNext, setupToken, onSetupTokenChang
             {/* Logo + Heading */}
             <div className="text-center space-y-3">
                 <div className="flex justify-center">
-                    <div className="w-20 h-20 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg">
-                        <span className="text-white text-3xl font-bold tracking-tight">CA</span>
+                    <div className="w-20 h-20 bg-accent rounded-lg flex items-center justify-center">
+                        <span className="text-on-accent text-3xl font-bold tracking-tight">CA</span>
                     </div>
                 </div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Welcome to ModularCA</h1>
-                <p className="text-gray-600 dark:text-gray-400 text-base sm:text-lg">Set up your certificate authority in a few simple steps</p>
+                <h1 className="text-2xl sm:text-3xl font-bold text-ink">Welcome to ModularCA</h1>
+                <p className="text-ink-muted text-base sm:text-lg">Set up your certificate authority in a few simple steps</p>
             </div>
 
             {/* Server Status */}
-            <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 text-center">
+            <div className="bg-ground border border-line rounded-lg p-4 text-center">
                 <div className="flex items-center justify-center gap-3 text-sm">
                     {loading ? (
                         <>
-                            <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <svg className="animate-spin h-5 w-5 text-accent-ink" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                             </svg>
-                            <span className="text-gray-600 dark:text-gray-400">Checking server status...</span>
+                            <span className="text-ink-muted">Checking server status...</span>
                         </>
                     ) : error ? (
                         <>
-                            <span className="text-red-500 text-lg">&#10007;</span>
-                            <span className="text-red-600 dark:text-red-400">{error}</span>
+                            <span className="text-crit text-lg">&#10007;</span>
+                            <span className="text-crit">{error}</span>
                         </>
                     ) : status?.databaseConnected ? (
                         <>
-                            <span className="text-green-500 text-lg">&#10003;</span>
-                            <span className="text-green-600 dark:text-green-400">Server ready &mdash; database connected</span>
+                            <span className="text-ok text-lg">&#10003;</span>
+                            <span className="text-ok">Server ready &mdash; database connected</span>
                         </>
                     ) : status?.needsDbConfig ? (
                         <>
-                            <span className="text-amber-500 text-lg">&#9888;</span>
-                            <span className="text-amber-600 dark:text-amber-400">Database configuration required</span>
+                            <span className="text-warn text-lg">&#9888;</span>
+                            <span className="text-warn">Database configuration required</span>
                         </>
                     ) : (
                         <>
-                            <span className="text-blue-500 text-lg">&#8226;</span>
-                            <span className="text-blue-600 dark:text-blue-400">Server ready</span>
+                            <span className="text-accent-ink text-lg">&#8226;</span>
+                            <span className="text-accent-ink">Server ready</span>
                         </>
                     )}
                 </div>
                 {status?.configured && (
-                    <p className="text-amber-600 dark:text-amber-400 text-sm mt-2">
-                        ModularCA is already configured. Use <code className="bg-gray-200 dark:bg-gray-800 px-1 rounded">--reset --force</code> to start over.
+                    <p className="text-warn text-sm mt-2">
+                        ModularCA is already configured. Use <code className="bg-sunken px-1 rounded">--reset --force</code> to start over.
                     </p>
                 )}
             </div>
 
             {/* Setup Token */}
             {!loading && !status?.configured && (
-                <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 sm:p-6 space-y-4">
+                <div className="bg-raised border border-line rounded-lg p-4 sm:p-6 space-y-4">
                     <div>
-                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Setup Token</h3>
-                        <p className="text-sm text-gray-600 mt-1">
+                        <h3 className="text-lg font-semibold text-ink">Setup Token</h3>
+                        <p className="text-sm text-ink-muted mt-1">
                             Enter the one-time setup token displayed on the server console at startup.
                         </p>
                     </div>
@@ -170,16 +170,16 @@ const Welcome: React.FC<WelcomeProps> = ({ onNext, setupToken, onSetupTokenChang
                         <button
                             onClick={handleValidateToken}
                             disabled={!setupToken.trim() || validatingToken || tokenValidated}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors disabled:cursor-not-allowed whitespace-nowrap"
+                            className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed whitespace-nowrap"
                         >
                             {validatingToken ? 'Validating...' : tokenValidated ? 'Verified' : 'Verify Token'}
                         </button>
                     </div>
                     {tokenError && (
-                        <p className="text-sm text-red-600 dark:text-red-400">{tokenError}</p>
+                        <p className="text-sm text-crit">{tokenError}</p>
                     )}
                     {tokenValidated && (
-                        <p className="text-sm text-green-600 dark:text-green-400">&#10003; Token verified successfully.</p>
+                        <p className="text-sm text-ok">&#10003; Token verified successfully.</p>
                     )}
                 </div>
             )}
@@ -190,7 +190,7 @@ const Welcome: React.FC<WelcomeProps> = ({ onNext, setupToken, onSetupTokenChang
                     <button
                         onClick={handleGetStarted}
                         disabled={!canProceed}
-                        className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
+                        className="px-8 py-3 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
                     >
                         Get Started
                     </button>

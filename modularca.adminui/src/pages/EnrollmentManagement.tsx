@@ -28,7 +28,7 @@ function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-const inputClass = 'w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-2 py-1 text-sm';
+const inputClass = 'w-full bg-sunken border border-line-strong text-ink rounded px-2 py-1 text-sm';
 
 interface CreatedToken {
     token: string;
@@ -167,11 +167,11 @@ const EnrollmentManagement: React.FC = () => {
             { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (t) => !!t.isRevoked, exportValue: (t) => (t.isRevoked ? 'Revoked' : 'Active'),
                 render: (t) => <StatusBadge status={t.isRevoked ? 'revoked' : 'active'} /> },
             { key: 'token', header: 'Token / Reference', defaultWidth: 220, exportValue: (t) => (isCmpCredentialRow(t) ? `CMP ${t.cmpReferenceValue || ''}` : `Token ${t.id}`),
-                render: (t) => <span className="font-mono text-xs">{tokenColumnLabel(t)}</span> },
+                render: (t) => <span className="data-mono">{tokenColumnLabel(t)}</span> },
             { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
-                render: (t) => <span className="text-gray-600 dark:text-gray-400">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
+                render: (t) => <span className="text-ink-muted">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
             { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
-                render: (t) => (t.protocol ? <StatusBadge status="pending" label={t.protocol} /> : <span className="text-gray-500">Any</span>) },
+                render: (t) => (t.protocol ? <StatusBadge status="pending" label={t.protocol} /> : <span className="text-ink-muted">Any</span>) },
             { key: 'created', header: 'Created', defaultWidth: 150, sortable: true, sortValue: (t) => t.createdAt ? new Date(t.createdAt) : null, exportValue: (t) => t.createdAt, render: (t) => formatDate(t.createdAt) },
             { key: 'expires', header: 'Expires', defaultWidth: 150, sortable: true, sortValue: (t) => t.expiresAt ? new Date(t.expiresAt) : null, exportValue: (t) => t.expiresAt, render: (t) => formatDate(t.expiresAt) },
         ],
@@ -211,25 +211,25 @@ const EnrollmentManagement: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Enrollment Management</h1>
-                <button onClick={() => (showCreate ? setShowCreate(false) : openCreate())} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">
+                <h1 className="text-xl font-semibold text-ink">Enrollment Management</h1>
+                <button onClick={() => (showCreate ? setShowCreate(false) : openCreate())} className="px-4 py-2 bg-accent text-on-accent rounded hover:bg-accent-hover text-sm">
                     {showCreate ? 'Cancel' : 'Generate Enrollment Credential'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h3 className="text-gray-900 dark:text-white text-sm font-semibold">Generate Enrollment Credential</h3>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h3 className="text-ink text-sm font-semibold">Generate Enrollment Credential</h3>
 
                     <div>
-                        <label className="text-xs text-gray-600 dark:text-gray-400">Protocol</label>
+                        <label className="text-xs text-ink-muted">Protocol</label>
                         <select value={form.protocol} onChange={e => selectProtocol(e.target.value)} className={inputClass}>
                             <option value="">Choose a protocol…</option>
                             {ENROLLMENT_PROTOCOLS.map(p => (
                                 <option key={p.value} value={p.value}>{p.label}</option>
                             ))}
                         </select>
-                        {meta && <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">{meta.description}</p>}
+                        {meta && <p className="text-[11px] text-ink-muted mt-1">{meta.description}</p>}
                     </div>
 
                     {kind !== null && (
@@ -237,12 +237,12 @@ const EnrollmentManagement: React.FC = () => {
                             {kind === 'cmp' && (
                                 <>
                                     <div>
-                                        <label className="text-xs text-gray-600 dark:text-gray-400">Reference value (senderKID)</label>
+                                        <label className="text-xs text-ink-muted">Reference value (senderKID)</label>
                                         <input type="text" value={form.referenceValue} onChange={e => setForm({ ...form, referenceValue: e.target.value })}
                                             className={`${inputClass} font-mono`} placeholder="e.g., printer-fleet" />
                                     </div>
                                     <div>
-                                        <label className="text-xs text-gray-600 dark:text-gray-400">Signing profile (decides the CA)</label>
+                                        <label className="text-xs text-ink-muted">Signing profile (decides the CA)</label>
                                         <select value={form.signingProfileId} onChange={e => setForm({ ...form, signingProfileId: e.target.value })} className={inputClass}>
                                             <option value="">Choose…</option>
                                             {signingProfiles.map((p: any) => (
@@ -254,12 +254,12 @@ const EnrollmentManagement: React.FC = () => {
                             )}
 
                             <div>
-                                <label className="text-xs text-gray-600 dark:text-gray-400">Expires In (hours)</label>
+                                <label className="text-xs text-ink-muted">Expires In (hours)</label>
                                 <input type="text" inputMode="numeric" value={form.expiresInHours} onChange={e => { const v = e.target.value.replace(/\D/g, ''); setForm({ ...form, expiresInHours: v === '' ? '' : +v }); }}
                                     className={inputClass} />
                             </div>
                             <div>
-                                <label className="text-xs text-gray-600 dark:text-gray-400">Max Uses (0 = unlimited)</label>
+                                <label className="text-xs text-ink-muted">Max Uses (0 = unlimited)</label>
                                 <input type="text" inputMode="numeric" value={form.maxUses} onChange={e => { const v = e.target.value.replace(/\D/g, ''); setForm({ ...form, maxUses: v === '' ? '' : +v }); }}
                                     className={inputClass} />
                             </div>
@@ -267,12 +267,12 @@ const EnrollmentManagement: React.FC = () => {
                             {kind === 'token' && (
                                 <>
                                     <div>
-                                        <label className="text-xs text-gray-600 dark:text-gray-400">Subject Restriction (optional)</label>
+                                        <label className="text-xs text-ink-muted">Subject Restriction (optional)</label>
                                         <input type="text" value={form.subjectRestriction} onChange={e => setForm({ ...form, subjectRestriction: e.target.value })}
                                             className={inputClass} placeholder="e.g., example.com or O=Acme" />
                                     </div>
                                     <div>
-                                        <label className="text-xs text-gray-600 dark:text-gray-400">SAN Restriction (optional)</label>
+                                        <label className="text-xs text-ink-muted">SAN Restriction (optional)</label>
                                         <input type="text" value={form.sanRestriction} onChange={e => setForm({ ...form, sanRestriction: e.target.value })}
                                             className={inputClass} placeholder="e.g., example.com, example.org" />
                                     </div>
@@ -282,40 +282,40 @@ const EnrollmentManagement: React.FC = () => {
                     )}
 
                     {kind === 'cmp' && (
-                        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                        <p className="text-[11px] text-ink-muted">
                             The shared secret is shown once, after Generate. A CMP credential can enroll any name the request profile permits; it cannot revoke.
                         </p>
                     )}
 
                     {formError && <InlineNotice notice={formError} variant="line" />}
                     <button onClick={handleGenerate} disabled={submitting || kind === null}
-                        className="px-4 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                        className="px-4 py-1.5 bg-ok text-on-accent rounded text-sm hover:bg-ok-hover disabled:opacity-50 disabled:cursor-not-allowed">
                         {submitting ? 'Generating…' : 'Generate'}
                     </button>
                 </div>
             )}
 
             {newCmp && (
-                <div className="bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded p-4 space-y-3">
-                    <p className="text-green-800 dark:text-green-300 text-sm font-semibold">CMP credential created (copy the secret now — it is shown only once)</p>
+                <div className="bg-ok-soft border border-ok/40 rounded p-4 space-y-3">
+                    <p className="text-ok text-sm font-semibold">CMP credential created (copy the secret now — it is shown only once)</p>
                     <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-                        <span className="text-gray-700 dark:text-gray-300 font-semibold">Reference value</span>
-                        <code className="text-green-800 dark:text-green-200 font-mono bg-gray-50 dark:bg-gray-900 p-2 rounded break-all">{newCmp.referenceValue}</code>
-                        <span className="text-gray-700 dark:text-gray-300 font-semibold">Shared secret</span>
-                        <code className="text-green-800 dark:text-green-200 font-mono bg-gray-50 dark:bg-gray-900 p-2 rounded break-all">{newCmp.sharedSecret}</code>
+                        <span className="text-ink font-semibold">Reference value</span>
+                        <code className="text-ok font-mono bg-sunken p-2 rounded break-all">{newCmp.referenceValue}</code>
+                        <span className="text-ink font-semibold">Shared secret</span>
+                        <code className="text-ok font-mono bg-sunken p-2 rounded break-all">{newCmp.sharedSecret}</code>
                         {newCmp.expiresAt && (<>
-                            <span className="text-gray-700 dark:text-gray-300 font-semibold">Expires</span>
-                            <span className="text-gray-800 dark:text-gray-200">{formatDate(newCmp.expiresAt)}</span>
+                            <span className="text-ink font-semibold">Expires</span>
+                            <span className="text-ink">{formatDate(newCmp.expiresAt)}</span>
                         </>)}
                     </div>
                     <div className="flex gap-2">
-                        <button onClick={() => { navigator.clipboard.writeText(newCmp.sharedSecret); }} className="text-xs text-green-800 dark:text-green-400 hover:text-green-300">Copy secret</button>
-                        <button onClick={() => { navigator.clipboard.writeText(newCmp.referenceValue); }} className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300">Copy reference</button>
-                        <button onClick={() => setNewCmp(null)} className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-300 ml-auto">Dismiss</button>
+                        <button onClick={() => { navigator.clipboard.writeText(newCmp.sharedSecret); }} className="text-xs text-ok hover:text-ok">Copy secret</button>
+                        <button onClick={() => { navigator.clipboard.writeText(newCmp.referenceValue); }} className="text-xs text-accent-ink hover:underline">Copy reference</button>
+                        <button onClick={() => setNewCmp(null)} className="text-xs text-ink-muted hover:text-ink ml-auto">Dismiss</button>
                     </div>
-                    <div className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
-                        <p className="text-gray-700 dark:text-gray-300 text-xs font-semibold mb-2">Initial request with OpenSSL (substitute the secret)</p>
-                        <pre className="text-blue-800 dark:text-blue-300 text-xs font-mono whitespace-pre overflow-x-auto">{buildOpensslCmpCommand(window.location.origin, newCmp.caLabel, newCmp.referenceValue)}</pre>
+                    <div className="p-3 bg-ground rounded-lg">
+                        <p className="text-ink text-xs font-semibold mb-2">Initial request with OpenSSL (substitute the secret)</p>
+                        <pre className="text-ink data-mono whitespace-pre overflow-x-auto">{buildOpensslCmpCommand(window.location.origin, newCmp.caLabel, newCmp.referenceValue)}</pre>
                     </div>
                 </div>
             )}
@@ -324,33 +324,33 @@ const EnrollmentManagement: React.FC = () => {
                 const enrollUrl = `${window.location.origin}/api/v1/public/enroll/${newToken.token}/page`;
                 const qrSvg = newToken.showQr ? generateQrSvg(enrollUrl, 4, 4) : '';
                 return (
-                    <div className="bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded p-4">
+                    <div className="bg-ok-soft border border-ok/40 rounded p-4">
                         <div className="flex items-start justify-between gap-2">
-                            <p className="text-green-800 dark:text-green-300 text-sm font-semibold mb-1">Token generated (copy now — shown only once):</p>
-                            <button onClick={() => setNewToken(null)} className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-300">Dismiss</button>
+                            <p className="text-ok text-sm font-semibold mb-1">Token generated (copy now — shown only once):</p>
+                            <button onClick={() => setNewToken(null)} className="text-xs text-ink-muted hover:text-ink">Dismiss</button>
                         </div>
-                        <code className="text-green-800 dark:text-green-200 text-xs font-mono bg-gray-50 dark:bg-gray-900 p-2 rounded block break-all">{newToken.token}</code>
+                        <code className="text-ok data-mono bg-sunken p-2 rounded block break-all">{newToken.token}</code>
                         {newToken.showQr && (
                             <>
-                                <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
-                                    <p className="text-gray-700 dark:text-gray-300 text-xs font-semibold mb-2">Enrollment URL</p>
+                                <div className="mt-4 p-3 bg-ground rounded-lg">
+                                    <p className="text-ink text-xs font-semibold mb-2">Enrollment URL</p>
                                     <div className="flex items-center gap-2">
-                                        <code className="text-blue-800 dark:text-blue-300 text-xs font-mono bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded flex-1 break-all">{enrollUrl}</code>
+                                        <code className="text-ink data-mono bg-sunken px-2 py-1 rounded flex-1 break-all">{enrollUrl}</code>
                                         <button onClick={() => { navigator.clipboard.writeText(enrollUrl); }}
-                                            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 whitespace-nowrap">Copy URL</button>
+                                            className="px-3 py-1 bg-accent text-on-accent text-xs rounded hover:bg-accent-hover whitespace-nowrap">Copy URL</button>
                                     </div>
                                 </div>
                                 <div className="mt-4 flex flex-col items-center">
-                                    <p className="text-gray-700 dark:text-gray-300 text-xs font-semibold mb-2">Scan to Enroll</p>
+                                    <p className="text-ink text-xs font-semibold mb-2">Scan to Enroll</p>
                                     <div className="bg-white p-2 rounded-lg inline-block" dangerouslySetInnerHTML={{ __html: qrSvg }} />
-                                    <p className="text-gray-600 text-xs mt-1">Scan with a mobile device to open the enrollment page</p>
+                                    <p className="text-ink-muted text-xs mt-1">Scan with a mobile device to open the enrollment page</p>
                                 </div>
                             </>
                         )}
                         <div className="mt-3 flex gap-2">
-                            <button onClick={() => { navigator.clipboard.writeText(newToken.token); }} className="text-xs text-green-800 dark:text-green-400 hover:text-green-300">Copy Token</button>
+                            <button onClick={() => { navigator.clipboard.writeText(newToken.token); }} className="text-xs text-ok hover:text-ok">Copy Token</button>
                             {newToken.showQr && (
-                                <button onClick={() => { navigator.clipboard.writeText(enrollUrl); }} className="text-xs text-blue-800 dark:text-blue-400 hover:text-blue-300">Copy Enrollment URL</button>
+                                <button onClick={() => { navigator.clipboard.writeText(enrollUrl); }} className="text-xs text-accent-ink hover:underline">Copy Enrollment URL</button>
                             )}
                         </div>
                     </div>

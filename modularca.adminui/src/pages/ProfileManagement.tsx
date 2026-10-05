@@ -141,16 +141,16 @@ const CertProfilesTab: React.FC = () => {
             key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name,
             render: (p) => (
                 <span className="flex items-center gap-2 min-w-0">
-                    <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span>
+                    <span className="text-ink font-medium truncate">{p.name}</span>
                     {p.inheritanceEnabled && p.inheritsFromId && (
-                        <span className="px-2 py-0.5 text-[10px] rounded bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-700 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
+                        <span className="px-2 py-0.5 text-[10px] rounded bg-accent-soft text-accent-ink border border-accent/40 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
                     )}
                 </span>
             ),
         },
         { key: 'type', header: 'Type', defaultWidth: 100, truncate: false, exportValue: (p) => (p.isCaProfile ? 'CA' : 'Leaf'), render: (p) => <StatusBadge status={p.isCaProfile ? 'active' : 'enabled'} label={p.isCaProfile ? 'CA' : 'Leaf'} /> },
-        { key: 'ct', header: 'CT', defaultWidth: 80, truncate: false, exportValue: (p) => (p.ctEnabled ? 'Yes' : 'No'), render: (p) => p.ctEnabled ? <StatusBadge status="active" label="CT" /> : <span className="text-xs text-gray-500">-</span> },
-        { key: 'validity', header: 'Validity', defaultWidth: 160, exportValue: (p) => (p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : ''), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : '-'}</span> },
+        { key: 'ct', header: 'CT', defaultWidth: 80, truncate: false, exportValue: (p) => (p.ctEnabled ? 'Yes' : 'No'), render: (p) => p.ctEnabled ? <StatusBadge status="active" label="CT" /> : <span className="text-xs text-ink-muted">-</span> },
+        { key: 'validity', header: 'Validity', defaultWidth: 160, exportValue: (p) => (p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : ''), render: (p) => <span className="text-xs text-ink-muted">{p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : '-'}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -162,23 +162,23 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Name" value={p.name} />
             <DetailField label="Description" value={p.description} />
             <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
+            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Key Algorithms</span><CeilingList items={p.allowedKeyAlgorithms} noun="key algorithm" /></div>
             <DetailField label="Validity Min" value={p.validityPeriodMin} />
             <DetailField label="Validity Max" value={p.validityPeriodMax} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
             {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
             <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to view all rules or edit.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view all rules or edit.</p>
         </div>
     );
 
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Certificate Profiles</h3>
+                <h3 className="text-sm font-semibold text-ink">Certificate Profiles</h3>
                 <button
                     onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                 >
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
@@ -186,8 +186,8 @@ const CertProfilesTab: React.FC = () => {
 
             {/* Create Form */}
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New Certificate Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New Certificate Profile</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -235,27 +235,27 @@ const CertProfilesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.isCaProfile} onChange={(e) => setForm({ ...form, isCaProfile: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.isCaProfile} onChange={(e) => setForm({ ...form, isCaProfile: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             CA Profile
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.ctEnabled} onChange={(e) => setForm({ ...form, ctEnabled: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.ctEnabled} onChange={(e) => setForm({ ...form, ctEnabled: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             CT Enabled
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.inheritanceEnabled} onChange={(e) => setForm({ ...form, inheritanceEnabled: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.inheritanceEnabled} onChange={(e) => setForm({ ...form, inheritanceEnabled: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Enable Inheritance
                         </label>
                     </div>
                     {form.ctEnabled && <FieldHint>{CT_ENABLED_HINT}</FieldHint>}
                     <InheritanceHint inheritsFromId={form.inheritsFromId} inheritanceEnabled={form.inheritanceEnabled} />
                     <div>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.allowWildcard} onChange={(e) => setForm({ ...form, allowWildcard: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.allowWildcard} onChange={(e) => setForm({ ...form, allowWildcard: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Allow wildcard SAN/CN entries
                         </label>
-                        <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">
+                        <p className="text-[11px] text-ink-muted mt-1 ml-6">
                             When disabled, any DNS SAN or CN containing <code className="font-mono">*</code> is rejected at issuance.
                             Structural rules still apply when enabled: at most one <code className="font-mono">*</code>, in the
                             leftmost label, and the name must have at least two labels.
@@ -288,7 +288,7 @@ const CertProfilesTab: React.FC = () => {
                             onChange={(next) => setForm({ ...form, allowedSignatureAlgorithms: next })} formatLabel={formatSignatureAlgorithmLabel} hint={CEILING_HINT} />
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || inheritancePairInconsistent(form.inheritsFromId, form.inheritanceEnabled)}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                     <SubmitBlockedHint reasons={[
@@ -321,7 +321,7 @@ const CertProfilesTab: React.FC = () => {
                 title="Delete Certificate Profile"
                 message={confirmDelete ? `Delete certificate profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}
@@ -476,14 +476,14 @@ const SigningProfilesTab: React.FC = () => {
             key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name,
             render: (p) => (
                 <span className="flex items-center gap-2 min-w-0">
-                    <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span>
+                    <span className="text-ink font-medium truncate">{p.name}</span>
                     {p.isDefault && <StatusBadge status="active" label="Default" />}
                 </span>
             ),
         },
-        { key: 'issuer', header: 'Issuer', defaultWidth: 180, exportValue: (p) => authorityName(p.issuerId) || '', render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{authorityName(p.issuerId) || '-'}</span> },
-        { key: 'algorithms', header: 'Algorithms', defaultWidth: 200, exportValue: (p) => parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted', render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted'}</span> },
-        { key: 'maxPath', header: 'Max Path', defaultWidth: 90, exportValue: (p) => (p.maxPathLength != null ? String(p.maxPathLength) : ''), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxPathLength != null ? p.maxPathLength : '-'}</span> },
+        { key: 'issuer', header: 'Issuer', defaultWidth: 180, exportValue: (p) => authorityName(p.issuerId) || '', render: (p) => <span className="text-xs text-ink-muted truncate">{authorityName(p.issuerId) || '-'}</span> },
+        { key: 'algorithms', header: 'Algorithms', defaultWidth: 200, exportValue: (p) => parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted', render: (p) => <span className="text-xs text-ink-muted truncate">{parseListField(p.allowedAlgorithms).join(', ') || 'unrestricted'}</span> },
+        { key: 'maxPath', header: 'Max Path', defaultWidth: 90, exportValue: (p) => (p.maxPathLength != null ? String(p.maxPathLength) : ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPathLength != null ? p.maxPathLength : '-'}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -496,26 +496,26 @@ const SigningProfilesTab: React.FC = () => {
             <DetailField label="Description" value={p.description} />
             <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
             <DetailField label="Issuer" value={authorityName(p.issuerId)} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
+            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><CeilingList items={p.allowedAlgorithms} noun="algorithm" /></div>
+            <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList noun="EKU" raw={parseListField(p.allowedEKUs ?? p.allowedEkus)} items={canonicalizeUsages(parseListField(p.allowedEKUs ?? p.allowedEkus), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label)} /></div>
             <DetailField label="Max Path Length" value={p.maxPathLength != null ? String(p.maxPathLength) : undefined} />
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page for all settings or to edit.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page for all settings or to edit.</p>
         </div>
     );
 
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Signing Profiles</h3>
+                <h3 className="text-sm font-semibold text-ink">Signing Profiles</h3>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New Signing Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New Signing Profile</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -571,10 +571,10 @@ const SigningProfilesTab: React.FC = () => {
                                             })}
                                             className={`px-2 py-1 text-xs rounded border transition-colors ${
                                                 selected
-                                                    ? 'bg-blue-600/30 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-600'
-                                                    : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'
+                                                    ? 'bg-accent-soft text-accent-ink border-accent/40'
+                                                    : 'bg-ground text-ink-muted border-line hover:border-ink-faint'
                                             }`}>
-                                            {eku.label} <span className="text-[10px] text-gray-600 ml-1">{eku.oid}</span>
+                                            {eku.label} <span className="text-[10px] text-ink-muted ml-1">{eku.oid}</span>
                                         </button>
                                     );
                                 })}
@@ -587,21 +587,21 @@ const SigningProfilesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Default Profile
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.inhibitAnyPolicy} onChange={(e) => setForm({ ...form, inhibitAnyPolicy: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.inhibitAnyPolicy} onChange={(e) => setForm({ ...form, inhibitAnyPolicy: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Inhibit Any Policy
                         </label>
                     </div>
                     <div>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.extendedKeyUsageCritical} onChange={(e) => setForm({ ...form, extendedKeyUsageCritical: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.extendedKeyUsageCritical} onChange={(e) => setForm({ ...form, extendedKeyUsageCritical: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Mark Extended Key Usage extension as critical
                         </label>
-                        <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 ml-6">
+                        <p className="text-[11px] text-ink-muted mt-1 ml-6">
                             RFC 5280 §4.2.1.12 recommends marking the EKU extension critical when the certificate's
                             purpose is restricted (e.g. a cert that must only be used for client auth).
                         </p>
@@ -613,12 +613,12 @@ const SigningProfilesTab: React.FC = () => {
                             onChange={(e) => { setForm({ ...form, policyQualifiersJson: e.target.value }); if (createPolicyQualifiersError) setCreatePolicyQualifiersError(null); }}
                             rows={8}
                             placeholder={'{\n  "2.23.140.1.2.1": {\n    "cpsUri": "https://example.com/cps",\n    "userNotice": "Subscriber agrees to the relying party agreement.",\n    "critical": false\n  }\n}'}
-                            className={`${inputClass} font-mono text-xs resize-y`}
+                            className={`${inputClass} data-mono resize-y`}
                         />
                         {createPolicyQualifiersError && (
-                            <p className="text-[11px] text-red-800 dark:text-red-400 mt-1">{createPolicyQualifiersError}</p>
+                            <p className="text-[11px] text-crit mt-1">{createPolicyQualifiersError}</p>
                         )}
-                        <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1">
+                        <p className="text-[11px] text-ink-muted mt-1">
                             Object mapping each policy OID listed above to its qualifiers. Each entry may include
                             <code className="font-mono"> cpsUri</code>, <code className="font-mono">userNotice</code>, and
                             <code className="font-mono"> critical</code>. Missing OIDs default to no qualifiers, non-critical.
@@ -631,12 +631,12 @@ const SigningProfilesTab: React.FC = () => {
                     </div>
                     <div>
                         <label className={labelClass}>Allowed Cert Profiles</label>
-                        <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-                            {certProfiles.length === 0 && <span className="text-xs text-gray-600">No cert profiles available</span>}
+                        <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+                            {certProfiles.length === 0 && <span className="text-xs text-ink-muted">No cert profiles available</span>}
                             {certProfiles.map((cp) => {
                                 const cpId = cp.id || cp.certProfileId;
                                 return (
-                                    <label key={cpId} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:bg-gray-800 px-1 rounded">
+                                    <label key={cpId} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover bg-raised px-1 rounded">
                                         <input
                                             type="checkbox"
                                             checked={form.allowedCertProfileIds.includes(cpId)}
@@ -646,7 +646,7 @@ const SigningProfilesTab: React.FC = () => {
                                                     : form.allowedCertProfileIds.filter((id) => id !== cpId);
                                                 setForm({ ...form, allowedCertProfileIds: updated });
                                             }}
-                                            className="accent-blue-500"
+                                            className="accent-accent"
                                         />
                                         <span>{cp.name}</span>
                                         {cp.isCaProfile && <StatusBadge status="active" label="CA" />}
@@ -656,7 +656,7 @@ const SigningProfilesTab: React.FC = () => {
                         </div>
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || !form.issuerId}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                     <SubmitBlockedHint reasons={[
@@ -688,7 +688,7 @@ const SigningProfilesTab: React.FC = () => {
                 title="Delete Signing Profile"
                 message={confirmDelete ? `Delete signing profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}
@@ -781,7 +781,7 @@ const SshSigningProfilesTab: React.FC = () => {
     const caKeyName = (id: string) => caKeys.find(k => k.id === id)?.name || id;
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
         {
             key: 'allows', header: 'Allows', defaultWidth: 130, truncate: false,
             exportValue: (p) => [p.allowUserCerts ? 'User' : null, p.allowHostCerts ? 'Host' : null].filter(Boolean).join(', '),
@@ -789,12 +789,12 @@ const SshSigningProfilesTab: React.FC = () => {
                 <span className="flex gap-1">
                     {p.allowUserCerts && <StatusBadge status="active" label="User" />}
                     {p.allowHostCerts && <StatusBadge status="pending" label="Host" />}
-                    {!p.allowUserCerts && !p.allowHostCerts && <span className="text-xs text-gray-500">-</span>}
+                    {!p.allowUserCerts && !p.allowHostCerts && <span className="text-xs text-ink-muted">-</span>}
                 </span>
             ),
         },
-        { key: 'caKey', header: 'CA Key', defaultWidth: 170, exportValue: (p) => caKeyName(p.sshCaKeyId), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{caKeyName(p.sshCaKeyId)}</span> },
-        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxValidityHours}h</span> },
+        { key: 'caKey', header: 'CA Key', defaultWidth: 170, exportValue: (p) => caKeyName(p.sshCaKeyId), render: (p) => <span className="text-xs text-ink-muted truncate">{caKeyName(p.sshCaKeyId)}</span> },
+        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -810,24 +810,24 @@ const SshSigningProfilesTab: React.FC = () => {
             <DetailField label="Allow User Certs" value={p.allowUserCerts ? 'Yes' : 'No'} />
             <DetailField label="Allow Host Certs" value={p.allowHostCerts ? 'Yes' : 'No'} />
             <DetailField label="Force Command" value={p.forceCommand || 'None'} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Default Extensions</span><BadgeList items={p.defaultExtensions} /></div>
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to view all settings or edit.</p>
+            <div className="py-1"><span className="text-xs text-ink-muted">Default Extensions</span><BadgeList items={p.defaultExtensions} /></div>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view all settings or edit.</p>
         </div>
     );
 
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">SSH Signing Profiles</h3>
+                <h3 className="text-sm font-semibold text-ink">SSH Signing Profiles</h3>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New SSH Signing Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New SSH Signing Profile</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -860,12 +860,12 @@ const SshSigningProfilesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.allowUserCerts} onChange={(e) => setForm({ ...form, allowUserCerts: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.allowUserCerts} onChange={(e) => setForm({ ...form, allowUserCerts: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Allow User Certs
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.allowHostCerts} onChange={(e) => setForm({ ...form, allowHostCerts: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.allowHostCerts} onChange={(e) => setForm({ ...form, allowHostCerts: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Allow Host Certs
                         </label>
                     </div>
@@ -876,7 +876,7 @@ const SshSigningProfilesTab: React.FC = () => {
                             hint="Applied only when a request names no extensions of its own; a request that lists any extension replaces this set entirely. These are defaults, not a ceiling: the SSH cert profile's Allowed Extensions decide what a request may ask for." />
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || !form.sshCaKeyId}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                 </div>
@@ -904,7 +904,7 @@ const SshSigningProfilesTab: React.FC = () => {
                 title="Delete SSH Signing Profile"
                 message={confirmDelete ? `Delete SSH signing profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}
@@ -992,9 +992,9 @@ const SshCertProfilesTab: React.FC = () => {
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span> },
-        { key: 'maxPrincipals', header: 'Max Principals', defaultWidth: 130, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxPrincipals}</span> },
-        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxValidityHours}h</span> },
+        { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
+        { key: 'maxPrincipals', header: 'Max Principals', defaultWidth: 130, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
+        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -1007,25 +1007,25 @@ const SshCertProfilesTab: React.FC = () => {
             <DetailField label="Description" value={p.description} />
             <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
             <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
-            <div className="py-1"><span className="text-xs text-gray-600 dark:text-gray-400">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
-            <p className="text-[11px] text-gray-500 pt-3">Open the full page to view principal patterns or edit.</p>
+            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
+            <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view principal patterns or edit.</p>
         </div>
     );
 
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">SSH Cert Profiles</h3>
+                <h3 className="text-sm font-semibold text-ink">SSH Cert Profiles</h3>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New SSH Cert Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New SSH Cert Profile</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -1066,7 +1066,7 @@ const SshCertProfilesTab: React.FC = () => {
                                 && `Required but not allowed: ${sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).join(', ')}.`} />
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name || sshRequiredNotAllowed(form.requiredExtensions, form.allowedExtensions).length > 0}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                     <SubmitBlockedHint reasons={[
@@ -1098,7 +1098,7 @@ const SshCertProfilesTab: React.FC = () => {
                 title="Delete SSH Cert Profile"
                 message={confirmDelete ? `Delete SSH cert profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}
@@ -1201,10 +1201,10 @@ const SshRequestProfilesTab: React.FC = () => {
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-gray-900 dark:text-white font-medium truncate">{p.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
         { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <StatusBadge status={p.requireApproval ? 'pending' : 'enabled'} label={p.requireApproval ? 'Required' : 'Auto'} /> },
-        { key: 'caScope', header: 'CA Scope', defaultWidth: 170, exportValue: (p) => (p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'), render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'}</span> },
-        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-gray-600 dark:text-gray-400">{p.maxValidityHours}h</span> },
+        { key: 'caScope', header: 'CA Scope', defaultWidth: 170, exportValue: (p) => (p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'), render: (p) => <span className="text-xs text-ink-muted truncate">{p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'}</span> },
+        { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -1225,7 +1225,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
                 <DetailField label="Allowed Signing Profiles" value={sps.length ? sps.join(', ') : 'Any'} />
                 <DetailField label="Allowed Cert Profiles" value={cps.length ? cps.join(', ') : 'Any'} />
-                <p className="text-[11px] text-gray-500 pt-3">Open the full page to edit.</p>
+                <p className="text-[11px] text-ink-muted pt-3">Open the full page to edit.</p>
             </div>
         );
     };
@@ -1233,16 +1233,16 @@ const SshRequestProfilesTab: React.FC = () => {
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">SSH Request Profiles</h3>
+                <h3 className="text-sm font-semibold text-ink">SSH Request Profiles</h3>
                 <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
+                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                     {showCreate ? 'Cancel' : 'Create Profile'}
                 </button>
             </div>
 
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-3">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New SSH Request Profile</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-ink">New SSH Request Profile</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -1270,17 +1270,17 @@ const SshRequestProfilesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" checked={form.requireApproval} onChange={(e) => setForm({ ...form, requireApproval: e.target.checked })} className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                        <label className="flex items-center gap-2 text-xs text-ink">
+                            <input type="checkbox" checked={form.requireApproval} onChange={(e) => setForm({ ...form, requireApproval: e.target.checked })} className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Require Approval
                         </label>
                     </div>
                     <div>
                         <label className={labelClass}>Allowed SSH Signing Profiles</label>
-                        <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-                            {signingProfiles.length === 0 && <span className="text-xs text-gray-600">No signing profiles available</span>}
+                        <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+                            {signingProfiles.length === 0 && <span className="text-xs text-ink-muted">No signing profiles available</span>}
                             {signingProfiles.map(sp => (
-                                <label key={sp.id} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:bg-gray-800 px-1 rounded">
+                                <label key={sp.id} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover bg-raised px-1 rounded">
                                     <input type="checkbox"
                                         checked={form.allowedSshSigningProfileIds.includes(sp.id)}
                                         onChange={(e) => setForm({
@@ -1289,7 +1289,7 @@ const SshRequestProfilesTab: React.FC = () => {
                                                 ? [...form.allowedSshSigningProfileIds, sp.id]
                                                 : form.allowedSshSigningProfileIds.filter(id => id !== sp.id)
                                         })}
-                                        className="accent-blue-500" />
+                                        className="accent-accent" />
                                     <span>{sp.name}</span>
                                 </label>
                             ))}
@@ -1297,10 +1297,10 @@ const SshRequestProfilesTab: React.FC = () => {
                     </div>
                     <div>
                         <label className={labelClass}>Allowed SSH Cert Profiles</label>
-                        <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-                            {certProfiles.length === 0 && <span className="text-xs text-gray-600">No cert profiles available</span>}
+                        <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+                            {certProfiles.length === 0 && <span className="text-xs text-ink-muted">No cert profiles available</span>}
                             {certProfiles.map(cp => (
-                                <label key={cp.id} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:bg-gray-800 px-1 rounded">
+                                <label key={cp.id} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover bg-raised px-1 rounded">
                                     <input type="checkbox"
                                         checked={form.allowedSshCertProfileIds.includes(cp.id)}
                                         onChange={(e) => setForm({
@@ -1309,14 +1309,14 @@ const SshRequestProfilesTab: React.FC = () => {
                                                 ? [...form.allowedSshCertProfileIds, cp.id]
                                                 : form.allowedSshCertProfileIds.filter(id => id !== cp.id)
                                         })}
-                                        className="accent-blue-500" />
+                                        className="accent-accent" />
                                     <span>{cp.name}</span>
                                 </label>
                             ))}
                         </div>
                     </div>
                     <button onClick={handleCreate} disabled={creating || !form.name}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create'}
                     </button>
                 </div>
@@ -1344,7 +1344,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 title="Delete SSH Request Profile"
                 message={confirmDelete ? `Delete SSH request profile "${confirmDelete.name}"? This cannot be undone.` : ''}
                 confirmLabel="Delete"
-                confirmClass="bg-red-600 hover:bg-red-700"
+                tone="crit"
                 loading={deleting}
                 onConfirm={performDelete}
                 onCancel={() => setConfirmDelete(null)}
@@ -1366,14 +1366,14 @@ const ProfileManagement: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Profile Management</h1>
+            <h1 className="text-xl font-semibold text-ink">Profile Management</h1>
 
-            <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700 overflow-x-auto">
+            <div className="flex gap-1 border-b border-line overflow-x-auto">
                 {TABS.map((tab) => (
                     <button key={tab} onClick={() => setActiveTab(tab)}
                         className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 whitespace-nowrap ${activeTab === tab
-                            ? 'text-blue-800 dark:text-blue-400 border-blue-400'
-                            : 'text-gray-600 dark:text-gray-400 border-transparent hover:text-gray-700 dark:text-gray-300'}`}>
+                            ? 'text-accent-ink border-accent'
+                            : 'text-ink-muted border-transparent hover:text-ink'}`}>
                         {tab}
                     </button>
                 ))}

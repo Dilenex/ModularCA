@@ -31,10 +31,17 @@ export interface ToastProps {
 }
 
 const typeStyles: Record<ToastType, string> = {
-    success: 'bg-green-50 dark:bg-green-900 border-green-500 text-green-800 dark:text-green-300',
-    error: 'bg-red-50 dark:bg-red-900 border-red-500 text-red-800 dark:text-red-300',
-    warning: 'bg-amber-50 dark:bg-amber-900 border-amber-500 text-amber-800 dark:text-amber-300',
-    info: 'bg-blue-50 dark:bg-blue-900 border-blue-500 text-blue-800 dark:text-blue-300',
+    success: 'border-l-ok',
+    error: 'border-l-crit',
+    warning: 'border-l-warn',
+    info: 'border-l-info',
+};
+
+const typeInk: Record<ToastType, string> = {
+    success: 'text-ok',
+    error: 'text-crit',
+    warning: 'text-warn',
+    info: 'text-info',
 };
 
 const typeIcons: Record<ToastType, string> = {
@@ -84,7 +91,7 @@ const CopyableToken: React.FC<{ label: string; value: string }> = ({ label, valu
                 type="button"
                 onClick={handleCopy}
                 aria-label={`Copy ${label} ${value}`}
-                className="px-1.5 py-0.5 rounded bg-black/5 dark:bg-black/20 hover:bg-black/10 dark:hover:bg-black/40 dark:hover:text-white transition-colors"
+                className="px-1.5 py-0.5 rounded border border-line bg-sunken text-ink hover:bg-hover transition-colors"
             >
                 {copied ? 'Copied' : 'Copy'}
             </button>
@@ -141,9 +148,9 @@ export const Toast: React.FC<ToastProps> = ({ id, type, message, duration = 0, o
             // or menu the operator is actually in, and stealing it here would close two things at
             // once.
             onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onDismiss(id); } }}
-            className={`flex items-start gap-3 px-4 py-3 rounded-lg border-l-4 shadow-lg animate-slide-in motion-reduce:animate-none ${typeStyles[type]}`}
+            className={`flex items-start gap-3 px-4 py-3 rounded-md border border-line border-l-4 bg-raised text-ink shadow-lg animate-slide-in motion-reduce:animate-none ${typeStyles[type]}`}
         >
-            <span className="text-lg font-bold flex-shrink-0" aria-hidden="true">{typeIcons[type]}</span>
+            <span className={`text-base font-semibold leading-5 flex-shrink-0 ${typeInk[type]}`} aria-hidden="true">{typeIcons[type]}</span>
             {/* The body scrolls rather than the column growing: a policy refusal can carry a dozen
                 violations, and a toast taller than the viewport has no dismiss button on screen. */}
             <div className="flex-1 min-w-0 space-y-1 max-h-[60vh] overflow-y-auto">
@@ -165,7 +172,7 @@ export const Toast: React.FC<ToastProps> = ({ id, type, message, duration = 0, o
             <button
                 onClick={() => onDismiss(id)}
                 aria-label="Dismiss notification"
-                className="text-current opacity-50 hover:opacity-100 flex-shrink-0"
+                className="text-ink-muted hover:text-ink flex-shrink-0"
             >
                 &times;
             </button>

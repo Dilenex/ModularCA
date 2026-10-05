@@ -122,22 +122,22 @@ const SshRequestProfileDetail: React.FC = () => {
     const toggleId = (key: 'allowedSshSigningProfileIds' | 'allowedSshCertProfileIds', val: string) =>
         setEditForm({ ...editForm, [key]: editForm[key].includes(val) ? editForm[key].filter((x) => x !== val) : [...editForm[key], val] });
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!profile) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">SSH request profile not found.</p>
-            <button onClick={() => navigate(SSH_REQUEST_TAB)} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Request Profiles</button>
+            <p className="text-sm text-ink-muted">SSH request profile not found.</p>
+            <button onClick={() => navigate(SSH_REQUEST_TAB)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Request Profiles</button>
         </div>
     );
 
     const p = profile;
     const checkboxList = (items: any[], emptyText: string, key: 'allowedSshSigningProfileIds' | 'allowedSshCertProfileIds') => (
-        <div className="max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 space-y-1">
-            {items.length === 0 && <span className="text-xs text-gray-600">{emptyText}</span>}
+        <div className="max-h-40 overflow-y-auto bg-ground border border-line rounded p-2 space-y-1">
+            {items.length === 0 && <span className="text-xs text-ink-muted">{emptyText}</span>}
             {items.map((it) => (
-                <label key={it.id} className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 px-1 rounded">
-                    <input type="checkbox" checked={editForm[key].includes(it.id)} onChange={() => toggleId(key, it.id)} className="accent-blue-500" />
+                <label key={it.id} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover px-1 rounded">
+                    <input type="checkbox" checked={editForm[key].includes(it.id)} onChange={() => toggleId(key, it.id)} className="accent-accent" />
                     <span>{it.name}</span>
                 </label>
             ))}
@@ -155,7 +155,7 @@ const SshRequestProfileDetail: React.FC = () => {
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !editForm.name}
-            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={<button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
         >
             {(mode) => mode === 'edit' ? (
                 <DetailSection title="Edit SSH Request Profile">
@@ -173,7 +173,7 @@ const SshRequestProfileDetail: React.FC = () => {
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-4">
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
+                            <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={editForm.requireApproval} onChange={(e) => setEditForm({ ...editForm, requireApproval: e.target.checked })} className="w-4 h-4 rounded" />Require Approval</label>
                         </div>
                         <div><label className={labelClass}>Allowed SSH Signing Profiles</label>{checkboxList(signingProfiles, 'No signing profiles available', 'allowedSshSigningProfileIds')}</div>
                         <div><label className={labelClass}>Allowed SSH Cert Profiles</label>{checkboxList(certProfiles, 'No cert profiles available', 'allowedSshCertProfileIds')}</div>
@@ -188,17 +188,17 @@ const SshRequestProfileDetail: React.FC = () => {
                     <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
                     <div className="py-1">
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Signing Profiles</span>
+                        <span className="text-xs text-ink-muted">Allowed Signing Profiles</span>
                         <div className="flex flex-wrap gap-1 mt-1">
-                            {resolveNames(p.allowedSshSigningProfileIds, signingProfiles).map((name, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{name}</span>)}
-                            {resolveNames(p.allowedSshSigningProfileIds, signingProfiles).length === 0 && <span className="text-gray-600 text-xs">Any</span>}
+                            {resolveNames(p.allowedSshSigningProfileIds, signingProfiles).map((name, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{name}</span>)}
+                            {resolveNames(p.allowedSshSigningProfileIds, signingProfiles).length === 0 && <span className="text-ink-muted text-xs">Any</span>}
                         </div>
                     </div>
                     <div className="py-1">
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Cert Profiles</span>
+                        <span className="text-xs text-ink-muted">Allowed Cert Profiles</span>
                         <div className="flex flex-wrap gap-1 mt-1">
-                            {resolveNames(p.allowedSshCertProfileIds, certProfiles).map((name, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800">{name}</span>)}
-                            {resolveNames(p.allowedSshCertProfileIds, certProfiles).length === 0 && <span className="text-gray-600 text-xs">Any</span>}
+                            {resolveNames(p.allowedSshCertProfileIds, certProfiles).map((name, i) => <span key={i} className="px-2 py-0.5 text-xs rounded bg-accent-soft text-accent-ink border border-accent/40">{name}</span>)}
+                            {resolveNames(p.allowedSshCertProfileIds, certProfiles).length === 0 && <span className="text-ink-muted text-xs">Any</span>}
                         </div>
                     </div>
                     {p.createdAt && <DetailField label="Created" value={new Date(p.createdAt).toLocaleString()} />}
@@ -209,7 +209,7 @@ const SshRequestProfileDetail: React.FC = () => {
                     title="Delete SSH Request Profile"
                     message={`Delete SSH request profile "${p.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}
