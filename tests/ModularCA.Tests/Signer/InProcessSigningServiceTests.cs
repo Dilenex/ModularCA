@@ -133,6 +133,8 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
             gen.SetNotBefore(DateTime.UtcNow.AddMinutes(-1));
             gen.SetNotAfter(DateTime.UtcNow.AddDays(1));
             gen.SetPublicKey(publicKey);
+            // A new CA's key self-signs its CA certificate and nothing else of its own.
+            gen.AddExtension(Org.BouncyCastle.Asn1.X509.X509Extensions.BasicConstraints, true, new Org.BouncyCastle.Asn1.X509.BasicConstraints(true));
             var cert = gen.Generate(new SigningServiceSignatureFactory(signer, generated.Key, SignatureAlgorithm.ForPublicKey(publicKey), ceremony));
             db.Certificates.Add(new ModularCA.Shared.Entities.CertificateEntity
             {

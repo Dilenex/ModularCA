@@ -16,6 +16,12 @@ public sealed record KeyRef(Guid CertificateId, string Keystore = KeyRef.Default
     /// <summary>The keystore the trusted CA certificates are written to, beside <see cref="DefaultKeystore"/>.</summary>
     public const string TrustKeystore = "ca-trust.keystore";
 
+    /// <summary>
+    /// The keystore SSH CA keys will live in (<c>ssh-keystore.md</c>, stage 2). A raw signature
+    /// with a key in it is refused for every purpose.
+    /// </summary>
+    public const string SshKeystore = "ssh-ca.keystore";
+
     /// <summary>The keystore files a backup carries, in the order a backup writes them.</summary>
     public static readonly IReadOnlyList<string> BackupKeystores = new[] { DefaultKeystore, TrustKeystore };
 

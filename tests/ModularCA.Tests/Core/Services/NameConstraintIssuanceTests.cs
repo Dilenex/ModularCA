@@ -136,12 +136,19 @@ public sealed class NameConstraintIssuanceTests
         public Guid LeafProfileId { get; }
         public Guid SpaceId => _world.SpaceA;
 
+        /// <summary>The signer world underneath: its keystore, its spaces and its audit.</summary>
+        public SignerTestWorld World => _world;
+
+        /// <summary>The in-process signer that creation and issuance sign through.</summary>
+        public ModularCA.Shared.Signing.ISigningService Signer { get; }
+
         /// <summary>The certificate policy issuance evaluates; a test adds violations to refuse.</summary>
         public ConfigurablePolicy Policy { get; } = new();
 
         public IssuanceWorld()
         {
             var signer = TestSigner.Over(_world.Keystore, _world.DatabaseName, _world.Persistence);
+            Signer = signer;
             Db = _world.OpenDb();
             BootstrapProfileSeeder.SeedBuiltInRoles(Db);
             CertProfileEntity Profile(string name, bool isCa = false) => new()

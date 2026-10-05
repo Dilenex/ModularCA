@@ -1,6 +1,7 @@
 # Signer hardening
 
-Status: draft, for owner review (2026-10-05). Nothing here is built.
+Status: draft, for owner review (2026-10-05). Item 1 Stage A (typed signing) is built, with the
+differences recorded under "Typed signing: as built" below. Nothing else here is built.
 
 ## Why
 
@@ -94,7 +95,9 @@ read the instance's secrets from a disk or an archive.
 - **The doc claims more than the code does.** `signer-separation.md:170-172` says the signer
   verifies approvals "against signed audit rows, not against mutable state". There are no signed
   audit rows. The audit chain (`AuditHashChainService`) is an unkeyed SHA-256 chain in a database
-  the node also writes. This design replaces that sentence.
+  the node also writes. This design replaces that sentence. (Corrected in
+  `signer-separation.md` on 2026-10-05: it now says what is verified today and what stages B
+  and C add.)
 
 ### The larger hole: the signer does not look at what it signs
 
@@ -138,6 +141,47 @@ future one, such as CA certificate renewal, needs a ceremony naming that key as 
 This also settles `Infrastructure` without a ceremony. A delegated certificate is safe to issue
 when its key never leaves the signer, and typed signing makes that the rule. Reissuing a responder
 stays an operator's action.
+
+### Typed signing: as built (2026-10-05)
+
+Built as Stage A; `signer-separation.md`, "Typed signing as built", is the full record. Where
+it differs from the table above:
+
+- **Every purpose is typed positively.** `Scep` signs CMS signed attributes carrying a SCEP
+  `messageType`, `Cmp` signs a CMP `ProtectedPart`, `Tsa` signs CMS signed attributes with
+  content type `id-ct-TSTInfo`. "Anything that is not a TBS" would have let a CA key sign an OCSP
+  `ResponseData` or a keystore-file signature payload under the `Cmp` label.
+- **The evidence for `cA=TRUE` is the key, not a ceremony row.** A CA certificate is signed only
+  for a key the signer generated under a ceremony context for a new CA, still holds uncommitted,
+  and has not yet certified as a CA. `CaCreationService` did not have to pass the ceremony to
+  the parent's signing context: the ceremony (or the waiver) was checked when the key was
+  generated, and the signer recognises the key. This is stronger than checking the row again at
+  signing time, because a forged row yields a CA whose key the signer holds, never one whose
+  key the node holds.
+- **Pending keys are typed too.** A generated key signs a certification request for itself; a
+  key generated for a new CA self-signs its CA certificate once; once certified it signs the
+  non-CA certificates of the delegated keys generated under the same ceremony, naming its
+  certified subject as issuer.
+- **keyCertSign and cRLSign without `cA=TRUE` are refused outright**, as are a path length or
+  name constraints without it, rather than asking for evidence.
+- **A CA's path length is enforced** on the CA certificates it signs.
+- **External responders and cross-certification are refused** until Stage B. The owner's
+  decision allows an external responder with verified evidence; a ceremony row is not that, and
+  a row-based door for an outside key would have reopened what the key rule closes.
+- **`ResponseData` is held to its responder id**, the signing key's own certificate. Its
+  contents are not judged.
+- **Refusal reasons**: `UntypedData`, `AlgorithmMismatch`, `IssuerMismatch`, `EvidenceRequired`
+  and the existing `PurposeNotPermitted`.
+
+Not built from Stage A: the upgrade check that lists CA certificates issued outside a ceremony
+in the last year. Two things an operator may meet after the upgrade, which that check would
+not have listed either:
+
+- issuing an OCSP-signing certificate to an outside CSR through ordinary issuance (the
+  "OCSP Responder Certificate Profile" is linked to every CA's signing profile) is refused at
+  the signer;
+- creating an intermediate beneath an intermediate is refused at the signer, where before it
+  produced a CA whose chain failed path validation.
 
 ### Evidence: a statement and the signatures over it
 

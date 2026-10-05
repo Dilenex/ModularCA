@@ -13,8 +13,14 @@ namespace ModularCA.Shared.Signing;
 /// <item>the TSA key signs timestamp tokens for its own CA only;</item>
 /// <item>a CMP protection key signs CMP responses for its own CA only;</item>
 /// <item>export is allowed only for end-entity keys and only to a caller holding the export right;</item>
-/// <item>generation, import, commit and retire are allowed only under a ceremony or bootstrap context;</item>
+/// <item>generation, commit and retire are allowed only under a ceremony or infrastructure context, import only under a ceremony;</item>
 /// <item>a generated key not yet committed signs only under the context that generated it;</item>
+/// <item>
+/// what is signed is typed: <see cref="SignAsync"/> parses the bytes as the one structure the
+/// key and purpose sign and refuses anything else (see <see cref="SignAsync"/>), so a purpose
+/// label constrains what a key signs, not only which key signs;
+/// </item>
+/// <item>an SSH CA key signs nothing through <see cref="SignAsync"/>, for any purpose;</item>
 /// <item>
 /// secrets are wrapped and unwrapped under the purposes listed for their
 /// <see cref="SecretKind"/>: <see cref="SigningPurpose.Cmp"/> both wraps and unwraps a CMP
@@ -32,7 +38,41 @@ public interface ISigningService
     /// <paramref name="algorithm"/>, and returns the raw signature bytes as the algorithm
     /// defines them (PKCS#1 v1.5 for RSA, DER-encoded r/s for ECDSA).
     /// </summary>
-    /// <exception cref="SigningRefusedException">The key is unknown, or policy refuses the purpose or CA.</exception>
+    /// <remarks>
+    /// <para>
+    /// The signer parses <paramref name="data"/> before it signs. It must be exactly one DER
+    /// object of the structure the key and purpose sign, and that structure must name
+    /// <paramref name="algorithm"/> where it names one:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><see cref="SigningPurpose.Certificate"/>, CA key: a v3 TBSCertificate whose issuer is the CA's subject;</item>
+    /// <item><see cref="SigningPurpose.Crl"/>, CA key: a TBSCertList whose issuer is the CA's subject;</item>
+    /// <item><see cref="SigningPurpose.Ocsp"/>, CA or responder key: a ResponseData whose responder id is the signing key's certificate;</item>
+    /// <item><see cref="SigningPurpose.Scep"/>, CA key: CMS signed attributes with content type id-data and a SCEP messageType;</item>
+    /// <item><see cref="SigningPurpose.Cmp"/>, CA or CMP signer key: a CMP ProtectedPart;</item>
+    /// <item><see cref="SigningPurpose.Tsa"/>, TSA key: CMS signed attributes with content type id-ct-TSTInfo;</item>
+    /// <item>
+    /// a generated key not yet committed, under its ceremony or infrastructure context: a
+    /// PKCS#10 CertificationRequestInfo for its own key; a key generated for a new CA also its
+    /// own self-signed CA certificate, and once certified as a CA the non-CA certificates of the
+    /// delegated keys generated under the same ceremony.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// A certificate asserts keyCertSign, cRLSign, a path length or name constraints only with
+    /// <c>cA=TRUE</c>. A <c>cA=TRUE</c> certificate is signed only for a key the signer itself
+    /// generated under a ceremony context for a new CA, still holds uncommitted and has not yet
+    /// certified as a CA, and within the signing CA's path length. An OCSP-signing certificate
+    /// is signed only for a delegated key the signer generated for the signing CA and still
+    /// holds uncommitted. Neither is signed for a key from outside the signer, whatever ceremony
+    /// the context names: cross-certification and external responders wait for approvals the
+    /// signer can verify. Refusals carry <see cref="SigningRefusalReason.UntypedData"/>,
+    /// <see cref="SigningRefusalReason.AlgorithmMismatch"/>, <see cref="SigningRefusalReason.IssuerMismatch"/>,
+    /// <see cref="SigningRefusalReason.EvidenceRequired"/> or
+    /// <see cref="SigningRefusalReason.PurposeNotPermitted"/>, and are audited like any other.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="SigningRefusedException">The key is unknown, policy refuses the purpose or CA, or the data is not what the purpose signs.</exception>
     Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>

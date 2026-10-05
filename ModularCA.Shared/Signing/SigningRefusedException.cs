@@ -77,6 +77,35 @@ public enum SigningRefusalReason
     /// for such a space happen only under an approved ceremony the signer can verify.
     /// </summary>
     CeremonyRequired,
+
+    /// <summary>
+    /// The bytes offered for signature are not the structure the purpose signs: a certificate
+    /// purpose signs a DER v3 TBSCertificate, a CRL purpose a TBSCertList, an OCSP purpose a
+    /// ResponseData, and so on. Bytes that do not parse, parse as something else, are not DER,
+    /// or carry trailing data are refused before any key is used.
+    /// </summary>
+    UntypedData,
+
+    /// <summary>
+    /// The structure names a signature algorithm other than the one the request asks the key to
+    /// sign with, so the signature would not verify as the structure claims.
+    /// </summary>
+    AlgorithmMismatch,
+
+    /// <summary>
+    /// The structure names an issuer or responder other than the certificate of the key that
+    /// would sign it: a TBSCertificate or TBSCertList whose issuer is not the CA's subject, or an
+    /// OCSP ResponseData whose responder id is not the signing certificate's.
+    /// </summary>
+    IssuerMismatch,
+
+    /// <summary>
+    /// The structure grants authority the signer has no evidence for: a certificate asserting
+    /// <c>cA=TRUE</c> for a key the signer did not generate under a ceremony for a new CA (or
+    /// has already certified as one), or an OCSP-signing certificate for a key the signer did
+    /// not generate for the signing CA. A ceremony id on the context is not such evidence.
+    /// </summary>
+    EvidenceRequired,
 }
 
 /// <summary>

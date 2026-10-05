@@ -35,6 +35,15 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   `config/config.yaml` and `db.yaml` behind the caller's back. Existing split installs keep
   running on `config/` with a warning until moved (`--migrate-signer-dir`; README-DEPLOY.md,
   "Two units").
+- **The signer reads what it signs.** Each purpose accepts one structure only: a certificate,
+  a CRL, an OCSP response, a CMP or SCEP message, a timestamp, or a key's own request. Anything
+  else is refused and audited with the hash of the bytes offered. A CA certificate is signed
+  only for a key the signer itself generated for a new CA, and an OCSP-signing certificate only
+  for a responder key it generated for that CA, so a compromised node cannot have either issued
+  to a key it holds. Two things that worked before are now refused: an OCSP responder
+  certificate for an outside key (until approvals are verified by the signer), and an
+  intermediate beneath an intermediate, which never validated because every intermediate is
+  created with path length 0. Node and signer must be upgraded together.
 - **Licences fail closed** while the vendor key is a placeholder.
 - **Expired certificates say what to do.** The dashboard counted from one page of the list; it
   now uses a scoped lifecycle summary, separates expired certificates that were replaced (renewed

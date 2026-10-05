@@ -12,6 +12,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Pkcs;
@@ -45,6 +46,15 @@ namespace ModularCA.Keystore.Signing;
 /// key serves the policy for its kind. <see cref="RetireKeyAsync"/> discards a pending key. A
 /// failure anywhere between generation and commit therefore leaves nothing on disk and nothing
 /// that signs outside the ceremony that made it.
+/// </para>
+/// <para>
+/// A signature is typed. Once the key and context pass the policy, <see cref="JudgeData"/>
+/// parses the bytes as the one structure that key signs for that purpose
+/// (<see cref="SignedDataTypes"/>) and refuses anything else, so a purpose label constrains what
+/// is signed. A certificate asserting <c>cA=TRUE</c> is signed only for a pending key this
+/// signer generated under a ceremony context for a new CA, and one carrying the OCSP-signing
+/// EKU only for a pending delegated key it generated for the signing CA: a key from outside the
+/// signer becomes neither, whatever the context claims.
 /// </para>
 /// <para>
 /// The policy, keyed on kind and purpose, is in <see cref="JudgeSign"/>, <see cref="JudgeDecrypt"/>,
@@ -111,6 +121,12 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The key and the context are judged first (<see cref="JudgeSign"/>, <see cref="JudgePending"/>),
+    /// then the bytes: <see cref="JudgeData"/> parses them as the structure the purpose and
+    /// the key sign and refuses anything else, so the purpose label constrains what is signed.
+    /// A key in <see cref="KeyRef.SshKeystore"/> signs nothing here.
+    /// </remarks>
     public async Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -118,14 +134,20 @@ public sealed class InProcessSigningService : ISigningService
         ArgumentNullException.ThrowIfNull(context);
 
         var dataHash = SHA256.HashData(data);
-        var (handle, refusal) = await ResolveAsync(key, context, JudgeSign, JudgePending, cancellationToken);
+        Resolution resolved;
+        if (string.Equals(key.Keystore, KeyRef.SshKeystore, StringComparison.OrdinalIgnoreCase))
+            resolved = new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"The key {key} is an SSH CA key; SSH certificates are built and signed by the signer from their fields, never from bytes offered for a raw signature."));
+        else
+            resolved = await ResolveAsync(key, context, JudgeSign, JudgePending, cancellationToken);
+        var refusal = resolved.Refusal ?? JudgeData(resolved, key, algorithm, data, context);
         if (refusal != null)
         {
             await RecordAsync("Sign", context, key, algorithm, allowed: false, refusal.Message, dataHash, cancellationToken);
             throw refusal;
         }
 
-        var signature = handle!.Sign(data, algorithm.Name);
+        var signature = resolved.Handle!.Sign(data, algorithm.Name);
         await RecordAsync("Sign", context, key, algorithm, allowed: true, reason: null, dataHash, cancellationToken);
         return signature;
     }
@@ -146,7 +168,7 @@ public sealed class InProcessSigningService : ISigningService
         ArgumentNullException.ThrowIfNull(context);
 
         var dataHash = SHA256.HashData(enveloped);
-        var (handle, refusal) = await ResolveAsync(key, context, JudgeDecrypt, RefusePendingDecrypt, cancellationToken);
+        var (handle, _, _, refusal) = await ResolveAsync(key, context, JudgeDecrypt, RefusePendingDecrypt, cancellationToken);
         if (refusal == null && handle is not SoftwarePrivateKeyHandle)
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"The key {key} is held by a backend that cannot decrypt; SCEP needs a software CA key.");
@@ -575,43 +597,56 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>
+    /// A resolved key: the handle to use and what the key is, a committed key's classification
+    /// or a pending key, or the refusal to record and throw. A refusal carries no handle.
+    /// </summary>
+    private sealed record Resolution(IPrivateKeyHandle? Handle, CachedOwner? Owner, PendingKey? Pending, SigningRefusedException? Refusal);
+
+    /// <summary>
     /// Resolves the key and judges the context: a pending key with <paramref name="judgePending"/>,
     /// a key the keystore holds with <paramref name="judge"/> over its classification. Returns
-    /// the handle to use, or the refusal to record and throw; never both.
+    /// the handle to use with the key's classification or pending entry, or the refusal to
+    /// record and throw; never both.
     /// </summary>
-    private async Task<(IPrivateKeyHandle? Handle, SigningRefusedException? Refusal)> ResolveAsync(
+    private async Task<Resolution> ResolveAsync(
         KeyRef key, SigningContext context,
         Func<CachedOwner, SigningContext, KeyRef, SigningRefusedException?> judge,
         Func<PendingKey, SigningContext, KeyRef, SigningRefusedException?> judgePending,
         CancellationToken cancellationToken)
     {
         if (!_unlocked)
-            return (null, new SigningRefusedException(SigningRefusalReason.SignerLocked, "The signer has not unlocked its keystore."));
+            return new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.SignerLocked, "The signer has not unlocked its keystore."));
 
         if (_pending.TryGetValue(key.CertificateId, out var pending))
         {
             var pendingRefusal = judgePending(pending, context, key);
-            return pendingRefusal != null ? (null, pendingRefusal) : (pending.Handle, null);
+            return pendingRefusal != null ? new Resolution(null, null, null, pendingRefusal) : new Resolution(pending.Handle, null, pending, null);
         }
 
         var owner = await ClassifyAsync(key.CertificateId, cancellationToken);
         if (owner == null)
-            return (null, new SigningRefusedException(SigningRefusalReason.UnknownKey, $"No certificate {key} is known to the signer."));
+            return new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.UnknownKey, $"No certificate {key} is known to the signer."));
 
         var handle = _keystore.GetPrivateKeyFor(owner.Certificate);
         if (handle == null)
-            return (null, new SigningRefusedException(SigningRefusalReason.UnknownKey, $"The signer holds no private key for {key}."));
+            return new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.UnknownKey, $"The signer holds no private key for {key}."));
 
         var refusal = judge(owner, context, key);
-        return refusal != null ? (null, refusal) : (handle, null);
+        return refusal != null ? new Resolution(null, null, null, refusal) : new Resolution(handle, owner, null, null);
     }
 
     /// <summary>
     /// The signing policy table. A key of a given kind signs for the purposes listed for it, and
     /// only for the CA that owns it; a caller that names a space must name the owning CA's space.
+    /// An SSH CA key signs for no purpose. What the bytes may be is judged after this, by
+    /// <see cref="JudgeData"/>.
     /// </summary>
     private static SigningRefusedException? JudgeSign(CachedOwner owner, SigningContext context, KeyRef key)
     {
+        if (owner.Kind == KeyKind.SshCa)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"The SSH CA key {key} signs no raw bytes, for any purpose; SSH certificates are signed only from their fields.");
+
         var permitted = owner.Kind switch
         {
             KeyKind.Ca => context.Purpose is SigningPurpose.Certificate or SigningPurpose.Crl or SigningPurpose.Ocsp
@@ -662,6 +697,246 @@ public sealed class InProcessSigningService : ISigningService
     /// <summary>A pending key decrypts nothing: no client has its certificate to encrypt to.</summary>
     private static SigningRefusedException? RefusePendingDecrypt(PendingKey pending, SigningContext context, KeyRef key)
         => new(SigningRefusalReason.PurposeNotPermitted, $"The generated key {key} has no certificate yet and decrypts nothing.");
+
+    /// <summary>
+    /// Typed signing: the bytes must parse as the one structure this key signs for this purpose.
+    /// A CA key signs a v3 TBSCertificate under Certificate (<see cref="JudgeCertificate"/>),
+    /// a TBSCertList under Crl, an OCSP ResponseData under Ocsp, SCEP signed attributes under
+    /// Scep and a CMP ProtectedPart under Cmp; a responder key signs ResponseData, a TSA key
+    /// timestamp-token signed attributes, a CMP signer key a ProtectedPart. A pending key is
+    /// judged by <see cref="JudgePendingData"/>. Anything else is refused before the key is used.
+    /// </summary>
+    private SigningRefusedException? JudgeData(Resolution resolved, KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context)
+    {
+        if (resolved.Pending is PendingKey pending)
+            return JudgePendingData(pending, key, algorithm, data);
+
+        var owner = resolved.Owner!;
+        return (owner.Kind, context.Purpose) switch
+        {
+            (KeyKind.Ca, SigningPurpose.Certificate) => JudgeCertificate(owner, algorithm, data),
+            (KeyKind.Ca, SigningPurpose.Crl) => JudgeCrl(owner, algorithm, data),
+            (KeyKind.Ca or KeyKind.OcspResponder, SigningPurpose.Ocsp) => JudgeOcspResponse(owner, data),
+            (KeyKind.Ca, SigningPurpose.Scep) => SignedDataTypes.SignedAttributes(data, SignedDataTypes.IdData, SignedDataTypes.ScepMessageType) != null
+                ? null
+                : Untyped(context.Purpose, "the signed attributes of a SCEP pkiMessage: a DER SET carrying content type id-data, a message digest and a SCEP messageType"),
+            (KeyKind.Ca or KeyKind.CmpSigner, SigningPurpose.Cmp) => JudgeCmp(algorithm, data),
+            (KeyKind.Tsa, SigningPurpose.Tsa) => SignedDataTypes.SignedAttributes(data, SignedDataTypes.IdCtTstInfo, null) != null
+                ? null
+                : Untyped(context.Purpose, "the signed attributes of a timestamp token: a DER SET carrying content type id-ct-TSTInfo and a message digest"),
+            _ => new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted, $"A {owner.Kind} key signs no {context.Purpose} structure."),
+        };
+    }
+
+    /// <summary>The refusal for bytes that are not the structure <paramref name="purpose"/> signs.</summary>
+    private static SigningRefusedException Untyped(SigningPurpose purpose, string expected)
+        => new(SigningRefusalReason.UntypedData, $"Under {purpose} the signer signs {expected}; the bytes offered are not that.");
+
+    /// <summary>
+    /// What every certificate the signer signs must be, whoever signs it: v3, signed with the
+    /// algorithm the request names, and no CA-only extension unless it asserts <c>cA=TRUE</c>
+    /// (a path length, keyCertSign or cRLSign, name constraints). A CA certificate carries no
+    /// OCSP-signing EKU. Returns the shape for the issuer-specific rules.
+    /// </summary>
+    private static SigningRefusedException? JudgeCertificateShape(TbsCertificateStructure tbs, SignatureAlgorithm algorithm, out SignedDataTypes.CertificateShape? shape)
+    {
+        shape = null;
+        if (tbs.VersionNumber == null || !tbs.VersionNumber.HasValue(2))
+            return new SigningRefusedException(SigningRefusalReason.UntypedData,
+                "The signer signs v3 certificates only; some verifiers treat a v1 or v2 certificate as a CA.");
+        if (!SignedDataTypes.SameAlgorithm(tbs.Signature, algorithm))
+            return new SigningRefusedException(SigningRefusalReason.AlgorithmMismatch,
+                $"The certificate names signature algorithm {tbs.Signature?.Algorithm.Id}, not the {algorithm} the request signs with.");
+        try
+        {
+            shape = SignedDataTypes.Shape(tbs);
+        }
+        catch (Exception)
+        {
+            return Untyped(SigningPurpose.Certificate, "a TBSCertificate whose basic constraints, key usage and extended key usage parse");
+        }
+        if (!shape.IsCa && shape.PathLength != null)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                "The certificate carries a path length constraint without cA=TRUE.");
+        if (!shape.IsCa && shape.CaKeyUsages)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                "The certificate asserts keyCertSign or cRLSign without cA=TRUE; only a CA certificate signs certificates or CRLs.");
+        if (!shape.IsCa && shape.NameConstraints)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                "The certificate carries name constraints without cA=TRUE.");
+        if (shape.IsCa && shape.OcspSigning)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                "A CA certificate does not carry the OCSP-signing EKU.");
+        return null;
+    }
+
+    /// <summary>
+    /// A CA key's certificate. The issuer must be the CA's own subject. A <c>cA=TRUE</c>
+    /// certificate is held to the CA's path length, and is signed only for a key this signer
+    /// generated under a ceremony context for a new CA and holds pending, not yet certified as
+    /// a CA (which the signature then records). An OCSP-signing certificate is signed only for a
+    /// delegated key this signer generated for this CA and holds pending. Either for any other
+    /// key is <see cref="SigningRefusalReason.EvidenceRequired"/>: a ceremony row is not
+    /// evidence here, since the node writes it, and evidence the signer can verify for an
+    /// outside key (cross-certification, an external responder) arrives with verified
+    /// approvals. Every other certificate is a leaf and is signed as before.
+    /// </summary>
+    private SigningRefusedException? JudgeCertificate(CachedOwner owner, SignatureAlgorithm algorithm, byte[] data)
+    {
+        var tbs = SignedDataTypes.TbsCertificate(data);
+        if (tbs == null)
+            return Untyped(SigningPurpose.Certificate, "a DER TBSCertificate");
+        var refusal = JudgeCertificateShape(tbs, algorithm, out var shape);
+        if (refusal != null)
+            return refusal;
+        if (!tbs.Issuer.Equivalent(owner.Certificate.SubjectDN, true))
+            return new SigningRefusedException(SigningRefusalReason.IssuerMismatch,
+                $"The certificate names issuer '{tbs.Issuer}', not '{owner.Certificate.SubjectDN}', the CA whose key would sign it.");
+
+        if (shape!.IsCa)
+        {
+            var issuerPathLength = owner.Certificate.GetBasicConstraints();
+            if (issuerPathLength >= 0 && issuerPathLength != int.MaxValue
+                && (issuerPathLength == 0 || shape.PathLength == null || shape.PathLength.IntValue >= issuerPathLength))
+                return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                    $"CA {owner.CaId} has a path length of {issuerPathLength}; a CA certificate it signs must carry a path length below it.");
+
+            var subject = FindPending(shape.SubjectPublicKeyInfo);
+            if (subject is not { MayBecomeCa: true })
+                return new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                    "A cA=TRUE certificate is signed only for a key this signer generated under a ceremony for a new CA and still holds uncommitted; the subject key of this certificate is not one.");
+            return subject.TryCertify(tbs.Subject)
+                ? null
+                : new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                    $"The generated key {subject.Ref} is already certified as a CA; a key is certified as a CA once.");
+        }
+
+        if (shape.OcspSigning)
+        {
+            var subject = FindPending(shape.SubjectPublicKeyInfo);
+            if (subject is not { MayBecomeCa: false } || subject.CaId != owner.CaId)
+                return new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                    $"An OCSP-signing certificate is signed only for a delegated key this signer generated for CA {owner.CaId} and still holds uncommitted; the subject key of this certificate is not one.");
+        }
+        return null;
+    }
+
+    /// <summary>A CA key's CRL: a TBSCertList, signed with the algorithm requested, naming the CA as its issuer.</summary>
+    private static SigningRefusedException? JudgeCrl(CachedOwner owner, SignatureAlgorithm algorithm, byte[] data)
+    {
+        var tbs = SignedDataTypes.TbsCertList(data);
+        if (tbs == null)
+            return Untyped(SigningPurpose.Crl, "a DER TBSCertList");
+        if (!SignedDataTypes.SameAlgorithm(tbs.Signature, algorithm))
+            return new SigningRefusedException(SigningRefusalReason.AlgorithmMismatch,
+                $"The CRL names signature algorithm {tbs.Signature?.Algorithm.Id}, not the {algorithm} the request signs with.");
+        if (!tbs.Issuer.Equivalent(owner.Certificate.SubjectDN, true))
+            return new SigningRefusedException(SigningRefusalReason.IssuerMismatch,
+                $"The CRL names issuer '{tbs.Issuer}', not '{owner.Certificate.SubjectDN}', the CA whose key would sign it.");
+        return null;
+    }
+
+    /// <summary>
+    /// An OCSP response from a CA key or its delegated responder: a ResponseData whose responder
+    /// id is the signing key's own certificate, by name or by key hash.
+    /// </summary>
+    private static SigningRefusedException? JudgeOcspResponse(CachedOwner owner, byte[] data)
+    {
+        var response = SignedDataTypes.OcspResponseData(data);
+        if (response == null)
+            return Untyped(SigningPurpose.Ocsp, "a DER OCSP ResponseData");
+        var responder = response.ResponderID;
+        bool matches;
+        if (responder.Name is X509Name name)
+            matches = name.Equivalent(owner.Certificate.SubjectDN, true);
+        else
+            matches = responder.GetKeyHash() is byte[] hash
+                && hash.AsSpan().SequenceEqual(SignedDataTypes.ResponderKeyHash(SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(owner.Certificate.GetPublicKey())));
+        return matches
+            ? null
+            : new SigningRefusedException(SigningRefusalReason.IssuerMismatch,
+                $"The OCSP response names a responder other than '{owner.Certificate.SubjectDN}', whose key would sign it.");
+    }
+
+    /// <summary>A CMP protection signature: a ProtectedPart whose header names the algorithm requested.</summary>
+    private static SigningRefusedException? JudgeCmp(SignatureAlgorithm algorithm, byte[] data)
+    {
+        var part = SignedDataTypes.CmpProtectedPart(data);
+        if (part == null)
+            return Untyped(SigningPurpose.Cmp, "a DER CMP ProtectedPart (PKIHeader and PKIBody)");
+        if (!SignedDataTypes.SameAlgorithm(part.Header.ProtectionAlg, algorithm))
+            return new SigningRefusedException(SigningRefusalReason.AlgorithmMismatch,
+                $"The CMP header names protection algorithm {part.Header.ProtectionAlg?.Algorithm.Id}, not the {algorithm} the request signs with.");
+        return null;
+    }
+
+    /// <summary>
+    /// What a pending key signs, under the context that generated it. Any pending key signs a
+    /// certification request for its own public key. A key that may become a CA also signs its
+    /// own self-signed <c>cA=TRUE</c> certificate, once, which records it as certified; once
+    /// certified, by itself or a parent, it signs the non-CA certificates of the keys the signer
+    /// generated under the same ceremony and scope, with its certified subject as the issuer.
+    /// Nothing else.
+    /// </summary>
+    private SigningRefusedException? JudgePendingData(PendingKey pending, KeyRef key, SignatureAlgorithm algorithm, byte[] data)
+    {
+        if (SignedDataTypes.CertificationRequestInfo(data) is { } request)
+        {
+            return SignedDataTypes.Spki(request.SubjectPublicKeyInfo).AsSpan().SequenceEqual(pending.PublicKeyDer)
+                ? null
+                : new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                    $"The generated key {key} signs a certification request for its own public key only.");
+        }
+
+        var tbs = SignedDataTypes.TbsCertificate(data);
+        if (tbs == null)
+            return Untyped(pending.Purpose, "a certification request for the generated key, or a certificate of the CA it is being created for");
+        var refusal = JudgeCertificateShape(tbs, algorithm, out var shape);
+        if (refusal != null)
+            return refusal;
+
+        if (shape!.SubjectPublicKeyInfo.AsSpan().SequenceEqual(pending.PublicKeyDer))
+        {
+            if (!pending.MayBecomeCa)
+                return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                    $"The generated key {key} is a delegated key; it does not certify itself.");
+            if (!shape.IsCa)
+                return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                    $"The generated key {key} self-signs only its own CA certificate.");
+            if (!tbs.Issuer.Equivalent(tbs.Subject, true))
+                return new SigningRefusedException(SigningRefusalReason.IssuerMismatch,
+                    "A self-signed certificate names its subject as its issuer.");
+            return pending.TryCertify(tbs.Subject)
+                ? null
+                : new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                    $"The generated key {key} is already certified as a CA; a key is certified as a CA once.");
+        }
+
+        if (!pending.MayBecomeCa || pending.CertifiedSubject is not X509Name certified)
+            return new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"The generated key {key} signs another key's certificate only once it is itself certified as a CA.");
+        if (!tbs.Issuer.Equivalent(certified, true))
+            return new SigningRefusedException(SigningRefusalReason.IssuerMismatch,
+                $"The certificate names issuer '{tbs.Issuer}', not '{certified}', the CA the generated key {key} was certified as.");
+        if (shape.IsCa)
+            return new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                "A CA that is not yet committed certifies no other CA.");
+        var subject = FindPending(shape.SubjectPublicKeyInfo);
+        if (subject == null || subject.Purpose != SigningPurpose.Ceremony || subject.MayBecomeCa
+            || subject.SpaceId != pending.SpaceId || subject.InstanceScope != pending.InstanceScope || subject.CeremonyId != pending.CeremonyId)
+            return new SigningRefusedException(SigningRefusalReason.EvidenceRequired,
+                $"A CA being created certifies only the delegated keys the signer generated under the same ceremony and scope; the subject key of this certificate is not one.");
+        return null;
+    }
+
+    /// <summary>The pending key with this DER SubjectPublicKeyInfo, or null.</summary>
+    private PendingKey? FindPending(byte[] spki)
+    {
+        foreach (var pending in _pending.Values)
+            if (pending.PublicKeyDer.AsSpan().SequenceEqual(spki))
+                return pending;
+        return null;
+    }
 
     /// <summary>
     /// The rule every key-management operation shares: generation, import, commit and retire
@@ -1445,13 +1720,41 @@ public sealed class InProcessSigningService : ISigningService
     /// it signs with, its public half, and the context that generated it, which is the only
     /// context it signs under.
     /// </summary>
-    private sealed record PendingKey(KeyRef Ref, SoftwarePrivateKeyHandle Handle, byte[] PublicKeyDer, SigningPurpose Purpose, Guid? SpaceId, Guid? CaId, bool InstanceScope)
+    private sealed record PendingKey(KeyRef Ref, SoftwarePrivateKeyHandle Handle, byte[] PublicKeyDer, SigningPurpose Purpose, Guid? SpaceId, Guid? CaId, bool InstanceScope, Guid? CeremonyId)
     {
+        private readonly object _gate = new();
+
+        /// <summary>
+        /// Whether this key may be certified as a CA: it was generated under a ceremony context
+        /// naming no existing CA, which is how CA creation generates a CA's key, and which the
+        /// ceremony check held to the scope's ceremony or waiver. Delegated keys, generated under
+        /// an infrastructure context or a ceremony context naming their CA, never may.
+        /// </summary>
+        public bool MayBecomeCa => Purpose == SigningPurpose.Ceremony && CaId == null;
+
+        /// <summary>The subject this key was certified under as a CA, by its own self-signature or a parent's; null until then.</summary>
+        public X509Name? CertifiedSubject { get; private set; }
+
+        /// <summary>
+        /// Records that this key is certified as a CA under <paramref name="subject"/>. A key is
+        /// certified as a CA once: false when it already was.
+        /// </summary>
+        public bool TryCertify(X509Name subject)
+        {
+            lock (_gate)
+            {
+                if (CertifiedSubject != null)
+                    return false;
+                CertifiedSubject = subject;
+                return true;
+            }
+        }
+
         /// <summary>Holds a fresh key pair pending under a new reference.</summary>
         public static PendingKey From(AsymmetricCipherKeyPair keyPair, SigningContext context) => new(
             new KeyRef(Guid.NewGuid()),
             new SoftwarePrivateKeyHandle(keyPair.Private),
             SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(keyPair.Public).GetDerEncoded(),
-            context.Purpose, context.SpaceId, context.CaId, context.InstanceScope);
+            context.Purpose, context.SpaceId, context.CaId, context.InstanceScope, context.CeremonyId);
     }
 }

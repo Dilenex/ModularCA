@@ -64,6 +64,9 @@ internal static class TestSigner
                 NotBefore = ca.Certificate.NotBefore,
                 NotAfter = ca.Certificate.NotAfter,
             });
+            // The space waives key ceremonies, as one that creates its CAs directly does, so a test
+            // can have the signer generate a key for a new CA under it.
+            db.Spaces.Add(new SpaceEntity { Id = spaceId, Name = $"test-space-{spaceId:N}", Slug = $"test-space-{spaceId:N}", RequireKeyCeremony = false });
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
                 Id = caId,

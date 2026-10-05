@@ -20,7 +20,9 @@ namespace ModularCA.Shared.Signing;
 /// <see cref="SigningRefusalReason.CeremonyNotApproved"/>. Null for a key operation the
 /// scope's policy allows without a ceremony; the signer reads that policy from the scope the
 /// context names (or the scope of the CA it names) and refuses
-/// <see cref="SigningRefusalReason.CeremonyRequired"/> where the scope requires one.
+/// <see cref="SigningRefusalReason.CeremonyRequired"/> where the scope requires one. It licenses
+/// key generation, commit and import only: a signature is never licensed by it, and a
+/// <c>cA=TRUE</c> certificate is signed for the key the ceremony generated, not for the id.
 /// </param>
 public sealed record SigningContext(string Caller, SigningPurpose Purpose, Guid? SpaceId, Guid? CaId, Guid? CeremonyId = null)
 {

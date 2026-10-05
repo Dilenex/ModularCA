@@ -26,8 +26,12 @@ public sealed class RemoteSignerWireTests
     private static SigningContext CertificateContext(SignerTestWorld world)
         => new("wire-test", SigningPurpose.Certificate, world.SpaceA, world.CaRsaId);
 
+    /// <summary>A leaf TBSCertificate under the RSA CA, which its key signs under the certificate purpose.</summary>
+    private static byte[] LeafTbs(SignerTestWorld world)
+        => TypedSigningData.Certificate(world["ca-rsa"].Certificate.SubjectDN, world["leaf"].PublicKey, SignatureAlgorithm.FromName("SHA256withRSA"));
+
     private static Task<byte[]> SignCaRsaAsync(ISigningService signer, SignerTestWorld world)
-        => signer.SignAsync(world["ca-rsa"].Ref, SignatureAlgorithm.FromName("SHA256withRSA"), Tbs, CertificateContext(world));
+        => signer.SignAsync(world["ca-rsa"].Ref, SignatureAlgorithm.FromName("SHA256withRSA"), LeafTbs(world), CertificateContext(world));
 
     private static int AuditRows(SignerTestWorld world)
     {

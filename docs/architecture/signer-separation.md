@@ -91,6 +91,9 @@ key generation and import are allowed only under a ceremony or bootstrap context
 is audited at the signer with the context, so the signer's audit is the record of what was
 signed even if the node's audit is lost.
 
+Since 2026-10-05 the signer also parses what it signs: `SignAsync` takes bytes, but only bytes
+that are the one structure the key and purpose sign. See "Typed signing as built".
+
 End-entity keys generated for server-side key generation are not CA keys and do not need custody;
 they are handed to the customer. They are generated in the node, used once to build the PKCS#12,
 and never enter the keystore. This is a change from today, where they are stored; the export
@@ -167,9 +170,22 @@ twice.
   what it can ask for, rate limits bound how much, the signer's audit records all of it.
 - The signer's own memory holds keys when the backend is software. Extraction resistance is the
   HSM's job, and the signer is where PKCS#11 lives so that an HSM is a configuration change.
-- The database is shared. A node with database access can alter what the signer reads for
-  ceremony verification; the signer verifies approvals against signed audit rows, not against
-  mutable state, which is the reason the audit chain matters for this design.
+- The database is shared, and the signer's ceremony check reads rows the node writes. What the
+  signer verifies today is that the `KeyCeremonies` row a context names exists, is `Approved`,
+  is unexpired, is of an operation type that licenses the operation, and names the same scope
+  and CA; with no ceremony named, that the scope's policy row waives ceremonies. It does not
+  verify who approved: the approvals are JSON in that row, the policy is a row, and a node with
+  database access can write all of them. There are no signed audit rows; the audit chain is an
+  unkeyed hash chain in the same database. An earlier version of this section claimed otherwise.
+  So a ceremony today stops a node that is merely asked to skip one, and does not stop a
+  compromised node that forges one. Approvals the signer can verify (WebAuthn assertions over a
+  statement the signer mints, checked against a registry the signer holds), a journal on the
+  signer's own disk, and policy held by the signer are stages B and C of
+  `signer-hardening.md`.
+- Since typed signing (see "Typed signing as built"), what a compromised node cannot do even
+  with a forged row is obtain a CA certificate, or a delegated OCSP certificate, for a key
+  that is outside the signer. A forged row still gets it a CA key generated and held inside
+  the signer, and a CA certificate for that key.
 
 ## Order of work
 
@@ -343,6 +359,94 @@ not recorded) each caught.
   verify. `SignerAudit.PeerIdentity` is the SPKI pin of the client certificate on the
   connection, computed by the gRPC host from the certificate Kestrel admitted and stamped on
   the context as a server-set property that the wire has no field for; null in process.
+
+## Typed signing as built (2026-10-05)
+
+Stage A of Item 1 in `signer-hardening.md`. Before it, the signer checked the key's kind, the
+purpose label and the owning CA, and signed whatever bytes came with them: a CA key signed a
+`cA=TRUE` certificate for any key under `Certificate`, and a certificate's TBS under `Ocsp`. Now
+`SignAsync` parses the bytes (`SignedDataTypes`, `InProcessSigningService.JudgeData`) and refuses
+anything that is not the structure the key and purpose sign. No wire change: `SignRequest`
+already carries the key, the algorithm, the data and the context, which is all the signer needs.
+
+The bytes must be exactly one DER object with nothing after it (they are re-encoded and
+compared), so what the signer judges is what a verifier reads.
+
+| Key | Purpose | The data must be | And |
+|---|---|---|---|
+| CA | `Certificate` | a v3 `TBSCertificate` | issuer is the CA's subject; `signature` names the requested algorithm; the certificate rules below |
+| CA | `Crl` | a `TBSCertList`, full or delta | issuer is the CA's subject; `signature` names the requested algorithm |
+| CA, OCSP responder | `Ocsp` | an OCSP `ResponseData` | the responder id is the signing key's own certificate, by name or by key hash |
+| CA | `Scep` | CMS signed attributes (a DER `SET OF Attribute`) | content type `id-data`, a message digest, a SCEP `messageType` |
+| CA, CMP signer | `Cmp` | a CMP `ProtectedPart` (header and body) | the header's `protectionAlg` is the requested algorithm |
+| TSA | `Tsa` | CMS signed attributes | content type `id-ct-TSTInfo`, a message digest |
+| pending (generated, uncommitted) | `Ceremony`, `Infrastructure` | a PKCS#10 `CertificationRequestInfo` | for the key's own public key |
+| pending, generated for a new CA | `Ceremony` | its own self-signed `cA=TRUE` `TBSCertificate`, once | issuer equals subject; subject key is the key itself |
+| pending, certified as a CA | `Ceremony` | a non-CA `TBSCertificate` | issuer is the subject it was certified under; the subject key is a delegated key generated under the same ceremony and scope |
+| SSH CA (`ssh-ca.keystore`, `KeyKind.SshCa`) | any | nothing | a raw signature is always refused; stage 2 of `ssh-keystore.md` adds `SignSshCertificate` |
+
+Every purpose is typed positively. The design proposed typing `Scep` and `Cmp` negatively
+(anything that is not a TBS); that would have let a CA key sign an OCSP `ResponseData`, or the
+payload of a keystore-file signature (the system signing CA's key signs those, inside the
+keystore project, with the same ECDSA and EdDSA schemes), under the `Cmp` label.
+
+**The certificate rules**, for any `TBSCertificate`:
+
+- keyCertSign, cRLSign, a path length and name constraints are refused without `cA=TRUE`;
+- a `cA=TRUE` certificate carries no OCSP-signing EKU;
+- a CA signs a `cA=TRUE` certificate only within its own path length: a CA with a path length
+  must give the new CA a smaller one, and a CA whose path length is zero certifies no CA. CA
+  creation gives every intermediate a path length of zero, so an intermediate under an
+  intermediate, which never validated, is now refused when it is created.
+
+**Who may be a CA.** A `cA=TRUE` certificate is signed only for a key that this signer generated
+under a ceremony context for a new CA (`GenerateKey`, which is where the ceremony row or the
+scope's waiver is checked), still holds uncommitted, and has not yet certified as a CA. The
+signature marks the key certified, under that subject, and it is certified once. That covers
+root creation (the key self-signs) and intermediate creation with or without a ceremony (the
+parent signs, for a parent in the same space or another). It is deliberately not "the context
+names an approved ceremony": the node writes that row. There is no cross-certification flow
+today (trust anchors are imported, not signed), and none is possible under this rule.
+
+**Who may be a responder.** A certificate carrying `id-kp-OCSPSigning` is signed only for a
+delegated key this signer generated and still holds uncommitted: under the creating ceremony
+when the CA is new, or under the CA's infrastructure context on reissue, for that CA. An
+external delegated responder is allowed by the owner's decision of 2026-10-05 only with
+verified evidence, which arrives in stage B, so in this stage it is refused.
+
+**What it protects against, and what it does not.**
+
+- A compromised node cannot get a CA key to certify a key the node holds as a CA, with or
+  without a ceremony row, forged or real. It cannot get a delegated OCSP certificate for a key
+  it holds. It cannot use one purpose's label to sign another purpose's structure, and it
+  cannot have an X.509 key sign an SSH certificate, an `SSHSIG` blob or a keystore file.
+- A compromised node can still have the signer generate a CA key (by forging a ceremony row, or
+  with none where the scope waives ceremonies) and have an existing CA certify it. That CA
+  exists and chains, but its key never leaves the signer, every signature it makes is typed
+  and audited, and it stops with the signer. Stage B (verified approvals) closes the forged
+  row; stage C moves the waiver out of the database.
+- Leaf certificates are signed as before. A compromised node can issue any leaf: any name, any
+  EKU except OCSP-signing, any validity. `anyExtendedKeyUsage` is treated as a leaf EKU.
+- OCSP content is not judged: a node can have a responder sign "good" for a revoked serial of
+  its own CA. The journal's OCSP consistency check (Item 2, stage 3) is what answers that.
+- A single-process install gains the typing as a guard against bugs, not against a compromised
+  process, which holds the keys.
+
+**Refusals.** `UntypedData` (not the structure, not DER, trailing bytes, not v3),
+`AlgorithmMismatch`, `IssuerMismatch`, `EvidenceRequired` (a `cA=TRUE` or OCSP-signing
+certificate for a key the signer does not vouch for) and `PurposeNotPermitted` (a CA-only
+extension without `cA`, a path length exceeded, an SSH key). Each is audited like any other
+refusal, with the hash of the bytes offered. The reason crosses the wire by name, so a node
+older than the signer reports a reason it does not know as a transport failure; node and signer
+are upgraded together.
+
+**Tests.** The contract suite signs well-formed data for every row of the policy table and
+offers every structure under every other purpose, on both bindings. The end-to-end tests
+create a root and an intermediate with and without ceremonies through the real creation
+service, and have each CA issue its responder and TSA certificates, a leaf, CRLs, an OCSP
+response through the responder service and a CMP protection signature. The CRL service itself
+runs against the typed signer on PostgreSQL (`PostgresTypedCrlTests`), since its counter lock
+is raw SQL.
 
 ## Ingress as built (2026-09-17)
 

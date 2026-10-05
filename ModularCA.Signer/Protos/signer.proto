@@ -45,6 +45,12 @@ message SigningContext {
   bool instance_scope = 6;
 }
 
+// The signer parses data before it signs: it must be one DER object of the structure the key
+// and context.purpose sign (a TBSCertificate, a TBSCertList, an OCSP ResponseData, CMS signed
+// attributes, a CMP ProtectedPart, a CertificationRequestInfo), naming the algorithm given
+// where it names one. Nothing was added to the message for this; the refusal reasons
+// UntypedData, AlgorithmMismatch, IssuerMismatch and EvidenceRequired are new names in the
+// trailer, which a client older than the signer does not know.
 message SignRequest {
   KeyRef key = 1;
   string algorithm = 2;

@@ -24,6 +24,14 @@ public enum KeyKind
 
     /// <summary>The key of an end-entity certificate: held only so it can be exported to its holder.</summary>
     EndEntity,
+
+    /// <summary>
+    /// The key of an SSH certificate authority, held in <see cref="KeyRef.SshKeystore"/>. It signs
+    /// nothing through <see cref="ISigningService.SignAsync"/>, for any purpose: an SSH certificate
+    /// is built and signed by the signer from its fields (<c>SignSshCertificate</c>, stage 2 of
+    /// <c>ssh-keystore.md</c>), never from bytes the node supplies.
+    /// </summary>
+    SshCa,
 }
 
 /// <summary>
