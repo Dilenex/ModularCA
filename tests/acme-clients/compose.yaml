@@ -1,0 +1,145 @@
+# The ACME client matrix: one ModularCA, installed unattended, and one container per ACME client,
+# each asking it for a certificate over http-01. Driven by run.sh, which also checks every
+# certificate against the root. README.md says what is and is not covered.
+#
+# Every name ends in .acme.test and exists only on this project's network, as a network alias.
+# ModularCA resolves them through Docker's DNS and reaches the clients on private addresses,
+# which is why bootstrap.yaml sets Acme.AllowPrivateAddressValidation.
+name: acme-clients
+
+services:
+  db:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run.sh sets POSTGRES_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # Puts the two files an unattended install reads into the config volume. It mounts the volume
+  # first, so Docker fills it from the image, and the files the image ships there are kept.
+  seed:
+    image: ${MODULARCA_IMAGE:?set MODULARCA_IMAGE to the image under test}
+    user: "0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        cp /seed/bootstrap.yaml /seed/setup-database.yaml /opt/modularca/config/
+        && chown modularca:modularca /opt/modularca/config/bootstrap.yaml /opt/modularca/config/setup-database.yaml
+        && chmod 0600 /opt/modularca/config/setup-database.yaml
+    volumes:
+      - config:/opt/modularca/config
+      - ${SEED_DIR:?run.sh sets SEED_DIR}:/seed:ro
+
+  modularca:
+    image: ${MODULARCA_IMAGE:?set MODULARCA_IMAGE to the image under test}
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    networks:
+      default:
+        aliases: [ca.acme.test]
+    volumes:
+      - config:/opt/modularca/config
+      - keystores:/opt/modularca/keystores
+      - logs:/opt/modularca/logs
+      - backups:/opt/modularca/backups
+
+  # A shell on the network for run.sh: it waits for ModularCA, fetches the root, reads the
+  # certificates the file-based clients wrote, and makes the TLS requests to the proxies.
+  tools:
+    image: ${CURL_IMAGE:-docker.io/curlimages/curl:latest}
+    user: "0"
+    entrypoint: ["tail", "-f", "/dev/null"]
+    volumes:
+      - trust:/trust
+      - certbot:/certs/certbot:ro
+      - acmesh:/certs/acmesh:ro
+
+  certbot:
+    image: ${CERTBOT_IMAGE:-docker.io/certbot/certbot:latest}
+    profiles: [clients]
+    networks:
+      default:
+        aliases: [certbot.acme.test]
+    environment:
+      REQUESTS_CA_BUNDLE: /trust/root.pem
+    command:
+      - certonly
+      - --standalone
+      - --non-interactive
+      - --agree-tos
+      - --register-unsafely-without-email
+      - --server
+      - https://ca.acme.test:8443/acme/ci-root/directory
+      - -d
+      - certbot.acme.test
+    volumes:
+      - trust:/trust:ro
+      - certbot:/etc/letsencrypt
+
+  acmesh:
+    image: ${ACMESH_IMAGE:-docker.io/neilpang/acme.sh:latest}
+    profiles: [clients]
+    networks:
+      default:
+        aliases: [acmesh.acme.test]
+    command:
+      - --issue
+      - --standalone
+      - --server
+      - https://ca.acme.test:8443/acme/ci-root/directory
+      - --ca-bundle
+      - /trust/root.pem
+      - -d
+      - acmesh.acme.test
+    volumes:
+      - trust:/trust:ro
+      - acmesh:/acme.sh
+
+  caddy:
+    image: ${CADDY_IMAGE:-docker.io/library/caddy:2}
+    profiles: [clients]
+    networks:
+      default:
+        aliases: [caddy.acme.test]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - trust:/trust:ro
+
+  traefik:
+    image: ${TRAEFIK_IMAGE:-docker.io/library/traefik:v3}
+    profiles: [clients]
+    networks:
+      default:
+        aliases: [traefik.acme.test]
+    environment:
+      # Traefik's ACME library reads the roots it trusts for the ACME server from here.
+      LEGO_CA_CERTIFICATES: /trust/root.pem
+    tmpfs:
+      - /acme
+    volumes:
+      - ./traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - ./traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+      - trust:/trust:ro
+
+volumes:
+  config:
+  keystores:
+  logs:
+  backups:
+  trust:
+  certbot:
+  acmesh:

@@ -1,0 +1,56 @@
+name: ACME clients
+
+# Proves that real ACME clients can take a certificate from a fresh ModularCA: certbot, acme.sh,
+# Caddy and Traefik, each over http-01, against the container image built from this commit and
+# installed unattended. tests/acme-clients/README.md says what is covered and what is not.
+#
+# It also proves three things nothing else in CI does: that the Containerfile builds, that the
+# image bootstraps from bootstrap.yaml, and that the node then starts and issues.
+#
+# Slower than build.yml, because it publishes the whole distribution first, so it runs on pushes
+# to the release branches, on pull requests, and on demand rather than on every branch push.
+
+on:
+  push:
+    branches: ['main', '*-dev']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: certbot, acme.sh, Caddy, Traefik
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The dist build runs `dotnet publish`, whose BuildWebUIs target installs and builds the
+      # SPAs itself, so node has to be present but there is no separate npm ci step.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build linux-x64 distribution
+        run: bash scripts/build-linux-dist.sh
+
+      # The same build the release workflow pushes, so what is tested is what ships.
+      - name: Build container image
+        run: |
+          dist="$(ls dist/modularca-*-linux-x64.tar.gz)"
+          docker build -f deploy/container/Containerfile --build-arg "DIST=$dist" -t modularca:ci .
+
+      - name: Run the client matrix
+        env:
+          MODULARCA_IMAGE: modularca:ci
+        run: bash tests/acme-clients/run.sh

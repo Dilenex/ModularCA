@@ -1,0 +1,23 @@
+# Traefik's static configuration: a certificate resolver that points at ModularCA and answers
+# http-01 on the plain-HTTP entry point.
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yaml
+
+certificatesResolvers:
+  modularca:
+    acme:
+      caServer: https://ca.acme.test:8443/acme/ci-root/directory
+      email: ci@acme.test
+      storage: /acme/acme.json
+      httpChallenge:
+        entryPoint: web
+
+log:
+  level: INFO

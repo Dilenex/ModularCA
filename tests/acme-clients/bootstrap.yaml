@@ -1,0 +1,47 @@
+# The unattended install the ACME client matrix runs against. The root is named "CI Root", so
+# its label is ci-root and its ACME directory is /acme/ci-root/directory.
+
+CA:
+  Subject:
+    CN: "CI Root"
+    O: "ModularCA CI"
+    C: "US"
+  Algorithm: ECDSA
+  KeySize: 384
+  ValidityYears: 10
+
+SigningProfile:
+  Name: "default"
+  IsCa: true
+  KeyUsages:
+    - digitalSignature
+    - keyCertSign
+    - crlSign
+  ExtendedKeyUsages:
+    - 1.3.6.1.5.5.7.3.1
+
+Features:
+  CRL: true
+  OCSP: true
+  ACME: true
+  EST: false
+  SCEP: false
+  CMP: false
+  MSAE: false
+
+Administration:
+  MultipleAdministrators: false
+
+Acme:
+  # Every client here has a private address on the compose network.
+  AllowPrivateAddressValidation: true
+
+HttpsApi:
+  CN: "ca.acme.test"
+  PublicDomain: "ca.acme.test"
+  SANs:
+    - "DNS:ca.acme.test"
+    - "DNS:localhost"
+    - "IP:127.0.0.1"
+  Port: 8443
+  HttpPort: 8080

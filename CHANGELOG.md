@@ -18,6 +18,14 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   optional. Neither is read unless ACME is on.
 - **The Setup UI guide said ACME starts on.** It starts off.
 
+### ACME client matrix in CI
+
+- **A new workflow, "ACME clients", has certbot, acme.sh, Caddy and Traefik each take a
+  certificate over http-01** from the container image built from the commit, installed
+  unattended. It is also the first thing in CI to build the Containerfile and start the image.
+  `tests/acme-clients/README.md` lists what it does not cover: cert-manager, Proxmox VE, dns-01,
+  wildcards, external account binding, renewal and revocation.
+
 ### An unattended install starts
 
 - **`--bootstrap` wrote no public name, and the node then refused to start.** The headless path

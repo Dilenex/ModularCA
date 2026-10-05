@@ -1,0 +1,11 @@
+# What a Caddy user writes to take certificates from a private ACME CA: the directory, and the
+# root to trust when talking to it.
+{
+	acme_ca https://ca.acme.test:8443/acme/ci-root/directory
+	acme_ca_root /trust/root.pem
+	skip_install_trust
+}
+
+caddy.acme.test {
+	respond "certificate from ModularCA"
+}
