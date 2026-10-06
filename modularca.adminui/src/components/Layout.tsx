@@ -11,7 +11,7 @@ import LogPanel from './LogPanel';
 import TopBar from './TopBar';
 import { switchBadge } from './BadgeSwitcher';
 import { useStepUp } from './StepUpMfaContext';
-import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
+import { APP_VERSION, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
 import { navSections } from '../nav';
@@ -84,15 +84,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         <nav className="w-56 h-full bg-raised text-ink flex flex-col border-r border-line overflow-y-auto">
             <div className="p-4 border-b border-line flex-shrink-0 flex items-center justify-between">
                 <Link to="/dashboard">
-                    <h2 className="text-base font-semibold tracking-tight text-ink">
-                        ModularCA{' '}
-                        <span
-                            className="font-mono text-[10px] font-normal text-ink-faint align-top select-none"
-                            title={`commit ${APP_COMMIT}${APP_BUILD_TIME ? ` • built ${APP_BUILD_TIME}` : ''}`}
-                        >
-                            v{APP_VERSION}
-                        </span>
-                    </h2>
+                    <h2 className="text-base font-semibold tracking-tight text-ink">ModularCA</h2>
                     <p className="text-xs text-ink-muted">{PORTAL_LABEL}</p>
                 </Link>
                 <button
