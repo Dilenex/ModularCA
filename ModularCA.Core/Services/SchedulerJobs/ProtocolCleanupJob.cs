@@ -142,7 +142,7 @@ public class ProtocolCleanupJob : SingletonCronJob
         var result = new CleanupResult(orphans.Count, scepExpired.Count, cmpExpired.Count, heldKeysDiscarded);
         if (result.Total > 0)
         {
-            await _audit.LogAsync(AuditActionType.ProtocolCleanupCompleted, null, "Scheduler",
+            await _audit.LogAsync(AuditActionType.ProtocolCleanupCompleted, null, SchedulerService.AuditActor,
                 details: new { result.OrphanedRequests, result.ScepTransactions, result.CmpTransactions, result.HeldKeysDiscarded, GraceMinutes = graceMinutes });
         }
         return result;

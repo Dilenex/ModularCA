@@ -231,6 +231,7 @@ public class AuditService : IAuditService
             // Authentication
             AuditActionType.UserLogin or
             AuditActionType.UserLoginFailed or
+            AuditActionType.SessionRefreshNotice or
             AuditActionType.UserCertLogin or
             AuditActionType.UserLogout or
             // MFA

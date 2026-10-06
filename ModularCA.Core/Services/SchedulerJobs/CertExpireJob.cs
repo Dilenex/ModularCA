@@ -100,7 +100,7 @@ public class CertExpireJob : SingletonCronJob
 
         if (expiredCount > 0)
         {
-            await _audit.LogAsync(AuditActionType.ExpiredCertificatesRevoked, null, "scheduler",
+            await _audit.LogAsync(AuditActionType.ExpiredCertificatesRevoked, null, SchedulerService.AuditActor,
                 details: new { Count = expiredCount, Note = "Observed expired certificates (NotAfter < now). No revocation write — CRLs exclude expired entries per RFC 5280 §3.3." });
         }
     }

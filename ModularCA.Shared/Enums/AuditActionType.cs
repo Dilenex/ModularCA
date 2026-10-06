@@ -13,6 +13,8 @@ public static class AuditActionType
     // Authentication
     public const string UserLogin = "UserLogin";
     public const string UserLoginFailed = "UserLoginFailed";
+    /// <summary>A session was refreshed from a changed address or client, or without proof of its key, and was allowed.</summary>
+    public const string SessionRefreshNotice = "SessionRefreshNotice";
     public const string UserCertLogin = "UserCertLogin";
     public const string UserLogout = "UserLogout";
 

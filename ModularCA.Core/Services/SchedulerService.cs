@@ -38,6 +38,9 @@ namespace ModularCA.Core.Services
         /// <summary>The lease name every install has used; a process passes another when its job set is not the control plane's.</summary>
         public const string DefaultLeaseName = "scheduler";
 
+        /// <summary>The actor every scheduled job writes its audit records under.</summary>
+        public const string AuditActor = "scheduler";
+
         private readonly string _leaseName;
 
         private readonly IServiceProvider _serviceProvider;

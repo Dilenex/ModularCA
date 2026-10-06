@@ -268,7 +268,7 @@ public sealed class HeldKeyService : IHeldKeyService
                 continue;
             Discard(request);
             discarded++;
-            await _audit.LogAsync(AuditActionType.HeldKeyDiscarded, null, "Scheduler",
+            await _audit.LogAsync(AuditActionType.HeldKeyDiscarded, null, SchedulerService.AuditActor,
                 "CertificateRequest", request.Id.ToString(),
                 new { Reason = reason, CertificateSerial = request.IssuedCertificate?.SerialNumber, Algorithm = request.HeldPrivateKeyAlgorithm });
         }

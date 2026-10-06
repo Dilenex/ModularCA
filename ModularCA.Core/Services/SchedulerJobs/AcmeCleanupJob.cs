@@ -113,7 +113,7 @@ public class AcmeCleanupJob : SingletonCronJob
             _logger.LogDebug("Reconciled {Count} stuck ACME challenges.", reconciledChallenges);
         }
 
-        await _audit.LogAsync(AuditActionType.AcmeCleanupCompleted, null, "Scheduler",
+        await _audit.LogAsync(AuditActionType.AcmeCleanupCompleted, null, SchedulerService.AuditActor,
             details: new
             {
                 StaleOrders = hasStaleOrders,

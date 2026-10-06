@@ -199,7 +199,7 @@ namespace ModularCA.Core.Services.SchedulerJobs
                 }
             }
 
-            await _audit.LogAsync(AuditActionType.CrlExported, null, "Scheduler",
+            await _audit.LogAsync(AuditActionType.CrlExported, null, SchedulerService.AuditActor,
                 "CRL", task.CaCertificateId.ToString(),
                 new { CaCertificateId = task.CaCertificateId, IsDelta = crlJob?.IsDelta ?? false, HadNewEntries = hadNewEntries });
         }

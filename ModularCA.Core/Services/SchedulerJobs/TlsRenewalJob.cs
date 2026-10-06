@@ -372,7 +372,7 @@ public class TlsRenewalJob : SingletonCronJob
         _logger.LogInformation("Web TLS certificate renewed via standard pipeline. New SN={Serial}, Expires={NotAfter}",
             newSerial, tlsCert.NotAfter);
 
-        await _audit.LogAsync(AuditActionType.TlsCertificateRenewed, null, "Scheduler",
+        await _audit.LogAsync(AuditActionType.TlsCertificateRenewed, null, SchedulerService.AuditActor,
             "Certificate", newSerial,
             new { OldSerial = currentSerial, NewSerial = newSerial, tlsCert.NotAfter });
 

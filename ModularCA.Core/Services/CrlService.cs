@@ -289,7 +289,7 @@ public class CrlService : ICrlService
             await _audit.LogAsync(
                 AuditActionType.CrlGenerated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "CRL",
                 targetEntityId: caCertificateId.ToString(),
                 details: new
@@ -553,7 +553,7 @@ public class CrlService : ICrlService
             await _audit.LogAsync(
                 AuditActionType.CrlGenerated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "CRL",
                 targetEntityId: caCertificateId.ToString(),
                 details: new

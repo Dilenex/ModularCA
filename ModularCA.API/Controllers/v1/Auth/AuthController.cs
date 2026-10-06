@@ -626,7 +626,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 // IP is an audit signal only — refresh-token theft is defended by DPoP proof-of-
                 // possession (CnfJkt below) plus rotation/family-reuse detection, NOT by IP pinning,
                 // which breaks legitimate dual-stack (IPv4/IPv6) and roaming clients. Never revoke here.
-                await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
+                await _audit.LogAsync(AuditActionType.SessionRefreshNotice, stored.UserId, user.Username,
                     sourceIp: currentIpStr, success: true, errorMessage: $"Refresh token IP changed (allowed): expected {stored.CreatedByIp}, got {currentIpStr}");
             }
 
@@ -644,7 +644,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                         await _db.SaveChangesAsync();
                         return Unauthorized(new { error = "Session invalid: client fingerprint changed", code = "REFRESH_FINGERPRINT_MISMATCH" });
                     }
-                    await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
+                    await _audit.LogAsync(AuditActionType.SessionRefreshNotice, stored.UserId, user.Username,
                         sourceIp: currentIpStr, success: true, errorMessage: "Refresh token fingerprint mismatch (allowed)");
                 }
             }
@@ -670,7 +670,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                         return Unauthorized(new { error = "Proof of possession required for this session", code = "REFRESH_POP_INVALID" });
                     }
                     // Observe mode: log and allow; the binding follows the presented key below.
-                    await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
+                    await _audit.LogAsync(AuditActionType.SessionRefreshNotice, stored.UserId, user.Username,
                         sourceIp: currentIpStr, success: true,
                         errorMessage: $"Refresh PoP {kind} (observe — allowed): expected {exp}, got {got}");
                 }
