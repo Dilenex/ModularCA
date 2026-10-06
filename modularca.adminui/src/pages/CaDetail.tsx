@@ -10,6 +10,7 @@ import { StepUpOps } from '@shared/generated';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { ocspStatus } from './ocspReadiness';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -110,6 +111,7 @@ const CaDetail: React.FC = () => {
     );
 
     const typeBadge = caTypeBadge(ca);
+    const ocsp = ocspStatus(ca.ocspResponder);
     // Wire name is `isEnabled`; `ca.enabled` was always undefined, so a disabled CA
     // presented as enabled here and in CaManagement.
     const enabled = !!ca.isEnabled;
@@ -197,11 +199,23 @@ const CaDetail: React.FC = () => {
                     </DetailSection>
                 )}
 
-                {ca.ocspResponder && (
+                {ocsp && (
                     <DetailSection title="OCSP Responder">
-                        <DetailField label="URL" value={ca.ocspResponder.url} mono />
-                        <DetailField label="Status" value={ca.ocspResponder.enabled ? 'Enabled' : 'Disabled'} />
-                        <DetailField label="Signing Cert" value={ca.ocspResponder.signingCertSubject} />
+                        <DetailField label="Status" value={<StatusBadge status={ocsp.status} label={ocsp.label} />} />
+                        {ca.ocspResponder.problem && <DetailField label="Reason" value={ca.ocspResponder.problem} />}
+                        {ca.ocspResponder.mode === 'off' && (
+                            <DetailField label="Reason" value="OCSP is switched off for this CA or for the instance, or the CA certificate is revoked or expired." />
+                        )}
+                        {ca.ocspResponder.mode === 'direct' && (
+                            <DetailField label="Signed by" value="The CA's own key. No responder certificate is set, and the security policy allows it." />
+                        )}
+                        <DetailField label="Signed by" value={ca.ocspResponder.responderSubject} />
+                        {ca.ocspResponder.responderSerial && (
+                            <DetailField label="Responder serial" mono value={
+                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{ca.ocspResponder.responderSerial}</Link>
+                            } />
+                        )}
+                        {ca.ocspResponder.responderNotAfter && <DetailField label="Responder expires" value={formatDate(ca.ocspResponder.responderNotAfter)} />}
                     </DetailSection>
                 )}
 
@@ -215,6 +229,16 @@ const CaDetail: React.FC = () => {
                             signing certificate, repoints the CA at the new certificate, and registers it
                             with the running service. The new certificate is live immediately — no restart.
                         </p>
+
+                        {ca.ocspResponder?.problem && (
+                            <div className="rounded border border-crit/40 bg-crit-soft p-3 max-w-3xl">
+                                <p className="text-xs text-crit">
+                                    <strong>OCSP is refusing requests for this CA.</strong> {ca.ocspResponder.problem} Every
+                                    OCSP request for a certificate this CA issued is answered <code>unauthorized</code>.
+                                    Tick <em>OCSP responder</em> below and reissue.
+                                </p>
+                            </div>
+                        )}
 
                         {/* The CMP signer is the one of the three that is not issued at CA creation, so
                             its absence is a state the operator has to be told about here. */}

@@ -249,7 +249,7 @@ public sealed class InstanceCeremonyEndpointTests
     {
         var actor = Guid.NewGuid();
         var controller = New(Ns + "AdminCaController", actor,
-            null, new CurrentUserStub(actor), null, null, null, null, null, null, null, null);
+            null, new CurrentUserStub(actor), null, null, null, null, null, null, null, null, null);
         var requestType = ApiAssembly.TypeNamed(Ns + requestTypeName);
 
         foreach (var (spaceId, scope) in new (Guid?, string?)[] { (null, null), (Guid.Empty, null), (Guid.NewGuid(), "instance"), (null, "global") })

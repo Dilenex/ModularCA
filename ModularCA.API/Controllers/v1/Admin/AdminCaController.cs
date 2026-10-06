@@ -34,7 +34,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     [Route("api/v1/admin/authorities")]
     [Authorize]
     [NodeRole(ProcessRole.Control)]
-    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc, IFeatureFlagService featureFlags) : ControllerBase
+    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc, IFeatureFlagService featureFlags, ModularCA.Core.Services.Ocsp.IOcspResponderReadiness ocspReadiness) : ControllerBase
     {
         private readonly ICertificateStore _certService = certService;
         private readonly ICurrentUserService _currentUser = currentUser;
@@ -46,6 +46,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
         private readonly IKeyCeremonyService _ceremonySvc = ceremonySvc;
         private readonly IFeatureFlagService _featureFlags = featureFlags;
+        private readonly ModularCA.Core.Services.Ocsp.IOcspResponderReadiness _ocspReadiness = ocspReadiness;
 
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
@@ -204,6 +205,10 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Returns the CA hierarchy tree with each CA's space, full certificate details, protocol configs, and service URLs.
+        /// Each CA carries <c>ocspResponder</c>: how it answers OCSP (<c>mode</c>), when every request for it
+        /// is refused, why (<c>problem</c>), and the responder certificate it points at
+        /// (<c>responderSerial</c>, <c>responderSubject</c>, <c>responderNotAfter</c>); null for a CA that is
+        /// disabled or has no certificate.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
@@ -237,6 +242,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Where(su => caCertIds.Contains(su.CaCertificateId))
                 .AsNoTracking()
                 .ToListAsync();
+
+            var ocspStates = await _ocspReadiness.AssessAsync(caIds, HttpContext.RequestAborted);
 
             // Guard against a malformed parent chain (a ParentCaId cycle) causing unbounded
             // recursion → StackOverflowException → 500 that would blank the entire CA tree (and with
@@ -279,6 +286,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ca.IsEnabled,
                     ca.ParentCaId,
                     ca.OcspResponderCertificateId,
+                    OcspResponder = ocspStates.TryGetValue(ca.Id, out var ocsp)
+                        ? new { ocsp.Mode, ocsp.Problem, ocsp.ResponderSerial, ocsp.ResponderSubject, ocsp.ResponderNotAfter }
+                        : null,
                     ca.CmpSigningCertificateId,
                     ca.CertificateId,
                     Certificate = ca.Certificate != null ? new

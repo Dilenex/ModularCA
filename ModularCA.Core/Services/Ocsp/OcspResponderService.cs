@@ -25,14 +25,10 @@ namespace ModularCA.Core.Services.Ocsp;
 /// </summary>
 public class OcspResponderService : IOcspService
 {
-    // RFC 6960 §4.2.2.2.1 / RFC 2560: id-pkix-ocsp-nocheck
-    private static readonly DerObjectIdentifier IdPkixOcspNoCheck = new("1.3.6.1.5.5.7.48.1.5");
     // RFC 6960 §4.4.8: id-pkix-ocsp-extended-revoke
     private static readonly DerObjectIdentifier IdPkixOcspExtendedRevoke = new("1.3.6.1.5.5.7.48.1.9");
     // RFC 6960 §4.4.7: id-pkix-ocsp-nonce (in case constants library drifts)
     private static readonly DerObjectIdentifier IdPkixOcspNonce = OcspObjectIdentifiers.PkixOcspNonce;
-    // RFC 5280 §4.2.1.12: id-kp-OCSPSigning
-    private static readonly DerObjectIdentifier IdKpOcspSigning = new("1.3.6.1.5.5.7.3.9");
 
     // Hash-algorithm allowlist for CertID.hashAlgorithm.
     // SHA-1 is still RFC-sanctioned for OCSP per §4.3; block MD5 and
@@ -689,38 +685,21 @@ public class OcspResponderService : IOcspService
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
-        // Validate id-kp-OCSPSigning EKU (RFC 6960 §4.2.2.2)
-        var ekuExt = responderCert.GetExtendedKeyUsage();
-        if (ekuExt == null || !ekuExt.Contains(IdKpOcspSigning))
+        // id-kp-OCSPSigning (RFC 6960 §4.2.2.2), id-pkix-ocsp-nocheck when the policy requires it,
+        // and the validity window. OcspResponderReadiness reports the same findings to operators.
+        var now = DateTime.UtcNow;
+        var delegatedPolicy = await _securityPolicy.GetAsync();
+        var problem = OcspResponderRules.Problem(responderCert, delegatedPolicy.RequireNoCheckExtension, now);
+        if (problem != null)
         {
-            _logger.LogWarning("OCSP responder certificate {Subject} lacks id-kp-OCSPSigning EKU", responderCert.SubjectDN);
+            _logger.LogWarning("OCSP: delegated responder '{Subject}' refused. {Problem}", responderCert.SubjectDN, problem);
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
-
-        // Id-pkix-ocsp-nocheck enforcement.
-        var hasNoCheck = responderCert.GetCriticalExtensionOids()?.Contains(IdPkixOcspNoCheck.Id) == true
-                      || responderCert.GetNonCriticalExtensionOids()?.Contains(IdPkixOcspNoCheck.Id) == true;
-        if (!hasNoCheck)
+        if (!OcspResponderRules.HasNoCheck(responderCert))
         {
-            var delegatedPolicy = await _securityPolicy.GetAsync();
-            if (delegatedPolicy.RequireNoCheckExtension)
-            {
-                _logger.LogWarning(
-                    "OCSP: delegated responder '{Subject}' lacks id-pkix-ocsp-nocheck — refusing to use (SecurityPolicy.RequireNoCheckExtension=true)",
-                    responderCert.SubjectDN);
-                return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
-            }
             _logger.LogWarning(
                 "OCSP: delegated responder '{Subject}' lacks id-pkix-ocsp-nocheck — RFC 6960 §4.2.2.2.1 SHOULD. Continuing anyway; flip SecurityPolicy.RequireNoCheckExtension=true to refuse.",
                 responderCert.SubjectDN);
-        }
-
-        // Validate responder certificate is within its validity period
-        var now = DateTime.UtcNow;
-        if (now > responderCert.NotAfter.ToUniversalTime() || now < responderCert.NotBefore.ToUniversalTime())
-        {
-            _logger.LogWarning("OCSP responder certificate {Subject} is not within validity period", responderCert.SubjectDN);
-            return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
         // Also verify the issuer CA's own cert is within its

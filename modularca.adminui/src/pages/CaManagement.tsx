@@ -23,6 +23,7 @@ import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { NameConstraintsEditor, type NameConstraintsValue } from '@shared/components/NameConstraintsEditor';
 import { nameConstraintRowsInvalid, nameConstraintRowsToList } from '@shared/generalNames';
+import { ocspStatus } from './ocspReadiness';
 
 /** The CA list's space column was keyed 'tenant' before 0.4.0; a stored layout carries over. Remove in 0.5. */
 const RENAMED_CA_COLUMNS = { tenant: 'space' };
@@ -312,6 +313,14 @@ const CaManagement: React.FC = () => {
         // Wire name is `isEnabled` (AdminCaController projects ca.IsEnabled). Reading `ca.enabled`
         // meant `undefined !== false` — every CA, including disabled ones, rendered as Enabled.
         { key: 'status', header: 'Status', defaultWidth: 110, truncate: false, exportValue: (ca) => (ca.isEnabled ? 'Enabled' : 'Disabled'), render: (ca) => <StatusBadge status={ca.isEnabled ? 'enabled' : 'disabled'} label={ca.isEnabled ? 'Enabled' : 'Disabled'} /> },
+        { key: 'ocsp', header: 'OCSP', defaultWidth: 110, truncate: false,
+            exportValue: (ca) => ocspStatus(ca.ocspResponder)?.label ?? '',
+            render: (ca) => {
+                const s = ocspStatus(ca.ocspResponder);
+                return s
+                    ? <span title={ca.ocspResponder.problem || undefined}><StatusBadge status={s.status} label={s.label} /></span>
+                    : <span className="text-xs text-ink-muted">-</span>;
+            } },
         { key: 'children', header: 'Children', defaultWidth: 90, exportValue: (ca) => (ca.children?.length || 0), render: (ca) => <span className="text-xs text-ink-muted">{ca.children?.length || 0}</span> },
         { key: 'expires', header: 'Expires', defaultWidth: 160, exportValue: (ca) => formatDate(ca.certificate?.notAfter || ca.notAfter), render: (ca) => <span className="text-xs text-ink-muted">{formatDate(ca.certificate?.notAfter || ca.notAfter)}</span> },
     ];

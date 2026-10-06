@@ -1146,6 +1146,7 @@ builder.Services.AddHttpClient("CtLog");
 
 // OCSP Protocol Service
 builder.Services.AddScoped<IOcspService, OcspResponderService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Ocsp.IOcspResponderReadiness, ModularCA.Core.Services.Ocsp.OcspResponderReadiness>();
 
 // The shared middle every enrollment protocol runs between parsing and responding.
 builder.Services.AddScoped<ModularCA.Core.Services.Enrollment.IEnrollmentPipeline,

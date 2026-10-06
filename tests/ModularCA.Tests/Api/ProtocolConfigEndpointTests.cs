@@ -364,10 +364,12 @@ public sealed class ProtocolConfigEndpointTests
         using var db = InMemoryDbContextFactory.Create();
         var caId = SeedCa(db, RsaCaPem(), "SCEP", "EST");
         var type = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminCaController");
-        // Only the database, the flags and the HTTP context are reached by GetHierarchy; the rest
-        // of the controller's dependencies are not touched on this path.
+        // Only the database, the flags, the OCSP readiness report and the HTTP context are reached
+        // by GetHierarchy; the rest of the controller's dependencies are not touched on this path.
+        var flags = new FlagStub("EST.Enabled");
         var controller = Activator.CreateInstance(
-            type, null, null, db, null, null, null, null, null, null, new FlagStub("EST.Enabled"))!;
+            type, null, null, db, null, null, null, null, null, null, flags,
+            new ModularCA.Core.Services.Ocsp.OcspResponderReadiness(db, new StubSecurityPolicyService(), flags))!;
         GiveHttpContext(controller);
         // The hierarchy is fenced; the middleware would store an instance-wide fence for this caller.
         var http = ((ControllerBase)controller).HttpContext;
@@ -382,6 +384,7 @@ public sealed class ProtocolConfigEndpointTests
         Assert.Equal(
             new[] { "EST" },
             ca.GetProperty("protocolConfigs").EnumerateArray().Select(p => p.GetProperty("protocol").GetString()).ToArray());
+        Assert.True(ca.TryGetProperty("ocspResponder", out _));
     }
 
     // ---- stubs -----------------------------------------------------------------------------

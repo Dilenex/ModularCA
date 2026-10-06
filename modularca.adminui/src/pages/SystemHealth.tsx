@@ -10,6 +10,8 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { APP_VERSION } from '../version';
 import { StepUpOps } from '@shared/generated';
 import type { CertificateLifecycleSummaryModel } from '@shared/generated';
+import { Link } from 'react-router-dom';
+import { OCSP_REFUSED_CONSEQUENCE, ocspRows, ocspStatus, type CaOcspRow } from './ocspReadiness';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -340,6 +342,38 @@ const SchedulerStatusCard: React.FC = () => {
     );
 };
 
+/* ─── OCSP Responders Card ─── */
+const OcspRespondersCard: React.FC = () => {
+    const [rows, setRows] = useState<Fetched<CaOcspRow[]> | null>(null);
+
+    useEffect(() => {
+        fetched(apiGet<any[]>('/api/v1/admin/authorities/hierarchy').then((d) => ocspRows(Array.isArray(d) ? d : []))).then(setRows);
+    }, []);
+
+    const refusing = rows?.ok ? rows.value.filter((r) => r.problem) : [];
+
+    return (
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">OCSP Responders</h2>
+            {!rows && <div className="text-sm text-ink-muted">Loading...</div>}
+            {rows && !rows.ok && <Unavailable what="OCSP responder state" error={rows.error} />}
+            {rows?.ok && rows.value.length === 0 && <div className="text-sm text-ink-muted">No certificate authority serves OCSP.</div>}
+            {rows?.ok && rows.value.length > 0 && (
+                <div className="space-y-2">
+                    {refusing.length > 0 && <p className="text-xs text-crit max-w-3xl">{OCSP_REFUSED_CONSEQUENCE}</p>}
+                    {rows.value.map((r) => (
+                        <div key={r.id} className="flex items-baseline gap-2 text-xs flex-wrap">
+                            <StatusBadge {...ocspStatus(r)!} />
+                            <Link to={`/authorities/manage/${encodeURIComponent(r.id)}`} className="text-ink hover:underline">{r.name}</Link>
+                            {r.problem && <span className="text-ink-muted">{r.problem}</span>}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
 /* ─── Protocol Activity Card ─── */
 const ProtocolActivityCard: React.FC = () => {
     type Counts = { est: Fetched<number>; scep: Fetched<number>; cmp: Fetched<number>; acme: Fetched<number>; msae: Fetched<number> };
@@ -544,6 +578,7 @@ const SystemHealth: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">System Health</h1>
             <HealthCheckCard />
+            <OcspRespondersCard />
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <SystemStatusCard />

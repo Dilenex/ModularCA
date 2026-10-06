@@ -99,7 +99,7 @@ public sealed class SingleAdministratorCeremonyTests
     private static object CaController(SingleAdminWorld w, Guid actor)
         => New(w, Ns + "AdminCaController", actor,
             null, new CurrentUserStub(actor), w.Db, new RecordingAuditService(), CaCreation(w), NewCache(), new RecordingAlertService(),
-            GroupAuth(w), new KeyCeremonyService(w.Db, new RecordingAuditService()), null);
+            GroupAuth(w), new KeyCeremonyService(w.Db, new RecordingAuditService()), null, null);
 
     private static object SshController(SingleAdminWorld w, Guid actor, IDistributedCache cache)
         => New(w, Ns + "AdminSshController", actor,
