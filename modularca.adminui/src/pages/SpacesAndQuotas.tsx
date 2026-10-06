@@ -8,6 +8,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { SystemQuorumCard } from '../components/UserQuorumPanel';
 import KerberosRealmsPanel from '../components/KerberosRealmsPanel';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { labelClass as labelCls } from '@shared/components/forms';
 import type { ValidityCeilingBehavior } from '@shared/generated';
 import { SPACE_INTERSTITIAL, recommendationBeforeCreate, recommendationFromResponse } from './spaceCreation';
@@ -236,9 +237,6 @@ const SpacesAndQuotas: React.FC = () => {
                     <h1 className="text-xl font-semibold text-ink">Spaces &amp; Quotas</h1>
                     <p className="text-sm text-ink-muted mt-1">A space groups CAs for delegated administration and carries their ceilings. Open a space to edit its ceilings and set per-CA issuance quotas.</p>
                 </div>
-                <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Space'}
-                </button>
             </div>
 
             {createdRecommendation && (
@@ -298,6 +296,7 @@ const SpacesAndQuotas: React.FC = () => {
 
             <DataTable<Space>
                 tableId="spaces"
+                toolbarAction={<NewButton what="space" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 title="All Spaces"
                 rows={spaces}
                 rowKey={(t) => t.id}

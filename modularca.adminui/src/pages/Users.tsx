@@ -10,6 +10,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 const GROUPS_SHOWN = 3;
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { StepUpOps } from '@shared/generated';
 import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { userMatches } from './userFilters';
@@ -137,11 +138,6 @@ const Users: React.FC = () => {
                         ))}
                     </div>
                 </div>
-                {tab === 'people' && (
-                    <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                        {showCreate ? 'Cancel' : 'Create User'}
-                    </button>
-                )}
             </div>
 
             {tab === 'service' && <ServiceIdentitiesPanel />}
@@ -216,6 +212,7 @@ const Users: React.FC = () => {
 
             <DataTable<any>
                 tableId="users"
+                toolbarAction={<NewButton what="user" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 title="Users"
                 rows={filteredUsers}
                 rowKey={(u) => u.id || u.username}

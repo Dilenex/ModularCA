@@ -9,6 +9,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { StepUpOps } from '@shared/generated';
 import { inputClass, labelClass } from '@shared/components/forms';
 import { ChipListInput } from '@shared/components/ChipListInput';
@@ -296,13 +297,11 @@ const Whitelists: React.FC = () => {
                         seeded on first bootstrap and can be edited but not deleted. Select rows to edit, enable/disable, or delete.
                     </p>
                 </div>
-                <button onClick={openCreate} className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    New Whitelist
-                </button>
             </div>
 
             <DataTable<Whitelist>
                 tableId="whitelists"
+                toolbarAction={<NewButton what="whitelist rule" onClick={openCreate} />}
                 title="Rules"
                 rows={sorted}
                 loading={loading}

@@ -15,6 +15,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { LdapPublisherManager } from './LdapPublishers';
 import { StepUpOps } from '@shared/generated';
 import { type CrlScheduleRow, crlAvailability } from './crlAvailability';
@@ -178,14 +179,6 @@ const CrlSchedulesSection: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-ink">CRL Schedules</h2>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Schedule'}
-                </button>
-            </div>
-
             {showCreate && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <h4 className="text-sm font-semibold text-ink">New CRL Schedule</h4>
@@ -237,6 +230,7 @@ const CrlSchedulesSection: React.FC = () => {
 
             <DataTable<any>
                 tableId="distribution-crl-schedules"
+                toolbarAction={<NewButton what="CRL schedule" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 title="CRL Schedules"
                 rows={visibleSchedules}
                 rowKey={crlId}

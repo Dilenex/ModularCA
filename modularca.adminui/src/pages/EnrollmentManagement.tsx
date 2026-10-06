@@ -12,6 +12,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { generateQrSvg } from '@shared-auth/utils/qrcode';
 import {
     buildOpensslCmpCommand, drawerTitle, isCmpCredentialRow, signingProfileLabel,
@@ -221,12 +222,7 @@ const EnrollmentManagement: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold text-ink">Enrollment Management</h1>
-                <button onClick={() => (showCreate ? setShowCreate(false) : openCreate())} className="px-4 py-2 bg-accent text-on-accent rounded hover:bg-accent-hover text-sm">
-                    {showCreate ? 'Cancel' : 'Generate Enrollment Credential'}
-                </button>
-            </div>
+            <h1 className="text-xl font-semibold text-ink">Enrollment Management</h1>
 
             {showCreate && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
@@ -378,6 +374,7 @@ const EnrollmentManagement: React.FC = () => {
 
             <DataTable<any>
                 tableId="enrollment-tokens"
+                toolbarAction={<NewButton what="enrollment credential" open={showCreate} onClick={() => (showCreate ? setShowCreate(false) : openCreate())} />}
                 title="Enrollment Tokens"
                 rows={tokens}
                 loading={loading}

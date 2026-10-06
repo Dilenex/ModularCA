@@ -8,6 +8,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
@@ -195,16 +196,6 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-ink">SSH CA Keys</h2>
-                {canGenerate && <button
-                    onClick={() => setShowGenForm(!showGenForm)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
-                >
-                    {showGenForm ? 'Cancel' : 'Generate CA Key'}
-                </button>}
-            </div>
-
             {canGenerate && showGenForm && (
                 <form onSubmit={handleGenerate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-ink">Generate New SSH CA Key</h3>
@@ -319,6 +310,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
             <DataTable<any>
                 tableId="ssh-ca-keys"
+                toolbarAction={canGenerate ? <NewButton what="SSH CA key" open={showGenForm} onClick={() => setShowGenForm(!showGenForm)} /> : undefined}
                 title="SSH CA Keys"
                 rows={keys}
                 rowKey={(k) => k.id || k.fingerprint}
@@ -655,17 +647,6 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                 </select>
             </div>
 
-            <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-ink">SSH Certificates</h2>
-                <button
-                    onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }}
-                    disabled={!selectedCaKeyId}
-                    className="px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50 transition-colors"
-                >
-                    {showSignForm ? 'Cancel' : 'Sign Key'}
-                </button>
-            </div>
-
             {/* Sign Form */}
             {showSignForm && (
                 <form onSubmit={handleSign} className="bg-raised border border-line rounded-lg p-4 space-y-3">
@@ -899,6 +880,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             {/* Certificate List */}
             <DataTable<any>
                 tableId="ssh-certs"
+                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }} />}
                 title="SSH Certificates"
                 rows={certs}
                 rowKey={(c) => c.id || c.serial || c.fingerprint}

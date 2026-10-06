@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { can, canAtSpace, consoleCas, spacesOf } from '../authz';
 import { useToast } from '@shared/context/ToastContext';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
@@ -132,14 +133,9 @@ const ServiceIdentitiesPanel: React.FC = () => {
 
     return (
         <div className="space-y-3">
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-                <p className="text-xs text-ink-muted max-w-3xl">
-                    Accounts that hold permissions for something that is not a person: the identity a Kerberos realm acts as, an integration, a protocol credential. They have no password and can never sign in. Each is confined to the system, one space or one CA, and can only hold groups inside that scope. System groups are never available to them.
-                </p>
-                <button onClick={() => setCreating((v) => !v)} disabled={scopes.length === 0} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors">
-                    {creating ? 'Cancel' : 'New service identity'}
-                </button>
-            </div>
+            <p className="text-xs text-ink-muted max-w-3xl">
+                Accounts that hold permissions for something that is not a person: the identity a Kerberos realm acts as, an integration, a protocol credential. They have no password and can never sign in. Each is confined to the system, one space or one CA, and can only hold groups inside that scope. System groups are never available to them.
+            </p>
 
             {creating && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
@@ -189,6 +185,7 @@ const ServiceIdentitiesPanel: React.FC = () => {
             <DataTable<ServiceIdentity>
                 onRowClick={(r) => setOpenId(r.id)}
                 tableId="service-identities"
+                toolbarAction={<NewButton what="service identity" open={creating} disabled={scopes.length === 0} onClick={() => setCreating((v) => !v)} />}
                 title="Service identities"
                 rows={rows}
                 rowKey={(r) => r.id}

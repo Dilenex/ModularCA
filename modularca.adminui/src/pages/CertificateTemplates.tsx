@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
-import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -257,14 +257,6 @@ const X509TemplatesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">X.509 Templates</h3>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Template'}
-                </button>
-            </div>
-
             {showCreate && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-4">
                     <h4 className="text-sm font-semibold text-ink">New Certificate Template</h4>
@@ -357,25 +349,17 @@ const X509TemplatesTab: React.FC = () => {
                 </div>
             )}
 
-            <div className="bg-raised border border-line rounded-lg overflow-x-auto">
-                {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
-                {error && <InlineNotice notice={error} />}
-                {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-ink-muted text-center">
-                        {scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
-                    </div>
-                )}
-                {!loading && !error && templates.length > 0 && (
-                    <DataTable<CertificateTemplate>
-                        tableId="templates-x509"
-                        title="Templates"
-                        rows={templates}
-                        empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
-                        sort={{ key: 'name', dir: 'asc' }}
-                        {...recordTableProps(record)}
-                    />
-                )}
-            </div>
+            <DataTable<CertificateTemplate>
+                tableId="templates-x509"
+                title="X.509 Templates"
+                rows={templates}
+                loading={loading}
+                error={error}
+                empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                sort={{ key: 'name', dir: 'asc' }}
+                toolbarAction={<NewButton what="template" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
+                {...recordTableProps(record)}
+            />
 
 
             <ConfirmModal
@@ -536,14 +520,6 @@ const SshTemplatesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">SSH Templates</h3>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Template'}
-                </button>
-            </div>
-
             {showCreate && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-4">
                     <h4 className="text-sm font-semibold text-ink">New SSH Certificate Template</h4>
@@ -605,23 +581,17 @@ const SshTemplatesTab: React.FC = () => {
                 </div>
             )}
 
-            <div className="bg-raised border border-line rounded-lg overflow-x-auto">
-                {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
-                {error && <InlineNotice notice={error} />}
-                {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-ink-muted text-center">No SSH certificate templates found</div>
-                )}
-                {!loading && !error && templates.length > 0 && (
-                    <DataTable<any>
-                        tableId="templates-ssh"
-                        title="SSH Templates"
-                        rows={templates}
-                        empty="No SSH templates"
-                        sort={{ key: 'name', dir: 'asc' }}
-                        {...recordTableProps(record)}
-                    />
-                )}
-            </div>
+            <DataTable<any>
+                tableId="templates-ssh"
+                title="SSH Templates"
+                rows={templates}
+                loading={loading}
+                error={error}
+                empty="No SSH certificate templates found"
+                sort={{ key: 'name', dir: 'asc' }}
+                toolbarAction={<NewButton what="template" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
+                {...recordTableProps(record)}
+            />
 
 
             <ConfirmModal

@@ -106,7 +106,7 @@ const RequestProfiles: React.FC = () => {
             </p>
 
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="request" />}
+                toolbarAction={<NewProfileButton type="request" />}
                 tableId="request-profiles"
                 title="Request Profiles"
                 findable

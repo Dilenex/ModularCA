@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { Chevron } from '@shared/components/Chevron';
 import { apiGet, apiPut, apiDelete, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { FieldHint } from '@shared/components/forms';
 import { StepUpOps } from '@shared/generated';
 import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
@@ -83,7 +83,6 @@ const AnchorDetail: React.FC<{ anchor: TrustAnchor }> = ({ anchor }) => {
 
 /* --- Import Form --- */
 const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
-    const [expanded, setExpanded] = useState(false);
     const [certificate, setCertificate] = useState('');
     const [label, setLabel] = useState('');
     const [description, setDescription] = useState('');
@@ -115,12 +114,7 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
 
     return (
         <div className="bg-raised border border-line rounded-lg">
-            <button onClick={() => setExpanded(!expanded)}
-                className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors rounded-lg">
-                <span className="text-ink-muted text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
-                <span className="text-sm font-semibold text-ink">Import Trust Anchor</span>
-            </button>
-            {expanded && (
+            <h3 className="px-4 py-3 text-sm font-semibold text-ink">Import trust anchor</h3>
                 <div className="px-4 pb-4 space-y-3">
                     <FieldHint tone="warn">
                         Importing makes this certificate an authority the whole system trusts: every certificate chaining to it is accepted wherever trust anchors are consulted. Verify its SHA-256 thumbprint against a copy obtained out of band (from the issuing organisation directly, not from the same channel the PEM came through) before importing. The thumbprint is shown again after import.
@@ -162,7 +156,6 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
                         {importing ? 'Importing...' : 'Import'}
                     </button>
                 </div>
-            )}
         </div>
     );
 };
@@ -170,6 +163,7 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
 /* --- Trust Anchors Page --- */
 const TrustAnchors: React.FC = () => {
     const { showToast } = useToast();
+    const [showImport, setShowImport] = useState(false);
     const { requireStepUp } = useStepUp();
     const [anchors, setAnchors] = useState<TrustAnchor[]>([]);
     const [loading, setLoading] = useState(true);
@@ -247,10 +241,11 @@ const TrustAnchors: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">Trust Anchors</h1>
 
-            <ImportForm onImported={load} />
+            {showImport && <ImportForm onImported={load} />}
 
             <DataTable<TrustAnchor>
                 tableId="trust-anchors"
+                toolbarAction={<NewButton label="Import" what="trust anchor" open={showImport} onClick={() => setShowImport(!showImport)} />}
                 title="Trust Anchors"
                 rows={anchors}
                 rowKey={(a) => a.id}

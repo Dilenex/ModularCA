@@ -5,6 +5,7 @@ import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/
 import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { FieldHint, ToggleField, inputClass, labelClass } from '@shared/components/forms';
@@ -112,17 +113,9 @@ const KerberosRealmsPanel: React.FC<{ spaceId: string | null; spaceName: string;
 
     return (
         <div className="space-y-3">
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div>
-                    <h3 className="text-sm font-semibold text-ink">Kerberos realms <span className="text-ink-muted font-normal">({realms.length})</span></h3>
-                    <p className="text-xs text-ink-muted mt-1">
-                        Active Directory forests whose machines and users may enroll from this space's CAs by Windows integrated authentication. Each forest holds a service account with the enrollment SPN; its key is imported here and never shown again.
-                    </p>
-                </div>
-                <button onClick={() => setAdding((v) => !v)} className="px-3 py-1.5 text-xs font-semibold rounded bg-accent text-on-accent hover:bg-accent-hover transition-colors">
-                    {adding ? 'Cancel' : 'Bind a forest'}
-                </button>
-            </div>
+            <p className="text-xs text-ink-muted">
+                Active Directory forests whose machines and users may enroll from this space's CAs by Windows integrated authentication. Each forest holds a service account with the enrollment SPN; its key is imported here and never shown again.
+            </p>
 
             {adding && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
@@ -164,6 +157,8 @@ const KerberosRealmsPanel: React.FC<{ spaceId: string | null; spaceName: string;
 
             <DataTable<Realm>
                 tableId={`kerberos-realms-${spaceId ?? 'instance'}`}
+                title="Kerberos realms"
+                toolbarAction={<NewButton label="Bind" what="a forest" open={adding} onClick={() => setAdding((v) => !v)} />}
                 rows={realms}
                 rowKey={(r) => r.id}
                 loading={loading}

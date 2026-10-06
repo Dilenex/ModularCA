@@ -8,6 +8,7 @@ import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { StepUpOps } from '@shared/generated';
 
 /// <summary>
@@ -183,15 +184,7 @@ const RoleManagement: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold text-ink">Roles</h1>
-                <button
-                    onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
-                >
-                    {showCreate ? 'Cancel' : 'Create Role'}
-                </button>
-            </div>
+            <h1 className="text-xl font-semibold text-ink">Roles</h1>
 
             {/* Create Role Form */}
             {showCreate && (
@@ -229,6 +222,7 @@ const RoleManagement: React.FC = () => {
 
             <DataTable<RoleSummary>
                 tableId="roles"
+                toolbarAction={<NewButton what="role" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 title="Roles"
                 rows={filteredRoles}
                 rowKey={(r) => r.id}

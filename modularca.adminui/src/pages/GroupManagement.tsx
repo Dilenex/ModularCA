@@ -11,6 +11,7 @@ import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { FieldHint } from '@shared/components/forms';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
@@ -218,14 +219,7 @@ const GroupManagement: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold text-ink">Groups</h1>
-                {canCreateGroup && (
-                    <button onClick={() => setShowCreate(!showCreate)} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                        {showCreate ? 'Cancel' : 'Create Group'}
-                    </button>
-                )}
-            </div>
+            <h1 className="text-xl font-semibold text-ink">Groups</h1>
 
             {canCreateGroup && showCreate && (
                 <form onSubmit={handleCreate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
@@ -310,6 +304,7 @@ const GroupManagement: React.FC = () => {
 
             <DataTable<any>
                 tableId="groups"
+                toolbarAction={canCreateGroup ? <NewButton what="group" open={showCreate} onClick={() => setShowCreate(!showCreate)} /> : undefined}
                 title="Groups"
                 rows={filteredGroups}
                 rowKey={(g) => g.id}

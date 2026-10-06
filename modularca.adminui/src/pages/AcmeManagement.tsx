@@ -10,6 +10,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { AuditFields } from '../components/AuditFields';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 
@@ -146,18 +147,6 @@ const EabKeyManagementSection: React.FC = () => {
 
     return (
         <div className="space-y-3">
-            <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-ink">EAB Key Management</h2>
-                {canManageEab && (
-                    <button
-                        onClick={() => { setShowCreateForm(!showCreateForm); setNewKey(null); }}
-                        className="px-3 py-1.5 bg-accent hover:bg-accent-hover text-on-accent text-xs font-medium rounded transition-colors"
-                    >
-                        + Generate EAB Key
-                    </button>
-                )}
-            </div>
-
             {/* New key creation form */}
             {showCreateForm && (
                 <div className="bg-raised border border-line rounded-lg px-4 py-3">
@@ -235,6 +224,7 @@ const EabKeyManagementSection: React.FC = () => {
 
             <DataTable<EabKey>
                 tableId="acme-eab-keys"
+                toolbarAction={canManageEab ? <NewButton what="EAB key" open={showCreateForm} onClick={() => { setShowCreateForm(!showCreateForm); setNewKey(null); }} /> : undefined}
                 title="EAB Keys"
                 rows={keys}
                 rowKey={(k) => k.id}

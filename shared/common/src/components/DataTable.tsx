@@ -81,8 +81,8 @@ export interface DataTableProps<Row> {
     /** Offer a find box that narrows the rows already loaded, by the text of every column.
      *  Not for a table whose parent pages or filters on the server. */
     findable?: boolean;
-    /** Shown at the right end of the title bar, after Export: the table's own "New …" button. */
-    toolbarEnd?: React.ReactNode;
+    /** The table's own "+ New" button. Sits at the right end of the header's second line. */
+    toolbarAction?: React.ReactNode;
     /** Show selection checkboxes + bulk-action toolbar. */
     selectable?: boolean;
     bulkActions?: DataTableBulkAction<Row>[];
@@ -150,7 +150,7 @@ const EMPTY_SET: Set<string> = new Set();
 
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
-    tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarEnd, onRowClick: onRowOpen,
+    tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarAction, onRowClick: onRowOpen,
     selectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
@@ -351,34 +351,9 @@ export function DataTable<Row>({
 
     return (
         <div className="bg-raised border border-line rounded-lg overflow-hidden">
-            {/* toolbar */}
+            {/* header, first line: what the table is, and the tools for looking at it */}
             <div className="px-3 py-2 border-b border-line flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 min-h-[28px]">
-                    {selectable && selected.size > 0 ? (
-                        <>
-                            <span className="text-xs font-semibold text-ink">{selectionCount} selected</span>
-                            {detailPath && (
-                                <button disabled={selected.size !== 1}
-                                    onClick={() => { const row = selectedRows[0]; if (row) navigate(detailPath(row)); }}
-                                    className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls('primary')}`}>
-                                    Details
-                                </button>
-                            )}
-                            {bulkActions?.map((a) => {
-                                const disabled = (a.single && selected.size !== 1) || (a.enabledFor ? !selectedRows.every(a.enabledFor) : false);
-                                return (
-                                    <button key={a.label} disabled={disabled} onClick={() => a.onClick(selectedRows)}
-                                        className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls(a.variant)}`}>
-                                        {a.label}
-                                    </button>
-                                );
-                            })}
-                            <button onClick={clearSelection} className="text-xs text-ink-muted hover:underline">Deselect</button>
-                        </>
-                    ) : (
-                        <h3 className="text-sm font-semibold text-ink">{title}{title ? ' ' : ''}<span className="text-ink-muted font-normal">({narrowed ? `${rows.length} of ${loadedRows.length}` : (totalCount ?? rows.length)})</span></h3>
-                    )}
-                </div>
+                <h3 className="text-sm font-semibold text-ink min-h-[28px] flex items-center gap-1">{title}<span className="text-ink-muted font-normal">({narrowed ? `${rows.length} of ${loadedRows.length}` : (totalCount ?? rows.length)})</span></h3>
                 <div className="flex items-center gap-2">
                     {findable && (
                         <input type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Find in this table"
@@ -418,9 +393,39 @@ export function DataTable<Row>({
                             {exporting ? 'Exporting…' : 'Export CSV'}
                         </button>
                     )}
-                    {toolbarEnd}
                 </div>
             </div>
+
+            {/* header, second line: what can be done with the ticked rows, and "+ New" at the right */}
+            {(selectable || toolbarAction) && (
+                <div className="px-3 py-1.5 border-b border-line flex items-center gap-2 flex-wrap min-h-[36px]">
+                    {selectable && (<>
+                    <span className={`text-xs w-24 shrink-0 ${selected.size > 0 ? 'font-semibold text-ink' : 'text-ink-muted'}`}>
+                        {selected.size > 0 ? `${selectionCount} selected` : 'None selected'}
+                    </span>
+                    {detailPath && (
+                        <button disabled={selected.size !== 1}
+                            onClick={() => { const row = selectedRows[0]; if (row) navigate(detailPath(row)); }}
+                            className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls()}`}>
+                            Details
+                        </button>
+                    )}
+                    {bulkActions?.map((a) => {
+                        const disabled = selected.size === 0 || (a.single && selected.size !== 1) || (a.enabledFor ? !selectedRows.every(a.enabledFor) : false);
+                        return (
+                            <button key={a.label} disabled={disabled} onClick={() => a.onClick(selectedRows)}
+                                className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls(a.variant)}`}>
+                                {a.label}
+                            </button>
+                        );
+                    })}
+                    {selected.size > 0
+                        ? <button onClick={clearSelection} className="text-xs text-ink-muted hover:underline">Deselect</button>
+                        : <span className="text-xs text-ink-faint">{detailPath || bulkActions?.length ? 'Tick rows to act on them.' : 'Tick rows to export only those.'}</span>}
+                    </>)}
+                    {toolbarAction && <div className="ml-auto flex items-center gap-2">{toolbarAction}</div>}
+                </div>
+            )}
 
             {/* select-all-matching banner (controlled / server-paginated tables) */}
             {selectable && controlled && totalCount != null && totalCount > allKeys.length && (allSelected || allMatchingSelected) && (

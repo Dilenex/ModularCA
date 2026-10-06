@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { isApiError } from '@shared-auth/api/problem';
-import { Chevron } from '@shared/components/Chevron';
+import { actionButton } from '@shared/components/actionButtons';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
@@ -14,6 +14,7 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
@@ -319,38 +320,12 @@ const CaManagement: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">CA Management</h1>
 
-            {/* Section 1: CA List */}
-            <DataTable<any>
-                tableId="ca-list"
-                renamedColumns={RENAMED_CA_COLUMNS}
-                title="Certificate Authorities"
-                findable
-                rows={allCasFlat}
-                rowKey={caKey}
-                loading={loading}
-                error={error}
-                empty={consoleCas(capabilities).length === 0 && canCreateCa
-                    ? 'No certificate authorities yet. Create the first one under Create Certificate Authority below.'
-                    : scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
-                columns={caColumns}
-                selectable
-                exportFileName="certificate-authorities"
-                renderDrawer={(ca) => <CaDrawer ca={ca} />}
-                drawerTitle={(ca) => ca.name || ca.subjectDN}
-                detailPath={(ca) => `/authorities/manage/${encodeURIComponent(caKey(ca))}`}
-            />
-
-            {/* Section 2: Create Intermediate CA */}
-            {canCreateCa && (
+            {canCreateCa && createExpanded && (
             <div className="bg-raised border border-line rounded-lg overflow-hidden">
-                <button
-                    onClick={() => setCreateExpanded(!createExpanded)}
-                    className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors"
-                >
-                    <span className="text-ink-muted text-xs"><Chevron open={createExpanded} className="w-3 h-3" /></span>
-                    <h3 className="text-sm font-semibold text-ink">Create Certificate Authority</h3>
-                </button>
-                {createExpanded && (
+                <div className="px-4 py-3 flex items-center justify-between gap-2 bg-sunken">
+                    <h3 className="text-sm font-semibold text-ink">New certificate authority</h3>
+                    <button type="button" onClick={() => setCreateExpanded(false)} className={actionButton}>Close</button>
+                </div>
                     <div className="p-4 border-t border-line space-y-4">
                         {spacesError && <InlineNotice notice={spacesError} />}
                         {/* Space Selector */}
@@ -548,9 +523,29 @@ const CaManagement: React.FC = () => {
                             </div>
                         )}
                     </div>
-                )}
             </div>
             )}
+
+            <DataTable<any>
+                tableId="ca-list"
+                renamedColumns={RENAMED_CA_COLUMNS}
+                title="Certificate Authorities"
+                findable
+                toolbarAction={canCreateCa ? <NewButton what="certificate authority" open={createExpanded} onClick={() => setCreateExpanded(!createExpanded)} /> : undefined}
+                rows={allCasFlat}
+                rowKey={caKey}
+                loading={loading}
+                error={error}
+                empty={consoleCas(capabilities).length === 0 && canCreateCa
+                    ? 'No certificate authorities yet. Create the first one with + New.'
+                    : scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
+                columns={caColumns}
+                selectable
+                exportFileName="certificate-authorities"
+                renderDrawer={(ca) => <CaDrawer ca={ca} />}
+                drawerTitle={(ca) => ca.name || ca.subjectDN}
+                detailPath={(ca) => `/authorities/manage/${encodeURIComponent(caKey(ca))}`}
+            />
 
         </div>
     );

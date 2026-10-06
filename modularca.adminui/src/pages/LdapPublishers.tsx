@@ -8,6 +8,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 
@@ -311,14 +312,6 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-ink">Publishers</h2>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    {showCreate ? 'Cancel' : 'Add Publisher'}
-                </button>
-            </div>
-
             {showCreate && (
                 <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <h4 className="text-sm font-semibold text-ink">New LDAP Publisher</h4>
@@ -332,6 +325,7 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
 
             <DataTable<LdapPublisher>
                 tableId="distribution-ldap-publishers"
+                toolbarAction={<NewButton what="LDAP publisher" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 title="Publishers"
                 rows={publishers}
                 rowKey={(p) => p.id}

@@ -110,7 +110,7 @@ const CertProfilesTab: React.FC = () => {
         <div className="space-y-4">
             {/* Profile List */}
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="cert" />}
+                toolbarAction={<NewProfileButton type="cert" />}
                 tableId="cert-profiles"
                 title="Certificate Profiles"
                 findable
@@ -238,7 +238,7 @@ const SigningProfilesTab: React.FC = () => {
     return (
         <div className="space-y-4">
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="signing" />}
+                toolbarAction={<NewProfileButton type="signing" />}
                 tableId="signing-profiles"
                 title="Signing Profiles"
                 findable
@@ -352,7 +352,7 @@ const SshSigningProfilesTab: React.FC = () => {
     return (
         <div className="space-y-4">
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="ssh-signing" />}
+                toolbarAction={<NewProfileButton type="ssh-signing" />}
                 tableId="ssh-signing-profiles"
                 title="SSH Signing Profiles"
                 findable
@@ -445,7 +445,7 @@ const SshCertProfilesTab: React.FC = () => {
     return (
         <div className="space-y-4">
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="ssh-cert" />}
+                toolbarAction={<NewProfileButton type="ssh-cert" />}
                 tableId="ssh-cert-profiles"
                 title="SSH Cert Profiles"
                 findable
@@ -565,7 +565,7 @@ const SshRequestProfilesTab: React.FC = () => {
     return (
         <div className="space-y-4">
             <DataTable<any>
-                toolbarEnd={<NewProfileButton type="ssh-request" />}
+                toolbarAction={<NewProfileButton type="ssh-request" />}
                 tableId="ssh-request-profiles"
                 title="SSH Request Profiles"
                 findable
