@@ -1674,6 +1674,7 @@ export interface UserEntityDto {
     passwordChangeOnNextLogon: boolean;
     passwordExpiration?: string | null;
     createdAt: string;
+    lastLoginAt?: string | null;
     groups?: GroupMembershipDto[] | null;
 }
 

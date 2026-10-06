@@ -206,7 +206,7 @@ public class AuditChainSealTests
             ModularCA.Tests.Roles.ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminAuditController"),
             mainDb, null, new NoUser(), db, new AuditHashChainService())!;
         var list = (Task<Microsoft.AspNetCore.Mvc.IActionResult>)controller.GetType().GetMethod("GetAuditLogs")!
-            .Invoke(controller, [null, null, null, null, null, 1, 50, Space, null, null, null])!;
+            .Invoke(controller, [null, null, null, null, null, 1, 50, Space, null, null, null, null])!;
         var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await list);
         using var page = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(ok.Value));
         Assert.Equal(4, page.RootElement.GetProperty("total").GetInt32());

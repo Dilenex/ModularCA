@@ -6,8 +6,9 @@ import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import DataCard from '../components/cards/DataCard';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
+import { actionButton } from '@shared/components/actionButtons';
 import { StructuredValue } from '@shared/components/StructuredValue';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import ConfirmModal from '../components/ConfirmModal';
@@ -26,6 +27,7 @@ import {
     attentionTone, capitalize, channelLabel, expiringLink, expiryPhrase, isoDay, lifecycleHealth, sortAttention,
     toneDotClass, toneTextClass, type LifecycleHealthItem,
 } from './certLifecycle';
+import { periodText } from '@shared/periodText';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -37,6 +39,9 @@ function certStatus(cert: any): 'active' | 'revoked' | 'expired' {
     if (new Date(cert.notAfter) < new Date()) return 'expired';
     return 'active';
 }
+
+/** CAs listed on the dashboard card; the rest are one link away. */
+const CAS_SHOWN = 8;
 
 interface GroupStats {
     total: number;
@@ -244,7 +249,7 @@ const Dashboard: React.FC = () => {
                 const all: any[] = Array.isArray(data) ? data : (data.items || data.groups || []);
                 // Under a CA scope, count that CA's groups only.
                 const groups = scopeCaId ? all.filter((g) => inScope(g.certificateAuthorityId || g.caId)) : all;
-                const system = groups.filter((g) => g.isSystem || g.type === 'System').length;
+                const system = groups.filter((g) => g.isSystemGroup).length;
                 const caScoped = groups.filter((g) => g.caId || g.certificateAuthorityId || g.type === 'CA').length;
                 setGroupStats({
                     total: groups.length,
@@ -328,7 +333,7 @@ const Dashboard: React.FC = () => {
             </div>
 
             {/* Stats Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-7 gap-4">
                 <Link to="/certificates" className={statLinkClass}>
                     <div className={statLabelClass}>Total Certs</div>
                     <div className={statValueClass}>{stat(summary?.total)}</div>
@@ -349,9 +354,7 @@ const Dashboard: React.FC = () => {
                     <div className={statLabelClass}>Expired</div>
                     <div className={`${statValueClass} ${loudText(expiredTone)}`}>{stat(summary?.expired)}</div>
                     {summary && summary.expired > 0 && (
-                        <div className="text-xs text-ink-muted mt-0.5">
-                            {summary.expired} expired · {summary.expiredNotReplaced} not replaced
-                        </div>
+                        <div className="text-xs text-ink-muted mt-0.5">{summary.expiredNotReplaced} not replaced</div>
                     )}
                 </Link>
                 <Link to="/certificates?status=revoked" className={statLinkClass}>
@@ -364,6 +367,13 @@ const Dashboard: React.FC = () => {
                         {pendingLoading ? '...' : pendingError ? '-' : pendingCount}
                     </div>
                 </div>
+                <Link to="/groups" className={statLinkClass}>
+                    <div className={statLabelClass}>Groups</div>
+                    <div className={statValueClass}>{groupsLoading ? '...' : groupsError || !groupStats ? '-' : groupStats.total}</div>
+                    {groupStats && !groupsError && (
+                        <div className="text-xs text-ink-muted mt-0.5">{groupStats.system} system · {groupStats.caScoped} CA-scoped</div>
+                    )}
+                </Link>
             </div>
 
             {/* Needs attention: recently expired or soon expiring, with no replacement */}
@@ -404,9 +414,9 @@ const Dashboard: React.FC = () => {
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2 flex-shrink-0">
-                                        <Link to={`/certificates/${item.serialNumber}`} className="px-2.5 py-1 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">View</Link>
+                                        <Link to={`/certificates/${item.serialNumber}`} className={actionButton}>View</Link>
                                         <button onClick={() => openReissueForSerial(item.serialNumber)} disabled={reissueLoadingId === item.serialNumber}
-                                            className="px-2.5 py-1 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors disabled:opacity-50">
+                                            className={actionButton}>
                                             {reissueLoadingId === item.serialNumber ? 'Loading...' : 'Reissue'}
                                         </button>
                                     </div>
@@ -424,286 +434,264 @@ const Dashboard: React.FC = () => {
                 )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* CA Overview */}
-                <div className="bg-raised border border-line rounded-lg overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-line">
-                        <h3 className="text-sm font-semibold text-ink">CA Overview</h3>
-                        <button
-                            onClick={() => navigate('/authorities/manage')}
-                            className="text-xs text-accent-ink hover:underline transition-colors"
-                        >
-                            View All
-                        </button>
-                    </div>
-                    <div className="max-h-80 overflow-y-auto">
-                        {caLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
-                        {caError && <InlineNotice notice={caError} />}
-                        {!caLoading && !caError && caList.length === 0 && (
-                            <div className="p-4 text-sm text-ink-muted text-center">No CAs configured</div>
-                        )}
-                        {!caLoading && !caError && caList.map((ca) => {
-                            const caKey = ca.id || ca.serialNumber || ca.certificateId;
-                            const isEnabled = ca.isEnabled !== false;
-                            const count = certsByCa[ca.id || ca.caId] ?? 0;
-
-                            return (
-                                <div
-                                    key={caKey}
-                                    className="flex items-center justify-between px-4 py-3 border-b border-line last:border-b-0 hover:bg-hover bg-sunken transition-colors"
-                                >
-                                    <div className="flex items-center gap-2 min-w-0">
-                                        <StatusBadge status={isEnabled ? 'active' : 'disabled'} label={ca.isRoot ? 'Root' : 'Sub'} />
-                                        <span className="text-sm text-ink truncate">{ca.name || ca.subjectDN}</span>
-                                    </div>
-                                    <div className="flex items-center gap-3 flex-shrink-0">
-                                        <span className="text-xs text-ink-muted">{count} cert{count !== 1 ? 's' : ''}</span>
-                                        <StatusBadge status={isEnabled ? 'enabled' : 'disabled'} label={isEnabled ? 'Enabled' : 'Disabled'} />
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-
-                {/* Group Stats */}
-                <div className="bg-raised border border-line rounded-lg overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-line">
-                        <h3 className="text-sm font-semibold text-ink">Group Stats</h3>
-                        <button
-                            onClick={() => navigate('/groups')}
-                            className="text-xs text-accent-ink hover:underline transition-colors"
-                        >
-                            View All
-                        </button>
-                    </div>
-                    <div className="p-4">
-                        {groupsLoading && <div className="text-sm text-ink-muted text-center">Loading...</div>}
-                        {groupsError && <InlineNotice notice={groupsError} />}
-                        {!groupsLoading && !groupsError && groupStats && (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-                                <div>
-                                    <div className="text-2xl font-bold text-ink">{groupStats.total}</div>
-                                    <div className="text-xs text-ink-muted mt-1">Total Groups</div>
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-accent-ink">{groupStats.system}</div>
-                                    <div className="text-xs text-ink-muted mt-1">System</div>
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-accent-ink">{groupStats.caScoped}</div>
-                                    <div className="text-xs text-ink-muted mt-1">CA-Scoped</div>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Recent Certificates */}
-                <DataCard
-                    key={`recent-${scopeCaId ?? "all"}-${recentCertsKey}`}
-                    title="Recent Certificates"
-                    fetchData={async () => { const r = await apiGet<any>(`/api/v1/admin/certificates?pageSize=10${caQuery(true)}`); return r.items || []; }}
-                    keyExtractor={(c: any) => c.serialNumber || c.certificateId}
-                    onViewAll={() => navigate('/certificates')}
-                    maxItems={5}
-                    emptyMessage="No certificates issued yet"
-                    detailMode="modal"
-                    modalTitle={(cert: any) => cert.subjectDN || 'Certificate Details'}
-                    modalFullViewUrl={() => '/certificates'}
-                    renderSummary={(cert: any) => (
-                        <div className="flex items-center gap-2">
-                            {certStatus(cert) === 'expired' && cert.replaced
-                                ? <StatusBadge status="disabled" label="expired" />
-                                : <StatusBadge status={certStatus(cert)} />}
-                            <span className="data-mono text-ink-muted">{cert.serialNumber?.substring(0, 12)}...</span>
-                            <span className="truncate">{cert.subjectDN}</span>
+            {/* Two independent columns: a card is as tall as its content, never stretched to its neighbour. */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                <div className="space-y-6">
+                    {/* CA Overview */}
+                    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+                            <h3 className="text-sm font-semibold text-ink">CA Overview</h3>
+                            <button
+                                onClick={() => navigate('/authorities/manage')}
+                                className="text-xs text-accent-ink hover:underline transition-colors"
+                            >
+                                View All
+                            </button>
                         </div>
-                    )}
-                    renderDetail={(cert: any) => {
-                        let thumbprints = cert.thumbprints;
-                        try {
-                            const tp = JSON.parse(cert.thumbprints);
-                            thumbprints = Object.entries(tp).map(([k, v]) => `${k}: ${v}`).join('\n');
-                        } catch {}
+                        <div>
+                            {caLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
+                            {caError && <InlineNotice notice={caError} />}
+                            {!caLoading && !caError && caList.length === 0 && (
+                                <div className="p-4 text-sm text-ink-muted text-center">No CAs configured</div>
+                            )}
+                            {!caLoading && !caError && caList.slice(0, CAS_SHOWN).map((ca) => {
+                                const caKey = ca.id || ca.serialNumber || ca.certificateId;
+                                const isEnabled = ca.isEnabled !== false;
+                                const count = certsByCa[ca.id || ca.caId] ?? 0;
 
-                        let sans = '';
-                        try {
-                            const s = JSON.parse(cert.subjectAlternativeNamesJson || '[]');
-                            sans = Array.isArray(s) ? s.join(', ') : cert.subjectAlternativeNamesJson;
-                        } catch { sans = cert.subjectAlternativeNamesJson || ''; }
-
-                        return (
-                            <div className="space-y-1">
-                                {cert.revoked && (
-                                    <div className="bg-crit-soft border border-crit/40 rounded px-3 py-2 mb-3">
-                                        <StatusBadge status="revoked" label="REVOKED" />
-                                        <span className="text-xs text-crit ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
+                                return (
+                                    <div
+                                        key={caKey}
+                                        className="flex items-center justify-between px-4 py-3 border-b border-line last:border-b-0 hover:bg-hover bg-sunken transition-colors"
+                                    >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Tag label={ca.isRoot ? 'Root' : 'Sub'} />
+                                            <span className="text-sm text-ink truncate">{ca.name || ca.subjectDN}</span>
+                                        </div>
+                                        <div className="flex items-center gap-3 flex-shrink-0">
+                                            <span className="text-xs text-ink-muted">{count} cert{count !== 1 ? 's' : ''}</span>
+                                            <StatusBadge status={isEnabled ? 'enabled' : 'disabled'} label={isEnabled ? 'Enabled' : 'Disabled'} />
+                                        </div>
                                     </div>
-                                )}
-                                <DetailField label="Serial" value={cert.serialNumber} mono />
-                                <DetailField label="Subject" value={cert.subjectDN} />
-                                <DetailField label="Issuer" value={cert.issuer} />
-                                <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
-                                <DetailField label="Not After" value={formatDate(cert.notAfter)} />
-                                <DetailField label="Is CA" value={cert.isCA ? 'Yes' : 'No'} />
-                                {sans && <DetailField label="SANs" value={sans} />}
-                                <DetailField label="Thumbprints" value={thumbprints} mono />
-                            </div>
-                        );
-                    }}
-                    actions={(cert: any) => [
-                        ...(certStatus(cert) === 'active' ? [{
-                            label: 'Revoke',
-                            // Opens the reason picker below; the card's own modal closes on click.
-                            onClick: () => { setQuickRevokeReason('Unspecified'); setQuickRevoke(cert); },
-                            variant: 'danger' as const,
-                        }] : []),
-                        ...(certStatus(cert) === 'active' ? [{
-                            label: reissueLoadingId === cert.certificateId ? 'Loading...' : 'Reissue',
-                            onClick: () => openReissueFromCard(cert),
-                            variant: 'success' as const,
-                        }] : []),
-                    ]}
-                />
-
-                {/* Recent Audit Logs */}
-                <DataCard
-                    key={`recent-${scopeCaId ?? "all"}`}
-                    title="Recent Activity"
-                    fetchData={async () => {
-                        const data = await apiGet<any>(`/api/v1/admin/audit?pageSize=10${caQuery(true)}`);
-                        return data.items || [];
-                    }}
-                    keyExtractor={(log: any) => log.id}
-                    onViewAll={() => navigate('/audit')}
-                    maxItems={10}
-                    emptyMessage="No audit entries"
-                    detailMode="modal"
-                    modalTitle={(log: any) => `${log.actionType || 'Audit Entry'}`}
-                    modalFullViewUrl={() => '/audit'}
-                    renderSummary={(log: any) => (
-                        <div className="flex items-center gap-2 text-xs">
-                            <span className="text-ink-muted min-w-[140px]">{formatDate(log.timestamp)}</span>
-                            <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'FAIL'} />
-                            <span className="text-accent-ink">{log.actorUsername || 'system'}</span>
-                            <span className="text-ink-muted">{log.actionType}</span>
-                        </div>
-                    )}
-                    renderDetail={(log: any) => (
-                        <div className="space-y-1">
-                            <DetailField label="Action" value={log.actionType} />
-                            <DetailField label="Actor" value={`${log.actorUsername || 'N/A'} (${log.actorUserId || 'N/A'})`} />
-                            <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
-                            <DetailField label="Target" value={`${log.targetEntityType || ''} ${log.targetEntityId || ''}`} />
-                            <DetailField label="Source IP" value={log.sourceIp} />
-                            <DetailField label="Success" value={log.success ? 'Yes' : 'No'} />
-                            <DetailField label="Error" value={log.errorMessage} />
-                            {log.detailsJson && (
-                                <div className="py-1">
-                                    <span className="label-caps">Details</span>
-                                    <StructuredValue className="mt-1" json={log.detailsJson} />
+                                );
+                            })}
+                            {!caLoading && !caError && caList.length > CAS_SHOWN && (
+                                <div className="px-4 py-2 text-xs border-t border-line">
+                                    <Link to="/authorities/manage" className="text-accent-ink hover:underline">{caList.length - CAS_SHOWN} more</Link>
                                 </div>
                             )}
                         </div>
-                    )}
-                />
+                    </div>
 
-                {/* Pending CSRs */}
-                <DataCard
-                    key={`pending-${scopeCaId ?? "all"}`}
-                    title="Pending Certificate Requests"
-                    fetchData={async () => {
-                        // /admin/requests returns ALL requests; this card must show only the ones
-                        // awaiting approval, otherwise issued/approved requests appear under a "pending"
-                        // badge (and look like they're all still pending).
-                        const data = await apiGet<any>(`/api/v1/admin/requests${caQuery()}`);
-                        const items: any[] = Array.isArray(data) ? data : (data?.items || []);
-                        return items.filter((csr: any) => {
-                            if (csr.issuedCertificateId) return false;
-                            const s = (csr.status || '').toLowerCase();
-                            return s === '' || s === 'pending' || s === 'pendingapproval' || s === 'partiallyapproved';
-                        });
-                    }}
-                    keyExtractor={(csr: any) => csr.requestId || csr.id}
-                    maxItems={5}
-                    emptyMessage="No pending requests"
-                    detailMode="modal"
-                    modalTitle={(csr: any) => csr.subjectName || 'CSR Details'}
-                    modalFullViewUrl={() => '/certificates/requests'}
-                    renderSummary={(csr: any) => (
-                        <div className="flex items-center gap-2">
-                            <StatusBadge status="pending" />
-                            <span className="truncate">{csr.subjectName}</span>
-                            <span className="text-xs text-ink-muted">{csr.keyAlgorithm} {csr.keySize}</span>
-                        </div>
-                    )}
-                    renderDetail={(csr: any) => (
-                        <div className="space-y-1">
-                            <DetailField label="Subject" value={csr.subjectName} />
-                            <DetailField label="Key Algorithm" value={csr.keyAlgorithm} />
-                            <DetailField label="Key Size" value={csr.keySize} />
-                            <DetailField label="Signature" value={csr.signatureAlgorithm} />
-                            <DetailField label="SANs" value={Array.isArray(csr.subjectAlternativeNames) ? csr.subjectAlternativeNames.join(', ') : csr.subjectAlternativeNames} />
-                        </div>
-                    )}
-                />
+                    {/* Recent Certificates */}
+                    <DataCard
+                        key={`recent-${scopeCaId ?? "all"}-${recentCertsKey}`}
+                        title="Recent Certificates"
+                        fetchData={async () => { const r = await apiGet<any>(`/api/v1/admin/certificates?pageSize=10${caQuery(true)}`); return r.items || []; }}
+                        keyExtractor={(c: any) => c.serialNumber || c.certificateId}
+                        onViewAll={() => navigate('/certificates')}
+                        maxItems={5}
+                        emptyMessage="No certificates issued yet"
+                        detailMode="modal"
+                        modalTitle={(cert: any) => cert.subjectDN || 'Certificate Details'}
+                        modalFullViewUrl={() => '/certificates'}
+                        renderSummary={(cert: any) => (
+                            <div className="flex items-center gap-2">
+                                {certStatus(cert) === 'expired' && cert.replaced
+                                    ? <StatusBadge status="disabled" label="expired" />
+                                    : <StatusBadge status={certStatus(cert)} />}
+                                <span className="data-mono text-ink-muted">{cert.serialNumber?.substring(0, 12)}...</span>
+                                <span className="truncate">{cert.subjectDN}</span>
+                            </div>
+                        )}
+                        renderDetail={(cert: any) => {
+                            let thumbprints = cert.thumbprints;
+                            try {
+                                const tp = JSON.parse(cert.thumbprints);
+                                thumbprints = Object.entries(tp).map(([k, v]) => `${k}: ${v}`).join('\n');
+                            } catch {}
 
-                {/* Signing Profiles */}
-                <DataCard
-                    title="Signing Profiles"
-                    fetchData={() => apiGet<any[]>('/api/v1/admin/signing-profiles')}
-                    keyExtractor={(p: any) => p.id}
-                    emptyMessage="No signing profiles"
-                    detailMode="modal"
-                    modalTitle={(p: any) => p.name || 'Signing Profile'}
-                    modalFullViewUrl={() => '/profiles'}
-                    renderSummary={(p: any) => (
-                        <div className="flex items-center gap-2">
-                            {p.isDefault && <StatusBadge status="active" label="Default" />}
-                            <span className="truncate font-medium">{p.name}</span>
-                        </div>
-                    )}
-                    renderDetail={(p: any) => (
-                        <div className="space-y-1">
-                            <DetailField label="Name" value={p.name} />
-                            <DetailField label="Description" value={p.description} />
-                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><AlgorithmSummary items={p.allowedAlgorithms} /></div>
-                            <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
-                            <DetailField label="Max Path Length" value={p.maxPathLength?.toString()} />
-                            <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
-                        </div>
-                    )}
-                />
+                            let sans = '';
+                            try {
+                                const s = JSON.parse(cert.subjectAlternativeNamesJson || '[]');
+                                sans = Array.isArray(s) ? s.join(', ') : cert.subjectAlternativeNamesJson;
+                            } catch { sans = cert.subjectAlternativeNamesJson || ''; }
 
-                {/* Certificate Profiles */}
-                <DataCard
-                    title="Certificate Profiles"
-                    fetchData={() => apiGet<any[]>('/api/v1/admin/cert-profiles')}
-                    keyExtractor={(p: any) => p.id}
-                    emptyMessage="No certificate profiles"
-                    detailMode="modal"
-                    modalTitle={(p: any) => p.name || 'Certificate Profile'}
-                    modalFullViewUrl={() => '/profiles'}
-                    renderSummary={(p: any) => (
-                        <div className="flex items-center gap-2">
-                            <StatusBadge status={p.isCaProfile ? 'active' : 'pending'} label={p.isCaProfile ? 'CA' : 'Leaf'} />
-                            <span className="truncate font-medium">{p.name}</span>
-                        </div>
-                    )}
-                    renderDetail={(p: any) => (
-                        <div className="space-y-1">
-                            <DetailField label="Name" value={p.name} />
-                            <DetailField label="Description" value={p.description} />
-                            <DetailField label="Validity Min" value={p.validityPeriodMin} />
-                            <DetailField label="Validity Max" value={p.validityPeriodMax} />
-                            <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
-                            <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                            <div className="py-1"><span className="text-xs text-ink-muted">Keys and signatures</span><KeyPolicySummary algorithms={p.allowedKeyAlgorithms} sizes={p.allowedKeySizes} signatures={p.allowedSignatureAlgorithms} /></div>
-                            <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
-                        </div>
-                    )}
-                />
+                            return (
+                                <div className="space-y-1">
+                                    {cert.revoked && (
+                                        <div className="bg-crit-soft border border-crit/40 rounded px-3 py-2 mb-3">
+                                            <StatusBadge status="revoked" label="Revoked" />
+                                            <span className="text-xs text-crit ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
+                                        </div>
+                                    )}
+                                    <DetailField label="Serial" value={cert.serialNumber} mono />
+                                    <DetailField label="Subject" value={cert.subjectDN} />
+                                    <DetailField label="Issuer" value={cert.issuer} />
+                                    <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
+                                    <DetailField label="Not After" value={formatDate(cert.notAfter)} />
+                                    <DetailField label="Is CA" value={cert.isCA ? 'Yes' : 'No'} />
+                                    {sans && <DetailField label="SANs" value={sans} />}
+                                    <DetailField label="Thumbprints" value={thumbprints} mono />
+                                </div>
+                            );
+                        }}
+                        actions={(cert: any) => [
+                            ...(certStatus(cert) === 'active' ? [{
+                                label: 'Revoke',
+                                // Opens the reason picker below; the card's own modal closes on click.
+                                onClick: () => { setQuickRevokeReason('Unspecified'); setQuickRevoke(cert); },
+                                variant: 'danger' as const,
+                            }] : []),
+                            ...(certStatus(cert) === 'active' ? [{
+                                label: reissueLoadingId === cert.certificateId ? 'Loading...' : 'Reissue',
+                                onClick: () => openReissueFromCard(cert),
+                                variant: 'primary' as const,
+                            }] : []),
+                        ]}
+                    />
+
+                    {/* Signing Profiles */}
+                    <DataCard
+                        title="Signing Profiles"
+                        fetchData={() => apiGet<any[]>('/api/v1/admin/signing-profiles')}
+                        keyExtractor={(p: any) => p.id}
+                        emptyMessage="No signing profiles"
+                        detailMode="modal"
+                        modalTitle={(p: any) => p.name || 'Signing Profile'}
+                        modalFullViewUrl={() => '/profiles'}
+                        onViewAll={() => navigate('/profiles')}
+                        renderSummary={(p: any) => (
+                            <div className="flex items-center gap-2">
+                                {p.isDefault && <Tag label="Default" tone="accent" />}
+                                <span className="truncate font-medium">{p.name}</span>
+                            </div>
+                        )}
+                        renderDetail={(p: any) => (
+                            <div className="space-y-1">
+                                <DetailField label="Name" value={p.name} />
+                                <DetailField label="Description" value={p.description} />
+                                <div className="py-1"><span className="text-xs text-ink-muted">Allowed Algorithms</span><AlgorithmSummary items={p.allowedAlgorithms} /></div>
+                                <div className="py-1"><span className="text-xs text-ink-muted">Allowed EKUs</span><CeilingList items={p.allowedEKUs || p.allowedEkus} noun="EKU" /></div>
+                                <DetailField label="Max Path Length" value={p.maxPathLength?.toString()} />
+                                <DetailField label="Default" value={p.isDefault ? 'Yes' : 'No'} />
+                            </div>
+                        )}
+                    />
+                </div>
+                <div className="space-y-6">
+                    {/* Recent Audit Logs */}
+                    <DataCard
+                        key={`recent-${scopeCaId ?? "all"}`}
+                        title="Recent Activity"
+                        fetchData={async () => {
+                            const data = await apiGet<any>(`/api/v1/admin/audit?pageSize=10${caQuery(true)}`);
+                            return data.items || [];
+                        }}
+                        keyExtractor={(log: any) => log.id}
+                        onViewAll={() => navigate('/audit')}
+                        maxItems={8}
+                        emptyMessage="No audit entries"
+                        detailMode="modal"
+                        modalTitle={(log: any) => `${log.actionType || 'Audit Entry'}`}
+                        modalFullViewUrl={() => '/audit'}
+                        renderSummary={(log: any) => (
+                            <div className="flex items-center gap-2 text-xs">
+                                <span className="text-ink-muted min-w-[140px]">{formatDate(log.timestamp)}</span>
+                                <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'Failed'} />
+                                <span className="text-accent-ink">{log.actorUsername || 'system'}</span>
+                                <span className="text-ink-muted">{log.actionType}</span>
+                            </div>
+                        )}
+                        renderDetail={(log: any) => (
+                            <div className="space-y-1">
+                                <DetailField label="Action" value={log.actionType} />
+                                <DetailField label="Actor" value={`${log.actorUsername || 'N/A'} (${log.actorUserId || 'N/A'})`} />
+                                <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
+                                <DetailField label="Target" value={`${log.targetEntityType || ''} ${log.targetEntityId || ''}`} />
+                                <DetailField label="Source IP" value={log.sourceIp} />
+                                <DetailField label="Success" value={log.success ? 'Yes' : 'No'} />
+                                <DetailField label="Error" value={log.errorMessage} />
+                                {log.detailsJson && (
+                                    <div className="py-1">
+                                        <span className="label-caps">Details</span>
+                                        <StructuredValue className="mt-1" json={log.detailsJson} />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    />
+
+                    {/* Pending CSRs */}
+                    <DataCard
+                        key={`pending-${scopeCaId ?? "all"}`}
+                        title="Pending Certificate Requests"
+                        fetchData={async () => {
+                            // /admin/requests returns ALL requests; this card must show only the ones
+                            // awaiting approval, otherwise issued/approved requests appear under a "pending"
+                            // badge (and look like they're all still pending).
+                            const data = await apiGet<any>(`/api/v1/admin/requests${caQuery()}`);
+                            const items: any[] = Array.isArray(data) ? data : (data?.items || []);
+                            return items.filter((csr: any) => {
+                                if (csr.issuedCertificateId) return false;
+                                const s = (csr.status || '').toLowerCase();
+                                return s === '' || s === 'pending' || s === 'pendingapproval' || s === 'partiallyapproved';
+                            });
+                        }}
+                        keyExtractor={(csr: any) => csr.requestId || csr.id}
+                        maxItems={5}
+                        emptyMessage="No pending requests"
+                        detailMode="modal"
+                        modalTitle={(csr: any) => csr.subjectName || 'CSR Details'}
+                        modalFullViewUrl={() => '/certificates/requests'}
+                        renderSummary={(csr: any) => (
+                            <div className="flex items-center gap-2">
+                                <StatusBadge status="pending" />
+                                <span className="truncate">{csr.subjectName}</span>
+                                <span className="text-xs text-ink-muted">{csr.keyAlgorithm} {csr.keySize}</span>
+                            </div>
+                        )}
+                        renderDetail={(csr: any) => (
+                            <div className="space-y-1">
+                                <DetailField label="Subject" value={csr.subjectName} />
+                                <DetailField label="Key Algorithm" value={csr.keyAlgorithm} />
+                                <DetailField label="Key Size" value={csr.keySize} />
+                                <DetailField label="Signature" value={csr.signatureAlgorithm} />
+                                <DetailField label="SANs" value={Array.isArray(csr.subjectAlternativeNames) ? csr.subjectAlternativeNames.join(', ') : csr.subjectAlternativeNames} />
+                            </div>
+                        )}
+                    />
+
+                    {/* Certificate Profiles */}
+                    <DataCard
+                        title="Certificate Profiles"
+                        fetchData={() => apiGet<any[]>('/api/v1/admin/cert-profiles')}
+                        keyExtractor={(p: any) => p.id}
+                        emptyMessage="No certificate profiles"
+                        detailMode="modal"
+                        modalTitle={(p: any) => p.name || 'Certificate Profile'}
+                        modalFullViewUrl={() => '/profiles'}
+                        onViewAll={() => navigate('/profiles')}
+                        renderSummary={(p: any) => (
+                            <div className="flex items-center gap-2">
+                                <Tag label={p.isCaProfile ? 'CA' : 'Leaf'} />
+                                <span className="truncate font-medium">{p.name}</span>
+                            </div>
+                        )}
+                        renderDetail={(p: any) => (
+                            <div className="space-y-1">
+                                <DetailField label="Name" value={p.name} />
+                                <DetailField label="Description" value={p.description} />
+                                <DetailField label="Validity Min" value={periodText(p.validityPeriodMin)} />
+                                <DetailField label="Validity Max" value={periodText(p.validityPeriodMax)} />
+                                <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
+                                <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
+                                <div className="py-1"><span className="text-xs text-ink-muted">Keys and signatures</span><KeyPolicySummary algorithms={p.allowedKeyAlgorithms} sizes={p.allowedKeySizes} signatures={p.allowedSignatureAlgorithms} /></div>
+                                <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
+                            </div>
+                        )}
+                    />
+                </div>
             </div>
 
             {/* Shared Reissue Modal */}

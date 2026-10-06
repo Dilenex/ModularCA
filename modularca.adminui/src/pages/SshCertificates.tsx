@@ -4,7 +4,7 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
@@ -153,7 +153,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const keyStatusBadge = (key: any) => {
         if (key.isEnabled === false) return <StatusBadge status="revoked" label="Disabled" />;
         if (pendingCeremonies.some((c: any) => c.targetEntityId === key.id && c.operationType === 'DeleteSshCa')) return <StatusBadge status="pending" label="Disable Pending" />;
-        return <StatusBadge status="active" label="CA Key" />;
+        return <Tag label="CA Key" />;
     };
 
     const columns: DataTableColumn<any>[] = [
@@ -394,7 +394,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     }, [caKeys]);
 
     useEffect(() => {
-        if (!selectedCaKeyId) return;
+        if (!selectedCaKeyId) { setLoading(false); return; }
         let cancelled = false;
         setLoading(true);
         setError(null);
@@ -604,7 +604,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         {
             key: 'status', header: 'Status', defaultWidth: 110, truncate: false,
             exportValue: (c) => (c.isRevoked ? 'Revoked' : (certIsUser(c) ? 'User' : 'Host')),
-            render: (c) => c.isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <StatusBadge status={certIsUser(c) ? 'pending' : 'active'} label={certIsUser(c) ? 'User' : 'Host'} />,
+            render: (c) => c.isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <Tag label={certIsUser(c) ? 'User' : 'Host'} />,
         },
         { key: 'keyId', header: 'Key ID', defaultWidth: 180, minWidth: 130, truncate: false, exportValue: (c) => c.keyId || c.identity || '', render: (c) => <span className={`text-sm truncate ${c.isRevoked ? 'text-ink-muted line-through' : 'text-ink'}`}>{c.keyId || c.identity}</span> },
         { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => c.serialNumber || c.serial || '', render: (c) => <span className="data-mono text-ink-muted">#{c.serialNumber || c.serial}</span> },

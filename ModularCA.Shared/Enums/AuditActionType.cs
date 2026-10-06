@@ -360,6 +360,15 @@ public static class AuditActionType
     /// The action types an audit search for <paramref name="actionType"/> matches: the type itself,
     /// plus its retired tenant name for a space event, or its space name for a retired tenant event.
     /// </summary>
+    /// <summary>Every action name declared here, sorted.</summary>
+    public static IReadOnlyList<string> All { get; } = typeof(AuditActionType)
+        .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+        .Where(f => f.IsLiteral && f.FieldType == typeof(string))
+        .Select(f => (string)f.GetRawConstantValue()!)
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(n => n, StringComparer.Ordinal)
+        .ToList();
+
     public static IReadOnlyList<string> Synonyms(string actionType)
     {
         if (RetiredNames.TryGetValue(actionType, out var retired))

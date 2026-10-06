@@ -18,6 +18,7 @@ import {
     updateSchedulerJob,
 } from '../api/scheduler';
 import { inputClass as inputCls, labelClass as labelCls, FieldHint } from '@shared/components/forms';
+import { actionButton } from '@shared/components/actionButtons';
 
 const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
 const CRON_5_FIELD = /^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/;
@@ -168,12 +169,12 @@ const SchedulerJobDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={() => setConfirmRun(true)} disabled={running}
-                        className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 disabled:opacity-50 transition-colors">
+                        className={actionButton}>
                         {running ? 'Running…' : 'Run Now'}
                     </button>
                     {toggleable && (
                         <button onClick={() => (job.enabled ? setConfirmDisable(true) : toggle())} disabled={toggling}
-                            className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover disabled:opacity-50 transition-colors">
+                            className={actionButton}>
                             {job.enabled ? 'Disable' : 'Enable'}
                         </button>
                     )}

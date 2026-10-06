@@ -19,6 +19,8 @@ import { renameColumnKeys } from '../tablePrefsKeys';
 import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
 import { sortRows } from '../tableSort';
+import { findRows } from '../tableFind';
+import { columnTrack } from '../tableTracks';
 import type { SortSpec } from '../tableQuery';
 
 /* ── public API ───────────────────────────────────────────────────────────── */
@@ -76,6 +78,11 @@ export interface DataTableProps<Row> {
     error?: NoticeInput | null;
     empty?: React.ReactNode;
     title?: string;
+    /** Offer a find box that narrows the rows already loaded, by the text of every column.
+     *  Not for a table whose parent pages or filters on the server. */
+    findable?: boolean;
+    /** Shown at the right end of the title bar, after Export: the table's own "New …" button. */
+    toolbarEnd?: React.ReactNode;
     /** Show selection checkboxes + bulk-action toolbar. */
     selectable?: boolean;
     bulkActions?: DataTableBulkAction<Row>[];
@@ -143,7 +150,7 @@ const EMPTY_SET: Set<string> = new Set();
 
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
-    tableId, renamedColumns, columns, rows, rowKey, loading, error, empty, title, onRowClick: onRowOpen,
+    tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarEnd, onRowClick: onRowOpen,
     selectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
@@ -151,6 +158,10 @@ export function DataTable<Row>({
     sort: sortProp, onSortChange, page, pageSize, totalPages: totalPagesProp, onPageChange, pageSizeOptions, onPageSizeChange,
 }: DataTableProps<Row>) {
     const navigate = useNavigate();
+
+    const [typed, setTyped] = useState('');
+    const rows = useMemo(() => (findable ? findRows(loadedRows, columns, typed) : loadedRows), [findable, loadedRows, columns, typed]);
+    const narrowed = rows.length !== loadedRows.length;
 
     /* sorting — the parent's when it re-queries (server mode); otherwise the table's own */
     const [internalSort, setInternalSort] = useState<SortSpec | null>(sortProp ?? null);
@@ -267,11 +278,12 @@ export function DataTable<Row>({
         return prefs.widths[col.key];
     };
 
-    // A column track: filler → minmax(min, 1fr) so it expands to fill; others → a fixed px width
-    // (resized value, else default). Resizing changes only the dragged column; the filler absorbs
-    // the slack and horizontal scroll kicks in past `tableMinWidth`.
+    // A column track: filler → minmax(min, 1fr) so it expands to fill; a resized column → its px
+    // width; an unsized one → its default, growing a little while there is room (columnTrack).
+    // Resizing changes only the dragged column; the filler absorbs the slack and horizontal
+    // scroll kicks in past `tableMinWidth`.
     const trackFor = (c: DataTableColumn<Row>): string =>
-        flexKeys.has(c.key) ? `minmax(${c.minWidth ?? 80}px, 1fr)` : `${widthFor(c) ?? c.defaultWidth ?? 120}px`;
+        flexKeys.has(c.key) ? `minmax(${c.minWidth ?? 80}px, 1fr)` : columnTrack(c.defaultWidth, widthFor(c));
 
     const gridTemplate = useMemo(() => {
         const parts: string[] = [];
@@ -364,10 +376,15 @@ export function DataTable<Row>({
                             <button onClick={clearSelection} className="text-xs text-ink-muted hover:underline">Deselect</button>
                         </>
                     ) : (
-                        <h3 className="text-sm font-semibold text-ink">{title}{title ? ' ' : ''}<span className="text-ink-muted font-normal">({totalCount ?? rows.length})</span></h3>
+                        <h3 className="text-sm font-semibold text-ink">{title}{title ? ' ' : ''}<span className="text-ink-muted font-normal">({narrowed ? `${rows.length} of ${loadedRows.length}` : (totalCount ?? rows.length)})</span></h3>
                     )}
                 </div>
                 <div className="flex items-center gap-2">
+                    {findable && (
+                        <input type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Find in this table"
+                            aria-label={title ? `Find in ${title}` : 'Find in this table'}
+                            className="w-48 px-2.5 py-1 text-xs bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
+                    )}
                     <div className="relative">
                         <button onClick={() => setMenuOpen((o) => !o)}
                             className="px-2.5 py-1 text-xs rounded border border-line-strong bg-raised text-ink hover:bg-hover transition-colors inline-flex items-center gap-1">
@@ -401,6 +418,7 @@ export function DataTable<Row>({
                             {exporting ? 'Exporting…' : 'Export CSV'}
                         </button>
                     )}
+                    {toolbarEnd}
                 </div>
             </div>
 
@@ -427,7 +445,9 @@ export function DataTable<Row>({
             {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading…</div>}
             {error && <div className="p-3"><InlineNotice notice={error} /></div>}
             {!loading && !error && rows.length === 0 && (
-                <div className="p-6 text-sm text-ink-muted text-center">{empty || 'No rows'}</div>
+                <div className="p-6 text-sm text-ink-muted text-center">
+                    {loadedRows.length > 0 ? <>Nothing here matches "{typed}". <button onClick={() => setTyped('')} className="text-accent-ink hover:underline">Clear</button></> : (empty || 'No rows')}
+                </div>
             )}
 
             {/* grid */}

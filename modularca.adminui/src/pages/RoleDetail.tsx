@@ -6,14 +6,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { capabilityCategory, categoryStatus } from './RoleManagement';
+import { capabilityCategory } from './RoleManagement';
 import type { RoleDetail as RoleDetailModel, RoleCapability } from './RoleManagement';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
 
 const ALL_CAPABILITIES = [
     'cert.request', 'cert.view', 'cert.revoke', 'cert.reissue', 'cert.approve',
@@ -161,14 +162,14 @@ const RoleDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'Roles', to: '/roles' }, { label: role.name }]}
             title={role.name}
-            status={<StatusBadge status={role.isBuiltIn ? 'pending' : 'active'} label={role.isBuiltIn ? 'Built-in' : 'Custom'} />}
+            status={<Tag label={role.isBuiltIn ? 'Built-in' : 'Custom'} />}
             subtitle={role.description ? role.description : undefined}
             editable={!role.isBuiltIn}
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !form.name}
             actions={!role.isBuiltIn ? (
-                <button onClick={deleteRole} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Delete</button>
+                <button onClick={deleteRole} className={actionButtonDanger}>Delete</button>
             ) : undefined}
         >
             {(mode) => (<>
@@ -224,7 +225,7 @@ const RoleDetail: React.FC = () => {
                                 Leave both blank to grant this capability everywhere. Fill both to scope it to one resource, for example type <span className="font-mono">ca</span> with a CA's id grants it on that CA only. Setting one without the other has no effect.
                                 {resourceHalfFilled && ' Fill in the other field or clear this one before adding.'}
                             </FieldHint>
-                            <button onClick={addCapability} disabled={!newCapability || resourceHalfFilled} className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50">Add Capability</button>
+                            <button onClick={addCapability} disabled={!newCapability || resourceHalfFilled} className={actionButtonPrimary}>Add Capability</button>
                         </div>
                     )}
 
@@ -235,7 +236,7 @@ const RoleDetail: React.FC = () => {
                             Object.entries(groupedEdit).map(([category, caps]) => (
                                 <div key={category} className="mb-3 last:mb-0">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <StatusBadge status={categoryStatus(category)} label={category} />
+                                        <Tag label={category} />
                                         <span className="text-[10px] text-ink-muted">({caps.length})</span>
                                     </div>
                                     <div className="bg-sunken border border-line rounded overflow-hidden">
@@ -264,7 +265,7 @@ const RoleDetail: React.FC = () => {
                             Object.entries(groupedView).map(([category, caps]) => (
                                 <div key={category} className="mb-3 last:mb-0">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <StatusBadge status={categoryStatus(category)} label={category} />
+                                        <Tag label={category} />
                                         <span className="text-[10px] text-ink-muted">({caps.length})</span>
                                     </div>
                                     <div className="bg-sunken border border-line rounded overflow-hidden">

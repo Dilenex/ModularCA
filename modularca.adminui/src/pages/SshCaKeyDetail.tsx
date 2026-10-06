@@ -6,11 +6,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -25,7 +26,6 @@ function downloadText(content: string, filename: string) {
     URL.revokeObjectURL(url);
 }
 
-const btnCls = 'px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors';
 
 /// <summary>
 /// Read-only detail page for a single SSH CA key: shows algorithm, validity, public key and
@@ -112,16 +112,16 @@ const SshCaKeyDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: key.name || 'Unnamed' }]}
             title={key.name || 'Unnamed'}
-            status={enabled ? <StatusBadge status="active" label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
+            status={enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
             subtitle={algorithm}
             backTo="/ssh"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={handleDownloadPublicKey} className={btnCls}>Download Public Key (.pub)</button>
-                    <button onClick={handleDownloadKrl} className={btnCls}>Download KRL</button>
+                    <button onClick={handleDownloadPublicKey} className={actionButton}>Download Public Key (.pub)</button>
+                    <button onClick={handleDownloadKrl} className={actionButton}>Download KRL</button>
                     {enabled && (
                         <button onClick={() => setConfirmOpen(true)} disabled={disabling}
-                            className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">
+                            className={actionButtonDanger}>
                             {disabling ? 'Disabling…' : 'Disable'}
                         </button>
                     )}

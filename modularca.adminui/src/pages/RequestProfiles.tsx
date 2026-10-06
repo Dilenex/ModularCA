@@ -4,7 +4,7 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
@@ -89,9 +89,9 @@ const RequestProfiles: React.FC = () => {
                 </span>
             ),
         },
-        { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <StatusBadge status={p.requireApproval ? 'pending' : 'enabled'} label={p.requireApproval ? 'Required' : 'Auto'} /> },
+        { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <Tag label={p.requireApproval ? 'Required' : 'Auto'} /> },
         { key: 'dnRules', header: 'DN Rules', defaultWidth: 100, exportValue: (p) => (p.subjectDnRules?.length || 0), render: (p) => <span className="text-xs text-ink">{p.subjectDnRules?.length || 0} rules</span> },
-        { key: 'san', header: 'SAN', defaultWidth: 110, truncate: false, exportValue: (p) => (p.sanRules?.required ? 'Required' : 'Optional'), render: (p) => <StatusBadge status={p.sanRules?.required ? 'active' : 'disabled'} label={p.sanRules?.required ? 'Required' : 'Optional'} /> },
+        { key: 'san', header: 'SAN', defaultWidth: 110, truncate: false, exportValue: (p) => (p.sanRules?.required ? 'Required' : 'Optional'), render: (p) => <Tag label={p.sanRules?.required ? 'Required' : 'Optional'} /> },
         { key: 'maxValidity', header: 'Max Validity', defaultWidth: 130, exportValue: (p) => p.maxValidityPeriod || '', render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityPeriod || '-'}</span> },
     ];
 
@@ -105,14 +105,11 @@ const RequestProfiles: React.FC = () => {
                 Manage enrollment request profiles that define subject DN rules, SAN constraints, and approval requirements.
             </p>
 
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">All Profiles</h3>
-                <NewProfileButton type="request" />
-            </div>
-
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="request" />}
                 tableId="request-profiles"
                 title="Request Profiles"
+                findable
                 rows={profiles}
                 rowKey={(p) => p.id}
                 loading={loading}

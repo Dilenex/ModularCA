@@ -49,7 +49,13 @@ public class AdminAuditController : ControllerBase
     }
 
     /// <summary>
-    /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA,
+    /// Every action name an audit record can carry, sorted, for the console's Action filter.
+    /// </summary>
+    [HttpGet("action-types")]
+    public IActionResult GetActionTypes() => Ok(AuditActionType.All);
+
+    /// <summary>
+    /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA, outcome,
     /// target, and space (records stamped with the space, its CAs, the space itself and its groups, or
     /// records of its retired chain from before 0.4.0). Each entry carries its <c>SpaceId</c>.
     /// System admins/auditors see all logs. CA-scoped auditors only see logs for their assigned CAs.
@@ -68,12 +74,15 @@ public class AdminAuditController : ControllerBase
         [FromQuery] Guid? spaceId = null,
         [FromQuery] string? sort = null,
         [FromQuery] string? targetEntityType = null,
-        [FromQuery] string? targetEntityId = null)
+        [FromQuery] string? targetEntityId = null,
+        [FromQuery] bool? success = null)
     {
         if (_auditDb == null)
             return StatusCode(503, new { error = "Audit database is not configured" });
 
         var query = _auditDb.AuditLogs.AsQueryable();
+        if (success.HasValue)
+            query = query.Where(a => a.Success == success.Value);
 
         // One entity's activity: the record drawers' Audit tab asks by target.
         if (!string.IsNullOrWhiteSpace(targetEntityType))

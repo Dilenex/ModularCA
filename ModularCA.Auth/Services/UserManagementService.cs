@@ -593,6 +593,7 @@ namespace ModularCA.Auth.Services
                 IsLocked = user.IsLocked,
                 PasswordNeverExpires = user.PasswordNeverExpires,
                 CreatedAt = user.CreatedAt,
+                LastLoginAt = user.LastLoginAt,
                 Groups = user.GroupMemberships?.Select(gm => new GroupMembershipDto
                 {
                     GroupId = gm.Group.Id,

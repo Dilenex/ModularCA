@@ -178,6 +178,25 @@ public sealed class AdminCertificateChainEndpointTests
     }
 
     [Fact]
+    public async Task The_certificate_page_is_told_the_key_and_signature_algorithm()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var pki = SeedPki(db);
+        using var x509 = X509Certificate2.CreateFromPem(pki.Leaf.Pem);
+        pki.Leaf.RawCertificate = x509.RawData;
+        db.SaveChanges();
+
+        var controller = NewController(db, canView: true);
+        var task = (Task<ActionResult<ModularCA.Shared.Models.CertificateInfoModel>>)controller.GetType()
+            .GetMethod("GetCertificateInfo")!.Invoke(controller, [pki.Leaf.SerialNumber])!;
+        var model = Assert.IsType<ModularCA.Shared.Models.CertificateInfoModel>(Assert.IsType<OkObjectResult>((await task).Result).Value);
+
+        Assert.Equal("ECDSA", model.KeyAlgorithm);
+        Assert.Equal("256", model.KeySize);
+        Assert.Contains("ECDSA", model.SignatureAlgorithm, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task The_admin_file_download_serves_a_ca_certificate()
     {
         using var db = InMemoryDbContextFactory.Create();

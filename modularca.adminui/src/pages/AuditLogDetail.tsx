@@ -4,7 +4,7 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { MsaeWhyNotice } from './AuditLogs';
@@ -27,11 +27,11 @@ function auditTitle(type: string, log: any): string {
 
 function auditStatus(type: string, log: any): React.ReactNode {
     if (type === 'network') {
-        if (log.blocked) return <StatusBadge status="revoked" label="BLOCKED" />;
+        if (log.blocked) return <StatusBadge status="revoked" label="Blocked" />;
         if (log.statusCode >= 400) return <StatusBadge status="expired" label={`${log.statusCode}`} />;
         return <StatusBadge status="active" label={`${log.statusCode ?? 'OK'}`} />;
     }
-    return <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'FAIL'} />;
+    return <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'Failed'} />;
 }
 
 /// <summary>
@@ -81,7 +81,7 @@ const AuditLogDetail: React.FC = () => {
             breadcrumbs={[{ label: 'Audit Logs', to: '/audit' }, { label: typeLabel }, { label: auditTitle(type, log) }]}
             title={auditTitle(type, log)}
             status={auditStatus(type, log)}
-            subtitle={<><StatusBadge status="pending" label={typeLabel} /> <span className="ml-2">{formatDate(log.timestamp)}</span></>}
+            subtitle={<><Tag label={typeLabel} /> <span className="ml-2">{formatDate(log.timestamp)}</span></>}
             backTo="/audit"
         >
             {() => (

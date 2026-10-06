@@ -11,7 +11,7 @@ export interface DrawerProps {
     open: boolean;
     onClose: () => void;
     title?: React.ReactNode;
-    /** Tailwind max-width class for the panel. Default 'max-w-md'. */
+    /** Tailwind max-width class for the panel. Default 'max-w-lg', which holds a 32-character serial or a UUID on one line. */
     widthClass?: string;
     /** Optional sticky footer (e.g. an "Open full page" CTA). */
     footer?: React.ReactNode;
@@ -23,7 +23,7 @@ export interface DrawerProps {
  * Closes on backdrop click or Escape. For rich/editable detail, link to a full route from the
  * footer instead of growing this.
  */
-export const Drawer: React.FC<DrawerProps> = ({ open, onClose, title, widthClass = 'max-w-md', footer, children }) => {
+export const Drawer: React.FC<DrawerProps> = ({ open, onClose, title, widthClass = 'max-w-lg', footer, children }) => {
     useEffect(() => {
         if (!open) return;
         const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

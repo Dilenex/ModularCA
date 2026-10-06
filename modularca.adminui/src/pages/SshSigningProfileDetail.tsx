@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
@@ -15,6 +15,7 @@ import { StepUpOps } from '@shared/generated';
 import { SshSigningProfileForm } from './profiles/SshSigningProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshSigningProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 const SSH_SIGNING_TAB = PROFILE_TYPES['ssh-signing'].listPath;
 
@@ -121,7 +122,7 @@ const SshSigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false 
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: SSH_SIGNING_TAB }, { label: 'SSH Signing Profiles', to: SSH_SIGNING_TAB }, { label: title }]}
             title={title}
-            status={isNew ? undefined : <span className="flex items-center gap-2">{p.allowUserCerts && <StatusBadge status="active" label="User" />}{p.allowHostCerts && <StatusBadge status="pending" label="Host" />}</span>}
+            status={isNew ? undefined : <span className="flex items-center gap-2">{p.allowUserCerts && <Tag label="User" />}{p.allowHostCerts && <Tag label="Host" />}</span>}
             subtitle={isNew ? undefined : caKeyName(p.sshCaKeyId)}
             backTo={SSH_SIGNING_TAB}
             editable
@@ -131,7 +132,7 @@ const SshSigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New SSH Signing Profile' : 'Edit SSH Signing Profile'}>

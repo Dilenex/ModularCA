@@ -13,6 +13,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 import { ToggleField } from '@shared/components/forms';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -172,8 +173,8 @@ const LdapPublisherDetail: React.FC = () => {
             saveDisabled={!dirty || !form.name.trim() || !form.host.trim() || !form.baseDn.trim()}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={test} disabled={testing} className="px-3 py-1.5 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 disabled:opacity-50 transition-colors">{testing ? 'Testing…' : 'Test Connection'}</button>
-                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>
+                    <button onClick={test} disabled={testing} className={actionButton}>{testing ? 'Testing…' : 'Test Connection'}</button>
+                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>
                 </div>
             }
         >

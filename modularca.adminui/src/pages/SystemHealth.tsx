@@ -9,6 +9,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { APP_VERSION } from '../version';
 import { StepUpOps } from '@shared/generated';
+import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -228,22 +229,10 @@ const CertStatsCard: React.FC = () => {
     const [error, setError] = useState<NoticeInput | null>(null);
 
     useEffect(() => {
-        apiGet<any>('/api/v1/admin/certificates')
-            .then((data) => {
-                const certs: any[] = Array.isArray(data) ? data : (data.items || []);
-                const now = new Date();
-                const in30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-                let active = 0, revoked = 0, expired = 0, expiring30 = 0;
-                certs.forEach((c) => {
-                    if (c.revoked) { revoked++; }
-                    else if (new Date(c.notAfter) < now) { expired++; }
-                    else {
-                        active++;
-                        if (new Date(c.notAfter) <= in30) expiring30++;
-                    }
-                });
-                setStats({ total: certs.length, active, revoked, expired, expiring30 });
-            })
+        // The server's counts over every certificate. Counting the rows of the list endpoint
+        // counted its first page, so an instance with more than 25 certificates read "Total 25".
+        apiGet<CertificateLifecycleSummaryModel>('/api/v1/admin/certificates/lifecycle-summary')
+            .then((s) => setStats({ total: s.total, active: s.active, revoked: s.revoked, expired: s.expired, expiring30: s.expiringWithin30Days }))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);

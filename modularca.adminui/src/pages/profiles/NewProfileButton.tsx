@@ -5,7 +5,7 @@ import { PROFILE_TYPES, profileNewPath, type ProfileType } from './profileRoutes
 /** The "New … profile" button on a Profile Management tab; opens that type's create page. */
 export const NewProfileButton: React.FC<{ type: ProfileType }> = ({ type }) => (
     <Link to={profileNewPath(type)}
-        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
+        className="px-2.5 py-1 text-xs font-medium rounded border border-accent bg-accent text-on-accent hover:bg-accent-hover transition-colors whitespace-nowrap">
         New {PROFILE_TYPES[type].noun}
     </Link>
 );

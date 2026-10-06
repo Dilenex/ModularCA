@@ -7,6 +7,8 @@ import { RecordFields } from '@shared/components/RecordFields';
 import { statusToneClass, type RecordDescriptor } from '@shared/records';
 import { useToast } from '@shared/context/ToastContext';
 import AuditTable from './AuditTable';
+import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
+import { badgeText } from '@shared/badgeText';
 
 /**
  * The one drawer body for every descriptor-driven list: a status chip and actions in the
@@ -38,16 +40,14 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
     };
 
     const toneBtn = (tone?: string) =>
-        tone === 'danger' ? 'bg-crit-soft text-crit border-crit/40 hover:bg-crit/15'
-            : tone === 'primary' ? 'bg-accent text-on-accent border-accent hover:bg-accent-hover'
-                : 'bg-raised text-ink border-line-strong hover:bg-hover';
+        tone === 'danger' ? actionButtonDanger : tone === 'primary' ? actionButtonPrimary : actionButton;
 
     return (
         <div className="space-y-3">
             {(status || (descriptor.actions && descriptor.actions.length > 0)) && (
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                     {status && (
-                        <span className={`inline-flex items-center px-1.5 py-px text-xs font-medium rounded-sm border ${statusToneClass(status.tone)}`}>{status.label}</span>
+                        <span className={`inline-flex items-center px-1.5 py-px text-xs font-medium rounded-sm border ${statusToneClass(status.tone)}`}>{badgeText(status.label)}</span>
                     )}
                     {descriptor.actions && descriptor.actions.length > 0 && (
                         <span className="flex items-center gap-1.5 flex-wrap">
@@ -55,7 +55,7 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
                                 const enabled = a.enabled ? a.enabled(row) : true;
                                 return (
                                     <button key={a.label} disabled={!enabled || busy != null} onClick={() => run(a.label, () => a.run(row))}
-                                        className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${toneBtn(a.tone)}`}>
+                                        className={toneBtn(a.tone)}>
                                         {busy === a.label ? `${a.label}…` : a.label}
                                     </button>
                                 );

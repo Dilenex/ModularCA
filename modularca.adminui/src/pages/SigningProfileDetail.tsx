@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
@@ -21,6 +21,7 @@ import { CertificatePoliciesView } from './profiles/CertificatePoliciesTable';
 import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/signingProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 const SIGNING_TAB = PROFILE_TYPES.signing.listPath;
 const spId = (p: any): string => p.id || p.signingProfileId;
@@ -155,7 +156,7 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: SIGNING_TAB }, { label: 'Signing Profiles', to: SIGNING_TAB }, { label: title }]}
             title={title}
-            status={!isNew && p.isDefault ? <StatusBadge status="active" label="Default" /> : undefined}
+            status={!isNew && p.isDefault ? <Tag label="Default" tone="accent" /> : undefined}
             subtitle={isNew ? undefined : <>{authorityName(p.issuerId)}{readOnly && <span className="block text-xs">{INSTANCE_WIDE_READ_ONLY}</span>}</>}
             backTo={SIGNING_TAB}
             editable={!readOnly}
@@ -165,7 +166,7 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Signing Profile' : 'Edit Signing Profile'}>

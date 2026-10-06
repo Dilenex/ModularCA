@@ -5,10 +5,11 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiBlob } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -115,15 +116,15 @@ const SshCertDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: title }]}
             title={title}
-            status={isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <StatusBadge status={isUser ? 'pending' : 'active'} label={isUser ? 'User' : 'Host'} />}
+            status={isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <Tag label={isUser ? 'User' : 'Host'} />}
             subtitle={<span className="font-mono">#{cert.serialNumber || cert.serial}</span>}
             backTo="/ssh"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={handleDownload} className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">Download Certificate</button>
+                    <button onClick={handleDownload} className={actionButton}>Download Certificate</button>
                     {!isRevoked && (
                         <button onClick={() => setConfirmOpen(true)} disabled={revoking}
-                            className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">
+                            className={actionButtonDanger}>
                             {revoking ? 'Revoking…' : 'Revoke'}
                         </button>
                     )}

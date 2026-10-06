@@ -389,7 +389,7 @@ const AcmeAuditSection: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'time', header: 'Time', defaultWidth: 180, minWidth: 140, exportValue: (e) => formatDate(e.timestamp || e.createdAt), render: (e) => <span className="text-xs text-ink-muted">{formatDate(e.timestamp || e.createdAt)}</span> },
-        { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (e) => (e.success !== false ? 'OK' : 'FAIL'), render: (e) => <StatusBadge status={e.success !== false ? 'active' : 'revoked'} label={e.success !== false ? 'OK' : 'FAIL'} /> },
+        { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, exportValue: (e) => (e.success !== false ? 'OK' : 'FAIL'), render: (e) => <StatusBadge status={e.success !== false ? 'active' : 'revoked'} label={e.success !== false ? 'OK' : 'Failed'} /> },
         { key: 'action', header: 'Action', defaultWidth: 200, exportValue: (e) => acmeAuditAction(e), render: (e) => <span className="text-sm text-ink truncate">{acmeAuditAction(e)}</span> },
         { key: 'clientIp', header: 'Client IP', defaultWidth: 160, exportValue: (e) => acmeAuditIp(e), render: (e) => <span className="data-mono text-ink-muted truncate">{acmeAuditIp(e) || '-'}</span> },
     ];

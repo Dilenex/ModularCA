@@ -15,8 +15,9 @@ import { SavedViews } from '@shared/components/SavedViews';
 import { REVOCATION_REASONS, RevocationReasonHint } from './CertificateDetail';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
+import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { Link } from 'react-router-dom';
-import { capitalize, expiryPhrase, expiryState, lifecycleTone, toneTextClass } from './certLifecycle';
+import { capitalize, expiryPhrase, expiryState, isoDay, lifecycleTone, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -73,6 +74,16 @@ function ExpiryCell({ cert }: { cert: any }) {
 }
 
 // Cross-page CSV: a fixed, complete field set (independent of which columns are visible/hidden).
+/** Key algorithm families the list can be narrowed to; the server matches a family or an exact name. */
+const KEY_ALGORITHM_FILTERS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA', 'SLH-DSA'];
+
+/** The "Expiring" choices, in days. */
+const EXPIRING_DAYS = [7, 30, 60, 90];
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The filter values for active certificates that expire within `days`, as the dashboard links them. */
+const expiringWithin = (days: number, now: Date = new Date()) =>
+    ({ status: 'active', notAfterFrom: '', notAfterTo: isoDay(new Date(now.getTime() + (days + 1) * DAY_MS)) });
+
 const CSV_HEADERS = ['Serial', 'Subject', 'Issuer', 'Status', 'Not Before', 'Not After', 'Key Algorithm', 'Revoked', 'Revocation Reason', 'Replaced', 'Replaced By'];
 const csvCells = (c: any): (string | number)[] => [
     c.serialNumber || '', c.subjectDN || '', c.issuer || '', certStatus(c),
@@ -360,7 +371,11 @@ const Certificates: React.FC = () => {
     };
 
     const advInput = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
-    const advLabel = 'block text-xs font-semibold text-ink-muted mb-1';
+    const advLabel = 'block label-caps mb-1';
+    // Which "Expiring" choice the current filters amount to, if any.
+    const expiringChoice = statusFilter === 'active' && !notAfterFrom
+        ? (EXPIRING_DAYS.find((n) => expiringWithin(n).notAfterTo === notAfterTo) ?? '')
+        : '';
     const advancedActive = !!(serialFilter || sanFilter || issuerFilter || caIdFilter || keyAlgorithmFilter || notAfterFrom || notAfterTo || issuedFrom || issuedTo);
     const clearAdvanced = () => {
         setSerialFilter(''); setSanFilter(''); setIssuerFilter('');
@@ -371,71 +386,82 @@ const Certificates: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">Certificates</h1>
 
-            {/* Search and Filter Bar */}
-            <div className="flex flex-wrap gap-4 items-center">
-                <input type="text" placeholder="Search subject, serial, SAN, or issuer..." value={search} onChange={(e) => setSearch(e.target.value)}
-                    className="flex-1 min-w-[250px] px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
-                <select value={statusFilter} onChange={(e) => setQ({ status: e.target.value })}
-                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
-                    <option value="all">All Statuses</option>
-                    <option value="active">Active</option>
-                    <option value="revoked">Revoked</option>
-                    <option value="expired">Expired</option>
-                </select>
-                <select value={replacedFilter} onChange={(e) => setQ({ replaced: e.target.value })} aria-label="Replacement"
-                    title="Replaced: reissued or renewed, or a newer valid certificate from the same CA has the same subject and names"
-                    className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent">
-                    <option value="">Replaced or not</option>
-                    <option value="yes">Replaced</option>
-                    <option value="no">Not replaced</option>
-                </select>
+            {/* Search and filters */}
+            <FilterBar>
+                <FilterField label="Search" grow>
+                    <input type="text" placeholder="Subject, serial, SAN or issuer" value={search} onChange={(e) => setSearch(e.target.value)} className={filterControlClass} />
+                </FilterField>
+                <FilterField label="Status">
+                    <select value={statusFilter} onChange={(e) => setQ({ status: e.target.value })} className={filterControlClass}>
+                        <option value="all">Any</option>
+                        <option value="active">Active</option>
+                        <option value="revoked">Revoked</option>
+                        <option value="expired">Expired</option>
+                    </select>
+                </FilterField>
+                <FilterField label="Expiring">
+                    <select value={expiringChoice} onChange={(e) => setQ(e.target.value ? expiringWithin(Number(e.target.value)) : { notAfterFrom: '', notAfterTo: '' })}
+                        title="Active certificates that expire within the chosen number of days" className={filterControlClass}>
+                        <option value="">Any time</option>
+                        {EXPIRING_DAYS.map((n) => <option key={n} value={n}>Within {n} days</option>)}
+                    </select>
+                </FilterField>
+                <FilterField label="Replacement">
+                    <select value={replacedFilter} onChange={(e) => setQ({ replaced: e.target.value })}
+                        title="Replaced: reissued or renewed, or a newer valid certificate from the same CA has the same subject and names" className={filterControlClass}>
+                        <option value="">Any</option>
+                        <option value="yes">Replaced</option>
+                        <option value="no">Not replaced</option>
+                    </select>
+                </FilterField>
                 <button onClick={() => setShowAdvanced((v) => !v)}
                     className={`px-3 py-2 text-sm rounded border transition-colors ${advancedActive ? 'bg-accent-soft text-accent-ink border-accent/40' : 'bg-raised text-ink border-line hover:bg-hover'}`}>
-                    {showAdvanced ? 'Hide advanced' : 'Advanced filters'}{advancedActive ? ' •' : ''}
+                    {showAdvanced ? 'Fewer filters' : 'More filters'}{advancedActive ? ' •' : ''}
                 </button>
-            </div>
+            </FilterBar>
 
-            {/* Advanced filters (collapsible) */}
+            {/* The rest of the filters. The issuing CA is offered only while the scope does not already name one. */}
             {showAdvanced && (
-                <div className="bg-raised border border-line rounded-lg p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="bg-raised border border-line rounded-lg p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                     <div><label className={advLabel}>Serial Number</label><input type="text" value={serialFilter} onChange={(e) => setSerialFilter(e.target.value)} placeholder="e.g. 01AB3F..." className={advInput} /></div>
                     <div><label className={advLabel}>Subject Alternative Name</label><input type="text" value={sanFilter} onChange={(e) => setSanFilter(e.target.value)} placeholder="e.g. *.example.com" className={advInput} /></div>
-                    <div>
-                        <label className={advLabel}>Issuing CA</label>
-                        <select value={caIdFilter} onChange={(e) => setQ({ caId: e.target.value })} className={advInput} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}>
-                            <option value="">All CAs</option>
-                            {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>)}
-                        </select>
-                    </div>
-                    <div><label className={advLabel}>Issuer DN</label><input type="text" value={issuerFilter} onChange={(e) => setIssuerFilter(e.target.value)} placeholder="e.g. CN=My CA" className={advInput} /></div>
+                    {!scopeLocked && (
+                        <div>
+                            <label className={advLabel}>Issuing CA</label>
+                            <select value={caIdFilter} onChange={(e) => setQ({ caId: e.target.value })} className={advInput}>
+                                <option value="">All CAs</option>
+                                {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>)}
+                            </select>
+                        </div>
+                    )}
                     <div>
                         <label className={advLabel}>Key Algorithm</label>
                         <select value={keyAlgorithmFilter} onChange={(e) => setQ({ keyAlgorithm: e.target.value })} className={advInput}>
                             <option value="">All Algorithms</option>
-                            <option value="RSA">RSA</option>
-                            <option value="ECDSA">ECDSA</option>
-                            <option value="Ed25519">Ed25519</option>
-                            <option value="Ed448">Ed448</option>
-                            <option value="DSA">DSA</option>
+                            {KEY_ALGORITHM_FILTERS.map((a) => <option key={a} value={a}>{a}</option>)}
                         </select>
                     </div>
-                    <div className="hidden lg:block" />
+                    {/* A saved view can still carry an issuer name; it is shown so it can be cleared. */}
+                    {issuerFilter && (
+                        <div><label className={advLabel}>Issuer DN</label><input type="text" value={issuerFilter} onChange={(e) => setIssuerFilter(e.target.value)} className={advInput} /></div>
+                    )}
                     <div><label className={advLabel}>Expires After</label><input type="date" value={notAfterFrom} max={notAfterTo || undefined} onChange={(e) => setQ({ notAfterFrom: e.target.value })} className={advInput} /></div>
                     <div>
                         <label className={advLabel}>Expires Before</label>
                         <input type="date" value={notAfterTo} min={notAfterFrom || undefined} onChange={(e) => setQ({ notAfterTo: e.target.value })} className={advInput} />
                         {expiresRangeInverted && <FieldHint tone="warn">"Expires After" is later than "Expires Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
                     </div>
-                    <div className="hidden lg:block" />
                     <div><label className={advLabel}>Issued After</label><input type="date" value={issuedFrom} max={issuedTo || undefined} onChange={(e) => setQ({ issuedFrom: e.target.value })} className={advInput} /></div>
                     <div>
                         <label className={advLabel}>Issued Before</label>
                         <input type="date" value={issuedTo} min={issuedFrom || undefined} onChange={(e) => setQ({ issuedTo: e.target.value })} className={advInput} />
                         {issuedRangeInverted && <FieldHint tone="warn">"Issued After" is later than "Issued Before", so no certificate can match and the list is empty. Swap the two dates.</FieldHint>}
                     </div>
-                    <div className="flex items-end">
-                        {advancedActive && <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-ink-muted hover:text-ink border border-line rounded transition-colors">Clear advanced</button>}
-                    </div>
+                    {advancedActive && (
+                        <div className="flex items-end">
+                            <button onClick={clearAdvanced} className="px-4 py-2 text-sm text-ink-muted hover:text-ink border border-line rounded transition-colors">Clear these filters</button>
+                        </div>
+                    )}
                 </div>
             )}
 

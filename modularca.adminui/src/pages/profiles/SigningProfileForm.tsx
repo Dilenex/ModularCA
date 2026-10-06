@@ -1,6 +1,6 @@
 import React from 'react';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { GroupedCheckboxList } from '@shared/components/CheckboxList';
 import { NameConstraintsEditor } from '@shared/components/NameConstraintsEditor';
 import type { EkuCatalog } from '../../hooks/useOidCatalog';
@@ -126,7 +126,7 @@ export const SigningProfileForm: React.FC<{
                             <label key={cid} className="flex items-center gap-2 text-sm text-ink cursor-pointer hover:bg-hover px-1 rounded">
                                 <input type="checkbox" checked={f.allowedCertProfileIds.includes(cid)} onChange={() => set('allowedCertProfileIds', toggle(f.allowedCertProfileIds, cid))} className="accent-accent" />
                                 <span>{cp.name}</span>
-                                {cp.isCaProfile && <StatusBadge status="active" label="CA" />}
+                                {cp.isCaProfile && <Tag label="CA" />}
                             </label>
                         );
                     })}

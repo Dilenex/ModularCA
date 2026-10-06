@@ -21,6 +21,7 @@ import { useScrollToHash } from '../hooks/useScrollToHash';
 import { ceremonyLink } from './ceremonyLinks';
 import { INSTANCE_CEREMONY_SETTINGS_PATH, KEY_CEREMONIES_ANCHOR, USERS_PATH, requirementWarning } from './ceremonyRefusal';
 import { useAuth } from '../context/AuthContext';
+import { actionButton } from '@shared/components/actionButtons';
 
 const num = (s: string) => (s.trim() === '' ? null : parseInt(s, 10));
 
@@ -206,8 +207,8 @@ const SpaceDetail: React.FC = () => {
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {t.isEnabled !== false
-                        ? <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 hover:text-warn transition-colors">Disable</button>
-                        : <button onClick={toggleEnabled} className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 hover:text-ok transition-colors">Enable</button>}
+                        ? <button onClick={toggleEnabled} className={actionButton}>Disable</button>
+                        : <button onClick={toggleEnabled} className={actionButton}>Enable</button>}
                 </div>
             }
         >

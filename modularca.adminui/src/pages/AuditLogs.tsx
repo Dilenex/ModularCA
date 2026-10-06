@@ -3,8 +3,9 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { scopeLabel } from '../scope';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { AuditFields } from '../components/AuditFields';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
@@ -43,7 +44,7 @@ const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'MSAE', 'Network'] as con
 export type Tab = typeof TABS[number];
 
 /** What the audit list keeps in the URL. Defaults stay out of the link. */
-const QUERY_DEFAULTS: TableQueryValues = { page: '1', pageSize: '25', sort: '-timestamp', tab: 'General', from: '', to: '', caId: '', actionType: '', user: '' };
+const QUERY_DEFAULTS: TableQueryValues = { page: '1', pageSize: '25', sort: '-timestamp', tab: 'General', from: '', to: '', caId: '', actionType: '', user: '', outcome: '' };
 const PAGE_SIZES = [25, 50, 100];
 
 type Category = 'general' | 'protocol' | 'network';
@@ -53,9 +54,9 @@ function tabCategory(tab: Tab): Category {
     return 'protocol';
 }
 
-const okFailBadge = (log: any) => <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'FAIL'} />;
+const okFailBadge = (log: any) => <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'Failed'} />;
 const networkBadge = (log: any) =>
-    log.blocked ? <StatusBadge status="revoked" label="BLOCKED" />
+    log.blocked ? <StatusBadge status="revoked" label="Blocked" />
         : log.statusCode >= 400 ? <StatusBadge status="expired" label={`${log.statusCode}`} />
             : <StatusBadge status="active" label={`${log.statusCode ?? 'OK'}`} />;
 
@@ -74,7 +75,7 @@ export function buildColumns(tab: Tab): DataTableColumn<any>[] {
             { key: 'sourceIp', header: 'Source IP', defaultWidth: 130, exportValue: (l) => l.sourceIp || '', render: (l) => <span className={`data-mono ${l.blocked ? 'text-crit' : 'text-ink'}`}>{l.sourceIp}</span> },
             { key: 'method', header: 'Method', defaultWidth: 90, exportValue: (l) => l.httpMethod || '', render: (l) => <span className="text-xs text-ink-muted font-medium">{l.httpMethod}</span> },
             { key: 'path', header: 'Request Path', defaultWidth: 220, exportValue: (l) => l.requestPath || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.requestPath}</span> },
-            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, exportValue: (l) => l.protocol || '', render: (l) => l.protocol ? <StatusBadge status="pending" label={l.protocol} /> : <span className="text-xs text-ink-muted">-</span> },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, exportValue: (l) => l.protocol || '', render: (l) => l.protocol ? <Tag label={l.protocol} /> : <span className="text-xs text-ink-muted">-</span> },
             { key: 'caLabel', header: 'CA', defaultWidth: 120, exportValue: (l) => l.caLabel || '', render: (l) => <span className="text-xs text-ink-muted truncate">{l.caLabel || '-'}</span> },
         ];
     }
@@ -192,6 +193,13 @@ const AuditLogs: React.FC = () => {
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [knownActionTypes, setKnownActionTypes] = useState<string[]>([]);
 
+    // Every action the server can record, for the Action filter.
+    useEffect(() => {
+        apiGet<string[]>('/api/v1/admin/audit/action-types')
+            .then((names) => setKnownActionTypes(Array.isArray(names) ? names : []))
+            .catch(() => { /* the filter then offers only "Any" */ });
+    }, []);
+
     // Fetch CAs for the filter dropdown
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
@@ -222,8 +230,11 @@ const AuditLogs: React.FC = () => {
         if (dateTo) params.set('to', dateTo);
         if (filterCaId) params.set('caId', filterCaId);
         else { const scoped = caQuery(); if (scoped.startsWith('?spaceId=')) params.set('spaceId', decodeURIComponent(scoped.slice('?spaceId='.length))); }
-        if (filterActionType) params.set('actionType', filterActionType);
-        if (q.user) params.set('user', q.user);
+        if (activeTab === 'General') {
+            if (filterActionType) params.set('actionType', filterActionType);
+            if (q.user) params.set('actorUsername', q.user);
+            if (q.outcome) params.set('success', q.outcome === 'ok' ? 'true' : 'false');
+        }
         if (activeTab === 'General' && q.sort) params.set('sort', q.sort);
 
         const path = activeTab === 'General'
@@ -240,17 +251,6 @@ const AuditLogs: React.FC = () => {
                 setTotalCount(data.total ?? data.totalCount ?? items.length);
                 setLoading(false);
 
-                // Collect unique action types for the filter dropdown
-                if (activeTab === 'General') {
-                    const types = new Set(knownActionTypes);
-                    for (const log of items) {
-                        if (log.actionType) types.add(log.actionType);
-                    }
-                    const sorted = Array.from(types).sort();
-                    if (sorted.length !== knownActionTypes.length) {
-                        setKnownActionTypes(sorted);
-                    }
-                }
             })
             .catch((err) => {
                 if (!cancelled) {
@@ -295,77 +295,56 @@ const AuditLogs: React.FC = () => {
                 ))}
             </div>
 
-            {/* CA Filter & Date Range Filters */}
-            <div className="flex flex-wrap gap-4 items-center">
-                <div className="flex items-center gap-2">
-                    <label className="text-xs text-ink-muted">CA:</label>
-                    <select
-                        value={filterCaId}
-                        onChange={(e) => setQ({ caId: e.target.value })}
-                        disabled={scopeLocked}
-                        title={scopeLocked ? 'Set by the scope in the sidebar' : undefined}
-                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                    >
-                        <option value="">All CAs</option>
-                        {authorities.map((ca) => (
-                            <option key={ca.id} value={ca.id}>{ca.label || ca.commonName || ca.id}</option>
-                        ))}
-                    </select>
-                </div>
-                <div className="flex items-center gap-2">
-                    <label className="text-xs text-ink-muted">From:</label>
-                    <input
-                        type="date"
-                        value={dateFrom}
-                        onChange={(e) => setQ({ from: e.target.value })}
-                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                    />
-                </div>
-                <div className="flex items-center gap-2">
-                    <label className="text-xs text-ink-muted">To:</label>
-                    <input
-                        type="date"
-                        value={dateTo}
-                        onChange={(e) => setQ({ to: e.target.value })}
-                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                    />
-                </div>
-                {activeTab === 'General' && (
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-ink-muted" htmlFor="audit-action-filter">Action <span className="text-ink-muted">(seen in the loaded entries)</span>:</label>
-                        <select
-                            id="audit-action-filter"
-                            value={filterActionType}
-                            onChange={(e) => setQ({ actionType: e.target.value })}
-                            title="Actions seen in the loaded entries. This is not the full list of action types; an action that has not appeared on a page you have viewed is not offered here."
-                            className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                        >
-                            <option value="">All actions</option>
-                            {knownActionTypes.map((t) => (
-                                <option key={t} value={t}>{t}</option>
+            {/* Filters. The CA is offered only while the scope does not already name one; the action,
+                outcome and user filters exist on the General log only. */}
+            <FilterBar>
+                {!scopeLocked && (
+                    <FilterField label="CA">
+                        <select value={filterCaId} onChange={(e) => setQ({ caId: e.target.value })} className={filterControlClass}>
+                            <option value="">All CAs</option>
+                            {authorities.map((ca) => (
+                                <option key={ca.id} value={ca.id}>{ca.label || ca.commonName || ca.id}</option>
                             ))}
                         </select>
-                    </div>
+                    </FilterField>
                 )}
-                <div className="flex items-center gap-2">
-                    <label className="text-xs text-ink-muted">User:</label>
-                    <input
-                        type="text"
-                        value={filterUser}
-                        onChange={(e) => setFilterUser(e.target.value)}
-                        placeholder="Username"
-                        className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent w-36"
-                    />
-                </div>
-                {(dateFrom || dateTo || filterCaId || filterActionType || filterUser) && (
+                <FilterField label="From">
+                    <input type="date" value={dateFrom} onChange={(e) => setQ({ from: e.target.value })} className={filterControlClass} />
+                </FilterField>
+                <FilterField label="To">
+                    <input type="date" value={dateTo} onChange={(e) => setQ({ to: e.target.value })} className={filterControlClass} />
+                </FilterField>
+                {activeTab === 'General' && (
+                    <>
+                        <FilterField label="Action">
+                            <select value={filterActionType} onChange={(e) => setQ({ actionType: e.target.value })} className={filterControlClass}>
+                                <option value="">Any</option>
+                                {knownActionTypes.map((t) => (
+                                    <option key={t} value={t}>{t}</option>
+                                ))}
+                            </select>
+                        </FilterField>
+                        <FilterField label="Outcome">
+                            <select value={q.outcome} onChange={(e) => setQ({ outcome: e.target.value })} className={filterControlClass}>
+                                <option value="">Any</option>
+                                <option value="ok">OK</option>
+                                <option value="failed">Failed</option>
+                            </select>
+                        </FilterField>
+                        <FilterField label="User">
+                            <input type="text" value={filterUser} onChange={(e) => setFilterUser(e.target.value)} placeholder="Exact username" className={`${filterControlClass} w-40`} />
+                        </FilterField>
+                    </>
+                )}
+                {(dateFrom || dateTo || (!scopeLocked && filterCaId) || filterActionType || filterUser || q.outcome) && (
                     <button
-                        onClick={() => { setFilterUser(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '' }); }}
-                        className="text-xs text-ink-muted hover:text-ink transition-colors"
+                        onClick={() => { setFilterUser(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '', outcome: '' }); }}
+                        className="px-3 py-2 text-sm text-ink-muted hover:text-ink transition-colors"
                     >
                         Clear filters
                     </button>
                 )}
-            </div>
+            </FilterBar>
 
             <SavedViews tableId="audit" current={currentView} onApply={applyView} />
 

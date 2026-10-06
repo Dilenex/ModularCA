@@ -25,6 +25,9 @@ namespace ModularCA.Shared.Models.Management
 
         public DateTime CreatedAt { get; set; }
 
+        /// <summary>When the user last completed a sign-in; null when they never have.</summary>
+        public DateTime? LastLoginAt { get; set; }
+
         /// <summary>CA group memberships for this user.</summary>
         public List<GroupMembershipDto>? Groups { get; set; }
     }

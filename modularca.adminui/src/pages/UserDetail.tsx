@@ -7,14 +7,14 @@ import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { groupChipClass } from './Users';
 import { StepUpOps } from '@shared/generated';
 import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
+import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -175,9 +175,7 @@ const UserDetail: React.FC = () => {
     const renderGroups = () => (
         <div className="flex gap-2 flex-wrap">
             {userGroups.map((g: any) => (
-                <span key={g.groupId} className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border ${groupChipClass(g)}`}>
-                    {g.displayName || g.groupName}
-                </span>
+                <Tag key={g.groupId} label={g.displayName || g.groupName} />
             ))}
             {userGroups.length === 0 && <span className="text-xs text-ink-muted">No groups assigned</span>}
         </div>
@@ -193,12 +191,12 @@ const UserDetail: React.FC = () => {
             editable
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={resetPassword} className="px-3 py-1.5 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 transition-colors">Reset Password</button>
-                    <button onClick={resetMfa} className="px-3 py-1.5 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 transition-colors">Reset MFA</button>
+                    <button onClick={resetPassword} className={actionButton}>Reset Password</button>
+                    <button onClick={resetMfa} className={actionButton}>Reset MFA</button>
                     {user.isActive !== false
-                        ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Disable Account</button>
-                        : <button onClick={enableAccount} className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors">Enable Account</button>}
-                    <button onClick={deleteUser} disabled={isSelf} title={isSelf ? 'You cannot delete your own account' : 'Delete this user'} className="px-3 py-1.5 text-xs bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Delete User</button>
+                        ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className={actionButton}>Disable Account</button>
+                        : <button onClick={enableAccount} className={actionButton}>Enable Account</button>}
+                    <button onClick={deleteUser} disabled={isSelf} title={isSelf ? 'You cannot delete your own account' : 'Delete this user'} className={actionButtonDanger}>Delete User</button>
                 </div>
             }
         >
@@ -238,7 +236,7 @@ const UserDetail: React.FC = () => {
                                         return (
                                             <button key={g.groupId} type="button" onClick={() => toggleRemove(g.groupId)}
                                                 title={staged ? 'Marked for removal — click to keep' : 'Click to remove'}
-                                                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${staged ? 'line-through opacity-70 bg-crit-soft text-crit border-crit/40' : groupChipClass(g)}`}>
+                                                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${staged ? 'line-through opacity-70 bg-crit-soft text-crit border-crit/40' : 'bg-sunken text-ink border-line-strong hover:bg-hover'}`}>
                                                 {g.displayName || g.groupName}
                                                 <span className="opacity-70">{staged ? '↺' : '×'}</span>
                                             </button>
@@ -264,11 +262,11 @@ const UserDetail: React.FC = () => {
                             )}
                             <div className="flex items-center gap-2 pt-1 flex-wrap">
                                 <button onClick={applyGroupChanges} disabled={groupBusy || (pendingAdd.length === 0 && pendingRemove.length === 0)}
-                                    className="px-3 py-1.5 text-xs bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
+                                    className={actionButtonPrimary}>
                                     {groupBusy ? 'Applying…' : `Apply changes (+${pendingAdd.length} / −${pendingRemove.length})`}
                                 </button>
                                 {(pendingAdd.length > 0 || pendingRemove.length > 0) && (
-                                    <button onClick={resetStaging} disabled={groupBusy} className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover disabled:opacity-50 transition-colors">Reset</button>
+                                    <button onClick={resetStaging} disabled={groupBusy} className={actionButton}>Reset</button>
                                 )}
                                 <span className="text-[10px] text-ink-muted">One MFA prompt; each privileged group change starts its own ceremony.</span>
                             </div>

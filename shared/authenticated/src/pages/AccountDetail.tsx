@@ -14,6 +14,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { MySecurity } from './MySecurity';
 import { AccessBadgesPanel } from '../components/AccessBadgesPanel';
 import { StepUpOps } from '@shared/generated';
+import { actionButton } from '@shared/components/actionButtons';
 
 const inputClass =
     'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
@@ -161,7 +162,7 @@ const GeneralTab: React.FC = () => {
 
             {mode === 'edit' && (
                 <div className="px-4 py-3 border-t border-line flex items-center justify-end gap-2">
-                    <button onClick={cancel} disabled={saving} className="px-3 py-1.5 text-xs text-ink hover:bg-hover rounded transition-colors disabled:opacity-50">
+                    <button onClick={cancel} disabled={saving} className={actionButton}>
                         Cancel
                     </button>
                     <button onClick={save} disabled={!dirty || saving} className="px-4 py-1.5 text-xs font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">

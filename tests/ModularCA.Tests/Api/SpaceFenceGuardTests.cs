@@ -69,6 +69,7 @@ public sealed class SpaceFenceGuardTests
         ["VersionController.Get"] = "no rows: the build version",
         ["WebAuthnController.ListCredentials"] = "own rows: the caller's credentials",
         ["AdminAcmeEabController.ListEabKeys"] = "instance credential: empty unless the cert.revoke fence is instance-wide",
+        ["AdminAuditController.GetActionTypes"] = "no rows: the action names the build declares",
         ["AdminAuditController.GetAcmeAudit"] = "capability: CA ids (a legacy row's label) from GetAccessibleCaIdsAsync(audit.view)",
         ["AdminAuditController.GetAcmeAuditById"] = "capability: CA ids (a legacy row's label) from GetAccessibleCaIdsAsync(audit.view)",
         ["AdminAuditController.GetAuditLogById"] = "capability: GetAccessibleCaIdsAsync(audit.view), system rows need system scope",

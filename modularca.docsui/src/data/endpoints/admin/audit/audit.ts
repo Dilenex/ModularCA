@@ -16,6 +16,7 @@ export const adminAudit: ApiEndpoint[] = [
             { name: 'spaceId', type: 'guid', required: false, description: 'Records about one space: its CAs, the space itself and its groups, or records stamped with it before 0.4.0. Replaces tenantId, which is refused with 400' },
             { name: 'targetEntityType', type: 'string', required: false, description: 'Target type of one entity\'s activity' },
             { name: 'targetEntityId', type: 'string', required: false, description: 'Target id of one entity\'s activity' },
+            { name: 'success', type: 'bool', required: false, description: 'Only records of actions that succeeded (true) or failed (false)' },
             { name: 'sort', type: 'string', required: false, description: 'Sort column and direction' },
             { name: 'page', type: 'int', required: false, description: 'Page number (default 1)' },
             { name: 'pageSize', type: 'int', required: false, description: 'Page size (default 50)' },
@@ -25,6 +26,17 @@ export const adminAudit: ApiEndpoint[] = [
         ],
         responseDescription: 'Paginated array of audit log entries.',
         notes: 'A caller with audit.view on some CAs only sees the records of those CAs.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/audit/action-types',
+        summary: 'Every action name an audit record can carry.',
+        auth: 'Authorize (CaAuditor)',
+        category: 'Admin Audit',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'A sorted array of action names, as the actionType filter takes them.',
     },
     {
         method: 'GET',

@@ -8,6 +8,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
+import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
 import CertificateReissueModal from '../components/CertificateReissueModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
@@ -82,8 +83,6 @@ export const RevocationReasonHint: React.FC<{ reason: string; id?: string }> = (
     </FieldHint>
 );
 
-const actBtn = 'px-3 py-1.5 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors';
-
 /// <summary>
 /// Read-only detail page for a single certificate (fetched by serial). Shows identity, validity,
 /// thumbprints, SANs and on-demand extensions; revoke / reissue / downloads live in the action bar.
@@ -103,7 +102,6 @@ const CertificateDetail: React.FC = () => {
     const [ext, setExt] = useState<any | null>(null);
     const [extLoading, setExtLoading] = useState(false);
     const [extError, setExtError] = useState<NoticeInput | null>(null);
-    const [extVisible, setExtVisible] = useState(false);
 
     const [revokeOpen, setRevokeOpen] = useState(false);
     const [revokeReason, setRevokeReason] = useState('Unspecified');
@@ -168,15 +166,15 @@ const CertificateDetail: React.FC = () => {
         setAddUserId(''); setAddLevel('View');
     };
 
-    const toggleExtensions = async () => {
-        if (extVisible) { setExtVisible(false); return; }
-        setExtVisible(true);
-        if (ext) return;
-        setExtLoading(true); setExtError(null);
-        try { setExt(await apiGet<any>(`/api/v1/admin/certificates/${serial}/extensions`)); }
-        catch (err: any) { setExtError(errorNotice(err, 'Failed to load extensions')); }
-        finally { setExtLoading(false); }
-    };
+    useEffect(() => {
+        let cancelled = false;
+        setExt(null); setExtError(null); setExtLoading(true);
+        apiGet<any>(`/api/v1/admin/certificates/${serial}/extensions`)
+            .then((data) => { if (!cancelled) setExt(data); })
+            .catch((err) => { if (!cancelled) setExtError(errorNotice(err, 'Failed to load extensions')); })
+            .finally(() => { if (!cancelled) setExtLoading(false); });
+        return () => { cancelled = true; };
+    }, [serial]);
 
     const handleDownloadPem = async () => {
         try {
@@ -268,13 +266,13 @@ const CertificateDetail: React.FC = () => {
             backTo="/certificates"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Revoke</button>}
+                    <button onClick={handleDownloadPem} className={actionButton}>PEM</button>
+                    <button onClick={handleDownloadDer} className={actionButton}>DER</button>
+                    <button onClick={handleDownloadChain} className={actionButton}>Full Chain</button>
+                    <button onClick={handleCopySerial} className={actionButton}>Copy Serial</button>
                     {/* Reissue builds a fresh request from the old subject, so an expired certificate can be replaced too; a revoked one only while it is merely on hold. */}
-                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className="px-3 py-1.5 text-xs bg-ok-soft text-ok border border-ok/40 rounded hover:bg-ok/15 transition-colors">Reissue</button>}
-                    <button onClick={handleDownloadPem} className={actBtn}>PEM</button>
-                    <button onClick={handleDownloadDer} className={actBtn}>DER</button>
-                    <button onClick={handleDownloadChain} className="px-3 py-1.5 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors">Full Chain</button>
-                    <button onClick={handleCopySerial} className="px-3 py-1.5 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">Copy Serial</button>
+                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className={actionButton}>Reissue</button>}
+                    {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className={actionButtonDanger}>Revoke</button>}
                 </div>
             }
         >
@@ -304,7 +302,7 @@ const CertificateDetail: React.FC = () => {
                                     : 'Not replaced'}
                             </span>
                             {!cert.replaced && canReissue(cert) && (
-                                <button onClick={() => setReissueOpen(true)} className="ml-auto px-2.5 py-1 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors">Reissue</button>
+                                <button onClick={() => setReissueOpen(true)} className={`ml-auto ${actionButtonPrimary}`}>Reissue</button>
                             )}
                         </div>
                         {!cert.replaced && (
@@ -319,42 +317,40 @@ const CertificateDetail: React.FC = () => {
                 )}
 
                 <DetailSection title="Certificate">
-                    <DetailField label="Serial" value={cert.serialNumber} mono />
-                    <DetailField label="Subject" value={cert.subjectDN} />
-                    <DetailField label="Issuer" value={cert.issuer} />
-                    <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
-                    <DetailField label="Not After" value={formatDate(cert.notAfter)} />
-                    <DetailField label="Key Algorithm" value={cert.keyAlgorithm} />
-                    <DetailField label="Signature Algorithm" value={cert.signatureAlgorithm} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+                        <div>
+                            <DetailField label="Subject" value={cert.subjectDN} />
+                            <DetailField label="Issuer" value={cert.issuer} />
+                            {sans && sans.length > 0
+                                ? <DetailField label="SANs" value={sans.join(', ')} />
+                                : <DetailField label="SANs" value={cert.subjectAlternativeNames?.join?.(', ') || '-'} />}
+                            <DetailField label="Serial" value={cert.serialNumber} mono />
+                        </div>
+                        <div>
+                            <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
+                            <DetailField label="Not After" value={formatDate(cert.notAfter)} />
+                            <DetailField label="Key Algorithm" value={[cert.keyAlgorithm, cert.keySize].filter(Boolean).join(' ')} />
+                            <DetailField label="Signature Algorithm" value={cert.signatureAlgorithm} />
+                        </div>
+                    </div>
                     {thumbprints ? thumbprints.map((tp) => <DetailField key={tp.label} label={`Thumbprint (${tp.label})`} value={tp.value} mono />)
                         : <DetailField label="Thumbprints" value={cert.thumbprints} mono />}
-                    {sans && sans.length > 0
-                        ? <DetailField label="SANs" value={sans.join(', ')} />
-                        : <DetailField label="SANs" value={cert.subjectAlternativeNames?.join?.(', ') || '-'} />}
                 </DetailSection>
 
                 <DetailSection title="Extensions">
-                    <button onClick={toggleExtensions} className="px-3 py-1 text-xs bg-sunken text-ink border border-line-strong rounded hover:bg-hover transition-colors">
-                        {extVisible ? 'Hide Extensions' : 'View Extensions'}
-                    </button>
-                    {extVisible && (
-                        <div className="mt-2 pl-2 border-l-2 border-line-strong space-y-1">
-                            {extLoading && <div className="text-xs text-ink-muted">Loading extensions...</div>}
-                            {extError && <InlineNotice notice={extError} />}
-                            {ext && (<>
-                                {ext.basicConstraints && <DetailField label="Basic Constraints" value={`CA: ${ext.basicConstraints.isCA ? 'Yes' : 'No'}${ext.basicConstraints.pathLength != null ? `, Path Length: ${ext.basicConstraints.pathLength}` : ''}`} />}
-                                {ext.keyUsage?.length > 0 && <DetailField label="Key Usage" value={ext.keyUsage.join(', ')} />}
-                                {ext.extendedKeyUsage?.length > 0 && <DetailField label="Extended Key Usage" value={ext.extendedKeyUsage.join(', ')} />}
-                                {ext.subjectAlternativeNames?.length > 0 && <DetailField label="SANs (ext)" value={ext.subjectAlternativeNames.join(', ')} />}
-                                {ext.subjectKeyIdentifier && <DetailField label="Subject Key ID" value={ext.subjectKeyIdentifier} mono />}
-                                {ext.authorityKeyIdentifier && <DetailField label="Authority Key ID" value={ext.authorityKeyIdentifier} mono />}
-                                {ext.authorityInformationAccess?.ocspUrls?.map((url: string, i: number) => <DetailField key={`ocsp-${i}`} label="OCSP" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
-                                {ext.authorityInformationAccess?.caIssuerUrls?.map((url: string, i: number) => <DetailField key={`caissuer-${i}`} label="CA Issuer" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
-                                {ext.crlDistributionPoints?.map((url: string, i: number) => <DetailField key={`cdp-${i}`} label="CRL Distribution Point" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
-                                {ext.certificatePolicies?.length > 0 && <DetailField label="Certificate Policies" value={ext.certificatePolicies.join(', ')} mono />}
-                            </>)}
-                        </div>
-                    )}
+                    {extLoading && <div className="text-xs text-ink-muted">Loading extensions...</div>}
+                    {extError && <InlineNotice notice={extError} />}
+                    {ext && (<>
+                        {ext.basicConstraints && <DetailField label="Basic Constraints" value={`CA: ${ext.basicConstraints.isCA ? 'Yes' : 'No'}${ext.basicConstraints.pathLength != null ? `, Path Length: ${ext.basicConstraints.pathLength}` : ''}`} />}
+                        {ext.keyUsage?.length > 0 && <DetailField label="Key Usage" value={ext.keyUsage.join(', ')} />}
+                        {ext.extendedKeyUsage?.length > 0 && <DetailField label="Extended Key Usage" value={ext.extendedKeyUsage.join(', ')} />}
+                        {ext.subjectKeyIdentifier && <DetailField label="Subject Key ID" value={ext.subjectKeyIdentifier} mono />}
+                        {ext.authorityKeyIdentifier && <DetailField label="Authority Key ID" value={ext.authorityKeyIdentifier} mono />}
+                        {ext.authorityInformationAccess?.ocspUrls?.map((url: string, i: number) => <DetailField key={`ocsp-${i}`} label="OCSP" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
+                        {ext.authorityInformationAccess?.caIssuerUrls?.map((url: string, i: number) => <DetailField key={`caissuer-${i}`} label="CA Issuer" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
+                        {ext.crlDistributionPoints?.map((url: string, i: number) => <DetailField key={`cdp-${i}`} label="CRL Distribution Point" value={<a href={url} target="_blank" rel="noopener noreferrer" className="text-accent-ink hover:underline underline break-all">{url}</a>} />)}
+                        {ext.certificatePolicies?.length > 0 && <DetailField label="Certificate Policies" value={ext.certificatePolicies.join(', ')} mono />}
+                    </>)}
                 </DetailSection>
 
                 <DetailSection title="Access Control (ACL)">
@@ -398,7 +394,7 @@ const CertificateDetail: React.FC = () => {
                                 <option value="View">View</option>
                                 <option value="Manage">Manage</option>
                             </select>
-                            <button onClick={addAccess} disabled={aclBusy || !addUserId} className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover disabled:opacity-50">Add</button>
+                            <button onClick={addAccess} disabled={aclBusy || !addUserId} className={actionButtonPrimary}>Add</button>
                         </div>
 
                         {/* Read-only RBAC hint — who can already access via CA-scoped group capabilities. */}

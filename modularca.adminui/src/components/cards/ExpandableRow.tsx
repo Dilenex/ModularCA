@@ -4,7 +4,7 @@ import { Chevron } from '@shared/components/Chevron';
 interface Action {
     label: string;
     onClick: () => void;
-    variant?: 'default' | 'danger' | 'success';
+    variant?: 'default' | 'danger' | 'primary';
     confirm?: string;
 }
 
@@ -30,7 +30,7 @@ export default function ExpandableRow<T>({
     const variantClasses: Record<string, string> = {
         default: 'bg-raised border border-line-strong hover:bg-hover text-ink',
         danger: 'bg-crit hover:bg-crit-hover text-on-accent',
-        success: 'bg-ok hover:bg-ok-hover text-on-accent',
+        primary: 'bg-accent hover:bg-accent-hover text-on-accent',
     };
 
     const handleAction = (action: Action) => {

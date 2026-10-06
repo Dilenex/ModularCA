@@ -4,7 +4,7 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
@@ -21,19 +21,6 @@ function capabilityCategory(cap: string): string {
     return 'Admin';
 }
 
-/// <summary>
-/// Returns a StatusBadge-compatible status string for a capability category.
-/// </summary>
-function categoryStatus(category: string): 'active' | 'pending' | 'held' | 'revoked' | 'disabled' {
-    switch (category) {
-        case 'Certificate': return 'active';
-        case 'Profile': return 'pending';
-        case 'Token': return 'held';
-        case 'CA': return 'revoked';
-        case 'Admin': return 'disabled';
-        default: return 'disabled';
-    }
-}
 
 interface RoleSummary {
     id: string;
@@ -186,7 +173,7 @@ const RoleManagement: React.FC = () => {
     const columns: DataTableColumn<RoleSummary>[] = [
         { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 140, truncate: false, exportValue: (r) => r.name, render: (r) => <span className="text-ink font-medium truncate">{r.name}</span> },
         { key: 'description', header: 'Description', defaultWidth: 280, exportValue: (r) => r.description || '', render: (r) => <span className="text-xs text-ink-muted truncate">{r.description || '-'}</span> },
-        { key: 'type', header: 'Type', defaultWidth: 110, truncate: false, exportValue: (r) => (r.isBuiltIn ? 'Built-in' : 'Custom'), render: (r) => <StatusBadge status={r.isBuiltIn ? 'pending' : 'active'} label={r.isBuiltIn ? 'Built-in' : 'Custom'} /> },
+        { key: 'type', header: 'Type', defaultWidth: 110, truncate: false, exportValue: (r) => (r.isBuiltIn ? 'Built-in' : 'Custom'), render: (r) => <Tag label={r.isBuiltIn ? 'Built-in' : 'Custom'} /> },
         { key: 'capabilities', header: 'Capabilities', defaultWidth: 120, exportValue: (r) => (r.capabilityCount ?? 0), render: (r) => <span className="text-xs text-ink-muted">{r.capabilityCount ?? 0}</span> },
     ];
 
@@ -276,5 +263,5 @@ const RoleManagement: React.FC = () => {
 
 export default RoleManagement;
 
-export { capabilityCategory, categoryStatus };
+export { capabilityCategory };
 export type { RoleSummary, RoleCapability, RoleDetail };

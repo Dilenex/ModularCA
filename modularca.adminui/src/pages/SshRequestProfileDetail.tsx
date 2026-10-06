@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
@@ -15,6 +15,7 @@ import { StepUpOps } from '@shared/generated';
 import { SshRequestProfileForm } from './profiles/SshRequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshRequestProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 const SSH_REQUEST_TAB = PROFILE_TYPES['ssh-request'].listPath;
 
@@ -132,7 +133,7 @@ const SshRequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false 
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: SSH_REQUEST_TAB }, { label: 'SSH Request Profiles', to: SSH_REQUEST_TAB }, { label: title }]}
             title={title}
-            status={!isNew && p.requireApproval ? <StatusBadge status="pending" label="Approval" /> : undefined}
+            status={!isNew && p.requireApproval ? <Tag label="Approval" /> : undefined}
             subtitle={isNew ? undefined : `${p.maxValidityHours}h max`}
             backTo={SSH_REQUEST_TAB}
             editable
@@ -142,7 +143,7 @@ const SshRequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New SSH Request Profile' : 'Edit SSH Request Profile'}>

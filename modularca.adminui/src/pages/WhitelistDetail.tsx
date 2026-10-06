@@ -14,6 +14,7 @@ import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shar
 import { ChipListInput } from '@shared/components/ChipListInput';
 import { invalidItems } from '@shared/components/chipList';
 import { validateIpOrCidr } from '@shared/validators';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 interface Whitelist {
     id: string;
@@ -150,7 +151,7 @@ const WhitelistDetail: React.FC = () => {
             onCancel={handleCancel}
             saveDisabled={!dirty || !form.name.trim() || invalidCidrs.length > 0}
             actions={!wl.isSystemDefault ? (
-                <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 transition-colors">Delete</button>
+                <button onClick={() => setConfirmDelete(true)} className={actionButtonDanger}>Delete</button>
             ) : undefined}
         >
             {(mode) => (<>{mode === 'view' ? (

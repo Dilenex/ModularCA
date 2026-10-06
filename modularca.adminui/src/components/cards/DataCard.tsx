@@ -8,7 +8,7 @@ import ExpandableRow from './ExpandableRow';
 interface Action {
     label: string;
     onClick: () => void | Promise<void>;
-    variant?: 'default' | 'danger' | 'success';
+    variant?: 'default' | 'danger' | 'primary';
     confirm?: string;
 }
 
@@ -128,7 +128,7 @@ export default function DataCard<T>({
     const variantClasses: Record<string, string> = {
         default: 'bg-raised border border-line-strong hover:bg-hover text-ink',
         danger: 'bg-crit hover:bg-crit-hover text-on-accent',
-        success: 'bg-ok hover:bg-ok-hover text-on-accent',
+        primary: 'bg-accent hover:bg-accent-hover text-on-accent',
     };
 
     return (
@@ -147,8 +147,8 @@ export default function DataCard<T>({
                     )}
                 </div>
 
-                {/* Content */}
-                <div className="max-h-80 overflow-y-auto">
+                {/* Content: at most maxItems rows, so the card never scrolls inside the page. */}
+                <div>
                     {loading && (
                         <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>
                     )}

@@ -207,7 +207,7 @@ public class AdminCertificateController(
             // in the database.
             var dbFiltered = await ApplySort(query, sort).ToListAsync();
             var matched = dbFiltered
-                .Where(c => string.Equals(ParseKeyInfo(c.RawCertificate).Algorithm, keyAlgorithm, StringComparison.OrdinalIgnoreCase))
+                .Where(c => KeyAlgorithmMatches(ParseKeyInfo(c.RawCertificate).Algorithm, keyAlgorithm))
                 .ToList();
             total = matched.Count;
             entities = matched.Skip((page - 1) * pageSize).Take(pageSize).ToList();
@@ -285,6 +285,14 @@ public class AdminCertificateController(
     /// (DER) bytes. Returns empties when the cert is missing or unparseable. Shared by the
     /// list projection and the in-memory key-algorithm filter.
     /// </summary>
+    /// <summary>
+    /// Whether a certificate's key algorithm is the one filtered for: the exact name, or its
+    /// family, so <c>ML-DSA</c> finds <c>ML-DSA-65</c>.
+    /// </summary>
+    internal static bool KeyAlgorithmMatches(string algorithm, string filter) =>
+        string.Equals(algorithm, filter, StringComparison.OrdinalIgnoreCase)
+        || algorithm.StartsWith(filter + "-", StringComparison.OrdinalIgnoreCase);
+
     private static (string Algorithm, string KeySize, string SignatureAlgorithm) ParseKeyInfo(byte[]? raw)
     {
         if (raw == null || raw.Length == 0)
@@ -299,6 +307,8 @@ public class AdminCertificateController(
             else if (pubKey is Ed25519PublicKeyParameters) { algo = "Ed25519"; size = "256"; }
             else if (pubKey is Ed448PublicKeyParameters) { algo = "Ed448"; size = "456"; }
             else if (pubKey is DsaPublicKeyParameters dsa) { algo = "DSA"; size = dsa.Parameters?.P?.BitLength.ToString() ?? string.Empty; }
+            else if (pubKey is MLDsaPublicKeyParameters mlDsa) { algo = mlDsa.Parameters.Name; }
+            else if (pubKey is SlhDsaPublicKeyParameters slhDsa) { algo = slhDsa.Parameters.Name; }
             return (algo, size, bcCert.SigAlgName ?? string.Empty);
         }
         catch
@@ -677,6 +687,10 @@ public class AdminCertificateController(
         var channels = await CertificateLifecycle.ResolveIssuanceChannelsAsync(
             _dbContext, HttpContext?.RequestServices?.GetService<AuditDbContext>(), [(certId, cert.SerialNumber)]);
         cert.IssuanceChannel = channels.GetValueOrDefault(certId);
+
+        var raw = await _dbContext.Certificates.AsNoTracking()
+            .Where(c => c.CertificateId == certId).Select(c => c.RawCertificate).FirstOrDefaultAsync();
+        (cert.KeyAlgorithm, cert.KeySize, cert.SignatureAlgorithm) = ParseKeyInfo(raw);
 
         return Ok(cert);
     }

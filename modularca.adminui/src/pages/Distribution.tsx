@@ -17,6 +17,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { LdapPublisherManager } from './LdapPublishers';
 import { StepUpOps } from '@shared/generated';
+import { type CrlScheduleRow, crlAvailability } from './crlAvailability';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -270,12 +271,21 @@ const CurrentCrlsSection: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
+    // Null until loaded, and when the lookup fails: every download is then offered.
+    const [schedules, setSchedules] = useState<CrlScheduleRow[] | null>(null);
+
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
+        apiGet<any>('/api/v1/admin/crl-schedules')
+            .then((data) => setSchedules(Array.isArray(data) ? data : (data.items || data.schedules || [])))
+            .catch(() => setSchedules(null));
     }, []);
+
+    const linkClass = 'px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block';
+    const absentClass = 'px-3 py-1 text-xs text-ink-muted border border-line rounded inline-block';
 
     return (
         <div className="space-y-4">
@@ -291,6 +301,7 @@ const CurrentCrlsSection: React.FC = () => {
                 {!loading && !error && cas.map((ca) => {
                     const caId = ca.id || ca.caId;
                     const serial = ca.certificateSerial || ca.serialNumber || ca.certificate?.serialNumber || caId;
+                    const published = crlAvailability(ca, schedules);
                     return (
                         <div key={caId} className="bg-raised border border-line rounded-lg p-4">
                             <h3 className="text-sm font-semibold text-ink mb-2">{ca.name || ca.subjectDN}</h3>
@@ -299,14 +310,20 @@ const CurrentCrlsSection: React.FC = () => {
                             {ca.lastCrlGenerated && <DetailField label="Last Generated" value={formatDate(ca.lastCrlGenerated)} />}
                             {ca.crlEntryCount != null && <DetailField label="Entry Count" value={String(ca.crlEntryCount)} />}
                             <div className="flex gap-2 mt-3">
-                                <a href={`${API_BASE}/crl/${serial}`} target="_blank" rel="noopener noreferrer"
-                                    className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block">
-                                    Download Full CRL
-                                </a>
-                                <a href={`${API_BASE}/crl/${serial}/delta`} target="_blank" rel="noopener noreferrer"
-                                    className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block">
-                                    Download Delta CRL
-                                </a>
+                                {published.full ? (
+                                    <a href={`${API_BASE}/crl/${serial}`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+                                        Download Full CRL
+                                    </a>
+                                ) : (
+                                    <span className={absentClass}>No CRL schedule</span>
+                                )}
+                                {published.delta ? (
+                                    <a href={`${API_BASE}/crl/${serial}/delta`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+                                        Download Delta CRL
+                                    </a>
+                                ) : (
+                                    <span className={absentClass}>No delta CRL</span>
+                                )}
                             </div>
                         </div>
                     );

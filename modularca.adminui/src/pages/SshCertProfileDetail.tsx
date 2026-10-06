@@ -14,6 +14,7 @@ import { StepUpOps } from '@shared/generated';
 import { SshCertProfileForm } from './profiles/SshCertProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshCertProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 const SSH_CERT_TAB = PROFILE_TYPES['ssh-cert'].listPath;
 
@@ -125,7 +126,7 @@ const SshCertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New SSH Cert Profile' : 'Edit SSH Cert Profile'}>

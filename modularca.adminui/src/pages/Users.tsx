@@ -4,44 +4,20 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
+
+/** Group memberships shown in a table row before "+N more". */
+const GROUPS_SHOWN = 3;
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
+import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
+import { userMatches } from './userFilters';
 import ServiceIdentitiesPanel from '../components/ServiceIdentitiesPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-/** Returns a StatusBadge-compatible status for a group's template name (color coding). */
-export function groupBadgeStatus(templateName: string | null): 'revoked' | 'held' | 'pending' | 'active' {
-    switch (templateName?.toLowerCase() ?? '') {
-        case 'administrator': return 'revoked';   // red
-        case 'operator': return 'held';            // orange
-        case 'auditor': return 'pending';          // blue
-        case 'requester': return 'active';         // green
-        default: return 'active';                  // green (custom)
-    }
-}
-
-/** Tailwind classes for a group membership chip (system groups get an outlined variant). */
-export function groupChipClass(g: any): string {
-    const s = groupBadgeStatus(g.templateName);
-    const colors: Record<string, string> = {
-        revoked: 'text-crit border-crit/40 bg-crit-soft',
-        held: 'text-warn border-warn/40 bg-warn-soft',
-        pending: 'text-info border-info/40 bg-info-soft',
-        active: 'text-ok border-ok/40 bg-ok-soft',
-    };
-    const outline: Record<string, string> = {
-        revoked: 'text-crit border-crit bg-transparent',
-        held: 'text-warn border-warn bg-transparent',
-        pending: 'text-info border-info bg-transparent',
-        active: 'text-ok border-ok bg-transparent',
-    };
-    return g.isSystemGroup ? (outline[s] || outline.active) : (colors[s] || colors.active);
 }
 
 /// <summary>
@@ -56,6 +32,9 @@ const Users: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [search, setSearch] = useState('');
+    const [statusFilter, setStatusFilter] = useState('');
+    const [signInFilter, setSignInFilter] = useState('');
+    const [groupFilter, setGroupFilter] = useState('');
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', firstName: '', lastName: '', groupIds: [] as string[] });
     const [creating, setCreating] = useState(false);
@@ -78,11 +57,7 @@ const Users: React.FC = () => {
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
-    const filteredUsers = users.filter((u) => {
-        if (!search) return true;
-        const s = search.toLowerCase();
-        return (u.username || '').toLowerCase().includes(s) || (u.email || '').toLowerCase().includes(s);
-    });
+    const filteredUsers = users.filter((u) => userMatches(u, { search, status: statusFilter, signIn: signInFilter, groupId: groupFilter }));
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -121,8 +96,10 @@ const Users: React.FC = () => {
             key: 'groups', header: 'Groups', defaultWidth: 240, minWidth: 140, truncate: false,
             exportValue: (u) => (u.groups || []).map((g: any) => g.displayName || g.groupName).join(', '),
             render: (u) => (
-                <span className="flex gap-1 flex-wrap">
-                    {(u.groups || []).map((g: any) => <span key={g.groupId} className={`inline-block px-2 py-0.5 text-xs rounded border ${groupChipClass(g)}`}>{g.displayName || g.groupName}</span>)}
+                <span className="flex gap-1 flex-wrap items-center" title={(u.groups || []).map((g: any) => g.displayName || g.groupName).join(', ')}>
+                    {/* The first few; the drawer and the user's page list them all. */}
+                    {(u.groups || []).slice(0, GROUPS_SHOWN).map((g: any) => <Tag key={g.groupId} label={g.displayName || g.groupName} />)}
+                    {(u.groups || []).length > GROUPS_SHOWN && <span className="text-xs text-ink-muted">+{(u.groups || []).length - GROUPS_SHOWN} more</span>}
                     {(u.groups || []).length === 0 && <span className="text-xs text-ink-muted">-</span>}
                 </span>
             ),
@@ -207,8 +184,35 @@ const Users: React.FC = () => {
                 </form>
             )}
 
-            <input type="text" placeholder="Search by username or email..." value={search} onChange={(e) => setSearch(e.target.value)}
-                className="w-full max-w-md px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
+            <FilterBar>
+                <FilterField label="Search" grow>
+                    <input type="text" placeholder="Username or email" value={search} onChange={(e) => setSearch(e.target.value)} className={filterControlClass} />
+                </FilterField>
+                <FilterField label="Status">
+                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={filterControlClass}>
+                        <option value="">Any</option>
+                        <option value="active">Active</option>
+                        <option value="locked">Locked</option>
+                        <option value="disabled">Disabled</option>
+                    </select>
+                </FilterField>
+                <FilterField label="Signed in">
+                    <select value={signInFilter} onChange={(e) => setSignInFilter(e.target.value)} className={filterControlClass}>
+                        <option value="">Any</option>
+                        <option value="never">Never</option>
+                        <option value="90">Not in the last 90 days</option>
+                    </select>
+                </FilterField>
+                <FilterField label="Group">
+                    <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className={filterControlClass}>
+                        <option value="">Any</option>
+                        {allGroups.map((g: any) => <option key={g.id} value={g.id}>{g.displayName || g.name}</option>)}
+                    </select>
+                </FilterField>
+                {(search || statusFilter || signInFilter || groupFilter) && (
+                    <button onClick={() => { setSearch(''); setStatusFilter(''); setSignInFilter(''); setGroupFilter(''); }} className="px-3 py-2 text-sm text-ink-muted hover:text-ink transition-colors">Clear filters</button>
+                )}
+            </FilterBar>
 
             <DataTable<any>
                 tableId="users"

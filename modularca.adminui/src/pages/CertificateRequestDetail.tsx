@@ -18,6 +18,7 @@ import {
 import { readDiagnostics } from '@shared-auth/api/problem';
 import { diagnosticNotices } from '@shared-auth/api/notices';
 import { mergeNotices, worstSeverity } from '@shared/notifications/notice';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -247,7 +248,7 @@ const CertificateRequestDetail: React.FC = () => {
             backTo="/certificates/requests"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    {canCancel(csr) && <button onClick={() => { setCancelReason(''); setCancelCustom(''); setCancelOpen(true); }} disabled={busyAny} className="px-3 py-1.5 text-xs bg-warn-soft text-warn border border-warn/40 rounded hover:bg-warn/15 disabled:opacity-50 transition-colors">Cancel Request</button>}
+                    {canCancel(csr) && <button onClick={() => { setCancelReason(''); setCancelCustom(''); setCancelOpen(true); }} disabled={busyAny} className={actionButtonDanger}>Cancel Request</button>}
                 </div>
             }
         >

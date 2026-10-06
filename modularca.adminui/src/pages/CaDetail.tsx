@@ -7,7 +7,7 @@ import { apiGet, apiPostWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 
@@ -126,7 +126,7 @@ const CaDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'CA Management', to: '/authorities/manage' }, { label: ca.name || ca.subjectDN }]}
             title={ca.name || ca.subjectDN}
-            status={<span className="flex items-center gap-2"><StatusBadge status={typeBadge.status} label={typeBadge.label} /><StatusBadge status={enabled ? 'enabled' : 'disabled'} label={enabled ? 'Enabled' : 'Disabled'} /></span>}
+            status={<span className="flex items-center gap-2"><Tag label={typeBadge.label} /><StatusBadge status={enabled ? 'enabled' : 'disabled'} label={enabled ? 'Enabled' : 'Disabled'} /></span>}
             subtitle={ca.label ? <span className="font-mono">{ca.label}</span> : undefined}
             backTo="/authorities/manage"
         >
@@ -173,7 +173,7 @@ const CaDetail: React.FC = () => {
                                 disableExport
                                 columns={[
                                     { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-ink">{pc.protocol || pc.name}</span> },
-                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /> },
+                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
                                     { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />

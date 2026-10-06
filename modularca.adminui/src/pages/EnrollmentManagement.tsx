@@ -8,7 +8,7 @@ import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
@@ -179,7 +179,7 @@ const EnrollmentManagement: React.FC = () => {
             { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
                 render: (t) => <span className="text-ink-muted">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
             { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
-                render: (t) => (t.protocol ? <StatusBadge status="pending" label={t.protocol} /> : <span className="text-ink-muted">Any</span>) },
+                render: (t) => (t.protocol ? <Tag label={t.protocol} /> : <span className="text-ink-muted">Any</span>) },
             { key: 'created', header: 'Created', defaultWidth: 150, sortable: true, sortValue: (t) => t.createdAt ? new Date(t.createdAt) : null, exportValue: (t) => t.createdAt, render: (t) => formatDate(t.createdAt) },
             { key: 'expires', header: 'Expires', defaultWidth: 150, sortable: true, sortValue: (t) => t.expiresAt ? new Date(t.expiresAt) : null, exportValue: (t) => t.expiresAt, render: (t) => formatDate(t.expiresAt) },
         ],

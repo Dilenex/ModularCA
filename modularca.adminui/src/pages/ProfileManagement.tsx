@@ -6,7 +6,7 @@ import { apiGet, apiDeleteWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
@@ -19,6 +19,7 @@ import { isInstanceWideCertProfile, isUnboundSigningProfile, mayChangeProfile } 
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 import { NewProfileButton } from './profiles/NewProfileButton';
 import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profileRoutes';
+import { periodRangeText, periodText } from '@shared/periodText';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -81,9 +82,9 @@ const CertProfilesTab: React.FC = () => {
                 </span>
             ),
         },
-        { key: 'type', header: 'Type', defaultWidth: 100, truncate: false, exportValue: (p) => (p.isCaProfile ? 'CA' : 'Leaf'), render: (p) => <StatusBadge status={p.isCaProfile ? 'active' : 'enabled'} label={p.isCaProfile ? 'CA' : 'Leaf'} /> },
-        { key: 'ct', header: 'CT', defaultWidth: 80, truncate: false, exportValue: (p) => (p.ctEnabled ? 'Yes' : 'No'), render: (p) => p.ctEnabled ? <StatusBadge status="active" label="CT" /> : <span className="text-xs text-ink-muted">-</span> },
-        { key: 'validity', header: 'Validity', defaultWidth: 160, exportValue: (p) => (p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : ''), render: (p) => <span className="text-xs text-ink-muted">{p.validityPeriodMin || p.validityPeriodMax ? `${p.validityPeriodMin || '?'} – ${p.validityPeriodMax || '?'}` : '-'}</span> },
+        { key: 'type', header: 'Type', defaultWidth: 100, truncate: false, exportValue: (p) => (p.isCaProfile ? 'CA' : 'Leaf'), render: (p) => <Tag label={p.isCaProfile ? 'CA' : 'Leaf'} /> },
+        { key: 'ct', header: 'CT', defaultWidth: 80, truncate: false, exportValue: (p) => (p.ctEnabled ? 'Yes' : 'No'), render: (p) => p.ctEnabled ? <Tag label="CT" /> : <span className="text-xs text-ink-muted">-</span> },
+        { key: 'validity', header: 'Validity', defaultWidth: 160, exportValue: (p) => periodRangeText(p.validityPeriodMin, p.validityPeriodMax), render: (p) => <span className="text-xs text-ink-muted">{periodRangeText(p.validityPeriodMin, p.validityPeriodMax) || '-'}</span> },
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
@@ -96,8 +97,8 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Description" value={p.description} />
             <DetailField label="Type" value={p.isCaProfile ? 'CA Profile' : 'Leaf Profile'} />
             <div className="py-1"><span className="text-xs text-ink-muted">Keys and signatures</span><KeyPolicySummary algorithms={p.allowedKeyAlgorithms} sizes={p.allowedKeySizes} signatures={p.allowedSignatureAlgorithms} /></div>
-            <DetailField label="Validity Min" value={p.validityPeriodMin} />
-            <DetailField label="Validity Max" value={p.validityPeriodMax} />
+            <DetailField label="Validity Min" value={periodText(p.validityPeriodMin)} />
+            <DetailField label="Validity Max" value={periodText(p.validityPeriodMax)} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
             {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
             <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
@@ -107,15 +108,12 @@ const CertProfilesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">Certificate Profiles</h3>
-                <NewProfileButton type="cert" />
-            </div>
-
             {/* Profile List */}
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="cert" />}
                 tableId="cert-profiles"
                 title="Certificate Profiles"
+                findable
                 rows={profiles}
                 rowKey={(p) => p.id || p.certProfileId || p.name}
                 loading={loading}
@@ -211,7 +209,7 @@ const SigningProfilesTab: React.FC = () => {
             render: (p) => (
                 <span className="flex items-center gap-2 min-w-0">
                     <span className="text-ink font-medium truncate">{p.name}</span>
-                    {p.isDefault && <StatusBadge status="active" label="Default" />}
+                    {p.isDefault && <Tag label="Default" tone="accent" />}
                 </span>
             ),
         },
@@ -239,14 +237,11 @@ const SigningProfilesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">Signing Profiles</h3>
-                <NewProfileButton type="signing" />
-            </div>
-
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="signing" />}
                 tableId="signing-profiles"
                 title="Signing Profiles"
+                findable
                 rows={visibleProfiles}
                 rowKey={(p) => p.id || p.signingProfileId || p.name}
                 loading={loading}
@@ -326,8 +321,8 @@ const SshSigningProfilesTab: React.FC = () => {
             exportValue: (p) => [p.allowUserCerts ? 'User' : null, p.allowHostCerts ? 'Host' : null].filter(Boolean).join(', '),
             render: (p) => (
                 <span className="flex gap-1">
-                    {p.allowUserCerts && <StatusBadge status="active" label="User" />}
-                    {p.allowHostCerts && <StatusBadge status="pending" label="Host" />}
+                    {p.allowUserCerts && <Tag label="User" />}
+                    {p.allowHostCerts && <Tag label="Host" />}
                     {!p.allowUserCerts && !p.allowHostCerts && <span className="text-xs text-ink-muted">-</span>}
                 </span>
             ),
@@ -356,14 +351,11 @@ const SshSigningProfilesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">SSH Signing Profiles</h3>
-                <NewProfileButton type="ssh-signing" />
-            </div>
-
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="ssh-signing" />}
                 tableId="ssh-signing-profiles"
                 title="SSH Signing Profiles"
+                findable
                 rows={profiles}
                 rowKey={(p) => p.id}
                 loading={loading}
@@ -452,14 +444,11 @@ const SshCertProfilesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">SSH Cert Profiles</h3>
-                <NewProfileButton type="ssh-cert" />
-            </div>
-
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="ssh-cert" />}
                 tableId="ssh-cert-profiles"
                 title="SSH Cert Profiles"
+                findable
                 rows={profiles}
                 rowKey={(p) => p.id}
                 loading={loading}
@@ -545,7 +534,7 @@ const SshRequestProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
-        { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <StatusBadge status={p.requireApproval ? 'pending' : 'enabled'} label={p.requireApproval ? 'Required' : 'Auto'} /> },
+        { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <Tag label={p.requireApproval ? 'Required' : 'Auto'} /> },
         { key: 'caScope', header: 'CA Scope', defaultWidth: 170, exportValue: (p) => (p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'), render: (p) => <span className="text-xs text-ink-muted truncate">{p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
@@ -575,14 +564,11 @@ const SshRequestProfilesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-ink">SSH Request Profiles</h3>
-                <NewProfileButton type="ssh-request" />
-            </div>
-
             <DataTable<any>
+                toolbarEnd={<NewProfileButton type="ssh-request" />}
                 tableId="ssh-request-profiles"
                 title="SSH Request Profiles"
+                findable
                 rows={profiles}
                 rowKey={(p) => p.id}
                 loading={loading}

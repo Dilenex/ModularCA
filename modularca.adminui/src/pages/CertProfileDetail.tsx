@@ -19,6 +19,8 @@ import { KeyPolicySummary } from './profiles/KeyPolicyEditor';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/certProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { type CtLogChoice, ctLogChoicesFromResponse, ctLogDisplay, ctLogIdsFromStored } from './profiles/ctLogChoices';
+import { actionButtonDanger } from '@shared/components/actionButtons';
+import { periodText } from '@shared/periodText';
 
 const CERT_TAB = PROFILE_TYPES.cert.listPath;
 
@@ -189,7 +191,7 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Certificate Profile' : 'Edit Certificate Profile'}>
@@ -206,8 +208,8 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
                     <DetailField label="Key Usages" value={canonicalizeUsages(parseListField(p.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                     <DetailField label="Extended Key Usages" value={canonicalizeUsages(parseListField(p.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
                     <div className="py-1"><span className="text-xs text-ink-muted">Keys and signatures</span><KeyPolicySummary algorithms={p.allowedKeyAlgorithms} sizes={p.allowedKeySizes} signatures={p.allowedSignatureAlgorithms} /></div>
-                    <DetailField label="Validity Period Min" value={p.validityPeriodMin} />
-                    <DetailField label="Validity Period Max" value={p.validityPeriodMax} />
+                    <DetailField label="Validity Period Min" value={periodText(p.validityPeriodMin)} />
+                    <DetailField label="Validity Period Max" value={periodText(p.validityPeriodMax)} />
                     <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
                     {p.ctEnabled && <div className="py-1"><span className="text-xs text-ink-muted">CT Logs</span><CtLogList stored={p.ctLogIds} logs={ctLogs} /></div>}
                     <DetailField label="Allow Wildcard SAN/CN" value={p.allowWildcard ? 'Yes' : 'No'} />
@@ -237,8 +239,8 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.IsCaProfile} label="CA Profile" value={resolvedProfile.isCaProfile ? 'Yes' : 'No'} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.KeyUsages} label="Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.keyUsages), KEY_USAGE_OPTIONS).map(keyUsageLabel).join(', ')} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.ExtendedKeyUsages} label="Extended Key Usages" value={canonicalizeUsages(parseListField(resolvedProfile.extendedKeyUsages), ekuCatalog.options, ekuCatalog.aliases).map(ekuCatalog.label).join(', ')} />
-                                <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMin} label="Validity Period Min" value={resolvedProfile.validityPeriodMin} />
-                                <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={resolvedProfile.validityPeriodMax} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMin} label="Validity Period Min" value={periodText(resolvedProfile.validityPeriodMin)} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ValidityPeriodMax} label="Validity Period Max" value={periodText(resolvedProfile.validityPeriodMax)} />
                                 <div className={`pl-3 border-l-2 ${['AllowedKeyAlgorithms', 'AllowedKeySizes', 'AllowedSignatureAlgorithms'].some((k) => resolvedProfile.fieldSources?.[k] === 'overridden') ? 'border-l-ok' : 'border-l-line-strong'}`}>
                                     <div className="flex flex-wrap items-center gap-y-1">
                                         <span className="text-xs text-ink-muted">Keys and signatures</span>

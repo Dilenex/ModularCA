@@ -17,6 +17,7 @@ import { SourceBorderedField as ReqSourceBorderedField, SubmitBlockedHint } from
 import { RequestProfileForm } from './profiles/RequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/requestProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
+import { actionButtonDanger } from '@shared/components/actionButtons';
 
 const REQUEST_TAB = PROFILE_TYPES.request.listPath;
 
@@ -169,7 +170,7 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 disabled:opacity-50 transition-colors">Delete</button>}
+            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Request Profile' : 'Edit Request Profile'}>

@@ -11,7 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import { can, canAtSpace, consoleCas, spacesOf } from '../authz';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { caKey } from './CaDetail';
@@ -305,7 +305,7 @@ const CaManagement: React.FC = () => {
 
 
     const caColumns: DataTableColumn<any>[] = [
-        { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <StatusBadge status={b.status} label={b.label} />; } },
+        { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (ca) => caTypeBadge(ca).label, render: (ca) => { const b = caTypeBadge(ca); return <Tag label={b.label} />; } },
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (ca) => ca.name || ca.subjectDN, render: (ca) => <span className="text-ink truncate">{ca.name || ca.subjectDN}</span> },
         { key: 'space', header: 'Space', defaultWidth: 140, exportValue: (ca) => ca.spaceName || '', render: (ca) => <span className="text-xs text-ink-muted truncate">{ca.spaceName || '-'}</span> },
         // Wire name is `isEnabled` (AdminCaController projects ca.IsEnabled). Reading `ca.enabled`
@@ -324,6 +324,7 @@ const CaManagement: React.FC = () => {
                 tableId="ca-list"
                 renamedColumns={RENAMED_CA_COLUMNS}
                 title="Certificate Authorities"
+                findable
                 rows={allCasFlat}
                 rowKey={caKey}
                 loading={loading}
