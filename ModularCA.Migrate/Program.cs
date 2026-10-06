@@ -402,7 +402,7 @@ internal static class Program
             The supported upgrade path has three steps, and this is the second:
               1. Upgrade the deployment to 0.3.0 on MariaDB.
               2. Stop the node and run this.
-              3. Start 0.3.1 against the PostgreSQL database this produced.
+              3. Start this version against the PostgreSQL database this produced.
 
             On the machine the deployment runs on, this is the whole command:
 

@@ -6,6 +6,67 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+## [0.4.0-rc.1] — 2026-10-06
+
+The first release candidate of 0.4.0. It carries everything since 0.3.0, including the work
+that was numbered 0.3.1 and 0.3.2 and never published. A release candidate is for trying, not
+for a CA you depend on.
+
+### Upgrading from 0.3.0
+
+- **0.4.0 runs on PostgreSQL only.** It refuses to start against MySQL or MariaDB.
+  `modularca-migrate`, which ships beside the node, copies a 0.3.0 MariaDB database into a
+  PostgreSQL one it creates, then brings it up to this version. 0.3.0 is the only MariaDB schema
+  it reads, so upgrade to 0.3.0 first from anything older. See
+  `docs/architecture/postgresql-migration.md`.
+- **Check before installing.** `--upgrade-check` rehearses every migration against your database
+  and lists every refusal in one run, changing nothing; `install.sh` runs it for you. "Upgrading
+  to 0.4.0" in `packaging/README-DEPLOY.md` says what can be refused and how to clear each.
+- **There is no downgrade.** Take a backup first; going back means restoring it.
+- **Containers: name the image.** `latest` is published by the first stable release, so a release
+  candidate has to be asked for: `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.0-rc.1`.
+
+### PostgreSQL
+
+- **The database is PostgreSQL.** The MySQL provider had no release for the framework ModularCA
+  targets and no sign of one. The node refuses a MySQL connection string outright instead of
+  failing somewhere inside a provider.
+- **Whether two names differ only in case is decided per column.** MySQL answered that once for
+  the whole database and PostgreSQL answers it the other way. Usernames, CA labels, protocol
+  names and the like stay case-insensitive, by column, so `Admin` still signs in as `admin` and a
+  label in an enrollment URL still resolves.
+- **The database no longer holds secrets it can read.** An enrollment token was stored as
+  itself, and the admin API handed live tokens to every CA operator. It is stored as a SHA-256:
+  tokens already issued keep working and stop being readable. CMP shared secrets are wrapped by
+  the signer.
+- **The audit hash chain verifies.** It never had: the hash was computed over a timestamp with
+  more precision than the column keeps, so every record failed recomputation and the verify
+  endpoint would have reported tampering on every deployment. Records written before the fix
+  cannot be recomputed, so a chain can be restarted by an audited marker; the node does it once
+  for each chain that needs it, and the verify report says what is intact and since when.
+
+### Security fixes since 0.3.0
+
+- **A CA that is revoked, disabled or expired does not sign.** Issuance only checked that the
+  tenant was enabled, so a CA whose certificate had been revoked, by the CA-compromise ceremony
+  included, kept issuing over ACME, EST, SCEP, admin issuance, reissue and auto-renewal. New
+  error codes `MCA-CFG-014`, `015` and `016`.
+- **A client certificate is one factor.** Certificate sign-in asked for a second factor and then
+  accepted the same certificate as that factor.
+- **A replayed refresh token ends the session.** Two requests with one token could both rotate
+  it. Rotation is now one conditional update, and presenting a rotated token revokes the whole
+  family.
+- **Every certificate knows which CA issued it.** One resolver walks the issuer chain; CA-scoped
+  access, the console's lists and the CRL and OCSP scope all decide by issuer, never by name
+  alone.
+- **Every route to privilege goes through the controlled-user ceremony.** A review found many
+  ways for a lone administrator to mint or remove privileged users around it. Rank now comes
+  from what an account can do, not from which groups it is in.
+- **The audit chain holds under concurrent writers**, including two processes writing to one
+  chain: the record is stamped and linked under a database lock.
+- **The consoles keep one session between tabs.** Renewal runs once across tabs, so two tabs
+  never present the same refresh token, and a transient failure no longer signs the user out.
+
 ### A backup restores onto a new host, and a test proves it
 
 A new test runs the built node as an operator does: it installs an instance unattended, starts
@@ -338,55 +399,6 @@ below close cross-scope gaps; several change behaviour an operator or a client c
   never individual keys; imports and commits are held to the CA that owns the certificate. The
   signer audit records the scope each decision was made under.
 
-- **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
-  configuration can name a request profile, and both protocols used that profile to choose the
-  certificate profile and to validate the names a client asked for. Neither ever read the flag
-  saying a human must approve first. Every ACME order finalized, and every CMP certificate request
-  issued, straight to a certificate with no approver, while the console showed the gate as set.
-  EST and Windows autoenrollment, the two anyone had exercised, both honoured it.
-
-  ACME and CMP now refuse and close the request, because neither offers a way for a client to come
-  back for a certificate approved later: nothing links a later approval to an ACME order, and CMP
-  implements no polling operation at all. SCEP, which does have a poll, answers with its pending
-  status and leaves the request in the queue for an approver. A deployment with any of the three
-  enabled on a CA whose request profile requires approval will see those clients start failing, or
-  in SCEP's case start waiting, where they previously succeeded.
-
-  All three were found by moving the protocols onto the shared enrollment pipeline, which is the
-  point of that work: the rule now lives in one place instead of being reimplemented, correctly or
-  not, five times. Three of the five were wrong, including the one whose wire format had carried a
-  pending status since it was written, declared and never once used.
-
-- **SCEP enrollment refused every request.** The key-algorithm rule read the certificate profile's
-  permitted list, which is JSON, by splitting it on commas. The profile default is an empty JSON
-  array, which splits into one token that matches no algorithm, and a populated list splits into
-  fragments that match nothing either, so every enrollment was answered with a bad-algorithm
-  failure. The same column is read correctly everywhere else. It is read as JSON now.
-
-### Separation of duties
-
-- **The signer is its own process.** Every stored private key is reached through one signing
-  contract, and nothing outside the keystore project can hold a key handle; an architecture test
-  fails the build if that changes. A key signs only for its own CA and space and only for the
-  purposes its kind allows; every decision is recorded in the signer's own audit table with the
-  ceremony it ran under and, over the wire, the peer that asked. `--role signer` runs the keystore
-  behind gRPC with mutual TLS, pinned both ways from a dedicated identity CA the signer creates
-  (`--init-identity`, `--issue-node-identity`), failing closed when it cannot record a decision; a
-  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A space
-  that requires ceremonies gets no key without an approved, unexpired one; a CA's OCSP, timestamp
-  and CMP signer keys are reissued under an infrastructure context that can never mint a CA key.
-  The default single process is unchanged.
-- **Roles.** Every controller and scheduled job belongs to one role: enrollment (the protocols),
-  validation (CRL, OCSP, AIA, CA certificates), control (console, admin, users, ceremonies,
-  backups) and ingress. `--role` or `Roles:` in the configuration selects any subset; a process
-  hosts only its roles' endpoints and jobs, and `/health/ready` reports what each active role
-  needs. The deploy readme describes the three-process layout.
-- **Ingress.** `--role ingress` terminates TLS with the instance's certificate and routes by
-  hostname to nodes with YARP, on plain HTTP as well so revocation URLs reach their node. Routes
-  come from `Ingress.Routes`; a name with no upstream is served locally, which is how a single
-  process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that fails
-  its health checks answers 503 for its names.
-
 ### Removed
 
 - **Tenant hostnames (0.4.0).** The instance is the isolation boundary and serves its own names,
@@ -532,6 +544,64 @@ below close cross-scope gaps; several change behaviour an operator or a client c
   every CA's ACME endpoint, so creating and deleting keys needs cert.revoke at system scope, and
   only a caller whose cert.revoke reaches every space sees the list. The console hides
   "Generate EAB Key" from everyone else and says why the list is empty.
+
+## [0.3.0] — 2026-09-19
+
+### Fixed
+
+- **An approval-gated request profile no longer lets ACME, CMP or SCEP past.** A CA's protocol
+  configuration can name a request profile, and both protocols used that profile to choose the
+  certificate profile and to validate the names a client asked for. Neither ever read the flag
+  saying a human must approve first. Every ACME order finalized, and every CMP certificate request
+  issued, straight to a certificate with no approver, while the console showed the gate as set.
+  EST and Windows autoenrollment, the two anyone had exercised, both honoured it.
+
+  ACME and CMP now refuse and close the request, because neither offers a way for a client to come
+  back for a certificate approved later: nothing links a later approval to an ACME order, and CMP
+  implements no polling operation at all. SCEP, which does have a poll, answers with its pending
+  status and leaves the request in the queue for an approver. A deployment with any of the three
+  enabled on a CA whose request profile requires approval will see those clients start failing, or
+  in SCEP's case start waiting, where they previously succeeded.
+
+  All three were found by moving the protocols onto the shared enrollment pipeline, which is the
+  point of that work: the rule now lives in one place instead of being reimplemented, correctly or
+  not, five times. Three of the five were wrong, including the one whose wire format had carried a
+  pending status since it was written, declared and never once used.
+
+- **SCEP enrollment refused every request.** The key-algorithm rule read the certificate profile's
+  permitted list, which is JSON, by splitting it on commas. The profile default is an empty JSON
+  array, which splits into one token that matches no algorithm, and a populated list splits into
+  fragments that match nothing either, so every enrollment was answered with a bad-algorithm
+  failure. The same column is read correctly everywhere else. It is read as JSON now.
+
+### Separation of duties
+
+- **The signer is its own process.** Every stored private key is reached through one signing
+  contract, and nothing outside the keystore project can hold a key handle; an architecture test
+  fails the build if that changes. A key signs only for its own CA and tenant and only for the
+  purposes its kind allows; every decision is recorded in the signer's own audit table with the
+  ceremony it ran under and, over the wire, the peer that asked. `--role signer` runs the keystore
+  behind gRPC with mutual TLS, pinned both ways from a dedicated identity CA the signer creates
+  (`--init-identity`, `--issue-node-identity`), failing closed when it cannot record a decision; a
+  node with `Signer.Mode: Remote` holds no key material and needs no keystore password. A tenant
+  that requires ceremonies gets no key without an approved, unexpired one; a CA's OCSP, timestamp
+  and CMP signer keys are reissued under an infrastructure context that can never mint a CA key.
+  The default single process is unchanged.
+- **Roles.** Every controller and scheduled job belongs to one role: enrollment (the protocols),
+  validation (CRL, OCSP, AIA, CA certificates), control (console, admin, users, ceremonies,
+  backups) and ingress. `--role` or `Roles:` in the configuration selects any subset; a process
+  hosts only its roles' endpoints and jobs, and `/health/ready` reports what each active role
+  needs. The deploy readme describes the three-process layout.
+- **Ingress.** `--role ingress` terminates TLS for the public domain and every tenant hostname,
+  selected by SNI, and routes by hostname to tenant nodes with YARP, on plain HTTP as well so a
+  tenant's revocation URLs reach its node. Routes come from `Ingress.Routes` and from the tenant
+  hostnames table (`NodeUpstream`); a name with no upstream is served locally, which is how a
+  single process keeps working. Upstreams are trusted by a pinned key or a shared CA; a node that
+  fails its health checks answers 503 for its names.
+- **Tenant hostnames.** A tenant is reachable by its own names from one process: each name gets
+  an endpoint certificate from a CA of the tenant, presented by SNI and renewed with the console's
+  own; enrollment URLs derive from the name a request arrived on; the readiness check accepts any
+  name a tenant is reached by. The console and sign-in stay on the public domain.
 
 ### Server-generated private keys are delivered once, as one PKCS#12
 

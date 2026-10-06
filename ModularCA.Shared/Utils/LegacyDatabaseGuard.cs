@@ -27,7 +27,7 @@ public static class LegacyDatabaseGuard
     /// whether the refusal comes from the node, the bootstrap or the setup wizard.
     /// </summary>
     public const string Explanation =
-        "ModularCA 0.3.1 and later run on PostgreSQL only; MySQL and MariaDB are no longer supported.\n"
+        "ModularCA releases after 0.3.0 run on PostgreSQL only; MySQL and MariaDB are no longer supported.\n"
         + "\n"
         + "The migration helper ships with this build and is already installed. It reads this\n"
         + "configuration itself, so there is nothing to assemble:\n"
