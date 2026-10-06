@@ -242,7 +242,7 @@ const CaDetail: React.FC = () => {
 
                         {/* The CMP signer is the one of the three that is not issued at CA creation, so
                             its absence is a state the operator has to be told about here. */}
-                        {!ca.cmpSigningCertificateId && (
+                        {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature !== true && (
                             <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
                                 <p className="text-xs text-warn">
                                     <strong>No CMP signing certificate.</strong> If CMP is enabled on this CA, its
@@ -252,6 +252,14 @@ const CaDetail: React.FC = () => {
                                     reissue to create one.
                                 </p>
                             </div>
+                        )}
+                        {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature === true && (
+                            <p className="text-xs text-ink-muted max-w-3xl">
+                                <strong className="text-ink">No CMP signing certificate.</strong> If CMP is enabled on
+                                this CA, its signature-protected responses are signed with the CA's own key. Tick
+                                <em> CMP signer</em> below and reissue to give CMP a certificate of its own, which can
+                                be replaced without touching the CA.
+                            </p>
                         )}
                         <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
                             <p className="text-xs text-warn">

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Errors;
+using ModularCA.Shared.Utils;
 using ModularCA.Tests.TestUtils;
 using BcX509Certificate = Org.BouncyCastle.X509.X509Certificate;
 using Org.BouncyCastle.X509;
@@ -66,6 +67,20 @@ public class CmpSignerCertificateTests
 
         Assert.Throws<ConfigurationValidationException>(
             () => CaCreationService.EnsureIssuedCertCarriesDigitalSignature(ToBc(ca), "CMP Signer"));
+    }
+
+    [Fact]
+    public void Whether_a_certificate_carries_digitalSignature_is_read_from_its_key_usage()
+    {
+        // The CA page words its missing-signer notice from this: a CA created from a profile
+        // that lists digitalSignature must not be told its certificate lacks it.
+        using var ca = TestCertificates.CreateCa("CN=Issuing CA");
+        using var signing = LeafWithKeyUsage(ca, X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyCertSign);
+        using var bare = TestCertificates.IssueLeaf(ca, "CN=No Key Usage");
+
+        Assert.True(CertificateUtil.CarriesDigitalSignature(ToBc(signing)));
+        Assert.False(CertificateUtil.CarriesDigitalSignature(ToBc(ca)));
+        Assert.False(CertificateUtil.CarriesDigitalSignature(ToBc(bare)));
     }
 
     [Fact]

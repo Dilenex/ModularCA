@@ -1945,13 +1945,14 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The CA certificate's key usage is <c>keyCertSign, cRLSign</c>; it does not carry
+    /// A CA certificate whose key usage is <c>keyCertSign, cRLSign</c> does not carry
     /// <c>digitalSignature</c>, and OpenSSL refuses such a certificate as a CMP message signer
-    /// ("no suitable sender cert"). Every signature-protected exchange therefore failed at the
-    /// client while PBMAC exchanges, whose responses are MAC-protected, worked. A dedicated signer
-    /// issued from the CA detail page carries the right bit and is rotated without touching the
-    /// CA certificate. The CA-direct path is kept as the fallback so an unconfigured CA still
-    /// answers PBMAC clients; it warns once per process so the gap is visible.
+    /// ("no suitable sender cert"): every signature-protected exchange fails at the client while
+    /// PBMAC exchanges, whose responses are MAC-protected, work. A dedicated signer issued from
+    /// the CA detail page carries the right bit and is rotated without touching the CA
+    /// certificate. The CA-direct path is kept as the fallback so an unconfigured CA still
+    /// answers; it warns once per process, and says whether this CA's certificate carries
+    /// <c>digitalSignature</c>, since a CA created from a profile that lists it does.
     /// </para>
     /// <para>
     /// The third element is the CA certificate when a delegated signer is in use, for
@@ -1996,10 +1997,16 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 }
                 else if (DirectSignerWarned.TryAdd(context.Ca.Id, 0))
                 {
-                    _logger.LogWarning(
-                        "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate, " +
-                        "which lacks digitalSignature and is rejected by OpenSSL-based clients. Issue one from the CA detail page.",
-                        context.Ca.Label);
+                    if (CertificateUtil.CarriesDigitalSignature(caCert))
+                        _logger.LogWarning(
+                            "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate. " +
+                            "Issue a CMP signer from the CA detail page to keep the CA key out of CMP traffic.",
+                            context.Ca.Label);
+                    else
+                        _logger.LogWarning(
+                            "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate, " +
+                            "which lacks digitalSignature and is rejected by OpenSSL-based clients. Issue one from the CA detail page.",
+                            context.Ca.Label);
                 }
 
                 if (held.Any(k => k.Key.CertificateId == certEntity.CertificateId))

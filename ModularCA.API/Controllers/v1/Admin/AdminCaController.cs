@@ -208,7 +208,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Each CA carries <c>ocspResponder</c>: how it answers OCSP (<c>mode</c>), when every request for it
         /// is refused, why (<c>problem</c>), and the responder certificate it points at
         /// (<c>responderSerial</c>, <c>responderSubject</c>, <c>responderNotAfter</c>); null for a CA that is
-        /// disabled or has no certificate.
+        /// disabled or has no certificate. <c>certificate.carriesDigitalSignature</c> says whether the CA
+        /// certificate's key usage includes digitalSignature; null when the certificate cannot be read.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
@@ -305,6 +306,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                         ca.Certificate.KeyUsagesJson,
                         ca.Certificate.ExtendedKeyUsagesJson,
                         ca.Certificate.Pem,
+                        // Read from the certificate itself: it decides whether a CA without a CMP
+                        // signer can sign CMP responses that OpenSSL-based clients accept.
+                        CarriesDigitalSignature = CarriesDigitalSignature(ca.Certificate.Pem),
                     } : null,
                     // The key algorithm the CA actually has, read from its certificate. The console
                     // needs it to say, before anything is saved, that SCEP cannot run here.
@@ -328,6 +332,14 @@ namespace ModularCA.API.Controllers.v1.Admin
             var result = roots.Select(ca => MapCa(ca)).ToList();
 
             return Ok(result);
+        }
+
+        /// <summary>Whether the certificate in <paramref name="pem"/> carries digitalSignature; null when it cannot be read.</summary>
+        private static bool? CarriesDigitalSignature(string? pem)
+        {
+            if (string.IsNullOrWhiteSpace(pem)) return null;
+            try { return CertificateUtil.CarriesDigitalSignature(CertificateUtil.ParseFromPem(pem)); }
+            catch (Exception) { return null; }
         }
 
         /// <summary>

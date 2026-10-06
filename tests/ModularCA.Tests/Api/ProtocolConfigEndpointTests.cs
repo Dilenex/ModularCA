@@ -385,6 +385,8 @@ public sealed class ProtocolConfigEndpointTests
             new[] { "EST" },
             ca.GetProperty("protocolConfigs").EnumerateArray().Select(p => p.GetProperty("protocol").GetString()).ToArray());
         Assert.True(ca.TryGetProperty("ocspResponder", out _));
+        Assert.Contains(ca.GetProperty("certificate").GetProperty("carriesDigitalSignature").ValueKind,
+            new[] { JsonValueKind.True, JsonValueKind.False });
     }
 
     // ---- stubs -----------------------------------------------------------------------------

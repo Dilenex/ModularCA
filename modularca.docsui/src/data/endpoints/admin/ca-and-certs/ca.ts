@@ -66,7 +66,7 @@ export const adminCa: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Hierarchical CA tree with certificates, protocol configurations, and service URLs. Each CA carries ocspResponder: mode (delegated, direct, none or off) and problem, the reason every OCSP request for that CA is answered unauthorized, or null when it is answered. responderSerial, responderSubject and responderNotAfter describe the responder certificate the CA points at, and are null when it has none. ocspResponder is null for a CA that is disabled or has no certificate.',
+        responseDescription: 'Hierarchical CA tree with certificates, protocol configurations, and service URLs. Each CA carries ocspResponder: mode (delegated, direct, none or off) and problem, the reason every OCSP request for that CA is answered unauthorized, or null when it is answered. responderSerial, responderSubject and responderNotAfter describe the responder certificate the CA points at, and are null when it has none. ocspResponder is null for a CA that is disabled or has no certificate. certificate.carriesDigitalSignature says whether the CA certificate\'s key usage includes digitalSignature; a CA without it and without a CMP signing certificate signs CMP responses that OpenSSL-based clients reject.',
     },
     {
         method: 'PUT',

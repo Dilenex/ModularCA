@@ -1200,10 +1200,7 @@ public class CaCreationService(
     /// </summary>
     internal static void EnsureIssuedCertCarriesDigitalSignature(X509Certificate cert, string certType)
     {
-        var keyUsage = cert.GetKeyUsage();
-        // BouncyCastle returns the KeyUsage bits as a bool array indexed by bit position;
-        // digitalSignature is bit 0.
-        if (keyUsage != null && keyUsage.Length > 0 && keyUsage[0])
+        if (CertificateUtil.CarriesDigitalSignature(cert))
             return;
         throw new ConfigurationValidationException(
             $"The reissued {certType} certificate was created without the digitalSignature key usage, " +

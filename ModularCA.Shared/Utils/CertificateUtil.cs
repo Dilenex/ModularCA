@@ -139,6 +139,18 @@ public static class CertificateUtil
         return JsonSerializer.Serialize(dict);
     }
 
+    /// <summary>
+    /// True when the certificate has a key usage extension with the digitalSignature bit set.
+    /// A certificate with no key usage extension counts as not carrying it.
+    /// </summary>
+    public static bool CarriesDigitalSignature(X509Certificate cert)
+    {
+        // BouncyCastle returns the KeyUsage bits as a bool array indexed by bit position;
+        // digitalSignature is bit 0.
+        var keyUsage = cert.GetKeyUsage();
+        return keyUsage != null && keyUsage.Length > 0 && keyUsage[0];
+    }
+
     // === Format Helpers ===
     public static bool IsPemFormat(string input)
     {
