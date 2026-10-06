@@ -55,7 +55,7 @@ public sealed class VocabularyTests
         [".cs", ".ts", ".tsx", ".js", ".mjs", ".md", ".yaml", ".yml", ".example", ".proto", ".json", ".sql", ".py", ".sh", ".ps1", ".psm1"];
 
     private static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase)
-        { "bin", "obj", "node_modules", "dist", "wwwroot", "generated", "TestResults", "__pycache__", ".git", ".vs", ".vscode", ".idea", ".claude" };
+        { "bin", "obj", "node_modules", "dist", "wwwroot", "generated", "TestResults", "__pycache__", ".git", ".vs", ".vscode", ".idea", ".claude", "References" };
 
     private static readonly HashSet<string> SkippedFiles = new(StringComparer.OrdinalIgnoreCase) { "package-lock.json" };
 
@@ -177,7 +177,6 @@ public sealed class VocabularyTests
         new("config/config.yaml.example", Reason.External, Text: "login.microsoftonline.com/{tenant}"),
         new("config/config.yaml.example", Reason.External, Text: "login.microsoftonline.com/your-tenant-id"),
 
-        new("References/", Reason.History),
         new("CHANGELOG.md", Reason.History),
         new("docs/architecture/instance-tenancy.md", Reason.History),
         new("docs/architecture/postgresql-migration.md", Reason.History),
