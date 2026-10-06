@@ -6,6 +6,222 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+Builds between release candidates are numbered after the candidate they follow: `0.4.0-rc.1.1`,
+`0.4.0-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
+change is listed here and becomes the next candidate's section.
+
+### 0.4.0-rc.1.13 — 2026-10-06
+
+**Fixed**
+
+- **The missing-CMP-signer notice no longer misdescribes the CA certificate.** A CA page with
+  no CMP signing certificate said the CA certificate "carries no digitalSignature key usage
+  and is rejected by OpenSSL-based clients", whatever the certificate carried. That is now
+  said only of a CA certificate without the usage. For one that has it, the page says that
+  CMP responses are signed with the CA's own key and that a CMP signer can be issued. The
+  server's log line follows the same rule, and the CA hierarchy feed carries the answer as
+  `certificate.carriesDigitalSignature`.
+
+### 0.4.0-rc.1.12 — 2026-10-06
+
+**Fixed**
+
+- **The CA page's OCSP Responder section shows the real state.** In rc.1.11 it read "Disabled"
+  for every CA, including one answering normally: the section was written for fields the feed
+  never sent, and the new `ocspResponder` state made it appear without them. It now shows
+  Answering, Refusing (with the reason), CA key signs or Not served, and the responder
+  certificate's subject, serial number and expiry. The hierarchy feed carries those as
+  `responderSubject`, `responderSerial` and `responderNotAfter`.
+- **Authorities shows "Not served" for a CA that does not serve OCSP**, where it showed a dash.
+
+### 0.4.0-rc.1.11 — 2026-10-06
+
+**Added**
+
+- **A CA whose OCSP responder cannot be used is now reported.** Such a CA answers every OCSP
+  request "unauthorized", and nothing said so. The reason is shown in three places:
+  - a notice on the CA's page, above the reissue action that repairs it;
+  - an OCSP column on Authorities (Answering or Refusing);
+  - an OCSP Responders card on System Health, listing every CA that serves OCSP.
+
+  The reasons are the responder's own: no responder certificate, one that is missing, revoked,
+  expired or not yet valid, one without the OCSP signing extended key usage, or one without
+  the no-check extension when the security policy requires it. The CA hierarchy feed carries
+  the state as `ocspResponder`. The readiness endpoint is unchanged: it answers 503 when
+  degraded, and one CA's responder is no reason to take a node out of service.
+
+  **Check after upgrading:** a CA created while the OCSP Responder Certificate Profile listed
+  no extended key usage holds a responder certificate that cannot sign. It shows as Refusing;
+  reissue its OCSP responder under Infrastructure Certificates on the CA's page.
+
+**Fixed**
+
+- **System Health counts every certificate.** Its statistics counted the first page of the
+  certificate list, so an instance with more than 25 certificates read "Total 25".
+
+### 0.4.0-rc.1.10 — 2026-10-06
+
+**Changed**
+
+- **Every table's create button is in the same place.** It is "+ New" at the right end of the
+  header's second line, and reads Cancel while its form is open. This now covers Users, Service
+  identities, Groups, Roles, Spaces, Kerberos realms, Enrollment, ACME EAB keys, SSH CA keys,
+  CRL schedules, LDAP publishers and Whitelists, as well as Authorities, Profiles and Templates.
+  - Three say what they do where "New" would mislead: "+ Import" on Trust Anchors, "+ Sign key"
+    on SSH Certificates and "+ Bind" on Kerberos realms.
+  - Trust Anchors' collapsed "Import Trust Anchor" bar is gone; the form opens from the button.
+  - A heading row that only repeated the table's title is removed (CRL Schedules, Publishers,
+    SSH CA Keys, SSH Certificates, EAB Key Management, Kerberos realms).
+  - Sign Key was a green button; it is the same teal as the rest.
+
+### 0.4.0-rc.1.9 — 2026-10-06
+
+**Changed**
+
+- **"+ New" moves to the right end of a table header's second line.** The first line is the
+  title with Find, Columns and Export; the second is the row actions on the left and "+ New" on
+  the right.
+
+### 0.4.0-rc.1.8 — 2026-10-06
+
+**Changed**
+
+- **Table headers have two lines.** The first carries the title, a "+ New" button where the
+  table has one, and Find, Columns and Export. The second carries what can be done with the
+  ticked rows: the count, Details, the table's actions and Deselect. The second line is always
+  there on a table with checkboxes, with its buttons disabled until a row is ticked, so the
+  title no longer gives way to the actions and the rows do not move when one is ticked.
+- **Details is a neutral button.** "+ New" is the one filled button in a table header.
+
+### 0.4.0-rc.1.7 — 2026-10-06
+
+**Changed**
+
+- **A table's New button leads its toolbar tools.** It sits before Find, Columns and Export, not
+  after Export, on Authorities, Profiles, Request Profiles and Templates. The Authorities button
+  reads "New certificate authority", in the same case as the others.
+
+### 0.4.0-rc.1.6 — 2026-10-06
+
+**Changed**
+
+- **Authorities: New Certificate Authority is a button in the table's toolbar.** It opens the
+  form above the table. The form was a collapsed bar under the table, easy to miss below a long
+  list.
+- **Templates: each tab names itself once.** The heading row above each table is gone; the table
+  carries the name and a New template button, and stays in place when there are no templates.
+
+**Fixed**
+
+- **Scheduled jobs write their audit records under one actor, `scheduler`.** Five jobs wrote
+  `Scheduler` and five wrote `scheduler`, so filtering the audit log by either found half.
+  Records written before this build keep the name they were written with.
+- **Every console has a tab icon.** Only the public pages declared one, so a browser on the
+  admin, setup or docs console asked for `/favicon.ico` and was answered 401.
+
+### 0.4.0-rc.1.5 — 2026-10-06
+
+**Fixed**
+
+- **The SSH certificates table no longer says "Loading…" forever when there is no SSH CA key.**
+  It now says there are none.
+- **Group chips on a user's page are neutral.** They were coloured by role, which read as a
+  status; colour is kept for status.
+
+### 0.4.0-rc.1.4 — 2026-10-06
+
+**Security**
+
+- **Twenty admin routes that changed something without step-up now ask for it.** An API client
+  that calls one must send `X-MFA-Token`; the console prompts.
+  - Restarting the audit hash chain.
+  - Trust anchors: import, enable or disable, delete.
+  - Revoking an SSH certificate.
+  - Creating an enrollment token, a CMP shared secret or an ACME external account binding key.
+  - Creating, changing or deleting another user's access badge.
+  - Creating a space; creating a certificate, request or signing profile.
+  - SSH certificate templates: create, change, delete.
+  - Approving or rejecting a certificate request.
+- **Left open on purpose:** cancelling a request, issuing an approved request, issuing with a
+  server-generated key, renewing, and signing SSH keys. Issuing follows an approval, which is
+  now gated.
+- **A test lists every admin route that changes something.** It fails when a new one neither
+  asks for step-up nor is named, with its reason, as deliberately open.
+
+**Changed**
+
+- **One step-up prompt covers a bulk action.** A verification may name up to 100 targets
+  (`targetIds` on `verify-stepup/totp` and `verify-stepup/webauthn`). The token is still bound to
+  the operation and to each named target, and is spent once per target. Approving or denying
+  several requests, revoking several SSH certificates and enabling, disabling or deleting
+  several trust anchors each prompt once.
+
+### 0.4.0-rc.1.3 — 2026-10-06
+
+**Security**
+
+- **Changing a certificate's access list by certificate id asks for step-up.** Two sets of
+  routes change who may view or manage one certificate. The routes addressed by serial asked
+  for step-up MFA; `allow/view`, `allow/manage`, `downgrade` and `revoke` under
+  `/api/v1/admin/manage/cert-permissions`, addressed by certificate id, did the same thing
+  without it. They now need an `UpdateCertAcl` step-up token issued for the certificate id. The
+  console never used these four; an API client that does must send `X-MFA-Token`.
+
+### 0.4.0-rc.1.2 — 2026-10-06
+
+**Changed**
+
+- **Profiles: each tab names itself once.** The tab, a heading and the table title all said
+  "Certificate Profiles". The heading is gone and the "New profile" button sits in the table's
+  title bar.
+
+### 0.4.0-rc.1.1 — 2026-10-06
+
+**Fixed**
+
+- **The distribution builds on Linux.** The release build of `0.4.0-rc.1` failed with
+  NETSDK1152, so that candidate published no tarball and no image. The console bundles were
+  being picked up twice by the publish step.
+- **Reissuing a CA's OCSP responder or timestamp signer changes nothing when it cannot work.**
+  A reissue from a certificate profile that lists no extended key usage issued the new
+  certificates, moved the CA to them, destroyed the old keys and then reported that the old
+  ones had been left in place. The profile is now checked first, and a failure after that rolls
+  everything back.
+- **A CA is not created from an infrastructure profile that lists no usage.** It would have had
+  a responder that every client rejects.
+- **CA Distribution offers no link to a CRL the CA does not publish.** The delta CRL link led
+  to a 404 when the CA had no delta schedule.
+- **A session refresh that was allowed is not recorded as a failed sign-in.** A refresh from a
+  changed address or client, or without proof of the session key in observe mode, was written
+  as `UserLoginFailed` with a successful outcome. It is now `SessionRefreshNotice`. Refusals
+  keep `UserLoginFailed`. Records written before this keep their old name.
+- **The certificate page shows the key and signature algorithm.** Only the list returned them.
+- **Three filters that did nothing now work.** The audit log's user filter sent a parameter the
+  server never read; the users table's "Last login" was always blank; the certificate list's key
+  algorithm filter could not find ML-DSA or SLH-DSA keys.
+- **The dashboard's count of system groups** read a field the server does not send and always
+  showed 0.
+
+**Changed**
+
+- **Console: colour means status.** Types and kinds (Root, Leaf, protocol names, Built-in) are
+  neutral tags. Action bars hold neutral buttons, at most one primary, and the destructive
+  action last in red.
+- **Filters share one layout**, and a filter that repeats the CA scope is hidden under a scope.
+  The audit log gained an Outcome filter and lists every action name the server can record;
+  the users table gained Status, Signed in and Group; certificates gained "Expiring within".
+- **Detail pages and drawers line their values up**, and drawers are a little wider. The
+  certificate page shows extensions without a button. The audit drawer names its fields in
+  words.
+- **Tables:** text columns start wider and grow into free space. The Authorities and Profiles
+  tables have a find box. A profile's validity reads "10 months to 13 months", not `P10M`.
+- **Dashboard:** cards are as tall as their content and none scrolls inside the page; the group
+  counts are a tile in the top row.
+
+**Added**
+
+- `GET /api/v1/admin/audit/action-types`, and a `success` parameter on `GET /api/v1/admin/audit`.
+
 ## [0.4.0-rc.1] — 2026-10-06
 
 The first release candidate of 0.4.0. It carries everything since 0.3.0, including the work
