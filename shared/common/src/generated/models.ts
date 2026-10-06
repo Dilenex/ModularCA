@@ -244,6 +244,7 @@ export interface BackupConfig {
     encryptionMode: string;
     passwordFilePath: string;
     minimumRetentionDays: number;
+    databaseTimeoutMinutes: number;
 }
 
 /** From `ModularCA.Shared/Models/CertificateExtensionsModel.cs`. */

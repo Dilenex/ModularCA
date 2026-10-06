@@ -1096,11 +1096,12 @@ else if (!isSetupMode)
 // self-traffic is still auditable.
 builder.Services.AddHostedService<AuditNetworkDrainService>();
 
-// Stage 2 TLS provisioning: if Mode=Pending, register the hosted service that issues
-// the real web TLS cert via the standard pipeline on first startup. It issues a certificate
-// and rewrites config.yaml, so it is the control plane's.
+// Stage 2 TLS provisioning: if Mode=Pending, or the self-issued PFX is gone (a restore onto a
+// new host), register the hosted service that issues the web TLS cert via the standard
+// pipeline at startup. It issues a certificate and rewrites config.yaml, so it is the control
+// plane's.
 if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control)
-    && string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
+    && ModularCA.Core.Services.WebTlsProvisioningService.NeedsProvisioning(config.Https, AppContext.BaseDirectory))
     builder.Services.AddHostedService<ModularCA.Core.Services.WebTlsProvisioningService>();
 
 builder.Services.AddHttpContextAccessor();
@@ -1943,7 +1944,18 @@ else
             : Path.Combine(AppContext.BaseDirectory, config.Https.CertificatePath);
     }
 
-    if (pfxPath != null && File.Exists(pfxPath))
+    // A self-issued PFX that is gone or does not open with the configured password: a restore,
+    // since no backup carries the PFX.
+    var replaceWebTls = !pendingTlsProvisioning
+        && ModularCA.Core.Services.WebTlsProvisioningService.NeedsProvisioning(config.Https, AppContext.BaseDirectory);
+
+    if (replaceWebTls)
+    {
+        Console.WriteLine("[STARTUP] Web TLS certificate file not found or not readable — starting on a temporary certificate.");
+        Console.WriteLine("         A replacement is issued automatically by this instance's CA.");
+        apiCertProvider.SetCertificate(GenerateSetupTlsCert());
+    }
+    else if (pfxPath != null && File.Exists(pfxPath))
     {
         // Load initial cert into the provider
         apiCertProvider.SetCertificate(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12FromFile(
@@ -1952,10 +1964,10 @@ else
     }
     else if (!pendingTlsProvisioning)
     {
-        // Web TLS cert missing (post-reset or misconfigured) — generate temp self-signed cert
-        // so the setup wizard or login page is still served over HTTPS
+        // A custom Web TLS certificate is missing — generate temp self-signed cert so the
+        // login page is still served over HTTPS
         Console.WriteLine("[WARNING] Web TLS certificate not found — using temporary self-signed certificate.");
-        Console.WriteLine("         Complete the setup wizard or re-run --bootstrap to generate a proper Web TLS cert.");
+        Console.WriteLine("         Put the certificate back at Https.CertificatePath, or reissue the Web TLS certificate from the console.");
         apiCertProvider.SetCertificate(GenerateSetupTlsCert());
     }
 

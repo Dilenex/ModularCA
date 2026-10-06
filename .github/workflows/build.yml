@@ -87,6 +87,10 @@ jobs:
       - name: Build
         run: dotnet build tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug
 
+      # The restore drill runs the node itself, which the test project does not reference.
+      - name: Build the node
+        run: dotnet build ModularCA.API/ModularCA.API.csproj -c Debug
+
       - name: Test
         env:
           MODULARCA_TEST_PG: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres

@@ -189,6 +189,7 @@ public sealed class BackupRestorePathsTests : IDisposable
         var staging = Path.Combine(_root, "archive");
         Directory.CreateDirectory(Path.Combine(staging, "config"));
         File.WriteAllText(Path.Combine(staging, "manifest.json"), """{"Version":"1.0","AppDatabase":"old-app"}""");
+        File.WriteAllText(Path.Combine(staging, "db-app.dump"), "PGDMP");
         File.WriteAllText(Path.Combine(staging, "config", "config.yaml"),
             "DB:\n  App:\n    Host: db.old-host.example\n    Database: old-app\n    Username: old_app\n    Password: \"old-secret\"\n");
         var archive = Path.Combine(_root, "modularca-backup-test.zip");
@@ -208,6 +209,58 @@ public sealed class BackupRestorePathsTests : IDisposable
         Assert.False(signerAsked);
         Assert.Equal(before, File.Exists(liveConfig) ? File.ReadAllBytes(liveConfig) : null);
         Assert.Empty(Directory.GetFiles(AppContext.BaseDirectory, "pre-restore-*.zip"));
+    }
+
+    /// <summary>
+    /// An archive whose backup could not dump the database used to restore its keystores and
+    /// config over a database they did not belong to, and report success.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_archive_without_its_application_database_is_refused_before_anything_is_touched(bool emptyDump)
+    {
+        var staging = Path.Combine(_root, "archive");
+        Directory.CreateDirectory(Path.Combine(staging, "config"));
+        File.WriteAllText(Path.Combine(staging, "manifest.json"), """{"Version":"1.0","AppDatabase":"old-app"}""");
+        File.WriteAllText(Path.Combine(staging, "config", "config.yaml"), "JWT:\n  Issuer: ModularCA\n");
+        if (emptyDump)
+            File.WriteAllBytes(Path.Combine(staging, "db-app.dump"), []);
+        var archive = Path.Combine(_root, "modularca-backup-test.zip");
+        ZipFile.CreateFromDirectory(staging, archive);
+        var signerAsked = false;
+        var output = new StringWriter();
+        var console = Console.Out;
+        Console.SetOut(output);
+        int exit;
+        try
+        {
+            exit = await BackupRestore.Restore(archive, _ =>
+            {
+                signerAsked = true;
+                throw new InvalidOperationException("the signer must not be built");
+            }, skipSchemaCheck: true, interactive: false);
+        }
+        finally
+        {
+            Console.SetOut(console);
+        }
+
+        Assert.Equal(1, exit);
+        Assert.False(signerAsked);
+        Assert.Contains("holds no application database", output.ToString());
+    }
+
+    [Theory]
+    [InlineData(null, 60)]
+    [InlineData(0, 1)]
+    [InlineData(-5, 1)]
+    [InlineData(90, 90)]
+    public void A_database_tool_may_run_for_the_configured_minutes_and_never_less_than_one(int? configured, int minutes)
+    {
+        var backup = configured is null ? null : new ModularCA.Shared.Models.Config.BackupConfig { DatabaseTimeoutMinutes = configured.Value };
+
+        Assert.Equal(minutes * 60_000, BackupRestore.DatabaseToolTimeoutMs(backup));
     }
 
     [Fact]

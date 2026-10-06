@@ -1253,6 +1253,12 @@ namespace ModularCA.Shared.Models.Config
         /// 3 days; set to 0 to disable the floor.
         /// </summary>
         public int MinimumRetentionDays { get; set; } = 3;
+
+        /// <summary>
+        /// How long one <c>pg_dump</c> or <c>pg_restore</c> run may take before a backup or a
+        /// restore gives up on it, in minutes. Default 60; values below 1 are read as 1.
+        /// </summary>
+        public int DatabaseTimeoutMinutes { get; set; } = 60;
     }
 
     /// <summary>

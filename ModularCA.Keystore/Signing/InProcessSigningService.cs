@@ -1287,7 +1287,8 @@ public sealed class InProcessSigningService : ISigningService
             {
                 bytes = _persistence.ReadKeystoreFile(key.Keystore);
             }
-            catch (FileNotFoundException)
+            // A host that has never held a keystore has no keystore directory either.
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
             {
                 refusal = new SigningRefusedException(SigningRefusalReason.UnknownKey, $"The signer keeps no keystore file named '{key.Keystore}'.");
             }

@@ -604,7 +604,72 @@ The audit role owns the audit tables on every install. The audit trail is tamper
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
 `docs/architecture/postgresql-migration.md`.
 
-## Restoring a backup
+## Backup and recovery
+
+This is the whole procedure for losing the CA host and getting the CA back. It is exercised by a
+test that runs the real program: it installs an instance, backs it up, destroys the host and
+both databases, restores onto a second host and checks the result
+(`tests/ModularCA.Tests/DisasterRecovery`).
+
+### What to keep off the host
+
+Three things, and a restore needs all three. Losing any one of them loses the CA.
+
+| What | Where it is | When it changes |
+|---|---|---|
+| A backup archive, `modularca-backup-<timestamp>.enc` | `backups/` | Every backup |
+| The backup key, `backup.key` (or the backup password you set) | `config/` | Never, unless you reset the instance or change the password |
+| The keystore passphrases, `keystore.yaml` | `config/` | Never |
+
+Copy the key and the passphrases off the host once, when you install, and keep them apart from
+the archives: an archive with its key and the passphrases is the CA. Copy each new archive off
+the host as it is made. Nothing does this for you; `backups/` is on the same disk as everything
+else.
+
+An archive holds both databases, the keystores, `config/` and the secrets that protect stored
+data. It does not hold its own key, the keystore passphrases, the database credentials
+(`db.yaml`) or the web certificate's key (`api-tls.pfx`).
+
+### Taking backups
+
+The node takes one every day at 02:00 UTC and keeps the last ten (`Backup.Schedule`,
+`Backup.RetentionCount`). The console's Backup page takes one on demand. From the command line:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --backup
+
+`pg_dump` and `pg_restore` must be on the PATH of the account that runs ModularCA, at the
+server's major version or newer. A backup that cannot dump a database stops and writes no
+archive; the scheduled job raises a `BackupFailed` alert. One `pg_dump` or `pg_restore` run may
+take up to `Backup.DatabaseTimeoutMinutes` (60).
+
+### What a restore brings back, and what it does not
+
+A restored CA is the CA as it was when the archive was taken.
+
+- **Certificates issued after the backup are unknown to it.** They still chain to the CA, but
+  they are not in its records: they cannot be revoked or renewed from the console, they are not
+  on its CRL, and its OCSP responder answers "revoked" for them, because it answers that for any
+  serial it never issued. Reissue them.
+- **Revocations made after the backup are forgotten.** Those certificates are valid again as far
+  as the CA knows. Revoke them again; the old host's last CRL, if you still have it, lists them.
+- **The first start publishes a new CRL**, numbered above every CRL the old host published, so a
+  client that has seen a later CRL does not treat the new one as a rollback.
+- **The web certificate is new.** Its key is in no archive, so the node issues itself a
+  replacement at its first start, with the same names. Clients that trust the root are
+  unaffected; anything that pinned the old certificate is not. If the old host's disk may be in
+  someone else's hands, revoke the old web certificate from the console.
+- **Users, passwords, authenticator secrets and passkeys come back as they were.** Passkeys keep
+  working only under the same public name.
+
+How much you lose is set by how often you back up and how quickly the archive leaves the host.
+
+**While the CA is down** nothing is issued or revoked and OCSP does not answer. The last CRL
+stays valid only until its next scheduled publication, 30 minutes away at most with the default
+schedule: the schedule's overlap setting is stored but not applied yet. After that, clients that
+insist on a current CRL fail until the CA is back. A longer CRL interval buys a longer outage at
+the price of slower revocation.
+
+### Restoring onto the same host
 
 `--restore` puts back the databases, the keystores and `config/` from an archive; the console's
 Backup page does the same for an archive in `backups/`. From the command line, with the service
@@ -614,9 +679,12 @@ stopped:
     sudo -u modularca /opt/modularca/ModularCA.API --restore /opt/modularca/backups/<archive>.enc
     sudo systemctl start modularca
 
-Before it changes anything it writes the live `config/` and keystores to
-`backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in `config/`;
-delete it once the restored node is running and you no longer need to go back.
+It asks you to type `RESTORE`. Before it changes anything it writes the live `config/` and
+keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in
+`config/`; delete it once the restored node is running and you no longer need to go back.
+
+A database that cannot be restored stops the restore before a keystore or a config file is
+replaced. Each database is restored in one transaction, so one that fails is left as it was.
 
 **The databases are this host's.** A restore writes into the databases this host's own
 `config/db.yaml` names, with its credentials and any `MODULARCA__DB__*` overrides in the
@@ -625,25 +693,51 @@ the archived `config.yaml`: archives taken by earlier builds can have one, and i
 the backup was taken on, which may still be running. The restored `config.yaml` is written
 without it. A host with no `db.yaml` is refused before anything changes.
 
-### Onto a new host
+### Restoring onto a new host
 
-An archive carries neither its own key nor the keystore passphrases, so keep these off the CA
-host when you set it up: `config/backup.key` (or the backup password, for a `StoredPassword`
-archive) and `config/keystore.yaml`.
+1. **Install the build the archive was taken with**, with `install.sh`, and PostgreSQL with its
+   client tools.
+2. **Give the host databases.** Either way works:
+   - Complete the setup wizard, or run an unattended install, as for a first install. This
+     makes a new, empty CA that the restore then replaces. Stop the service afterwards.
+   - Or create two login roles and two empty databases yourself, each database owned by its
+     role, and write `config/db.yaml` from `config/db.yaml.example`, owned by `modularca`,
+     `0600`. Do not start the service.
+3. **Put the kit in place**, owned by `modularca`, `0600`: `keystore.yaml` and `backup.key` in
+   `config/`, replacing the ones a fresh install made, and the archive in `backups/`.
+4. **Restore**, as above. For an archive protected by a password, give `--password` or answer
+   the prompt.
+5. **Start the service.** At this start it unwraps the stored-data secrets the restore staged in
+   `config/restore-pending/`, issues its web certificate and publishes a new CRL.
+6. **Check it**, from another machine:
+   - `http://<name>:<http port>/ca/<label>` returns the root you already trust.
+   - `https://<name>:<port>/` presents a certificate that root signed.
+   - `http://<name>:<http port>/crl/<label>` returns a CRL dated today.
+   - Sign in. The audit trail's integrity check is `GET /api/v1/admin/audit/verify`, as an
+     administrator; it should report no breaks.
+7. **Deal with the gap**: reissue what was issued after the backup, revoke again what was
+   revoked after it, take a new backup, and delete `backups/pre-restore-*.zip`.
 
-1. Install the build the archive was taken with. Where this host has a `config.yaml` (after the
-   wizard), the restore compares the archive's schema with the database's and refuses a
-   difference.
-2. Create the databases and `config/db.yaml`: complete the setup wizard as for a first install,
-   which creates both; or create the two roles and two databases yourself, each database owned by
-   its role, and write `config/db.yaml` from `config/db.yaml.example`, owned by `modularca`,
-   `0600`.
-3. Stop the service and put the old host's `config/keystore.yaml`, and for a `RandomKey` archive
-   its `config/backup.key`, in `config/`, owned by `modularca`, `0600`.
-4. Run the restore as above. For a `StoredPassword` archive, give `--password` or answer the
-   prompt.
-5. Start the service. At its first start it unwraps the Data Protection key ring and the SSH CA
-   keys the restore staged in `config/restore-pending/`.
+Where the host has a `config.yaml` (after the wizard), the restore compares the archive's schema
+with the database's and refuses a difference, which is why step 1 asks for the same build.
+Upgrade after the restore, not before.
+
+With compose, step 2 is `docker compose up -d` and the wizard, and the rest is:
+
+    docker compose stop modularca
+    docker compose cp keystore.yaml modularca:/opt/modularca/config/keystore.yaml
+    docker compose cp backup.key modularca:/opt/modularca/config/backup.key
+    docker compose cp <archive>.enc modularca:/opt/modularca/backups/
+    docker compose run --rm modularca --restore /opt/modularca/backups/<archive>.enc
+    docker compose up -d modularca
+
+The host procedure is what the test runs. The compose commands have not been run yet.
+
+### Rehearse it
+
+A backup you have not restored is a guess. Restore your latest archive onto a spare machine or a
+second compose project now and again, with the kit you actually keep, and do step 6. Do not
+give the rehearsal the production name: it would answer OCSP and publish CRLs as the CA.
 
 ## Firewall and ports
 

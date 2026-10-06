@@ -30,7 +30,9 @@ public static class CrlNumberFloor
 
     /// <summary>
     /// Raises every CRL configuration's <c>LastCrlNumber</c> to at least <paramref name="floor"/>
-    /// and saves. Returns the configurations that changed.
+    /// and makes every configuration due, so the node publishes a CRL above the floor when it
+    /// next starts instead of serving the restored one until its schedule comes round. Returns
+    /// the configurations whose counter changed.
     /// </summary>
     public static async Task<IReadOnlyList<Raised>> ApplyAsync(ModularCADbContext db, long floor, CancellationToken cancellationToken = default)
     {
@@ -38,13 +40,13 @@ public static class CrlNumberFloor
         var raised = new List<Raised>();
         foreach (var config in await db.CrlConfigurations.ToListAsync(cancellationToken))
         {
+            config.NextUpdateUtc = DateTime.MinValue;
             if (config.LastCrlNumber >= floor)
                 continue;
             raised.Add(new Raised(config.TaskId, config.IssuerDN, config.IsDelta, config.LastCrlNumber, floor));
             config.LastCrlNumber = floor;
         }
-        if (raised.Count > 0)
-            await db.SaveChangesAsync(cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
         return raised;
     }
 }

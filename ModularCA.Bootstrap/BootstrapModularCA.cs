@@ -493,15 +493,17 @@ public class BootstrapModularCA
         var theOUs = bootstrapConfig.CA.Subject.OU != null ? string.Join(",", bootstrapConfig.CA.Subject.OU) : string.Empty;
 
         // === Self-Signed CA Certificate ===
-        var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(bootstrapConfig.CA.Subject.CN ?? throw new Exception("The CA Subject CN was not found"), bootstrapConfig.CA.Subject.O ?? throw new Exception("The CA Subject O was not found"), theOUs,
-            bootstrapConfig.CA.Subject.L ?? throw new Exception("The CA Subject L was not found"), bootstrapConfig.CA.Subject.ST ?? throw new Exception("The CA Subject ST was not found"), bootstrapConfig.CA.Subject.C ?? throw new Exception("The CA Subject C was not found"), bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
+        // Only the CN is needed; the rest of the subject is optional, as in the setup wizard.
+        var subject = bootstrapConfig.CA.Subject;
+        var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(caCn, subject.O ?? string.Empty, theOUs,
+            subject.L ?? string.Empty, subject.ST ?? string.Empty, subject.C ?? string.Empty, bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
             DateTime.UtcNow, DateTime.UtcNow.AddYears(bootstrapConfig.CA.ValidityYears), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
 
         var (signedCaCert, caPrivKey, caPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(caCertRequest);
 
         // === ModularCA System Signing CA ===
         var sysCertRequest = BootstrapCertCreator.CreateCertificateRequest("ModularCA System Signing CA", "ModularCA", string.Empty,
-            bootstrapConfig.CA.Subject.L, bootstrapConfig.CA.Subject.ST, bootstrapConfig.CA.Subject.C,
+            subject.L ?? string.Empty, subject.ST ?? string.Empty, subject.C ?? string.Empty,
             bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
             DateTime.UtcNow, DateTime.UtcNow.AddYears(100), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
         var (signedSysCert, sysPrivKey, sysPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(sysCertRequest);

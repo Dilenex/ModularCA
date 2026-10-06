@@ -727,7 +727,7 @@ namespace ModularCA.Tests.Database
         private static async Task<(int ExitCode, string Stderr)> RestoreDumpFileAsync(string pgpass, DbInstance instance, string dump, bool ensureCitext)
         {
             var method = typeof(BackupRestore).GetMethod("RestoreDumpFileAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
-            return await (Task<(int, string)>)method.Invoke(null, [pgpass, instance, dump, ensureCitext])!;
+            return await (Task<(int, string)>)method.Invoke(null, [pgpass, instance, dump, ensureCitext, 600_000])!;
         }
 
         /// <summary>Whether any captured event, at any level, contains <paramref name="text"/>.</summary>

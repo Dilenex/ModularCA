@@ -363,6 +363,7 @@ Https:
 #   RetentionCount: 10           # Max archives to keep; oldest are pruned
 #   MinimumRetentionDays: 3      # Hard floor (days) — never delete archives younger than this regardless of count
 #   Schedule: "0 2 * * *"        # Cron expression — default is daily at 2 AM UTC
+#   DatabaseTimeoutMinutes: 60   # How long one pg_dump or pg_restore run may take
 
 # WebAuthn/FIDO2 — second-factor authentication with security keys (enabled by default)
 # The WebAuthn relying-party id and origin are derived from Https.PublicDomain +

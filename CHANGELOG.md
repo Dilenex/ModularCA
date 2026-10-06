@@ -6,6 +6,48 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### A backup restores onto a new host, and a test proves it
+
+A new test runs the built node as an operator does: it installs an instance unattended, starts
+it, backs it up, destroys the host and both databases, restores the archive onto a second host
+from the archive, the backup key and `keystore.yaml` alone, starts it, and checks the root, a
+newly signed web certificate and CRL, the stored-data secrets and the audit chain. It runs with
+the PostgreSQL harness in CI. Its first runs found every fault below; none of them could be seen
+without restoring for real.
+
+- **A restore onto a host with no keystores was refused.** The step that saves the live state
+  before a restore failed when there was no `keystores/` directory, so restoring onto a clean
+  host with hand-made databases never worked.
+- **After restoring into empty databases the restore could not read them.** It created the
+  `citext` extension after the database driver had read the type list, so the CRL counters were
+  not raised and the keystores were refused.
+- **A node restored over a fresh install did not start.** The fresh install's web certificate
+  file stayed, the restored `config.yaml` held another password for it, and the node exited with
+  an unhandled exception. The restore now removes that file, and a file that does not open is
+  treated as missing.
+- **A restored node served a throwaway self-signed web certificate.** The certificate's key is
+  in no archive, nothing reissued it, and the startup message suggested `--bootstrap`, which
+  would have erased the restored CA. The node now issues itself a replacement at start, with
+  the subject, names and lifetime of the last one.
+- **A restored node went on serving the CRL from the archive** until its schedule came round,
+  numbered below CRLs already published. A restore now makes every CRL schedule due, so the
+  first start publishes one above the floor.
+- **A backup whose database dump failed reported success.** It printed a warning, wrote an
+  archive with no database in it and exited 0, and the verification job cannot see inside an
+  encrypted archive. A failed dump now ends the backup with no archive.
+- **A restore whose database step failed carried on** to replace the keystores and `config/`,
+  and reported success. It now stops first. An archive with no application database is refused
+  before anything changes.
+- **A backup that could not load its key left the plaintext archive behind** in `backups/`. The
+  key is now loaded first, and an archive that was not encrypted is deleted.
+- **`pg_dump` and `pg_restore` were killed after two minutes.** The limit is now
+  `Backup.DatabaseTimeoutMinutes`, 60 by default.
+- **An unattended install crashed when `bootstrap.yaml` gave the root no locality or state**,
+  after creating the databases. Only the common name is needed, as in the wizard.
+
+The deploy guide's "Backup and recovery" section is now the procedure, including what a restore
+does not bring back: certificates issued and revocations made after the backup.
+
 ### Setup asks whether ACME clients are on a private network
 
 - **Ticking ACME in the wizard asks "Will ACME clients be on a private network?"** The default

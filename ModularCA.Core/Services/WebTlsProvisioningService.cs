@@ -18,7 +18,10 @@ namespace ModularCA.Core.Services;
 /// <summary>
 /// Stage 2 of the two-stage bootstrap: issues the web TLS certificate through the standard
 /// CSR → profile validation → CertificateIssuanceService pipeline on first runtime start.
-/// Registered as an IHostedService only when <c>Https.Mode = "Pending"</c>.
+/// Registered as an IHostedService only when <see cref="NeedsProvisioning"/> says so:
+/// <c>Https.Mode = "Pending"</c>, or <c>"SelfIssued"</c> with the PFX gone, which is a restore
+/// onto a new host, since no backup carries the PFX. The replacement then takes the subject,
+/// names and lifetime of the last Web TLS certificate in the database.
 /// After successful issuance, updates config.yaml to <c>Mode = "SelfIssued"</c> and
 /// hot-swaps the cert into <see cref="ApiCertificateProvider"/>.
 /// </summary>
@@ -33,17 +36,49 @@ public class WebTlsProvisioningService(
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     /// <summary>
-    /// In Pending mode, issues the Web TLS certificate from the pending subject and SANs (DNS and
-    /// IP only, <see cref="EnsureDnsOrIpSans"/>) under the signing profile
-    /// <see cref="ResolveSigningProfileAsync"/> picks, writes the PFX, switches the config to
-    /// SelfIssued and hot-swaps the certificate. A failure is logged and the temporary certificate stays.
+    /// Whether the Web TLS certificate has to be issued at start: the mode is Pending, or it is
+    /// SelfIssued and <c>config/api-tls.pfx</c> under <paramref name="baseDirectory"/> is missing
+    /// or does not open with the configured password (a file left by another installation).
+    /// </summary>
+    public static bool NeedsProvisioning(HttpsConfig https, string baseDirectory)
+    {
+        var mode = https.Mode?.Trim();
+        if (string.Equals(mode, "Pending", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.Equals(mode, "SelfIssued", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var pfxPath = Path.Combine(baseDirectory, "config", "api-tls.pfx");
+        if (!File.Exists(pfxPath))
+            return true;
+        try
+        {
+            using var probe = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, https.CertificatePassword, X509KeyStorageFlags.EphemeralKeySet);
+            return false;
+        }
+        catch (CryptographicException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// When <see cref="NeedsProvisioning"/>, issues the Web TLS certificate under the signing
+    /// profile <see cref="ResolveSigningProfileAsync"/> picks, writes the PFX, switches the config
+    /// to SelfIssued and hot-swaps the certificate. The subject and SANs (DNS and IP only,
+    /// <see cref="EnsureDnsOrIpSans"/>) are the pending ones; without those, the last Web TLS
+    /// certificate's; without one, the public name. A failure is logged and the temporary
+    /// certificate stays.
     /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (!string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
+        if (!NeedsProvisioning(config.Https, AppContext.BaseDirectory))
             return;
+        var replacing = !string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase);
 
-        logger.LogInformation("Stage 2 TLS provisioning: issuing web TLS certificate via standard pipeline...");
+        logger.LogInformation(replacing
+            ? "The Web TLS certificate file is missing (it is in no backup): issuing a replacement via the standard pipeline..."
+            : "Stage 2 TLS provisioning: issuing web TLS certificate via standard pipeline...");
 
         try
         {
@@ -64,11 +99,23 @@ public class WebTlsProvisioningService(
                     "No enabled instance CA (or CA of the instance's primary space) has a signing profile linked to the "
                     + "Web TLS Certificate Profile.");
 
-            // Build subject DN and SANs from pending config
-            var subjectDn = config.Https.PendingSubjectDn ?? "CN=localhost";
-            var sans = config.Https.PendingSans ?? new List<string> { "DNS:localhost", "IP:127.0.0.1" };
+            // Subject, SANs and lifetime: the pending ones, else the last Web TLS certificate's.
+            var previous = replacing
+                ? await db.Certificates.AsNoTracking()
+                    .Where(c => c.CertProfileId == certProfile.Id && !c.IsCA)
+                    .OrderByDescending(c => c.NotBefore)
+                    .FirstOrDefaultAsync(cancellationToken)
+                : null;
+            List<string> previousSans = previous == null ? [] : [.. UpnSanEncoding.DeserializeStoredSans(previous.SubjectAlternativeNamesJson)];
+            var publicName = string.IsNullOrWhiteSpace(config.Https.PublicDomain) ? "localhost" : config.Https.PublicDomain.Trim();
+            var subjectDn = config.Https.PendingSubjectDn ?? previous?.SubjectDN ?? $"CN={publicName}";
+            var sans = config.Https.PendingSans
+                ?? (previousSans.Count > 0
+                    ? previousSans
+                    : new List<string> { System.Net.IPAddress.TryParse(publicName, out _) ? $"IP:{publicName}" : $"DNS:{publicName}" });
             EnsureDnsOrIpSans(sans);
-            var validityDays = config.Https.PendingValidityDays ?? 365;
+            var validityDays = config.Https.PendingValidityDays
+                ?? (previous == null ? 365 : Math.Max(1, (int)Math.Round((previous.NotAfter - previous.NotBefore).TotalDays)));
             var keyAlgorithm = config.Https.PendingKeyAlgorithm ?? "ECDSA";
             var keySize = config.Https.PendingKeySize ?? 256;
 
@@ -173,7 +220,13 @@ public class WebTlsProvisioningService(
                     actorUserId: null, actorUsername: "system",
                     targetEntityType: "Certificate",
                     targetEntityId: CertificateUtil.FormatSerialNumber(issuedCert.SerialNumber),
-                    details: new { Action = "Stage2Provisioning", Subject = issuedCert.SubjectDN.ToString(), issuedCert.NotAfter });
+                    details: new
+                    {
+                        Action = replacing ? "ReplacedMissingCertificateFile" : "Stage2Provisioning",
+                        Subject = issuedCert.SubjectDN.ToString(),
+                        issuedCert.NotAfter,
+                        Replaces = previous?.SerialNumber,
+                    });
             }
         }
         catch (Exception ex)

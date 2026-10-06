@@ -66,6 +66,22 @@ public class CrlNumberFloorTests
     }
 
     [Fact]
+    public async Task After_a_restore_every_crl_configuration_is_due_whether_or_not_its_counter_moved()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var behind = Config(isDelta: false, last: 40);
+        var ahead = Config(isDelta: true, last: 5_000_000_000);
+        behind.NextUpdateUtc = ahead.NextUpdateUtc = DateTime.UtcNow.AddDays(1);
+        db.CrlConfigurations.AddRange(behind, ahead);
+        await db.SaveChangesAsync();
+
+        await CrlNumberFloor.ApplyAsync(db, CrlNumberFloor.FloorAt(DateTimeOffset.UtcNow));
+
+        db.ChangeTracker.Clear();
+        Assert.All(db.CrlConfigurations, c => Assert.True(c.NextUpdateUtc < DateTime.UtcNow));
+    }
+
+    [Fact]
     public async Task A_second_restore_later_lands_above_a_ca_that_has_published_since_the_first()
     {
         using var db = InMemoryDbContextFactory.Create();
