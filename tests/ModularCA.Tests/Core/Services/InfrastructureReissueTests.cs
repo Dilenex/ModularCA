@@ -92,10 +92,61 @@ public sealed class InfrastructureReissueTests
     }
 
     /// <summary>
+    /// A reissue that cannot produce a working responder leaves the CA as it was: the responder it
+    /// pointed at, no key in the keystore, and a refusal that says which profile to fix. Staging
+    /// had a certificate profile with no extended key usages; the reissue issued three
+    /// certificates, moved the CA to them, destroyed their keys and then reported that nothing
+    /// had changed.
+    /// </summary>
+    [Theory]
+    [InlineData("[]", true, "OCSP Responder Certificate Profile")]
+    [InlineData("[\"1.3.6.1.5.5.7.3.9\"]", false, "reissued OCSP Responder certificate")]
+    public async Task A_reissue_that_cannot_work_changes_nothing(string profileUsages, bool issuedWithUsage, string named)
+    {
+        var world = SignerTestWorld.Create();
+        var caId = world.CaEcId;
+        var previousResponder = Guid.NewGuid();
+        using (var seed = world.OpenDb())
+        {
+            seed.CertificateAuthorities.Single(c => c.Id == caId).OcspResponderCertificateId = previousResponder;
+            seed.SigningProfiles.Add(new SigningProfileEntity { Name = "ca-ec signing", AllowedAlgorithms = "[]", IssuerId = world["ca-ec"].Ref.CertificateId });
+            seed.CertProfiles.Add(new CertProfileEntity
+            {
+                Name = "OCSP Responder Certificate Profile",
+                KeyUsages = "[\"Digital Signature\"]",
+                ExtendedKeyUsages = profileUsages,
+                AllowedKeySizes = "[]",
+                AllowedSignatureAlgorithms = "[]",
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var signer = TestSigner.Over(world.Keystore, world.DatabaseName, world.Persistence);
+        using var db = world.OpenDb();
+        var service = new CaCreationService(
+            db,
+            InstanceCeremonyEndpointTests.Fake<ICrlService>.Create(),
+            InstanceCeremonyEndpointTests.Fake<ICaServiceUrlService>.Create(),
+            new CsrService(db, new HeldKeyService(db, new EphemeralDataProtectionProvider(), new RecordingAuditService())),
+            new SignerIssuance(db, signer, issuedWithUsage),
+            new SystemConfig(),
+            NullLogger<CaCreationService>.Instance,
+            signer);
+
+        var refused = await Assert.ThrowsAsync<ModularCA.Shared.Errors.ConfigurationValidationException>(
+            () => service.ReissueInfrastructureCertsAsync(caId, reissueOcsp: true, reissueTsa: false));
+
+        Assert.Contains(named, refused.Message);
+        using var check = world.OpenDb();
+        Assert.Equal(previousResponder, check.CertificateAuthorities.Single(c => c.Id == caId).OcspResponderCertificateId);
+        Assert.Empty(world.Persistence.Appended);
+    }
+
+    /// <summary>
     /// Issues the requested certificate with the CA key through the signer, under the context
     /// the caller names, and links it to its request as issuance does.
     /// </summary>
-    private sealed class SignerIssuance(ModularCADbContext db, ISigningService signer) : ICertificateIssuanceService
+    private sealed class SignerIssuance(ModularCADbContext db, ISigningService signer, bool withOcspSigning = true) : ICertificateIssuanceService
     {
         public Task<IssuanceResult> IssueCertificateAsync(Guid csrId, DateTime? notBefore, DateTime? notAfter,
             X509Certificate caCert, KeyRef caKey, SigningContext caSigningContext, CancellationToken cancellationToken = default)
@@ -113,7 +164,8 @@ public sealed class InfrastructureReissueTests
             gen.SetPublicKey(csr.GetPublicKey());
             gen.AddExtension(X509Extensions.BasicConstraints, true, new BasicConstraints(false));
             gen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(KeyUsage.DigitalSignature));
-            gen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeID.id_kp_OCSPSigning));
+            if (withOcspSigning)
+                gen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeID.id_kp_OCSPSigning));
             var cert = gen.Generate(new SigningServiceSignatureFactory(signer, caKey, SignatureAlgorithm.ForPublicKey(caCert.GetPublicKey()), caSigningContext));
 
             var pem = CertificateUtil.ConvertDerToPem(cert.GetEncoded(), "CERTIFICATE");

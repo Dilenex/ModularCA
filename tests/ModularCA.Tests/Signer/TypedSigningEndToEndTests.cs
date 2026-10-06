@@ -40,19 +40,7 @@ public sealed class TypedSigningEndToEndTests
     /// </summary>
     private static NameConstraintIssuanceTests.IssuanceWorld NewWorld()
     {
-        var w = new NameConstraintIssuanceTests.IssuanceWorld();
-        var ocsp = w.Db.CertProfiles.Single(p => p.Name == "OCSP Responder Certificate Profile");
-        ocsp.KeyUsages = "[\"Digital Signature\"]";
-        ocsp.ExtendedKeyUsages = $"[\"{OcspSigning}\"]";
-        var tsa = w.Db.CertProfiles.Single(p => p.Name == "TSA Certificate Profile");
-        tsa.KeyUsages = "[\"Digital Signature\"]";
-        tsa.ExtendedKeyUsages = $"[\"{TimeStamping}\"]";
-        w.Db.OIDOptions.AddRange(
-            new OIDOptionEntity { OID = OcspSigning, FriendlyName = "OCSPSigning", KeyUsage = "Extended" },
-            new OIDOptionEntity { OID = TimeStamping, FriendlyName = "timeStamping", KeyUsage = "Extended" },
-            new OIDOptionEntity { OID = "2.5.29.15.0", FriendlyName = "digitalSignature", KeyUsage = "Standard" });
-        w.Db.SaveChanges();
-        return w;
+        return new NameConstraintIssuanceTests.IssuanceWorld();
     }
 
     private static Guid SeedStrictSpace(NameConstraintIssuanceTests.IssuanceWorld w)

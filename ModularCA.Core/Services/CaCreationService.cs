@@ -530,6 +530,11 @@ public class CaCreationService(
         await using var tx = await db.Database.BeginTransactionAsync();
         try
         {
+            // A new CA issues itself a timestamp signer and an OCSP responder from these two
+            // profiles. One that lists no usage would give it a responder that cannot answer.
+            await EnsureCertProfileRequestsEkuAsync("TSA Certificate Profile", IdKpTimeStampingOid, "timeStamping", "time stamping");
+            await EnsureCertProfileRequestsEkuAsync("OCSP Responder Certificate Profile", IdKpOcspSigningOid, "OCSPSigning", "OCSP signing");
+
             // For self-signed roots, link IssuerCertificateId back to the cert's own row.
             // For intermediates (issued via the pipeline), IssuerCertificateId is already set
             // by CertificateIssuanceService.
@@ -994,6 +999,11 @@ public class CaCreationService(
         // anything. Reissuing into a profile that forbids the usage produced a certificate that
         // could never work, having already revoked the one it replaced.
         EnsureSigningProfilePermitsInfrastructureEkus(signingProfile, reissueOcsp, reissueTsa);
+        // The certificate profiles must ask for the usage too: issuance emits what they list.
+        if (reissueTsa)
+            await EnsureCertProfileRequestsEkuAsync("TSA Certificate Profile", IdKpTimeStampingOid, "timeStamping", "time stamping");
+        if (reissueOcsp)
+            await EnsureCertProfileRequestsEkuAsync("OCSP Responder Certificate Profile", IdKpOcspSigningOid, "OCSPSigning", "OCSP signing");
 
         // The CMP signer profile is created on first use so installs that predate it need no
         // migration; the seeder creates the same row on fresh installs.
@@ -1008,6 +1018,11 @@ public class CaCreationService(
         X509Certificate? newTsaCert = null, newOcspCert = null, newCmpCert = null;
         var newKeys = new List<(KeyRef Key, Guid CertificateId)>();
 
+        // Each issue below saves a certificate and moves the CA's pointer to it. One transaction
+        // over all of them, so a failure leaves no new certificate and no moved pointer.
+        await using var transaction = db.Database.CurrentTransaction == null
+            ? await db.Database.BeginTransactionAsync()
+            : null;
         try
         {
             // IssueInfrastructureCertAsync chooses the new subject key's algorithm from the CA
@@ -1045,11 +1060,23 @@ public class CaCreationService(
             // The CMP signer needs no EKU, but it is useless without digitalSignature: that bit is
             // the whole reason it exists rather than the CA certificate signing directly.
             if (newCmpCert != null) EnsureIssuedCertCarriesDigitalSignature(newCmpCert, CmpSignerCertType);
+
+            if (transaction != null)
+                await transaction.CommitAsync();
         }
         catch
         {
-            // A failure above leaves no orphaned key: the pending keys are retired and were never
-            // written anywhere.
+            // A failure above leaves nothing behind: the certificates and the moved pointers are
+            // rolled back, the pointers are put back on the tracked row as well, and the pending
+            // keys are retired and were never written anywhere.
+            if (transaction != null)
+            {
+                try { await transaction.RollbackAsync(); } catch { /* the original failure is the one to report */ }
+            }
+            caEntity.OcspResponderCertificateId = previousOcspId;
+            caEntity.TsaCertificateId = previousTsaId;
+            caEntity.CmpSigningCertificateId = previousCmpId;
+            try { await db.SaveChangesAsync(); } catch { /* as above */ }
             await RetireQuietlyAsync(ceremony, newKeys.Select(k => (KeyRef?)k.Key).ToArray());
             throw;
         }
@@ -1272,6 +1299,48 @@ public class CaCreationService(
             $"({requiredOid}), so it would not work. The previous certificate has been left in place " +
             "and still points at this CA. Check the signing profile's Allowed EKUs and the " +
             $"'{certType}' certificate profile, then reissue again.", ErrorCodes.SigningProfileMissingRequiredEku);
+    }
+
+    /// <summary>
+    /// Confirms an infrastructure certificate profile lists the extended key usage its
+    /// certificates exist for, before a CA is created or its certificates reissued. Issuance emits exactly what the profile
+    /// lists and an empty list is legitimate there, so a profile that has lost the usage yields a
+    /// certificate that cannot do its job, with no error. A profile that does not exist is left
+    /// to issuance, which says so.
+    /// </summary>
+    /// <param name="profileName">The certificate profile's name.</param>
+    /// <param name="oid">The extended key usage, as an OID.</param>
+    /// <param name="friendly">Its catalog name, as the console stores it.</param>
+    /// <param name="what">What to call it in the refusal.</param>
+    private async Task EnsureCertProfileRequestsEkuAsync(string profileName, string oid, string friendly, string what)
+    {
+        var stored = await db.CertProfiles.AsNoTracking()
+            .Where(cp => cp.Name == profileName)
+            .Select(cp => cp.ExtendedKeyUsages)
+            .FirstOrDefaultAsync();
+        if (stored == null && !await db.CertProfiles.AnyAsync(cp => cp.Name == profileName))
+            return;
+
+        List<string> requested;
+        try
+        {
+            requested = JsonSerializer.Deserialize<List<string>>(
+                string.IsNullOrWhiteSpace(stored) ? "[]" : stored, SafeJsonOptions.Default) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            requested = new List<string>();
+        }
+
+        if (requested.Any(r => string.Equals(r.Trim(), oid, StringComparison.Ordinal)
+                            || UsageCatalogResolver.Canonicalize(r) == UsageCatalogResolver.Canonicalize(oid)
+                            || UsageCatalogResolver.Canonicalize(r) == UsageCatalogResolver.Canonicalize(friendly)))
+            return;
+
+        throw new ConfigurationValidationException(
+            $"The certificate profile '{profileName}' does not list {what} ({oid}) among its extended key " +
+            "usages, so a certificate issued from it would not work. Nothing has been changed. Add the " +
+            "usage to that certificate profile and try again.", ErrorCodes.SigningProfileMissingRequiredEku);
     }
 
     /// <summary>
