@@ -20,6 +20,7 @@ export const adminAcmeEab: ApiEndpoint[] = [
         category: 'Admin ACME EAB',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-eab-key. Required for this operation.' },
         ],
         responseDescription: 'Created EAB key with ID and MAC key.',
     },

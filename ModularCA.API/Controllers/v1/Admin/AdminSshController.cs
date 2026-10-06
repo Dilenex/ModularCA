@@ -1,3 +1,4 @@
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -399,6 +400,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/{id:guid}/revoke")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.RevokeSshCert, "id")]
     public async Task<IActionResult> RevokeCertificate(Guid caKeyId, Guid id)
     {
         await currentUser.EnsureLoadedAsync();

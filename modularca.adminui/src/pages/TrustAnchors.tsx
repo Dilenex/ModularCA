@@ -2,13 +2,16 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
-import { apiGet, apiPost, apiPut, apiDelete } from '../api/client';
+import { apiGet, apiPut, apiDelete, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
 import { FieldHint } from '@shared/components/forms';
+import { StepUpOps } from '@shared/generated';
+import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 interface TrustAnchor {
     id: string;
@@ -87,11 +90,12 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
     const [importing, setImporting] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string; subject?: string; thumbprint?: string | null } | null>(null);
 
+    const { requireStepUp } = useStepUp();
     const handleImport = async () => {
         setImporting(true);
         setMessage(null);
         try {
-            const result = await apiPost<TrustAnchor>('/api/v1/admin/trust-anchors', { certificate, label, description });
+            const result = await apiPostWithMfa<TrustAnchor>('/api/v1/admin/trust-anchors', { certificate, label, description }, requireStepUp, StepUpOps.ManageTrustAnchor);
             // Echo what was just trusted so the thumbprint can be checked against the one obtained
             // out of band; a bare "imported successfully" gives nothing to compare.
             setMessage({
@@ -166,6 +170,7 @@ const ImportForm: React.FC<{ onImported: () => void }> = ({ onImported }) => {
 /* --- Trust Anchors Page --- */
 const TrustAnchors: React.FC = () => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [anchors, setAnchors] = useState<TrustAnchor[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -187,11 +192,9 @@ const TrustAnchors: React.FC = () => {
     const bulkSetEnabled = async (rows: TrustAnchor[], enabled: boolean) => {
         const targets = rows.filter((a) => a.isEnabled !== enabled);
         if (targets.length === 0) { showToast('info', `All selected are already ${enabled ? 'enabled' : 'disabled'}.`); return; }
-        let ok = 0, failed = 0;
-        for (const a of targets) {
-            try { await apiPut(`/api/v1/admin/trust-anchors/${a.id}/toggle`, { enabled }); ok++; }
-            catch { failed++; }
-        }
+        const result = await runWithOneStepUp(targets, (a) => String(a.id), requireStepUp, StepUpOps.ManageTrustAnchor,
+            (a, headers) => apiPut(`/api/v1/admin/trust-anchors/${a.id}/toggle`, { enabled }, { toast: false, headers }));
+        const ok = result.ok, failed = result.failures.length;
         if (ok) showToast('success', `${enabled ? 'Enabled' : 'Disabled'} ${ok} anchor${ok !== 1 ? 's' : ''}.`);
         if (failed) showToast('error', `${failed} failed.`);
         load();
@@ -202,10 +205,10 @@ const TrustAnchors: React.FC = () => {
         setConfirmLoading(true);
         let ok = 0, failed = 0;
         try {
-            for (const a of confirmBulk) {
-                try { await apiDelete(`/api/v1/admin/trust-anchors/${a.id}`); ok++; }
-                catch { failed++; }
-            }
+            const result = await runWithOneStepUp(confirmBulk, (a) => String(a.id), requireStepUp, StepUpOps.ManageTrustAnchor,
+                (a, headers) => apiDelete(`/api/v1/admin/trust-anchors/${a.id}`, { toast: false, headers }));
+            ok = result.ok;
+            failed = result.failures.length;
             if (ok) showToast('success', `Deleted ${ok} anchor${ok !== 1 ? 's' : ''}.`);
             if (failed) showToast('error', `${failed} failed to delete.`);
             load();

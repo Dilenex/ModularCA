@@ -218,7 +218,7 @@ const UserDetail: React.FC = () => {
                         Badges this user can wear. Each keeps a subset of the grant sources they already hold; issuing one hands
                         them a narrowed way of working without changing their grants.
                     </p>
-                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded />
+                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded stepUp={{ operation: StepUpOps.ManageUserBadge, targetId: id! }} />
                 </DetailSection>
 
                 <DetailSection title={`Groups (${userGroups.length})`}>

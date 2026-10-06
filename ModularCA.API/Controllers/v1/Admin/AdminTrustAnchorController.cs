@@ -1,3 +1,4 @@
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModularCA.Auth.Interfaces;
@@ -51,6 +52,7 @@ public class AdminTrustAnchorController(
     /// </summary>
     /// <param name="request">The import request containing the certificate and optional metadata.</param>
     [HttpPost]
+    [RequireStepUp(StepUpOps.ManageTrustAnchor)]
     public async Task<IActionResult> Import([FromBody] ImportTrustAnchorRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Certificate))
@@ -90,6 +92,7 @@ public class AdminTrustAnchorController(
     /// </summary>
     /// <param name="id">The trust anchor identifier.</param>
     [HttpDelete("{id:guid}")]
+    [RequireStepUp(StepUpOps.ManageTrustAnchor, "id")]
     public async Task<IActionResult> Delete(Guid id)
     {
         await currentUser.EnsureLoadedAsync();
@@ -117,6 +120,7 @@ public class AdminTrustAnchorController(
     /// <param name="id">The trust anchor identifier.</param>
     /// <param name="request">The toggle request containing the desired enabled state.</param>
     [HttpPut("{id:guid}/toggle")]
+    [RequireStepUp(StepUpOps.ManageTrustAnchor, "id")]
     public async Task<IActionResult> Toggle(Guid id, [FromBody] ToggleTrustAnchorRequest request)
     {
         await currentUser.EnsureLoadedAsync();

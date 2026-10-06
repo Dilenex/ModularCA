@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, apiPost, apiDeleteWithMfa, API_BASE } from '../api/client';
+import { apiGet, apiDeleteWithMfa, API_BASE, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -70,9 +70,9 @@ const EabKeyManagementSection: React.FC = () => {
         setGenerating(true);
         setActionError(null);
         try {
-            const result = await apiPost<NewEabKey>('/api/v1/admin/acme/eab-keys', {
+            const result = await apiPostWithMfa<NewEabKey>('/api/v1/admin/acme/eab-keys', {
                 description: description || undefined,
-            });
+            }, requireStepUp, StepUpOps.CreateEabKey);
             setNewKey(result);
             setDescription('');
             setShowCreateForm(false);

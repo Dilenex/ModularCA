@@ -82,6 +82,7 @@ export const adminCsr: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for approve-request, issued for the request id. Required for this operation.' },
         ],
         responseDescription: 'Approval status including message, status (Approved or PartiallyApproved), approvalCount, and requiredCount.',
         notes: 'Prevents self-approval of own requests (unless system-super with AllowSystemSuperSelfApproval). Prevents duplicate approvals. Enforces profile.use capability and space isolation.',
@@ -109,6 +110,7 @@ export const adminCsr: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for reject-request, issued for the request id. Required for this operation.' },
         ],
         responseDescription: 'Object with message, id, and reason.',
         notes: 'Only Pending requests can be rejected. Enforces space isolation.',

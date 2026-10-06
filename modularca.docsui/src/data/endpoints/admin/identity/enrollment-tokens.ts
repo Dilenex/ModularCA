@@ -31,6 +31,7 @@ export const adminEnrollmentTokens: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-enrollment-secret. Required for this operation.' },
         ],
         responseDescription: 'Object with token (plaintext) and expiresIn (hours).',
         notes: 'Enforces space isolation via the selected profiles. System-wide tokens require SystemOperator/SystemAdmin.',
@@ -49,6 +50,7 @@ export const adminEnrollmentTokens: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-enrollment-secret. Required for this operation.' },
         ],
         responseDescription: 'Object with id, cmpReferenceValue, sharedSecret (plaintext, shown once), expiresAt, maxUses, and a warning to record the secret.',
         notes: 'The plaintext secret is returned exactly once and never stored in the clear. Subsequent admin views show only the last 4 digits. Returns 409 if the referenceValue already exists.',

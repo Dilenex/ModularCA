@@ -212,6 +212,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("allow/view")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> GrantViewPermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -251,6 +252,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("allow/manage")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> GrantManagePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -286,6 +288,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("downgrade")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> DowngradePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -321,6 +324,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("revoke")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> RevokePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();

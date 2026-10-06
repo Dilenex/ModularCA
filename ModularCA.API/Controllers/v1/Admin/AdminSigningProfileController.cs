@@ -190,6 +190,7 @@ public class AdminSigningProfileController(
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CaManage, CaTarget.CaCertificate, "r.IssuerId")]
+    [RequireStepUp(StepUpOps.CreateSigningProfile)]
     public async Task<IActionResult> Create([FromBody] CreateSigningProfileRequest r)
     {
         await currentUser.EnsureLoadedAsync();

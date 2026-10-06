@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuthClient } from '../api/AuthClientContext';
+import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { AccessBadgeSourceKind, type AccessBadgeDto, type AccessBadgeSourceOptionDto, type AccessBadgeSourceRef } from '@shared/generated';
 
@@ -12,9 +13,22 @@ import { AccessBadgeSourceKind, type AccessBadgeDto, type AccessBadgeSourceOptio
  * grant sources the user holds; the server refuses anything else, so the list of sources here
  * is exactly the list of things a badge may be made of.
  */
-export const AccessBadgesPanel: React.FC<{ basePath: string; embedded?: boolean }> = ({ basePath, embedded }) => {
-    const { apiGet, apiPost, apiPut, apiDelete } = useAuthClient();
+export const AccessBadgesPanel: React.FC<{
+    basePath: string;
+    embedded?: boolean;
+    /** Set on an administrator's view of another user, whose badge changes ask for step-up. */
+    stepUp?: { operation: string; targetId: string };
+}> = ({ basePath, embedded, stepUp }) => {
+    const client = useAuthClient();
+    const { apiGet } = client;
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
+    const apiPost = (path: string, body: object) => stepUp
+        ? client.apiPostWithMfa(path, body, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiPost(path, body);
+    const apiPut = (path: string, body: object) => stepUp
+        ? client.apiPutWithMfa(path, body, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiPut(path, body);
+    const apiDelete = (path: string) => stepUp
+        ? client.apiDeleteWithMfa(path, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiDelete(path);
 
     const [badges, setBadges] = useState<AccessBadgeDto[]>([]);
     const [sources, setSources] = useState<AccessBadgeSourceOptionDto[]>([]);
@@ -48,7 +62,7 @@ export const AccessBadgesPanel: React.FC<{ basePath: string; embedded?: boolean 
             showToast('success', `Badge "${badge.name}" deleted`);
             await load();
         } catch (e: any) {
-            showToast('error', e?.message || 'Failed to delete badge');
+            if (e?.message !== 'Step-up MFA cancelled') showToast('error', e?.message || 'Failed to delete badge');
         }
     };
 

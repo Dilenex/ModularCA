@@ -126,6 +126,7 @@ public class AdminRequestProfileController(
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
+    [RequireStepUp(StepUpOps.CreateRequestProfile)]
     public async Task<IActionResult> Create([FromBody] CreateRequestProfileRequest request)
     {
         if (RequestProfileRules.Normalize(request.SubjectDnRules, request.SanRules) is string rulesError)

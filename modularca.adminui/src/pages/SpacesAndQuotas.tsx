@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, apiPost } from '../api/client';
+import { apiGet, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -13,6 +13,8 @@ import type { ValidityCeilingBehavior } from '@shared/generated';
 import { SPACE_INTERSTITIAL, recommendationBeforeCreate, recommendationFromResponse } from './spaceCreation';
 import { INSTANCE_REALMS_ANCHOR } from './msaeRefusals';
 import { useScrollToHash } from '../hooks/useScrollToHash';
+import { StepUpOps } from '@shared/generated';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 /** The recommendation the server returned for the last space created in this page load. */
 let lastServerRecommendation: string | null = null;
@@ -142,6 +144,7 @@ export const CaQuotaRow: React.FC<{
 /* ── page: spaces list (DataTable) + create + quorum panel ────────────────── */
 const SpacesAndQuotas: React.FC = () => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [spaces, setSpaces] = useState<Space[]>([]);
     const [instance, setInstance] = useState<InstanceSummary | null>(null);
     const [totals, setTotals] = useState<{ totalSpaces: number; totalCAs: number; casAtLimit: number; casNearLimit: number } | null>(null);
@@ -178,12 +181,12 @@ const SpacesAndQuotas: React.FC = () => {
         e.preventDefault();
         setCreating(true);
         try {
-            const created = await apiPost<any>('/api/v1/admin/spaces', {
+            const created = await apiPostWithMfa<any>('/api/v1/admin/spaces', {
                 name: createForm.name,
                 description: createForm.description,
                 maxValidityDays: createForm.maxValidityDays,
                 validityCeilingBehavior: createForm.validityCeilingBehavior,
-            });
+            }, requireStepUp, StepUpOps.CreateSpace);
             const said = recommendationFromResponse(created);
             lastServerRecommendation = said;
             setServerRecommendation(said);

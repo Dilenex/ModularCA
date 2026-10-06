@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa, apiPostWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -109,7 +109,7 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     const handleSave = async () => {
         try {
             if (isNew) {
-                const created = await apiPost<any>('/api/v1/admin/request-profiles', formToCreateBody(editForm));
+                const created = await apiPostWithMfa<any>('/api/v1/admin/request-profiles', formToCreateBody(editForm), requireStepUp, StepUpOps.CreateRequestProfile);
                 showToast('success', 'Request profile created');
                 navigate(created?.id ? profileDetailPath('request', created.id) : REQUEST_TAB, { replace: true });
                 return;

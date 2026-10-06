@@ -73,6 +73,7 @@ public class AdminAcmeEabController(
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
+    [RequireStepUp(StepUpOps.CreateEabKey)]
     public async Task<IActionResult> CreateEabKey([FromBody] CreateEabKeyRequest? request)
     {
         await _currentUser.EnsureLoadedAsync();

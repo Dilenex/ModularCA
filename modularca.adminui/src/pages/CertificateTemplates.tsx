@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
@@ -405,6 +405,7 @@ const X509TemplatesTab: React.FC = () => {
 /* ─── SSH CA Templates Tab ─── */
 const SshTemplatesTab: React.FC = () => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [templates, setTemplates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -474,12 +475,12 @@ const SshTemplatesTab: React.FC = () => {
                 sshCertProfileId: form.sshCertProfileId, isEnabled: form.isEnabled,
             };
             if (form.sshRequestProfileId) body.sshRequestProfileId = form.sshRequestProfileId;
-            await apiPost('/api/v1/admin/ssh/templates', body);
+            await apiPostWithMfa('/api/v1/admin/ssh/templates', body, requireStepUp, StepUpOps.ManageSshTemplate);
             setShowCreate(false);
             resetForm();
             load();
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to create SSH template');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to create SSH template');
         } finally {
             setCreating(false);
         }
@@ -493,7 +494,7 @@ const SshTemplatesTab: React.FC = () => {
             title: 'Delete SSH Template',
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
-                await apiDelete(`/api/v1/admin/ssh/templates/${template.id}`);
+                await apiDeleteWithMfa(`/api/v1/admin/ssh/templates/${template.id}`, requireStepUp, StepUpOps.ManageSshTemplate, template.id);
                 load();
             },
         });

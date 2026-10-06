@@ -472,6 +472,7 @@ public class AdminCertSignRequestController(
     /// </summary>
     [HttpPost("{id:guid}/approve")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ApproveRequest, "id")]
     public async Task<IActionResult> Approve(Guid id, [FromBody] ApproveCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -615,6 +616,7 @@ public class AdminCertSignRequestController(
     /// </summary>
     [HttpPost("{id:guid}/reject")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.RejectRequest, "id")]
     public async Task<IActionResult> Reject(Guid id, [FromBody] RejectCsrRequest request)
     {
         await _currentUser.EnsureLoadedAsync();

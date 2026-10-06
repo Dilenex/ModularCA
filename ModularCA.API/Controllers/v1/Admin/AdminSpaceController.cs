@@ -145,6 +145,7 @@ public partial class AdminSpaceController(
     /// (<see cref="SpaceCreationGate"/>). The slug <c>system</c> is reserved for instance CAs' groups.
     /// </summary>
     [HttpPost]
+    [RequireStepUp(StepUpOps.CreateSpace)]
     public async Task<IActionResult> Create([FromBody] CreateSpaceRequest request)
     {
         await _currentUser.EnsureLoadedAsync();

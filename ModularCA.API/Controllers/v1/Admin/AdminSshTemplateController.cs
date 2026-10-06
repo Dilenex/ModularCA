@@ -107,6 +107,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate)]
     public async Task<IActionResult> Create([FromBody] CreateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -139,6 +140,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// </summary>
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -181,6 +183,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]
     public async Task<IActionResult> Delete(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();

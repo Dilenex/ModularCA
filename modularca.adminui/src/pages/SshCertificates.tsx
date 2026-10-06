@@ -14,6 +14,7 @@ import { FieldHint } from '@shared/components/forms';
 import { ChipListInput } from '@shared/components/ChipListInput';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
+import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -371,6 +372,7 @@ function parseJsonArray(val: any): string[] {
 /* ─── SSH Certificates Section ─── */
 const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys: any[] }> = ({ refreshTrigger, onRefresh, caKeys }) => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [certs, setCerts] = useState<any[]>([]);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
@@ -548,17 +550,17 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         }
     };
 
-    // Revoke is a plain endpoint (no step-up), so bulk revoke just loops.
+    // One step-up prompt names every selected certificate; each is then revoked with that token.
     const performBulkRevoke = async () => {
         if (!confirmRevoke) return;
         if (!selectedCaKeyId) { showToast('warning', 'Please select a CA key first.'); setConfirmRevoke(null); return; }
         setRevoking('bulk');
         let ok = 0, failed = 0;
         try {
-            for (const c of confirmRevoke) {
-                if (c.isRevoked) continue;
-                try { await apiPost(`/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/${c.id}/revoke`, {}); ok++; } catch { failed++; }
-            }
+            const result = await runWithOneStepUp(confirmRevoke.filter((c) => !c.isRevoked), (c) => String(c.id), requireStepUp, StepUpOps.RevokeSshCert,
+                (c, headers) => apiPost(`/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/${c.id}/revoke`, {}, { toast: false, headers }));
+            ok = result.ok;
+            failed = result.failures.length;
             if (ok) showToast('success', `Revoked ${ok} certificate${ok !== 1 ? 's' : ''}.`);
             if (failed) showToast('error', `${failed} failed to revoke.`);
             onRefresh();

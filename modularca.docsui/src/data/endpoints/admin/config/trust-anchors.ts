@@ -31,6 +31,7 @@ export const adminTrustAnchors: ApiEndpoint[] = [
         category: 'Admin Trust Anchors',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-trust-anchor. Required for this operation.' },
         ],
         responseDescription: 'Created trust anchor.',
     },
@@ -42,6 +43,7 @@ export const adminTrustAnchors: ApiEndpoint[] = [
         category: 'Admin Trust Anchors',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-trust-anchor, issued for the anchor id. Required for this operation.' },
         ],
         responseDescription: 'Deletion confirmation.',
     },
@@ -53,6 +55,7 @@ export const adminTrustAnchors: ApiEndpoint[] = [
         category: 'Admin Trust Anchors',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-trust-anchor, issued for the anchor id. Required for this operation.' },
         ],
         responseDescription: 'Toggle confirmation.',
     },

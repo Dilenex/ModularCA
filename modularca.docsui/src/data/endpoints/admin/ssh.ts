@@ -131,6 +131,7 @@ export const adminSsh: ApiEndpoint[] = [
         category: 'Admin SSH',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for revoke-ssh-cert, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Revocation confirmation message.',
     },

@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost } from '../api/client';
+import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -19,6 +19,8 @@ import { readDiagnostics } from '@shared-auth/api/problem';
 import { diagnosticNotices } from '@shared-auth/api/notices';
 import { mergeNotices, worstSeverity } from '@shared/notifications/notice';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { StepUpOps } from '@shared/generated';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -78,6 +80,7 @@ const CertificateRequestDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
 
     const [csr, setCsr] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
@@ -151,12 +154,12 @@ const CertificateRequestDetail: React.FC = () => {
         if (!csr) return;
         setBusy('approve');
         try {
-            const result = await apiPost<{ message: string; status: string; approvalCount: number; requiredCount: number }>(`/api/v1/admin/requests/${id}/approve`, { comment: approveComment });
+            const result = await apiPostWithMfa<{ message: string; status: string; approvalCount: number; requiredCount: number }>(`/api/v1/admin/requests/${id}/approve`, { comment: approveComment }, requireStepUp, StepUpOps.ApproveRequest, id);
             showToast('success', result.message || `Approval recorded (${result.approvalCount}/${result.requiredCount})`);
             setApproveComment('');
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to record approval');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to record approval');
         } finally {
             setBusy(null);
         }
@@ -200,7 +203,7 @@ const CertificateRequestDetail: React.FC = () => {
         if (!reason) return;
         setBusy('reject');
         try {
-            await apiPost(`/api/v1/admin/requests/${id}/reject`, { reason });
+            await apiPostWithMfa(`/api/v1/admin/requests/${id}/reject`, { reason }, requireStepUp, StepUpOps.RejectRequest, id);
             showToast('success', `Request rejected: ${csr.subjectName || csr.subject}`);
             navigate('/certificates/requests');
         } catch (err: any) {

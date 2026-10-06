@@ -38,7 +38,7 @@ export const adminSpaces: ApiEndpoint[] = [
             { name: 'maxValidityDays', type: 'int', required: false, description: 'Longest leaf validity for the space\'s CAs; 0 = unlimited' },
             { name: 'validityCeilingBehavior', type: 'string', required: false, description: '"Shorten" (default) or "Refuse" when a request exceeds the ceiling' },
         ],
-        headers: auth,
+        headers: [...auth, { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-space. Required for this operation.' }],
         responseDescription: '201 with the created space and recommendation: "A licence is recommended for more than four spaces." from the fifth space on (null otherwise, or with a licence that carries the feature).',
         notes: 'Creation always succeeds; the recommendation never blocks. Spaces share sign-in, backups, the audit trail and instance administrators; a separate customer belongs in a separate instance.',
     },

@@ -31,6 +31,7 @@ export const adminSigningProfiles: ApiEndpoint[] = [
         category: 'Admin Signing Profiles',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-signing-profile. Required for this operation.' },
         ],
         responseDescription: 'Created signing profile.',
         notes: 'Each allowed cert profile must be visible to the caller and usable by the issuing CA: an instance-wide profile (no space, no CA), a profile of the CA’s space bound to no CA, or one bound to this CA. An unbound signing profile takes instance-wide profiles only. Anything else is refused with 400 (code MCA-CFG-019 when out of scope).',

@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -130,7 +130,7 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
     const handleSave = async () => {
         try {
             if (isNew) {
-                const created = await apiPost<any>('/api/v1/admin/cert-profiles', formToCreateBody(editForm));
+                const created = await apiPostWithMfa<any>('/api/v1/admin/cert-profiles', formToCreateBody(editForm), requireStepUp, StepUpOps.CreateCertProfile);
                 showToast('success', 'Certificate profile created');
                 const newId = created ? cpId(created) : undefined;
                 navigate(newId ? profileDetailPath('cert', newId) : CERT_TAB, { replace: true });

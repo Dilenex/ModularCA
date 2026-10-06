@@ -20,10 +20,14 @@ export interface MfaFactors {
     webauthn: boolean;
 }
 
+/** The request field for what a prompt authorises: one target, or a list. */
+const stepUpTarget = (target?: string | string[]) => (Array.isArray(target) ? { targetIds: target } : { targetId: target });
+
 export interface StepUpMfaModalProps {
     isOpen: boolean;
     operation: string;
-    targetId?: string;
+    /** One target, or the list one prompt authorises. */
+    targetId?: string | string[];
     onSuccess: (mfaToken: string) => void;
     onCancel: () => void;
     /** The host app's authenticated POST. */
@@ -117,7 +121,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                             clientExtensionResults: credential.getClientExtensionResults(),
                         },
                         operation,
-                        targetId,
+                        ...stepUpTarget(targetId),
                     },
                 );
 
@@ -153,7 +157,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
         try {
             const data = await apiPost<{ mfaToken?: string; token?: string }>(
                 '/auth/mfa/verify-stepup/totp',
-                { code, operation, targetId },
+                { code, operation, ...stepUpTarget(targetId) },
             );
             settledRef.current = true;
             abortRef.current?.abort();
@@ -271,7 +275,9 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
 
                 <p className="text-xs text-ink-muted text-center">
                     {describeStepUpOperation(operation)} <span className="font-mono text-[10px] text-ink-muted">({operation})</span>
-                    {targetId && (
+                    {Array.isArray(targetId) ? (
+                        <>{' '} | {targetId.length} item{targetId.length === 1 ? '' : 's'}</>
+                    ) : targetId && (
                         <>
                             {' '} | Target: <span className="font-mono text-ink-muted">{targetId}</span>
                         </>

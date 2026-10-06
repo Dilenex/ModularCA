@@ -113,6 +113,7 @@ public class AdminCertProfileController(
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
+    [RequireStepUp(StepUpOps.CreateCertProfile)]
     public async Task<IActionResult> Create([FromBody] CreateCertProfileRequest request)
     {
         Guid? resolvedSpaceId = null;

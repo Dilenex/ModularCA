@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPutWithMfa, apiDeleteWithMfa, apiPostWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { Tag } from '@shared/components/cards/StatusBadge';
@@ -109,7 +109,7 @@ const SigningProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     const handleSave = async () => {
         try {
             if (isNew) {
-                const created = await apiPost<any>('/api/v1/admin/signing-profiles', formToCreateBody(editForm));
+                const created = await apiPostWithMfa<any>('/api/v1/admin/signing-profiles', formToCreateBody(editForm), requireStepUp, StepUpOps.CreateSigningProfile);
                 showToast('success', 'Signing profile created');
                 const newId = created ? spId(created) : undefined;
                 navigate(newId ? profileDetailPath('signing', newId) : SIGNING_TAB, { replace: true });

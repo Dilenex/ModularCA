@@ -219,6 +219,34 @@ public static class StepUpOps
     // several sensitive fields at once prompts for step-up exactly once.
     public const string UpdateSpaceSettings = "update-space-settings";
 
+    // Gated in 0.4.0-rc.1.4: mutations that had no step-up while their siblings did.
+    /// <summary>Starting a new epoch of the audit hash chain.</summary>
+    public const string RestartAuditChain = "restart-audit-chain";
+    /// <summary>Importing, enabling, disabling or deleting a trust anchor.</summary>
+    public const string ManageTrustAnchor = "manage-trust-anchor";
+    /// <summary>Revoking an SSH certificate.</summary>
+    public const string RevokeSshCert = "revoke-ssh-cert";
+    /// <summary>Creating an enrollment token or a CMP shared secret.</summary>
+    public const string CreateEnrollmentSecret = "create-enrollment-secret";
+    /// <summary>Creating an ACME external account binding key.</summary>
+    public const string CreateEabKey = "create-eab-key";
+    /// <summary>Creating, changing or deleting another user's access badge.</summary>
+    public const string ManageUserBadge = "manage-user-badge";
+    /// <summary>Creating a space.</summary>
+    public const string CreateSpace = "create-space";
+    /// <summary>Creating a certificate profile.</summary>
+    public const string CreateCertProfile = "create-cert-profile";
+    /// <summary>Creating a request profile.</summary>
+    public const string CreateRequestProfile = "create-request-profile";
+    /// <summary>Creating a signing profile.</summary>
+    public const string CreateSigningProfile = "create-signing-profile";
+    /// <summary>Creating, changing or deleting an SSH certificate template.</summary>
+    public const string ManageSshTemplate = "manage-ssh-template";
+    /// <summary>Approving a certificate request.</summary>
+    public const string ApproveRequest = "approve-request";
+    /// <summary>Rejecting a certificate request.</summary>
+    public const string RejectRequest = "reject-request";
+
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
     /// string not present here is rejected at issuance time with
@@ -266,6 +294,8 @@ public static class StepUpOps
         WebAuthnRegister, WebAuthnDelete,
         MtlsEnroll, MtlsDelete,
         EnableSpace, DisableSpace, UpdateSpaceSettings,
+        RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
+        CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
     };
 
     /// <summary>

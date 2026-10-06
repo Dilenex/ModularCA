@@ -3,13 +3,15 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiBlob } from '../api/client';
+import { apiGet, apiBlob, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
+import { StepUpOps } from '@shared/generated';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -42,6 +44,7 @@ const SshCertDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [searchParams] = useSearchParams();
     const caKey = searchParams.get('caKey') || '';
 
@@ -81,11 +84,11 @@ const SshCertDetail: React.FC = () => {
     const doRevoke = async () => {
         setRevoking(true);
         try {
-            await apiPost(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates/${id}/revoke`, {});
+            await apiPostWithMfa(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates/${id}/revoke`, {}, requireStepUp, StepUpOps.RevokeSshCert, id);
             showToast('success', 'Certificate revoked');
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            showToast('error', err.message || 'Revocation failed');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Revocation failed');
         } finally {
             setRevoking(false);
             setConfirmOpen(false);

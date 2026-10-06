@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import React, { useEffect, useState, useMemo } from 'react';
-import { apiGet, apiPost, apiDelete } from '../api/client';
+import { apiGet, apiDelete, apiPostWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
@@ -24,6 +24,8 @@ import {
 } from '../components/enrollmentForm';
 import { SAN_RESTRICTION_TYPES, SUBJECT_RESTRICTION_TYPES, restrictionRowsFromText } from '../components/enrollmentRestriction';
 import { TypedEntryListEditor, TypedEntryListView, type TypedEntryType } from '@shared/components/TypedEntryListEditor';
+import { StepUpOps } from '@shared/generated';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 /** A stored restriction as the patterns the server reads from it, or null when unset. */
 function restrictionView(text: string | null | undefined, types: readonly TypedEntryType[]) {
@@ -117,7 +119,7 @@ const EnrollmentManagement: React.FC = () => {
         setSubmitting(true);
         try {
             if (enrollmentKind(form.protocol) === 'cmp') {
-                const result = await apiPost<any>('/api/v1/admin/enrollment-tokens/cmp-secret', buildCmpRequest(form));
+                const result = await apiPostWithMfa<any>('/api/v1/admin/enrollment-tokens/cmp-secret', buildCmpRequest(form), requireStepUp, StepUpOps.CreateEnrollmentSecret);
                 // The created row carries the CA id; the authorities list carries labels. Best
                 // effort for the example command — the placeholder shows if the lookup misses.
                 let caLabel: string | null = null;
@@ -131,7 +133,7 @@ const EnrollmentManagement: React.FC = () => {
                 } catch { /* label is cosmetic */ }
                 setNewCmp({ referenceValue: result.cmpReferenceValue, sharedSecret: result.sharedSecret, expiresAt: result.expiresAt || null, caLabel });
             } else {
-                const result = await apiPost<any>('/api/v1/admin/enrollment-tokens', buildTokenRequest(form));
+                const result = await apiPostWithMfa<any>('/api/v1/admin/enrollment-tokens', buildTokenRequest(form), requireStepUp, StepUpOps.CreateEnrollmentSecret);
                 setNewToken({ token: result.token, showQr: showsQrResult(form.protocol) });
             }
             setShowCreate(false);
@@ -144,6 +146,7 @@ const EnrollmentManagement: React.FC = () => {
     };
 
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const performBulkRevoke = async () => {
         if (!confirmBulk) return;
         setConfirmLoading(true);

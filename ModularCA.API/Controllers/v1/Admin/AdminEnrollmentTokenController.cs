@@ -146,6 +146,7 @@ public class AdminEnrollmentTokenController(
     [HttpPost("cmp-secret")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
+    [RequireStepUp(StepUpOps.CreateEnrollmentSecret)]
     public async Task<IActionResult> GenerateCmpSharedSecret([FromBody] GenerateCmpSharedSecretRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -203,6 +204,7 @@ public class AdminEnrollmentTokenController(
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
+    [RequireStepUp(StepUpOps.CreateEnrollmentSecret)]
     public async Task<IActionResult> GenerateToken([FromBody] GenerateEnrollmentTokenRequest request)
     {
         await currentUser.EnsureLoadedAsync();

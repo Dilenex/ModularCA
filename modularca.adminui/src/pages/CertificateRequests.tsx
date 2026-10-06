@@ -9,6 +9,9 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, DataTableColumn } from '@shared/components/DataTable';
+import { StepUpOps } from '@shared/generated';
+import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -90,6 +93,7 @@ const STATUS_FILTERS = ['All', 'Pending', 'Approved', 'Issued', 'Rejected', 'Can
 
 const CertificateRequests: React.FC = () => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [requests, setRequests] = useState<any[]>([]);
     const [statusFilter, setStatusFilter] = useState<string>('Pending');
     const [loading, setLoading] = useState(true);
@@ -149,8 +153,9 @@ const CertificateRequests: React.FC = () => {
 
     const openBulk = (type: 'approve' | 'deny' | 'issue', rows: any[]) => { setBulkMessage(''); setIssueValidity({}); setBulk({ type, rows }); };
 
-    // Loop the (no-step-up) per-request endpoints; approve/deny share one message, issue takes an
-    // optional per-cert validity. Never abort on a single failure — collect each failure's reason
+    // Approve and deny ask for step-up: one prompt names every selected request, and each is then
+    // decided with that token. Issue follows an approval and asks for none. Approve/deny share one
+    // message, issue takes an optional per-cert validity. Never abort on a single failure — collect each failure's reason
     // (e.g. "You cannot approve your own request") and surface them in the summary toast.
     //
     // Every call passes `toast: false`. The client's own error toast is per-request and correct for
@@ -166,14 +171,26 @@ const CertificateRequests: React.FC = () => {
         setBulkBusy(true);
         let ok = 0;
         const failReasons: string[] = [];
-        for (const c of rows) {
+        if (type !== 'issue') {
+            try {
+                const result = await runWithOneStepUp(rows, csrId, requireStepUp,
+                    type === 'approve' ? StepUpOps.ApproveRequest : StepUpOps.RejectRequest,
+                    (c, headers) => type === 'approve'
+                        ? apiPost(`/api/v1/admin/requests/${csrId(c)}/approve`, { comment: msg }, { toast: false, headers })
+                        : apiPost(`/api/v1/admin/requests/${csrId(c)}/reject`, { reason: msg }, { toast: false, headers }));
+                if (result.cancelled && result.ok === 0) { setBulkBusy(false); return; }
+                ok = result.ok;
+                failReasons.push(...result.failures);
+            } catch (err: any) {
+                failReasons.push(err?.message || 'Failed');
+            }
+        }
+        else for (const c of rows) {
             const cid = csrId(c);
             try {
-                if (type === 'approve') await apiPost(`/api/v1/admin/requests/${cid}/approve`, { comment: msg }, { toast: false });
-                else if (type === 'deny') await apiPost(`/api/v1/admin/requests/${cid}/reject`, { reason: msg }, { toast: false });
                 // Optional per-cert "valid until" (end of the chosen day); blank → omit so the backend
                 // coalesces validity from the effective cert profile (clamped to the issuing CA).
-                else await apiPost('/api/v1/admin/certificates/issue', {
+                await apiPost('/api/v1/admin/certificates/issue', {
                     csrId: cid,
                     ...(issueValidity[cid] ? { notAfter: new Date(`${issueValidity[cid]}T23:59:59Z`).toISOString() } : {}),
                 }, { toast: false });

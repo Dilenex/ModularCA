@@ -681,6 +681,7 @@ public class AdminAuditController : ControllerBase
     [HttpPost("verify/restart")]
     [Authorize(Policy = "SystemAdmin")]
     [RefuseQueryKey("tenantId", "chainId")]
+    [RequireStepUp(StepUpOps.RestartAuditChain)]
     public async Task<IActionResult> RestartHashChain(
         [FromQuery] Guid? chainId,
         [FromBody] RestartChainRequest? request)

@@ -1,3 +1,4 @@
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,7 @@ public class AdminUserBadgesController(
 
     /// <summary>Creates a badge for the user; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpPost]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Create(Guid userId, [FromBody] AccessBadgeWriteRequest request)
     {
         if (!await UserExistsAsync(userId)) return NotFound();
@@ -91,6 +93,7 @@ public class AdminUserBadgesController(
 
     /// <summary>Replaces one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpPut("{id:guid}")]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Update(Guid userId, Guid id, [FromBody] AccessBadgeWriteRequest request)
     {
         if (await RefuseSuperTargetAsync(userId) is { } refused) return refused;
@@ -109,6 +112,7 @@ public class AdminUserBadgesController(
 
     /// <summary>Deletes one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpDelete("{id:guid}")]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Delete(Guid userId, Guid id)
     {
         if (await RefuseSuperTargetAsync(userId) is { } refused) return refused;
