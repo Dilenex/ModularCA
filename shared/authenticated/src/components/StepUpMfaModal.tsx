@@ -174,8 +174,9 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
         onCancel();
     };
 
+    // Above every dialog (they stop at z-[60]): step-up is asked for from inside them. Toasts stay on top.
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center">
             <div
                 className="absolute inset-0 bg-scrim backdrop-blur-sm"
                 onClick={handleCancel}
