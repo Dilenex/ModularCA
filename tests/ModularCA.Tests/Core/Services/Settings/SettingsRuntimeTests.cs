@@ -32,6 +32,7 @@ public sealed class SettingsRuntimeTests : IDisposable
 
     private ModularCADbContext Db() => InMemoryDbContextFactory.Create(_databaseName);
     private SettingsStore Store() => new(Db(), _audit, new NoSecretsSigner(), NullLogger<SettingsStore>.Instance);
+    private SettingsStore Store(ModularCA.Shared.Signing.ISigningService signer) => new(Db(), _audit, signer, NullLogger<SettingsStore>.Instance);
 
     /// <summary>A configuration as an operator's <c>config.yaml</c> gives it: a few settings of every kind changed.</summary>
     private static SystemConfig FromFile()
@@ -485,6 +486,225 @@ public sealed class SettingsRuntimeTests : IDisposable
         Assert.Equal("12", (await Store().LoadAsync()).Settings["Acme_Http01_MaxAddresses"].ValueJson);
     }
 
+    // ---- the secrets --------------------------------------------------------------------------
+
+    private const string JwtSecret = "the-jwt-secret-from-the-file";
+    private const string BindPassword = "the-directory-bind-password";
+    private const string MailPassword = "the-mail-password";
+    private const string HookSecret = "whsec-from-the-file";
+
+    private static SystemConfig FromFileWithSecrets()
+    {
+        var config = FromFile();
+        config.LdapAuth.BindPassword = BindPassword;
+        config.Email.Password = MailPassword;
+        config.Webhook.Endpoints = [new WebhookEndpoint { Url = "https://hooks.example.test/ca", Secret = HookSecret, Events = ["CertificateIssued"] }];
+        return config;
+    }
+
+    private async Task<(SystemConfig Config, SettingsPersistence Persistence, SettingsStartReport Report)> StartFromFile(
+        string path, ModularCA.Shared.Signing.ISigningService signer, bool mayMove = true, EnvVarConfigOverlay? environment = null)
+    {
+        var config = YamlConfigLoader.Load(path);
+        var overlay = environment ?? new EnvVarConfigOverlay();
+        var persistence = new SettingsPersistence(config, overlay, path);
+        var report = await SettingsRuntime.StartAsync(Store(signer), config, persistence, overlay.EnvSourcedPaths, mayMove, withSecrets: true);
+        return (config, persistence, report);
+    }
+
+    [Fact]
+    public async Task The_secrets_the_node_uses_are_moved_out_of_the_file_wrapped_and_read_back_at_the_next_start()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+
+        var first = await StartFromFile(path, signer);
+
+        Assert.Equal(["Email_Password", "JWT_Secret", "LdapAuth_BindPassword", "Webhook_Endpoints"], first.Report.SecretsMoved!.Order());
+        Assert.Empty(first.Report.SecretProblems!);
+        // In force for this start, as they were.
+        Assert.Equal(JwtSecret, first.Config.JWT.Secret);
+
+        // Neither the file nor the copy of the file as it was holds one of them now.
+        var yaml = File.ReadAllText(path);
+        var copy = File.ReadAllText(first.Report.FileBackup!);
+        foreach (var secret in new[] { JwtSecret, BindPassword, MailPassword, HookSecret })
+        {
+            Assert.DoesNotContain(secret, yaml);
+            Assert.DoesNotContain(secret, copy);
+        }
+        // The copy still has what was not a secret, and the file still has the host's settings.
+        Assert.Contains("MaxAddresses: 8", copy);
+        Assert.Contains("Port: 9443", yaml);
+        // The two single API keys are not moved: named keys replace them.
+        Assert.Contains("the-api-key-from-the-file", yaml);
+        // Nothing in the audit or the history holds one either.
+        var audited = System.Text.Json.JsonSerializer.Serialize(_audit.Entries.Select(e => e.Details));
+        Assert.DoesNotContain(JwtSecret, audited);
+        Assert.DoesNotContain(HookSecret, audited);
+
+        // The next start has only the stored ones to go by.
+        var wraps = signer.Wraps;
+        var second = await StartFromFile(path, signer);
+        Assert.Equal(JwtSecret, second.Config.JWT.Secret);
+        Assert.Equal(BindPassword, second.Config.LdapAuth.BindPassword);
+        Assert.Equal(MailPassword, second.Config.Email.Password);
+        Assert.Equal(HookSecret, Assert.Single(second.Config.Webhook.Endpoints).Secret);
+        Assert.Empty(second.Report.SecretsMoved!);
+        Assert.Empty(second.Report.SecretProblems!);
+        Assert.Null(second.Report.FileBackup);
+        Assert.Equal(wraps, signer.Wraps);
+        Assert.Equal(yaml, File.ReadAllText(path));
+    }
+
+    /// <summary>A signer that is locked or out of reach at the first start must not cost anyone their secrets.</summary>
+    [Fact]
+    public async Task Without_a_signer_the_secrets_stay_in_the_file_and_keep_working_until_a_start_that_has_one()
+    {
+        var signer = new SettingsTestSigner { Unreachable = true };
+        var path = WriteFullFile(FromFileWithSecrets());
+
+        var first = await StartFromFile(path, signer);
+
+        Assert.Empty(first.Report.SecretsMoved!);
+        Assert.Contains(first.Report.SecretProblems!, p => p.StartsWith("The secrets stay in config.yaml"));
+        Assert.Equal(JwtSecret, first.Config.JWT.Secret);
+        Assert.Contains(JwtSecret, File.ReadAllText(path));
+        Assert.DoesNotContain("MaxAddresses", File.ReadAllText(path));
+        Assert.Empty((await Store().LoadAsync()).Secrets);
+
+        signer.Unreachable = false;
+        var second = await StartFromFile(path, signer);
+        Assert.Equal(4, second.Report.SecretsMoved!.Count);
+        Assert.DoesNotContain(JwtSecret, File.ReadAllText(path));
+        Assert.DoesNotContain(JwtSecret, File.ReadAllText(second.Report.FileBackup!));
+        Assert.Equal(JwtSecret, second.Config.JWT.Secret);
+    }
+
+    [Fact]
+    public async Task A_stored_secret_that_cannot_be_read_back_is_reported_and_left_empty()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        await StartFromFile(path, signer);
+
+        signer.Unreachable = true;
+        var later = await StartFromFile(path, signer);
+
+        Assert.Equal(string.Empty, later.Config.JWT.Secret);
+        Assert.Contains(later.Report.SecretProblems!, p => p.StartsWith("JWT_Secret could not be unwrapped"));
+        Assert.All(later.Report.SecretProblems!, p => Assert.DoesNotContain(JwtSecret, p));
+    }
+
+    [Fact]
+    public async Task Another_role_reads_the_stored_secrets_and_moves_none()
+    {
+        var signer = new SettingsTestSigner();
+        var controlPath = WriteFullFile(FromFileWithSecrets());
+        await StartFromFile(controlPath, signer);
+
+        // A host whose own file never had the mail password, and has an old bind password.
+        var theirs = new SystemConfig { Https = { Port = 9443 }, LdapAuth = { BindPassword = "an-old-bind-password" } };
+        var path = Path.Combine(_dir, "other-config.yaml");
+        ConfigYamlWriter.Write(path, theirs);
+        var before = File.ReadAllText(path);
+
+        var other = await StartFromFile(path, signer, mayMove: false);
+
+        Assert.Equal(MailPassword, other.Config.Email.Password);
+        Assert.Equal(BindPassword, other.Config.LdapAuth.BindPassword);
+        Assert.Empty(other.Report.SecretsMoved!);
+        Assert.Equal(before, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public async Task A_secret_changed_in_memory_is_wrapped_and_stored_and_the_others_are_left_alone()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        var started = await StartFromFile(path, signer);
+        var wraps = signer.Wraps;
+
+        started.Config.Email.Password = "a-new-mail-password";
+        started.Config.Acme.Http01.MaxAddresses = 12;
+        await started.Persistence.SaveAsync(Store(signer), Alice);
+
+        // One write, one wrap: the secrets that were not touched are not wrapped again.
+        Assert.Equal(wraps + 1, signer.Wraps);
+        var snapshot = await Store().LoadAsync();
+        Assert.Equal(2, snapshot.Secrets["Email_Password"].Version);
+        Assert.Equal(1, snapshot.Secrets["JWT_Secret"].Version);
+        Assert.Equal(snapshot.Secrets["Email_Password"].Revision, snapshot.Settings["Acme_Http01_MaxAddresses"].Revision);
+        Assert.DoesNotContain("a-new-mail-password", File.ReadAllText(path));
+        Assert.DoesNotContain("a-new-mail-password", System.Text.Json.JsonSerializer.Serialize(_audit.Entries.Select(e => e.Details)));
+
+        // Saving again changes nothing; emptying the secret clears it.
+        await started.Persistence.SaveAsync(Store(signer), Alice);
+        Assert.Equal(wraps + 1, signer.Wraps);
+        started.Config.Email.Password = string.Empty;
+        await started.Persistence.SaveAsync(Store(signer), Alice);
+        Assert.Null((await Store().LoadAsync()).Secrets["Email_Password"].Value);
+
+        var restarted = await StartFromFile(path, signer);
+        Assert.Equal(string.Empty, restarted.Config.Email.Password);
+        Assert.Equal(12, restarted.Config.Acme.Http01.MaxAddresses);
+        Assert.Equal(JwtSecret, restarted.Config.JWT.Secret);
+    }
+
+    [Fact]
+    public async Task When_the_signer_will_not_wrap_a_changed_secret_nothing_of_the_save_is_stored()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        var started = await StartFromFile(path, signer);
+        var revision = (await Store().LoadAsync()).Revision;
+
+        signer.Unreachable = true;
+        started.Config.Email.Password = "a-new-mail-password";
+        started.Config.Acme.Http01.MaxAddresses = 12;
+        var refused = await Assert.ThrowsAsync<SettingsRefusedException>(() => started.Persistence.SaveAsync(Store(signer), Alice));
+
+        Assert.Equal(SettingsRefusal.SignerRefused, refused.Reason);
+        Assert.DoesNotContain("a-new-mail-password", refused.Message);
+        Assert.Equal(revision, (await Store().LoadAsync()).Revision);
+    }
+
+    // ---- what the console is told about each setting -------------------------------------------
+
+    [Fact]
+    public async Task The_console_is_told_where_each_setting_is_kept_and_when_a_change_takes_effect()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        var started = await StartFromFile(path, signer);
+        var environment = new HashSet<string> { "Email.OAuth2ClientId" };
+
+        var described = SettingsDescriptions.Describe(started.Persistence.Snapshot, environment).ToDictionary(d => d.Key);
+
+        // Stored, at its default, and from the environment.
+        Assert.Equal(("database", "live", "database", 1), (described["Acme_Http01_MaxAddresses"].Kept, described["Acme_Http01_MaxAddresses"].Applies,
+            described["Acme_Http01_MaxAddresses"].Source, described["Acme_Http01_MaxAddresses"].Version));
+        Assert.Equal(("database", "default"), (described["Tokens_RefreshTokenDays"].Kept, described["Tokens_RefreshTokenDays"].Source));
+        Assert.Equal("environment", described["Email_OAuth2ClientId"].Source);
+        // Read once at start, so a change waits for a restart; and this host's own.
+        Assert.Equal("restart", described["IpWhitelist_Enabled"].Applies);
+        Assert.Equal(("host", "file"), (described["Https_Port"].Kept, described["Https_Port"].Source));
+        Assert.Equal("bootstrap", described["DB_App_Host"].Kept);
+        Assert.Equal("signer", described["Hsm_Pin"].Kept);
+        // A moved secret is the database's; the single API keys are not moved.
+        Assert.Equal((true, "database", "database"), (described["JWT_Secret"].Secret, described["JWT_Secret"].Kept, described["JWT_Secret"].Source));
+        Assert.Equal(("host", "file"), (described["IntegrationApi_ApiKey"].Kept, described["IntegrationApi_ApiKey"].Source));
+        // Nothing here is a value.
+        var json = System.Text.Json.JsonSerializer.Serialize(described.Values);
+        Assert.DoesNotContain(JwtSecret, json);
+        Assert.DoesNotContain("the-api-key-from-the-file", json);
+
+        // Before the settings are moved, the file decides every one of them.
+        var before = SettingsDescriptions.Describe(null, new HashSet<string>()).ToDictionary(d => d.Key);
+        Assert.Equal("file", before["Acme_Http01_MaxAddresses"].Source);
+        Assert.Equal(SettingsCatalog.Definitions.Count, before.Count);
+    }
+
     // ---- the host command ---------------------------------------------------------------------
 
     private async Task<(int Exit, string Out, string Err)> Run(params string[] args)
@@ -548,6 +768,7 @@ public sealed class SettingsRuntimeTests : IDisposable
     [InlineData(1, "set per host", "set", "Https_Port", "9443")]
     [InlineData(1, "belongs to the signer", "get", "Hsm_Pin")]
     [InlineData(2, "is a secret", "set", "JWT_Secret", "anything-at-all")]
+    [InlineData(1, "Usage", "clear", "JWT_Secret", "extra")]
     [InlineData(2, "a number", "set", "Acme_Http01_MaxAddresses", "many")]
     [InlineData(1, "Usage", "set", "Acme_Http01_MaxAddresses")]
     [InlineData(1, "Usage", "remove", "Acme_Http01_MaxAddresses")]

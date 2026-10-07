@@ -79,9 +79,9 @@ public static class SettingsCommand
         if (verb == "get") return await GetAsync(store, definition, output, cancellationToken);
         if (verb == "history") return await HistoryAsync(store, definition, output, cancellationToken);
 
-        if (definition.Class == SettingClass.Secret)
+        if (definition.Class == SettingClass.Secret && verb == "set")
         {
-            error.WriteLine($"{definition.Key} is a secret. Secrets are still set in config.yaml on this build, or through the environment.");
+            error.WriteLine($"{definition.Key} is a secret, and storing one needs the signer to wrap it. Set it in the console, or supply it through the environment. It can be cleared from here.");
             return 2;
         }
 
@@ -188,7 +188,10 @@ public static class SettingsCommand
         }})");
         if (definition.Class == SettingClass.Secret)
         {
-            output.WriteLine("  a secret: set in config.yaml on this build, and never shown.");
+            var secret = snapshot.Secrets.GetValueOrDefault(definition.Key);
+            output.WriteLine(secret?.Value != null
+                ? $"  a secret, stored {(secret.Kind == SettingSecretKind.Hashed ? "as a hash" : "wrapped by the signer")} and never shown   (set by {secret.ActorName}, {secret.Source}, {secret.UpdatedAt:yyyy-MM-dd HH:mm} UTC, version {secret.Version})"
+                : "  a secret, not stored: it is empty, or still in config.yaml, or supplied by the environment. Never shown.");
             return 0;
         }
         var stored = snapshot.Settings.GetValueOrDefault(definition.Key);

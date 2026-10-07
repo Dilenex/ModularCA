@@ -26,6 +26,7 @@ public sealed class SettingsPersistence(
     string configPath)
 {
     private volatile SettingsSnapshot? _snapshot;
+    private volatile IReadOnlyDictionary<string, string>? _secretBaseline;
 
     /// <summary>The stored settings as last read or written by this process; null while the store is not in use.</summary>
     public SettingsSnapshot? Snapshot => _snapshot;
@@ -36,12 +37,30 @@ public sealed class SettingsPersistence(
     /// <summary>The <c>config.yaml</c> this process writes.</summary>
     public string ConfigPath { get; } = configPath;
 
-    /// <summary>Takes <paramref name="snapshot"/> as the stored settings this process is running on.</summary>
-    public void Use(SettingsSnapshot snapshot) => _snapshot = snapshot;
+    /// <summary>
+    /// Takes <paramref name="snapshot"/> as the stored settings this process is running on.
+    /// <paramref name="secretBaseline"/> is what the configuration holds for each secret now, to
+    /// tell a later change by; null when this process does not handle the stored secrets.
+    /// </summary>
+    public void Use(SettingsSnapshot snapshot, IReadOnlyDictionary<string, string>? secretBaseline = null)
+    {
+        _snapshot = snapshot;
+        _secretBaseline = secretBaseline;
+    }
 
-    /// <summary>The dotted paths of the settings the store holds for this process, which the file leaves out.</summary>
-    public IReadOnlyList<string> StoredPaths() =>
-        SettingsRuntime.Covered(environment.EnvSourcedPaths).Select(d => d.Path).ToList();
+    /// <summary>
+    /// The dotted paths of the settings the store holds for this process, which the file leaves
+    /// out: the instance-wide settings, and each secret that has been stored. A secret that has
+    /// not been stored yet stays in the file, where it still works.
+    /// </summary>
+    public IReadOnlyList<string> StoredPaths()
+    {
+        var paths = SettingsRuntime.Covered(environment.EnvSourcedPaths).Select(d => d.Path).ToList();
+        if (_snapshot is { } snapshot)
+            paths.AddRange(SettingsRuntime.CoveredSecrets(environment.EnvSourcedPaths)
+                .Where(d => snapshot.Secrets.ContainsKey(d.Key)).Select(d => d.Path));
+        return paths;
+    }
 
     /// <summary>
     /// Saves the configuration as it stands in memory: changed instance-wide settings to
@@ -50,7 +69,10 @@ public sealed class SettingsPersistence(
     /// <exception cref="SettingsRefusedException">The store refused a value; neither the store nor the file was changed.</exception>
     public async Task SaveAsync(ISettingsStore store, SettingsActor actor, string? reason = null, CancellationToken cancellationToken = default)
     {
-        if (StoreInUse)
+        if (StoreInUse && _secretBaseline is { } baseline)
+            (_snapshot, _secretBaseline) = await SettingsRuntime.SaveWithSecretsAsync(
+                store, config, environment.EnvSourcedPaths, baseline, actor, SettingsSource.Api, reason, cancellationToken);
+        else if (StoreInUse)
             _snapshot = await SettingsRuntime.SaveAsync(store, config, environment.EnvSourcedPaths, actor, SettingsSource.Api, reason, cancellationToken);
         WriteFile();
     }

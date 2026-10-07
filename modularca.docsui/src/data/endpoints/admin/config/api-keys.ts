@@ -2,6 +2,19 @@ import type { ApiEndpoint } from '../../types';
 
 const bearer = { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' };
 
+export const adminSettings: ApiEndpoint[] = [
+    {
+        method: 'GET',
+        path: '/api/v1/admin/settings',
+        summary: 'Describe every setting: where it is kept and when a change to it takes effect. No value is returned.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [bearer],
+        responseDescription: '{ storeInUse, revision, movedAt, settings }. Each setting has key (with underscores, as it is stored), path (dotted), section, kept ("database", "host" for this host\'s config.yaml, "signer" or "bootstrap"), applies ("live": a saved change takes effect at once on the node that saved it; "restart": at its next start), source (where the value in force comes from: "database", "default", "environment" or "file"), secret, and version, updatedBy and updatedAt when a value is stored.',
+        notes: 'The values themselves are returned by GET /api/v1/admin/config, which redacts secrets. A setting whose source is "environment" is decided by an environment variable on that node and cannot be changed through the API.',
+    },
+];
+
 export const adminApiKeys: ApiEndpoint[] = [
     {
         method: 'GET',

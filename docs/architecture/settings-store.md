@@ -911,8 +911,8 @@ secret.
 
 ### Built so far
 
-As of 2026-10-06. The instance-wide settings are read from the store and saved to it. The
-secrets are in the store's code and not yet in its use.
+As of 2026-10-06. The instance-wide settings and the secrets the node uses are read from the
+store and saved to it.
 
 - `[Setting]` on every leaf of `SystemConfig`, and `SettingsCatalog`: the keys, the classes, and
   the check and canonical spelling of a value.
@@ -943,10 +943,26 @@ secrets are in the store's code and not yet in its use.
 
 Where this differs from the sections above:
 
-- **The secrets are not moved.** They stay in `config.yaml`, and the store is given a signer
-  that refuses (`NoSecretsSigner`) wherever the node has none yet. Moving them needs the node
-  to reach its signer before the web host is built, and to say what it does when it cannot,
-  which is the availability question in `signer-hardening.md`.
+- **The six wrapped secrets are moved; the two hashed API keys are not.** `SettingsStartup`
+  opens a signer before the web host is built: the node's own keystore, unlocked as the node
+  unlocks it (`MaintenanceSigner.CreateUnlocked`), or the remote signer it is configured for.
+  The control role stores each secret the file holds and nothing has stored yet; every role
+  reads the stored ones back. A secret is taken out of the file once it is stored, so one
+  that could not be wrapped stays there and keeps working. The copy of the file kept at the
+  rewrite has the stored secrets removed.
+- **A node that cannot read its JWT secret runs on a temporary one.** The design had it answer
+  503 to every sign-in until the signer returned. It signs sessions with a secret made up for
+  that start and says so, which keeps the console reachable to put things right; the sessions
+  end with the process. The other secrets wait, as designed.
+- **The single integration API keys stay in `config.yaml`** (open question 11): named API keys
+  replace them, so they are neither hashed into the store nor refused for being short.
+- **The JWT secret is not rotated at the move**, which `signer-hardening.md` asks for because
+  earlier archives hold it in the clear. The log says that earlier copies and archives still
+  hold the moved secrets.
+- **Reload is declared as it is today**, not as designed. The console shows it to the person
+  saving, so `[Setting]` says Restart for the twenty-two settings something reads once at
+  start, and each moves to Live when its reader is made to follow changes (the "Making restart
+  items live" list in section 3).
 - **Sparse by value, not by presence in the file.** The console has always written the whole
   configuration back, so a key being present in `config.yaml` says nothing about whether
   anyone chose its value. What is stored is what differs from the default.
@@ -967,7 +983,7 @@ Where this differs from the sections above:
   and after.
 - **`--upgrade-check` does not yet report** what will move.
 
-Not built: the secrets' move, per-section validators and change policies as their own types,
+Not built: per-section validators and change policies as their own types,
 bootstrap seeding the store directly, the generic section endpoint, the rest of the host
 command (`rollback`, `export`, `import`, `adopt`), and stages 2 to 6. The store does not link
 a row to its audit record, so the integrity check in section 2 has nothing to check against.

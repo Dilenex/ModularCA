@@ -989,7 +989,12 @@ if (!isSetupMode)
     {
         try
         {
-            await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive);
+            // The secrets come back through a signer: the remote one this node is configured
+            // for, or this process's own keystore. An ingress holds no key and uses no secret.
+            var settingsSignerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote;
+            await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive,
+                ingressOnly ? null : new ModularCA.API.Startup.SettingsStartup.SignerAccess(
+                    settingsSignerIsRemote, signerPaths.KeystoresDirectory, signerPaths.KeystoreYamlPath));
         }
         catch (Exception ex)
         {
@@ -1310,6 +1315,22 @@ var loadedConfig = config;
 if (isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret))
 {
     loadedConfig.JWT.Secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
+}
+
+// The JWT secret is kept in the settings store, wrapped by the signer. A process that could
+// not read it back (its signer is locked or out of reach, or it is an ingress, which holds no
+// key) has none. It runs on one made up for this start rather than refuse every sign-in: the
+// console stays reachable to put things right. Sessions signed with it end when the process
+// does and are not accepted by another node.
+if (!isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret) && settingsPersistence.StoreInUse)
+{
+    loadedConfig.JWT.Secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
+    if (!ingressOnly)
+    {
+        Log.Error("The JWT secret could not be read from the settings store, so this process signs sessions with a temporary one. "
+            + "Everyone is signed out at its next restart, and another node will not accept its sessions. See the Settings warnings above for why.");
+        Console.WriteLine("[WARNING] The stored JWT secret could not be read; using a temporary one for this start.");
+    }
 }
 
 // Validate JWT secret length (skip in setup mode where it's auto-generated)

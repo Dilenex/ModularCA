@@ -228,7 +228,9 @@ public interface ISettingsStore
     /// those, and checks a presented key with <see cref="SettingsSnapshot.HashedSecretMatches"/>.
     /// </summary>
     /// <returns>One sentence per secret that was not applied. None of them contains a secret.</returns>
-    Task<IReadOnlyList<string>> ApplySecretsAsync(SettingsSnapshot snapshot, SystemConfig config, CancellationToken cancellationToken = default);
+    /// <param name="exceptKeys">Secrets to leave alone, by key: those the environment supplies.</param>
+    Task<IReadOnlyList<string>> ApplySecretsAsync(SettingsSnapshot snapshot, SystemConfig config, CancellationToken cancellationToken = default,
+        IReadOnlySet<string>? exceptKeys = null);
 
     /// <summary>
     /// Records that the settings have been moved out of <c>config.yaml</c>, by

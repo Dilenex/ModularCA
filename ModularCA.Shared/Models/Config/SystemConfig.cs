@@ -263,7 +263,7 @@ namespace ModularCA.Shared.Models.Config
     public class IpWhitelistConfig
     {
         /// <summary>Whether IP whitelisting is enforced. Enabled by default — only private IPs can access protocol endpoints.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>
@@ -289,15 +289,15 @@ namespace ModularCA.Shared.Models.Config
     public class NetworkAuditConfig
     {
         /// <summary>Whether request audit logging is enabled.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>When false, only log protocol/admin endpoints. When true, log everything.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool LogAllRequests { get; set; } = false;
 
         /// <summary>Paths to exclude from logging (e.g., health checks, metrics).</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public List<string> ExcludePaths { get; set; } = new() { "/health", "/metrics" };
     }
 
@@ -355,16 +355,16 @@ namespace ModularCA.Shared.Models.Config
     public class SyslogConfig
     {
         /// <summary>Target syslog relay host (IP or DNS name).</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Component)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Host { get; set; } = string.Empty;
         /// <summary>Target syslog port. Default 514 (RFC 5424 UDP).</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Component)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int Port { get; set; } = 514;
         /// <summary>Transport: <c>"UDP"</c> (default) or <c>"TCP"</c>.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Component)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Protocol { get; set; } = "UDP";
         /// <summary>App-name field embedded in each RFC 5424 record. Default <c>"ModularCA"</c>.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Component)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string AppName { get; set; } = "ModularCA";
         /// <summary>
         /// RFC 5424 syslog facility label. Parsed against
@@ -375,7 +375,7 @@ namespace ModularCA.Shared.Models.Config
         /// <c>LogAlert</c>, <c>Cron2</c>, and <c>Local0</c>..<c>Local7</c>.
         /// Malformed or unknown values fall back to <c>Local0</c>.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Component)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Facility { get; set; } = "Local0";
     }
 
@@ -438,7 +438,7 @@ namespace ModularCA.Shared.Models.Config
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int? PublicPort { get; set; }
 
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string CorsOrigins { get; set; } = "";
         /// <summary>
         /// ICF-02: Swagger UI enable flag. Default <c>false</c> — Swagger is not
@@ -459,7 +459,7 @@ namespace ModularCA.Shared.Models.Config
         /// X-CSRF-Token, X-Correlation-Id</c>. <c>AllowCredentials</c> is NEVER
         /// attached to this policy.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool EnableCors { get; set; } = false;
 
         /// <summary>
@@ -526,11 +526,11 @@ namespace ModularCA.Shared.Models.Config
         /// <c>max-age</c> in seconds. Default <c>31536000</c> (1 year). Lower to
         /// e.g. <c>86400</c> during certificate rollovers. 0 disables HSTS entirely.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int MaxAgeSeconds { get; set; } = 31536000;
 
         /// <summary>Emit <c>includeSubDomains</c>. Default <c>true</c>.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool IncludeSubDomains { get; set; } = true;
 
         /// <summary>
@@ -538,7 +538,7 @@ namespace ModularCA.Shared.Models.Config
         /// <c>true</c> only after the operator has verified they want the
         /// public hostname submitted to the HSTS preload list.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool Preload { get; set; } = false;
     }
 
@@ -564,7 +564,7 @@ namespace ModularCA.Shared.Models.Config
         /// per job whose <c>NextRunUtc</c> is in the past. <c>RunAll</c> emulates
         /// the legacy "run every cron-gated job on first boot" behaviour.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string MissedRunPolicy { get; set; } = "RunOnce";
 
         /// <summary>
@@ -697,7 +697,7 @@ namespace ModularCA.Shared.Models.Config
         /// IP to match exactly on every request. <c>Subnet24</c> allows clients to
         /// move within a /24 (IPv4) or /64 (IPv6) — friendly for mobile NAT reroutes.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public JwtIpBindingMode BindJwtToIp { get; set; } = JwtIpBindingMode.Off;
 
         /// <summary>Whether to reject refresh token usage from a different IP than where it was issued.</summary>
@@ -992,7 +992,7 @@ namespace ModularCA.Shared.Models.Config
 
     public class JwtConfig
     {
-        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
+        [Setting(SettingClass.Secret, SettingReload.Restart, Secret = SettingSecretKind.Wrapped)]
         public string Secret { get; set; } = string.Empty;
 
         /// <summary>
@@ -1004,9 +1004,9 @@ namespace ModularCA.Shared.Models.Config
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ExpirationMinutes { get; set; } = 15;
 
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Issuer { get; set; } = "ModularCA";
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Audience { get; set; } = "ModularCA-API";
     }
 
@@ -1105,7 +1105,7 @@ namespace ModularCA.Shared.Models.Config
         /// JWT-authenticated request. Only useful behind a reverse proxy that requires a
         /// client cert on the frontend and forwards the verified cert to this app.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public List<string> RequiredPaths { get; set; } = new();
 
         /// <summary>
@@ -1196,7 +1196,7 @@ namespace ModularCA.Shared.Models.Config
         /// refresh runs off the handshake path, so a stale-but-present set answers the connection
         /// and the next one sees the new anchors.
         /// </remarks>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
     }
 
@@ -1567,7 +1567,7 @@ namespace ModularCA.Shared.Models.Config
         /// algorithms are unaffected. When "PSS", BouncyCastle uses SHA-{n}withRSAandMGF1
         /// signers (RSASSA-PSS with MGF1 and matching hash).
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string RsaSignaturePadding { get; set; } = "PSS";
 
         /// <summary>

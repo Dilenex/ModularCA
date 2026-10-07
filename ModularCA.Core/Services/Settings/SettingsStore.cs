@@ -112,7 +112,8 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<string>> ApplySecretsAsync(SettingsSnapshot snapshot, SystemConfig config, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> ApplySecretsAsync(SettingsSnapshot snapshot, SystemConfig config, CancellationToken cancellationToken = default,
+        IReadOnlySet<string>? exceptKeys = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(config);
@@ -121,6 +122,7 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
         foreach (var stored in snapshot.Secrets.Values.OrderBy(s => s.Key, StringComparer.Ordinal))
         {
             if (stored.Value == null || stored.Kind != SettingSecretKind.Wrapped) continue;
+            if (exceptKeys?.Contains(stored.Key) == true) continue;
 
             var definition = SettingsCatalog.Find(stored.Key);
             if (definition is not { Class: SettingClass.Secret, Secret: SettingSecretKind.Wrapped })

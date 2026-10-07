@@ -21,10 +21,11 @@ import {
     type Validator, validateAbsoluteFilePath, validateEmail, validateOrigin, validatePathPrefix, validatePositiveInteger,
 } from '@shared/validators';
 import {
-    DEPRECATED_ALGORITHM_SUGGESTIONS, POLICY_SIGNATURE_ALGORITHMS, certExpiryNotificationBody, warningDaysFromConfig,
+    DEPRECATED_ALGORITHM_SUGGESTIONS, POLICY_SIGNATURE_ALGORITHMS, certExpiryNotificationBody, jwtIpBindingMode, warningDaysFromConfig,
 } from './settingsLists';
 import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
 import { ApiKeysPanel } from '../components/ApiKeysPanel';
+import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings } from './settingsMeta';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -46,19 +47,49 @@ const RESTART_ANCHOR = 'restart-application';
 /* --- Shared Form Helpers --- */
 const cardClass = 'bg-raised border border-line rounded-lg overflow-hidden';
 
+/* Where each setting is kept and when a change to it takes effect, as the server describes it
+   (GET /api/v1/admin/settings). A field names its setting with `path`, and says beside its label
+   whether a saved change is live or waits for a restart. Empty until loaded, and for a field the
+   server does not describe: such a field shows nothing, which is better than a guess. */
+const SettingsMetaContext = React.createContext<SettingsIndex>(new Map());
+
+const badgeTone = {
+    ok: 'bg-ok-soft text-ok border-ok/40',
+    warn: 'bg-warn-soft text-warn border-warn/40',
+    neutral: 'bg-sunken text-ink-muted border-line-strong',
+} as const;
+
+const FieldBadges: React.FC<{ path?: string }> = ({ path }) => {
+    const badges = fieldBadges(describeField(React.useContext(SettingsMetaContext), path));
+    if (badges.length === 0) return null;
+    return (
+        <span className="inline-flex items-center gap-1 ml-2 align-middle normal-case tracking-normal">
+            {badges.map((b) => (
+                <span key={b.label} title={b.title} className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${badgeTone[b.tone]}`}>{b.label}</span>
+            ))}
+        </span>
+    );
+};
+
+/** Whether the field's setting is decided by an environment variable, so it cannot be changed here. */
+const useLocked = (path?: string) => fieldLocked(describeField(React.useContext(SettingsMetaContext), path));
+
 /* Every primitive takes `hint`: what the value does, or what saving it causes, shown under the
    control. The label names the setting; the hint says what happens when you change it. */
-const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, type = 'text', placeholder, hint, disabled }) => (
-    <div>
-        <label className={labelClass}>{label}</label>
-        <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled} />
-        {hint && <FieldHint>{hint}</FieldHint>}
-    </div>
-);
+const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode; disabled?: boolean; path?: string }> = ({ label, value, onChange, type = 'text', placeholder, hint, disabled, path }) => {
+    const locked = useLocked(path);
+    return (
+        <div>
+            <label className={labelClass}>{label}<FieldBadges path={path} /></label>
+            <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled || locked} />
+            {hint && <FieldHint>{hint}</FieldHint>}
+        </div>
+    );
+};
 
-const ConfigTextarea: React.FC<{ label: string; value: any; onChange: (v: string) => void; placeholder?: string; rows?: number; hint?: React.ReactNode }> = ({ label, value, onChange, placeholder, rows = 6, hint }) => (
+const ConfigTextarea: React.FC<{ label: string; value: any; onChange: (v: string) => void; placeholder?: string; rows?: number; hint?: React.ReactNode; path?: string }> = ({ label, value, onChange, placeholder, rows = 6, hint, path }) => (
     <div>
-        <label className={labelClass}>{label}</label>
+        <label className={labelClass}>{label}<FieldBadges path={path} /></label>
         <textarea
             value={value ?? ''}
             onChange={(e) => onChange(e.target.value)}
@@ -70,29 +101,35 @@ const ConfigTextarea: React.FC<{ label: string; value: any; onChange: (v: string
     </div>
 );
 
-const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, fallback = 0, hint, disabled }) => (
-    <div>
-        <label className={labelClass}>{label}</label>
-        <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} disabled={disabled} />
-        {hint && <FieldHint>{hint}</FieldHint>}
-    </div>
-);
+const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode; disabled?: boolean; path?: string }> = ({ label, value, onChange, fallback = 0, hint, disabled, path }) => {
+    const locked = useLocked(path);
+    return (
+        <div>
+            <label className={labelClass}>{label}<FieldBadges path={path} /></label>
+            <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} disabled={disabled || locked} />
+            {hint && <FieldHint>{hint}</FieldHint>}
+        </div>
+    );
+};
 
-const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn'; disabled?: boolean }> = ({ label, checked, onChange, hint, hintTone, disabled }) => (
+const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn'; disabled?: boolean; path?: string }> = ({ label, checked, onChange, hint, hintTone, disabled: disabledProp, path }) => {
+    const disabled = useLocked(path) || disabledProp;
+    return (
     <div>
         <div className="flex items-center justify-between">
-            <label className="text-xs text-ink-muted">{label}</label>
+            <label className="text-xs text-ink-muted">{label}<FieldBadges path={path} /></label>
             <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-accent' : 'bg-ink-faint'}`}>
                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
             </button>
         </div>
         {hint && <FieldHint tone={hintTone}>{hint}</FieldHint>}
     </div>
-);
+    );
+};
 
-const ConfigSelect: React.FC<{ label: string; value: string; options: string[]; onChange: (v: string) => void; hint?: React.ReactNode }> = ({ label, value, options, onChange, hint }) => (
+const ConfigSelect: React.FC<{ label: string; value: string; options: string[]; onChange: (v: string) => void; hint?: React.ReactNode; path?: string }> = ({ label, value, options, onChange, hint, path }) => (
     <div>
-        <label className={labelClass}>{label}</label>
+        <label className={labelClass}>{label}<FieldBadges path={path} /></label>
         <select value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
             {options.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
@@ -112,11 +149,11 @@ const SaveButton: React.FC<{ saving: boolean; onClick: () => void; label?: strin
 
 /* A list setting edited as chips. Invalid entries stay visible and marked; the card's Save is
    blocked on them through `listBlocked`. */
-const ConfigChips: React.FC<{ label: string; value: string[]; onChange: (v: string[]) => void; validate?: Validator; suggestions?: ChipSuggestion[]; placeholder?: string; hint?: React.ReactNode; numeric?: boolean; sort?: 'asc' | 'desc'; mono?: boolean; caseInsensitive?: boolean }> = ({ label, hint, ...chip }) => {
+const ConfigChips: React.FC<{ label: string; value: string[]; onChange: (v: string[]) => void; validate?: Validator; suggestions?: ChipSuggestion[]; placeholder?: string; hint?: React.ReactNode; numeric?: boolean; sort?: 'asc' | 'desc'; mono?: boolean; caseInsensitive?: boolean; path?: string }> = ({ label, hint, path, ...chip }) => {
     const id = React.useId();
     return (
         <div>
-            <label htmlFor={id} className={labelClass}>{label}</label>
+            <label htmlFor={id} className={labelClass}>{label}<FieldBadges path={path} /></label>
             <ChipListInput id={id} aria-describedby={hint ? `${id}-hint` : undefined} {...chip} />
             {hint && <FieldHint id={`${id}-hint`}>{hint}</FieldHint>}
         </div>
@@ -149,14 +186,29 @@ const RestartTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibol
 
 const ReadOnlyTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sunken text-ink-muted border border-line-strong">Read-only</span>;
 
-const SectionHeader: React.FC<{ title: string; expanded: boolean; onToggle: () => void; description?: string; tag?: 'live' | 'restart' | 'read-only' }> = ({ title, expanded, onToggle, description, tag }) => (
-    <button onClick={onToggle} className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors">
-        <span className="text-ink-muted text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
-        <span className="text-sm font-semibold text-ink">{title}</span>
-        {description && <span className="text-xs text-ink-muted ml-2">{description}</span>}
-        <span className="ml-auto">{tag === 'live' ? <LiveTag /> : tag === 'restart' ? <RestartTag /> : tag === 'read-only' ? <ReadOnlyTag /> : null}</span>
-    </button>
-);
+const MixedTag = () => <span title="Some of these settings take effect at once and some at the next start. Each field says which." className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sunken text-ink-muted border border-line-strong">Live and restart</span>;
+
+const tagFor = (applies: 'live' | 'restart' | 'mixed' | 'read-only' | null | undefined) =>
+    applies === 'live' ? <LiveTag /> : applies === 'restart' ? <RestartTag /> : applies === 'mixed' ? <MixedTag /> : applies === 'read-only' ? <ReadOnlyTag /> : null;
+
+/* The tag for a group of fields: what the server says of those settings, so a heading cannot
+   disagree with the fields under it. */
+const AppliesTag: React.FC<{ fields: readonly string[] }> = ({ fields }) => tagFor(fieldsApply(React.useContext(SettingsMetaContext), fields));
+
+/* `fields` are the settings the card edits (CARD_FIELDS). With them the tag is what those
+   settings say; `tag` is what is shown for a card that edits none the server describes. */
+const SectionHeader: React.FC<{ title: string; expanded: boolean; onToggle: () => void; description?: string; tag?: 'live' | 'restart' | 'read-only'; fields?: readonly string[] }> = ({ title, expanded, onToggle, description, tag, fields }) => {
+    const described = fieldsApply(React.useContext(SettingsMetaContext), fields);
+    const shown = tag === 'read-only' ? tag : described ?? tag;
+    return (
+        <button onClick={onToggle} className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors">
+            <span className="text-ink-muted text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
+            <span className="text-sm font-semibold text-ink">{title}</span>
+            {description && <span className="text-xs text-ink-muted ml-2">{description}</span>}
+            <span className="ml-auto">{tagFor(shown)}</span>
+        </button>
+    );
+};
 
 /* --- Webhook Test Card --- */
 const WebhookTestCard: React.FC = () => {
@@ -226,6 +278,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const { user } = useAuth();
     const { showToast } = useToast();
     const [config, setConfig] = useState<any>(null);
+    const [settingsMeta, setSettingsMeta] = useState<SettingsIndex>(new Map());
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [expanded, setExpanded] = useState<string | null>(null);
@@ -365,6 +418,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             .then((c) => { setConfig(c); snap('config', c); })
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
+        // Where each setting is kept and when a change takes effect. The page works without it:
+        // a field then shows no badge, and the cards keep their own tags.
+        apiGet<any>('/api/v1/admin/settings')
+            .then((d) => setSettingsMeta(indexSettings(d?.settings)))
+            .catch(() => setSettingsMeta(new Map()));
     };
 
     const loadPolicy = () => {
@@ -568,9 +626,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const networkAuditBlocked = listBlocked([['Exclude Paths', config.networkAudit?.excludePaths, validatePathPrefix]]);
 
     return (
+        <SettingsMetaContext.Provider value={settingsMeta}>
         <div className="space-y-2">
             {successMsg && (
                 <div className="bg-ok-soft border border-ok/40 rounded-lg p-3 text-xs text-ok">{successMsg}</div>
+            )}
+            {settingsMeta.size > 0 && (
+                <p className="text-xs text-ink-muted max-w-4xl">
+                    Each setting says when a saved change takes effect. <LiveTag /> at once on this node; other nodes take it at their next start.{' '}
+                    <RestartTag /> when this node next starts. Settings are kept in the database, except those marked{' '}
+                    <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${badgeTone.neutral}`}>This host</span>, which are in this host's config.yaml.
+                </p>
             )}
 
             {/* ================================================================ */}
@@ -580,7 +646,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                 <>
                     {/* Public Domain */}
                     <div className={cardClass}>
-                        <SectionHeader title="Public Domain" expanded={expanded === 'baseurl'} onToggle={() => toggle('baseurl')}
+                        <SectionHeader fields={CARD_FIELDS.baseurl} title="Public Domain" expanded={expanded === 'baseurl'} onToggle={() => toggle('baseurl')}
                             description={config.https?.publicDomain || 'Not configured — using request origin'} tag="restart" />
                         {expanded === 'baseurl' && (
                             <div className="p-4 border-t border-line space-y-4">
@@ -590,9 +656,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     separately in CA Management.
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigInput label="Public Domain" value={config.https?.publicDomain} onChange={(v) => update('https', 'publicDomain', v)} placeholder="ca.example.com"
+                                    <ConfigInput label="Public Domain" value={config.https?.publicDomain} path="https.publicDomain" onChange={(v) => update('https', 'publicDomain', v)} placeholder="ca.example.com"
                                         hint="Empty means URLs are built from whatever host the request arrived on, which is wrong behind a proxy and unusable for ACME JWS URL checks." />
-                                    <ConfigNumber label="Public Port (443 = omitted from URLs)" value={config.https?.publicPort} onChange={(v) => update('https', 'publicPort', v)} fallback={443}
+                                    <ConfigNumber label="Public Port (443 = omitted from URLs)" value={config.https?.publicPort} path="https.publicPort" onChange={(v) => update('https', 'publicPort', v)} fallback={443}
                                         hint="The port external clients reach this server on, which may differ from the listen port behind a proxy. Anything other than 443 is written into every generated URL." />
                                 </div>
                                 {config.https?.publicDomain && (
@@ -608,21 +674,21 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* HTTP */}
                     <div className={cardClass}>
-                        <SectionHeader title="HTTP" expanded={expanded === 'http'} onToggle={() => toggle('http')}
+                        <SectionHeader fields={CARD_FIELDS.http} title="HTTP" expanded={expanded === 'http'} onToggle={() => toggle('http')}
                             description={`Port ${config.http?.port || 0}, Swagger ${config.http?.swaggerEnabled ? 'On' : 'Off'}`} tag="restart" />
                         {expanded === 'http' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigNumber label="HTTP Port (0 = disabled)" value={config.http.port} onChange={(v) => update('http', 'port', v)}
+                                    <ConfigNumber label="HTTP Port (0 = disabled)" value={config.http.port} path="http.port" onChange={(v) => update('http', 'port', v)}
                                         hint="Plain-HTTP listener for CRL, OCSP and AIA fetches, which relying parties make without TLS. 0 turns it off, and those URLs stop answering." />
-                                    <ConfigNumber label="Public Port (behind proxy)" value={config.http.publicPort} onChange={(v) => update('http', 'publicPort', v)} fallback={0}
+                                    <ConfigNumber label="Public Port (behind proxy)" value={config.http.publicPort} path="http.publicPort" onChange={(v) => update('http', 'publicPort', v)} fallback={0}
                                         hint="Port external clients connect to when a proxy sits in front (proxy on 80, this process on 8080). It is written into CRL/OCSP/AIA URLs. 0 uses the listener port." />
-                                    <ConfigChips label="CORS Origins" value={listFromValue(config.http.corsOrigins)} onChange={(v) => update('http', 'corsOrigins', listToCsv(v))}
+                                    <ConfigChips label="CORS Origins" value={listFromValue(config.http.corsOrigins)} path="http.corsOrigins" onChange={(v) => update('http', 'corsOrigins', listToCsv(v))}
                                         validate={validateOrigin} caseInsensitive mono placeholder="https://app.example.com"
                                         hint="HTTPS origins whose browser scripts may call this API, as scheme, host and optional port with no path. Plain http is accepted only for localhost. Only read when Enable CORS is on." />
-                                    <ConfigToggle label="Enable CORS" checked={config.http.enableCors ?? false} onChange={(v) => update('http', 'enableCors', v)}
+                                    <ConfigToggle label="Enable CORS" checked={config.http.enableCors ?? false} path="http.enableCors" onChange={(v) => update('http', 'enableCors', v)}
                                         hint="Allows browser pages on the listed origins to call the API. Off means every cross-origin browser request is refused, even in Development." />
-                                    <ConfigToggle label="Swagger Enabled" checked={config.http.swaggerEnabled} onChange={(v) => update('http', 'swaggerEnabled', v)}
+                                    <ConfigToggle label="Swagger Enabled" checked={config.http.swaggerEnabled} path="http.swaggerEnabled" onChange={(v) => update('http', 'swaggerEnabled', v)}
                                         hint="Publishes the interactive API documentation at /swagger to anyone who can reach the port. Leave off in production." />
                                 </div>
                                 <p className="text-[10px] text-ink-muted">Trusted Proxy CIDRs moved to the <strong>Reverse Proxy</strong> card (Security tab).</p>
@@ -648,14 +714,14 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Metrics */}
                     <div className={cardClass}>
-                        <SectionHeader title="Metrics" expanded={expanded === 'metrics'} onToggle={() => toggle('metrics')}
+                        <SectionHeader fields={CARD_FIELDS.metrics} title="Metrics" expanded={expanded === 'metrics'} onToggle={() => toggle('metrics')}
                             description={config.metrics?.enabled ? `Enabled at ${config.metrics.path}` : 'Disabled'} tag="restart" />
                         {expanded === 'metrics' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.metrics.enabled} onChange={(v) => update('metrics', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.metrics.enabled} path="metrics.enabled" onChange={(v) => update('metrics', 'enabled', v)}
                                         hint="Serves Prometheus metrics at the path below. Anyone who can reach the port can scrape them; restrict at the network or whitelist level." />
-                                    <ConfigInput label="Path" value={config.metrics.path} onChange={(v) => update('metrics', 'path', v)}
+                                    <ConfigInput label="Path" value={config.metrics.path} path="metrics.path" onChange={(v) => update('metrics', 'path', v)}
                                         hint="Route the scrape endpoint is mounted on. Prometheus defaults to /metrics." />
                                 </div>
                                 <SaveButton saving={saving === 'metrics'} onClick={() => saveSection('metrics', config.metrics, 'metrics')} />
@@ -665,14 +731,14 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* SSH CA */}
                     <div className={cardClass}>
-                        <SectionHeader title="SSH CA" expanded={expanded === 'sshCa'} onToggle={() => toggle('sshCa')}
+                        <SectionHeader fields={CARD_FIELDS.sshCa} title="SSH CA" expanded={expanded === 'sshCa'} onToggle={() => toggle('sshCa')}
                             description={`${config.sshCa?.sshKeygenPath || 'ssh-keygen'}`} tag="restart" />
                         {expanded === 'sshCa' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigInput label="ssh-keygen Path" value={config.sshCa.sshKeygenPath} onChange={(v) => update('sshCa', 'sshKeygenPath', v)}
+                                    <ConfigInput label="ssh-keygen Path" value={config.sshCa.sshKeygenPath} path="sshCa.sshKeygenPath" onChange={(v) => update('sshCa', 'sshKeygenPath', v)}
                                         hint="The OpenSSH binary used to sign SSH certificates. A bare name is resolved on PATH; if it is missing, every SSH issuance fails." />
-                                    <ConfigInput label="Key Storage Path" value={config.sshCa.keyStoragePath} onChange={(v) => update('sshCa', 'keyStoragePath', v)}
+                                    <ConfigInput label="Key Storage Path" value={config.sshCa.keyStoragePath} path="sshCa.keyStoragePath" onChange={(v) => update('sshCa', 'keyStoragePath', v)}
                                         hint="Directory holding SSH CA private keys. Must be writable by the service and is included in backups." />
                                 </div>
                                 <SaveButton saving={saving === 'sshCa'} onClick={() => saveSection('ssh-ca', config.sshCa, 'sshCa')} />
@@ -698,20 +764,20 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Backup */}
                     <div className={cardClass}>
-                        <SectionHeader title="Backup" expanded={expanded === 'backup'} onToggle={() => toggle('backup')}
+                        <SectionHeader fields={CARD_FIELDS.backup} title="Backup" expanded={expanded === 'backup'} onToggle={() => toggle('backup')}
                             description={`Retain ${config.backup?.retentionCount ?? 0} · ${config.backup?.outputPath || 'default path'}`} tag="restart" />
                         {expanded === 'backup' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigInput label="Output Path" value={config.backup?.outputPath} onChange={(v) => update('backup', 'outputPath', v)}
+                                    <ConfigInput label="Output Path" value={config.backup?.outputPath} path="backup.outputPath" onChange={(v) => update('backup', 'outputPath', v)}
                                         hint="Directory archives are written to. A relative path resolves from the application directory, so it lives on the same disk as the data it protects." />
-                                    <ConfigNumber label="Retention Count" value={config.backup?.retentionCount} onChange={(v) => update('backup', 'retentionCount', v)}
+                                    <ConfigNumber label="Retention Count" value={config.backup?.retentionCount} path="backup.retentionCount" onChange={(v) => update('backup', 'retentionCount', v)}
                                         hint="Archives kept on disk. When a new one is written, the oldest beyond this count are deleted." />
-                                    <ConfigNumber label="Max Backup Age Days" value={config.backup?.maxBackupAgeDays} onChange={(v) => update('backup', 'maxBackupAgeDays', v)}
+                                    <ConfigNumber label="Max Backup Age Days" value={config.backup?.maxBackupAgeDays} path="backup.maxBackupAgeDays" onChange={(v) => update('backup', 'maxBackupAgeDays', v)}
                                         hint="If the newest archive is older than this when the verification job runs, it raises a Critical BackupStale alert." />
-                                    <ConfigToggle label="Verify on Schedule" checked={config.backup?.verifyOnSchedule ?? true} onChange={(v) => update('backup', 'verifyOnSchedule', v)}
+                                    <ConfigToggle label="Verify on Schedule" checked={config.backup?.verifyOnSchedule ?? true} path="backup.verifyOnSchedule" onChange={(v) => update('backup', 'verifyOnSchedule', v)}
                                         hint="Each scheduled run also opens recent archives and checks them for corruption. Off means a bad archive is found only when you need it." />
-                                    <ConfigNumber label="Verify Count" value={config.backup?.verifyCount} onChange={(v) => update('backup', 'verifyCount', v)}
+                                    <ConfigNumber label="Verify Count" value={config.backup?.verifyCount} path="backup.verifyCount" onChange={(v) => update('backup', 'verifyCount', v)}
                                         hint="How many of the newest archives each verification run checks. 1 checks only the latest, so corruption in the one before it goes unnoticed." />
                                 </div>
                                 <ScheduleMovedNote job="BackupCreation" />
@@ -726,8 +792,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                             <div>
                                 <h3 className="text-sm font-semibold text-ink">Restart Application</h3>
                                 <p className="text-xs text-ink-muted mt-1">
-                                    Apply pending configuration changes that require a restart (logging, HTTP, HTTPS), or bring a restored
-                                    backup into service. The application will shut down and the process manager will restart it.
+                                    Applies saved changes to the settings marked Restart, takes up a rotated JWT secret, and brings a
+                                    restored backup into service. The application will shut down and the process manager will restart it.
                                 </p>
                             </div>
                             <button
@@ -761,18 +827,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         (account lockout in the DB policy + per-username rate limit in the
                         yaml middleware). Each layer saves to its own endpoint. */}
                     <div className={cardClass}>
-                        <SectionHeader title="Login Protection" expanded={expanded === 'loginProtection'} onToggle={() => toggle('loginProtection')}
-                            description={securityPolicy ? `Lockout ${securityPolicy.lockoutMinutes}m / ${securityPolicy.maxFailedLoginAttempts} tries` : 'Loading...'} />
+                        <SectionHeader fields={CARD_FIELDS.loginProtection} title="Login Protection" expanded={expanded === 'loginProtection'} onToggle={() => toggle('loginProtection')}
+                            description={securityPolicy ? `Lockout ${securityPolicy.lockoutMinutes}m / ${securityPolicy.maxFailedLoginAttempts} tries` : 'Loading...'} tag="live" />
                         {expanded === 'loginProtection' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     Two independent layers defend against password guessing. <strong>Account lockout</strong> disables an
-                                    account after repeated failures and applies live. The <strong>per-username rate limit</strong> throttles
-                                    attempts in the request pipeline and is wired at startup (restart to change). Each has its own Save,
-                                    and each Save writes only the fields in its own group.
+                                    account after repeated failures. The <strong>per-username rate limit</strong> throttles attempts in the
+                                    request pipeline. Each has its own Save, and each Save writes only the fields in its own group.
                                 </div>
 
-                                {/* Account Lockout — DB SecurityPolicy (live) */}
+                                {/* Account Lockout — the security policy, read on every login */}
                                 <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Account Lockout</h4><LiveTag /></div>
                                 {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
@@ -790,12 +855,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     </>
                                 )}
 
-                                {/* Per-Username Rate Limit — yaml middleware (restart) */}
-                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Per-Username Rate Limit</h4><RestartTag /></div>
+                                {/* Per-Username Rate Limit */}
+                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Per-Username Rate Limit</h4><AppliesTag fields={['security.maxPerUsernameLoginFailures', 'security.perUsernameLoginFailureWindowMinutes']} /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigNumber label="Per-Username Failure Limit" value={config.security.maxPerUsernameLoginFailures} onChange={(v) => update('security', 'maxPerUsernameLoginFailures', v)}
+                                    <ConfigNumber label="Per-Username Failure Limit" value={config.security.maxPerUsernameLoginFailures} path="security.maxPerUsernameLoginFailures" onChange={(v) => update('security', 'maxPerUsernameLoginFailures', v)}
                                         hint="Failed logins allowed for one username from any number of IPs within the window before further attempts are refused. Catches many-IP attacks on a single account, which per-IP limits miss." />
-                                    <ConfigNumber label="Per-Username Failure Window (min)" value={config.security.perUsernameLoginFailureWindowMinutes} onChange={(v) => update('security', 'perUsernameLoginFailureWindowMinutes', v)}
+                                    <ConfigNumber label="Per-Username Failure Window (min)" value={config.security.perUsernameLoginFailureWindowMinutes} path="security.perUsernameLoginFailureWindowMinutes" onChange={(v) => update('security', 'perUsernameLoginFailureWindowMinutes', v)}
                                         hint="Length of the sliding window the failure count is measured over." />
                                 </div>
                                 <SaveButton saving={saving === 'securityRateLimit'} onClick={() => saveSecurityFields(['maxPerUsernameLoginFailures', 'perUsernameLoginFailureWindowMinutes'], 'securityRateLimit')} label="Save Per-Username Limit" />
@@ -806,40 +871,39 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Token Binding & Lifetime — refresh token lifetime (tokens) + JWT/refresh
                         binding (security middleware), previously split across two cards. */}
                     <div className={cardClass}>
-                        <SectionHeader title="Token Binding & Lifetime" expanded={expanded === 'tokenBinding'} onToggle={() => toggle('tokenBinding')}
-                            description={`Refresh ${config.tokens?.refreshTokenDays || 7}d — JWT IP binding: ${['Off', 'Exact', 'Subnet24'][config.security?.bindJwtToIp ?? 0]}`} />
+                        <SectionHeader fields={CARD_FIELDS.tokenBinding} title="Token Binding & Lifetime" expanded={expanded === 'tokenBinding'} onToggle={() => toggle('tokenBinding')}
+                            description={`Refresh ${config.tokens?.refreshTokenDays || 7}d — JWT IP binding: ${jwtIpBindingMode(config.security?.bindJwtToIp)}`} />
                         {expanded === 'tokenBinding' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
-                                    The lifetime lives in the <strong>tokens</strong> config section and applies live; the binding rules live in
-                                    the <strong>security</strong> section and are wired at startup. Each group has its own Save, and each writes
-                                    only its own fields.
+                                    How long a session can be renewed, and the rules that tie it to where it was issued. Each group has
+                                    its own Save, and each writes only its own fields.
                                 </div>
-                                {/* Refresh Token Lifetime — tokens (live) */}
-                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Refresh Token Lifetime</h4><LiveTag /></div>
+                                {/* Refresh Token Lifetime */}
+                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Refresh Token Lifetime</h4><AppliesTag fields={['tokens.refreshTokenDays']} /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigNumber label="Refresh Token Lifetime (days, 1-30)" value={config.tokens.refreshTokenDays} onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
+                                    <ConfigNumber label="Refresh Token Lifetime (days, 1-30)" value={config.tokens.refreshTokenDays} path="tokens.refreshTokenDays" onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
                                         hint="Days a session can be renewed without logging in again. A stolen refresh token stays usable for the same period, subject to the bindings below and the session caps in Security Policy." />
                                 </div>
                                 <SaveButton saving={saving === 'tokens'} onClick={() => saveSection('tokens', config.tokens, 'tokens')} label="Save Lifetime" />
 
-                                {/* JWT & Refresh Binding — yaml middleware (restart) */}
-                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">JWT &amp; Refresh Binding</h4><RestartTag /></div>
+                                {/* JWT & Refresh Binding */}
+                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">JWT &amp; Refresh Binding</h4><AppliesTag fields={['security.bindJwtToIp', 'security.bindRefreshTokenToIp', 'security.bindRefreshTokenToFingerprint', 'security.allowRefreshTokenMismatch']} /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="block text-xs text-ink-muted mb-1">JWT IP Binding</label>
-                                        <select value={config.security.bindJwtToIp ?? 0} onChange={(e) => update('security', 'bindJwtToIp', parseInt(e.target.value))} className={inputClass}>
-                                            <option value={0}>Off (no IP binding)</option>
-                                            <option value={1}>Exact (must match issue-time IP)</option>
-                                            <option value={2}>Subnet /24 (tolerant of NAT)</option>
+                                        <label className="block text-xs text-ink-muted mb-1">JWT IP Binding<FieldBadges path="security.bindJwtToIp" /></label>
+                                        <select value={jwtIpBindingMode(config.security.bindJwtToIp)} onChange={(e) => update('security', 'bindJwtToIp', e.target.value)} className={inputClass}>
+                                            <option value="Off">Off (no IP binding)</option>
+                                            <option value="Exact">Exact (must match issue-time IP)</option>
+                                            <option value="Subnet24">Subnet /24 (tolerant of NAT)</option>
                                         </select>
                                         <FieldHint>Ties every access token to the address it was issued to. Exact logs users out whenever their IP changes (mobile, VPN reconnects); Subnet /24 tolerates movement within one IPv4 /24 or IPv6 /64.</FieldHint>
                                     </div>
-                                    <ConfigToggle label="Bind Refresh Token to IP" checked={config.security.bindRefreshTokenToIp ?? true} onChange={(v) => update('security', 'bindRefreshTokenToIp', v)}
+                                    <ConfigToggle label="Bind Refresh Token to IP" checked={config.security.bindRefreshTokenToIp ?? true} path="security.bindRefreshTokenToIp" onChange={(v) => update('security', 'bindRefreshTokenToIp', v)}
                                         hint="A refresh attempted from a different IP than the one the token was issued to is refused and the user must log in again." />
-                                    <ConfigToggle label="Bind Refresh Token to Fingerprint" checked={config.security.bindRefreshTokenToFingerprint ?? true} onChange={(v) => update('security', 'bindRefreshTokenToFingerprint', v)}
+                                    <ConfigToggle label="Bind Refresh Token to Fingerprint" checked={config.security.bindRefreshTokenToFingerprint ?? true} path="security.bindRefreshTokenToFingerprint" onChange={(v) => update('security', 'bindRefreshTokenToFingerprint', v)}
                                         hint="A refresh from a different browser or User-Agent than the issuing one is refused." />
-                                    <ConfigToggle label="Allow Refresh Token Mismatch (forensic)" checked={config.security.allowRefreshTokenMismatch ?? false} onChange={(v) => update('security', 'allowRefreshTokenMismatch', v)}
+                                    <ConfigToggle label="Allow Refresh Token Mismatch (forensic)" checked={config.security.allowRefreshTokenMismatch ?? false} path="security.allowRefreshTokenMismatch" onChange={(v) => update('security', 'allowRefreshTokenMismatch', v)}
                                         hintTone={config.security.allowRefreshTokenMismatch ? 'warn' : 'muted'}
                                         hint="Mismatches are written to the audit log but the refresh still succeeds. While on, the two bindings above protect nothing; use it to observe before enforcing." />
                                 </div>
@@ -851,7 +915,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Reverse Proxy — proxy mode (security) + trusted CIDRs (http), previously
                         split across the Security and HTTP cards. */}
                     <div className={cardClass}>
-                        <SectionHeader title="Reverse Proxy" expanded={expanded === 'reverseProxy'} onToggle={() => toggle('reverseProxy')}
+                        <SectionHeader fields={CARD_FIELDS.reverseProxy} title="Reverse Proxy" expanded={expanded === 'reverseProxy'} onToggle={() => toggle('reverseProxy')}
                             description={config.security?.behindReverseProxy ? 'Behind proxy' : 'Direct'} tag="restart" />
                         {expanded === 'reverseProxy' && (
                             <div className="p-4 border-t border-line space-y-4">
@@ -861,13 +925,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <strong> http</strong> section, so that Save writes the whole HTTP section, including any unsaved edits
                                     on the General → HTTP card.
                                 </div>
-                                <ConfigToggle label="Behind Reverse Proxy" checked={config.security.behindReverseProxy ?? false} onChange={(v) => update('security', 'behindReverseProxy', v)}
+                                <ConfigToggle label="Behind Reverse Proxy" checked={config.security.behindReverseProxy ?? false} path="security.behindReverseProxy" onChange={(v) => update('security', 'behindReverseProxy', v)}
                                     hintTone={config.security.behindReverseProxy && !config.http.trustedProxyCidrs ? 'warn' : 'muted'}
                                     hint={config.security.behindReverseProxy && !config.http.trustedProxyCidrs
                                         ? 'On, but no trusted CIDRs are listed: only loopback is trusted, so every client will appear to come from the proxy and per-IP limits and bindings collapse onto one address.'
                                         : 'Rate limiting and IP binding use the client address from X-Forwarded-For sent by a proxy in the ranges below. If on with no proxy in front, any client can forge its address.'} />
                                 <SaveButton saving={saving === 'securityProxy'} onClick={() => saveSecurityFields(['behindReverseProxy'], 'securityProxy')} label="Save Proxy Mode" />
-                                <ConfigInput label="Trusted Proxy CIDRs" value={config.http.trustedProxyCidrs} onChange={(v) => update('http', 'trustedProxyCidrs', v)} placeholder="10.0.0.0/8, 172.16.0.0/12"
+                                <ConfigInput label="Trusted Proxy CIDRs" value={config.http.trustedProxyCidrs} path="http.trustedProxyCidrs" onChange={(v) => update('http', 'trustedProxyCidrs', v)} placeholder="10.0.0.0/8, 172.16.0.0/12"
                                     hint="Only proxies in these ranges may set forwarded headers. Empty means loopback only. Name the actual proxy subnet, not RFC1918 wholesale." />
                                 <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" blockedReason={httpBlocked} />
                             </div>
@@ -1114,27 +1178,27 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 <DetailField label="Issuer" value={config.jwt.issuer} />
                                 <DetailField label="Audience" value={config.jwt.audience} />
                                 <DetailField label="Secret" value="***" />
-                                <div className="text-xs text-ink-muted mt-2">JWT settings are managed via config.yaml and require a restart to change.</div>
+                                <div className="text-xs text-ink-muted mt-2">Changed on the host with the <code className="mono">--settings</code> command; a change takes effect when the node next starts. The secret is stored wrapped by the signer and is never shown.</div>
                             </div>
                         )}
                     </div>
 
                     {/* mTLS */}
                     <div className={cardClass}>
-                        <SectionHeader title="mTLS" expanded={expanded === 'mtls'} onToggle={() => toggle('mtls')}
+                        <SectionHeader fields={CARD_FIELDS.mtls} title="mTLS" expanded={expanded === 'mtls'} onToggle={() => toggle('mtls')}
                             description={config.mtls?.enabled ? (config.mtls.authSubdomain || 'AuthSubdomain not set') : 'Disabled'} tag="restart" />
                         {expanded === 'mtls' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.mtls?.enabled ?? false} onChange={(v) => update('mtls', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.mtls?.enabled ?? false} path="mtls.enabled" onChange={(v) => update('mtls', 'enabled', v)}
                                         hint="Offers certificate-based login: connections to the auth subdomain are asked for a client certificate; every other hostname gets a normal handshake." />
-                                    <ConfigInput label="Auth Subdomain" value={config.mtls?.authSubdomain} onChange={(v) => update('mtls', 'authSubdomain', v)} placeholder="mtls.ca.example.com"
+                                    <ConfigInput label="Auth Subdomain" value={config.mtls?.authSubdomain} path="mtls.authSubdomain" onChange={(v) => update('mtls', 'authSubdomain', v)} placeholder="mtls.ca.example.com"
                                         hint="Hostname whose TLS handshake requests a client certificate. Needs DNS pointing here and the Web TLS certificate's SANs must include it, or clients fail before login." />
-                                    <ConfigChips label="Required Paths" value={listFromValue(config.mtls?.requiredPaths)} onChange={(v) => update('mtls', 'requiredPaths', v)}
+                                    <ConfigChips label="Required Paths" value={listFromValue(config.mtls?.requiredPaths)} path="mtls.requiredPaths" onChange={(v) => update('mtls', 'requiredPaths', v)}
                                         validate={validatePathPrefix} mono placeholder="/api/v1/admin"
                                         hint="Path prefixes that refuse any request not carrying a valid client certificate, regardless of hostname." />
                                     <div className="md:col-span-2">
-                                        <ConfigChips label="Trusted CA Cert Paths" value={listFromValue(config.mtls?.trustedCaCertPaths)} onChange={(v) => update('mtls', 'trustedCaCertPaths', v)}
+                                        <ConfigChips label="Trusted CA Cert Paths" value={listFromValue(config.mtls?.trustedCaCertPaths)} path="mtls.trustedCaCertPaths" onChange={(v) => update('mtls', 'trustedCaCertPaths', v)}
                                             validate={validateAbsoluteFilePath} mono placeholder="/etc/modularca/client-ca.pem"
                                             hint="Absolute paths of PEM files on the server, for the CAs whose certificates count as a login. A certificate from any other issuer is rejected at the handshake. Each file is checked when you save." />
                                     </div>
@@ -1146,7 +1210,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* IP Whitelist */}
                     <div className={cardClass}>
-                        <SectionHeader title="IP Whitelist" expanded={expanded === 'ipwhitelist'} onToggle={() => toggle('ipwhitelist')}
+                        <SectionHeader fields={CARD_FIELDS.ipwhitelist} title="IP Whitelist" expanded={expanded === 'ipwhitelist'} onToggle={() => toggle('ipwhitelist')}
                             description={config.ipWhitelist?.enabled ? 'Enabled — managed at /admin/whitelists' : 'Disabled (master kill switch)'} tag="live" />
                         {expanded === 'ipwhitelist' && (
                             <div className="p-4 border-t border-line space-y-4">
@@ -1156,13 +1220,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     This card only exposes the master kill switch and the path-based exempt list — both of which stay in
                                     <code className="mono"> config.yaml</code>.
                                 </div>
-                                <ConfigToggle label="Enabled (master kill switch)" checked={config.ipWhitelist?.enabled ?? true} onChange={(v) => update('ipWhitelist', 'enabled', v)}
+                                <ConfigToggle label="Enabled (master kill switch)" checked={config.ipWhitelist?.enabled ?? true} path="ipWhitelist.enabled" onChange={(v) => update('ipWhitelist', 'enabled', v)}
                                     hintTone={config.ipWhitelist?.enabled === false ? 'warn' : 'muted'}
                                     hint={config.ipWhitelist?.enabled === false
                                         ? 'Off: every rule on the Whitelists page is ignored and all addresses reach every endpoint.'
                                         : 'On: each request is matched against the Whitelists rules. Turning this off bypasses all of them at once.'} />
                                 <ConfigChips label="Exempt Paths" value={listFromValue(config.ipWhitelist?.exemptPaths)}
-                                    onChange={(v) => update('ipWhitelist', 'exemptPaths', v)}
+                                    path="ipWhitelist.exemptPaths" onChange={(v) => update('ipWhitelist', 'exemptPaths', v)}
                                     validate={validatePathPrefix} mono placeholder="/api/v1/public/ca"
                                     hint="Path prefixes that always pass, whatever the rules say. A prefix covers every path that starts with it, and undoes any tightening of those paths on the Whitelists page." />
                                 <div className="text-xs text-ink-muted">
@@ -1213,7 +1277,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* LDAP Auth */}
                     <div className={cardClass}>
-                        <SectionHeader title="LDAP Authentication" expanded={expanded === 'ldapAuth'} onToggle={() => toggle('ldapAuth')}
+                        <SectionHeader fields={CARD_FIELDS.ldapAuth} title="LDAP Authentication" expanded={expanded === 'ldapAuth'} onToggle={() => toggle('ldapAuth')}
                             description={config.ldapAuth?.enabled ? `${config.ldapAuth.host}:${config.ldapAuth.port}` : 'Disabled'} tag="live" />
                         {expanded === 'ldapAuth' && (
                             <div className="p-4 border-t border-line space-y-4">
@@ -1225,35 +1289,35 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     </p>
                                 )}
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} onChange={(v) => update('ldapAuth', 'enabled', v)} disabled={!user?.isSuper && !config.ldapAuth.enabled}
+                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} path="ldapAuth.enabled" onChange={(v) => update('ldapAuth', 'enabled', v)} disabled={!user?.isSuper && !config.ldapAuth.enabled}
                                         hint="Logins are verified by binding to the directory as the user; a successful bind is accepted as proof of the password. Applies live, no restart." />
-                                    <ConfigInput label="Host" value={config.ldapAuth.host} onChange={(v) => update('ldapAuth', 'host', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Host" value={config.ldapAuth.host} path="ldapAuth.host" onChange={(v) => update('ldapAuth', 'host', v)} disabled={!user?.isSuper}
                                         hint="Directory server this instance binds to. Whoever controls this host can approve any login, so change it only over a verified channel." />
-                                    <ConfigNumber label="Port" value={config.ldapAuth.port} onChange={(v) => update('ldapAuth', 'port', v)} fallback={389} disabled={!user?.isSuper}
+                                    <ConfigNumber label="Port" value={config.ldapAuth.port} path="ldapAuth.port" onChange={(v) => update('ldapAuth', 'port', v)} fallback={389} disabled={!user?.isSuper}
                                         hint="389 for plain LDAP, 636 for LDAPS." />
-                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} onChange={(v) => update('ldapAuth', 'useSsl', v)} disabled={!user?.isSuper}
+                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} path="ldapAuth.useSsl" onChange={(v) => update('ldapAuth', 'useSsl', v)} disabled={!user?.isSuper}
                                         hintTone={config.ldapAuth.useSsl ? 'muted' : 'warn'}
                                         hint="Connects over LDAPS. Off sends the service-account password and every user's login password to the directory in clear text; there is no StartTLS path." />
-                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} path="ldapAuth.searchBaseDn" onChange={(v) => update('ldapAuth', 'searchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for the user's entry, e.g. OU=People,DC=example,DC=com." />
-                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} path="ldapAuth.searchFilter" onChange={(v) => update('ldapAuth', 'searchFilter', v)} disabled={!user?.isSuper}
                                         hint="LDAP filter locating the user; {0} is replaced with the login name." />
-                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} path="ldapAuth.bindDn" onChange={(v) => update('ldapAuth', 'bindDn', v)} disabled={!user?.isSuper}
                                         hint="Service account used to search for users before they authenticate. Blank attempts an anonymous search." />
                                     {/* The bind password was previously not editable here at all, so it could
                                         only be set in config.yaml. It loads as *** when one is stored; leaving
                                         that placeholder untouched keeps the existing password. */}
-                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current" disabled={!user?.isSuper}
+                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} path="ldapAuth.bindPassword" onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current" disabled={!user?.isSuper}
                                         hint="Shown as *** when one is stored. Leave it as-is to keep the current password; type a new one to replace it." />
-                                    <ConfigToggle label="Group Sync Enabled" checked={config.ldapAuth.groupSyncEnabled} onChange={(v) => update('ldapAuth', 'groupSyncEnabled', v)}
+                                    <ConfigToggle label="Group Sync Enabled" checked={config.ldapAuth.groupSyncEnabled} path="ldapAuth.groupSyncEnabled" onChange={(v) => update('ldapAuth', 'groupSyncEnabled', v)}
                                         hint="The LdapGroupSync job periodically re-reads each LDAP user's groups and applies the mappings below, granting and revoking local group membership to match." />
-                                    <ConfigToggle label="Auto Provision Users" checked={config.ldapAuth.autoProvisionUsers} onChange={(v) => update('ldapAuth', 'autoProvisionUsers', v)}
+                                    <ConfigToggle label="Auto Provision Users" checked={config.ldapAuth.autoProvisionUsers} path="ldapAuth.autoProvisionUsers" onChange={(v) => update('ldapAuth', 'autoProvisionUsers', v)}
                                         hint="Has no effect: an LDAP login never creates an account. Every account is created here by an administrator, and a directory bind signs in only as the existing local account of the same name." />
-                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} path="ldapAuth.groupSearchBaseDn" onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for groups during sync." />
-                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} path="ldapAuth.groupSearchFilter" onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)} disabled={!user?.isSuper}
                                         hint="Filter selecting the groups a user belongs to; {0} is replaced with the user's DN." />
-                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)} disabled={!user?.isSuper}
+                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} path="ldapAuth.groupMemberAttribute" onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)} disabled={!user?.isSuper}
                                         hint="Attribute on the user entry listing its groups (memberOf on Active Directory)." />
                                     <div className="md:col-span-2">
                                         <LdapMappingsEditor value={config.ldapAuth.groupToRoleMappings} savedValue={savedConfig()?.ldapAuth?.groupToRoleMappings}
@@ -1276,20 +1340,20 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                 <>
                     {/* Certificate Policy */}
                     <div className={cardClass}>
-                        <SectionHeader title="Certificate Policy" expanded={expanded === 'certPolicy'} onToggle={() => toggle('certPolicy')}
+                        <SectionHeader fields={CARD_FIELDS.certPolicy} title="Certificate Policy" expanded={expanded === 'certPolicy'} onToggle={() => toggle('certPolicy')}
                             description={config.certPolicy?.enabled ? `Min RSA ${config.certPolicy.minRsaKeySize || 2048}` : 'Disabled'} tag="live" />
                         {expanded === 'certPolicy' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.certPolicy?.enabled ?? false} onChange={(v) => update('certPolicy', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.certPolicy?.enabled ?? false} path="certPolicy.enabled" onChange={(v) => update('certPolicy', 'enabled', v)}
                                         hintTone={config.certPolicy?.enabled ? 'muted' : 'warn'}
                                         hint="These rules are checked at every issuance, whatever profile is used. Off means none of them block anything." />
-                                    <ConfigNumber label="Min RSA Key Size" value={config.certPolicy?.minRsaKeySize} onChange={(v) => update('certPolicy', 'minRsaKeySize', v)} fallback={0}
+                                    <ConfigNumber label="Min RSA Key Size" value={config.certPolicy?.minRsaKeySize} path="certPolicy.minRsaKeySize" onChange={(v) => update('certPolicy', 'minRsaKeySize', v)} fallback={0}
                                         hint="Requests with an RSA key shorter than this are refused. 0 sets no minimum." />
-                                    <ConfigToggle label="Require SANs" checked={config.certPolicy?.requireSans ?? false} onChange={(v) => update('certPolicy', 'requireSans', v)}
+                                    <ConfigToggle label="Require SANs" checked={config.certPolicy?.requireSans ?? false} path="certPolicy.requireSans" onChange={(v) => update('certPolicy', 'requireSans', v)}
                                         hint="Requests without a Subject Alternative Name are refused. Browsers ignore the Common Name, so a certificate without SANs fails hostname checks anyway." />
                                     <div className="md:col-span-2">
-                                        <ConfigChips label="Forbidden Algorithms" value={listFromValue(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', v)}
+                                        <ConfigChips label="Forbidden Algorithms" value={listFromValue(config.certPolicy?.forbiddenAlgorithms)} path="certPolicy.forbiddenAlgorithms" onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', v)}
                                             suggestions={FORBIDDEN_ALGORITHM_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1withRSA"
                                             hint="A request whose signature algorithm has exactly one of these names is refused at issuance (case does not matter). Use the full name, such as SHA1withRSA; a fragment like SHA1 matches nothing. An algorithm the server has no name for is matched by its OID, e.g. 1.2.840.113549.1.1.4 for MD5withRSA." />
                                     </div>
@@ -1306,16 +1370,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Auto-Renewal */}
                     <div className={cardClass}>
-                        <SectionHeader title="Auto-Renewal" expanded={expanded === 'autoRenewal'} onToggle={() => toggle('autoRenewal')}
+                        <SectionHeader fields={CARD_FIELDS.autoRenewal} title="Auto-Renewal" expanded={expanded === 'autoRenewal'} onToggle={() => toggle('autoRenewal')}
                             description={config.autoRenewal?.enabled ? `Renew ${config.autoRenewal.renewDaysBeforeExpiry || 30}d before expiry` : 'Disabled'} tag="live" />
                         {expanded === 'autoRenewal' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.autoRenewal?.enabled ?? false} onChange={(v) => update('autoRenewal', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.autoRenewal?.enabled ?? false} path="autoRenewal.enabled" onChange={(v) => update('autoRenewal', 'enabled', v)}
                                         hint="The AutoRenewal job creates renewal requests for certificates approaching expiry, with a fresh key pair. Off means certificates simply expire unless someone renews them." />
-                                    <ConfigNumber label="Renew Days Before Expiry" value={config.autoRenewal?.renewDaysBeforeExpiry} onChange={(v) => update('autoRenewal', 'renewDaysBeforeExpiry', v)} fallback={0}
+                                    <ConfigNumber label="Renew Days Before Expiry" value={config.autoRenewal?.renewDaysBeforeExpiry} path="autoRenewal.renewDaysBeforeExpiry" onChange={(v) => update('autoRenewal', 'renewDaysBeforeExpiry', v)} fallback={0}
                                         hint="Certificates within this many days of expiry are renewed on the job's next run. Leave enough margin for the renewal to be approved and deployed." />
-                                    <ConfigToggle label="Auto Approve" checked={config.autoRenewal?.autoApprove ?? false} onChange={(v) => update('autoRenewal', 'autoApprove', v)}
+                                    <ConfigToggle label="Auto Approve" checked={config.autoRenewal?.autoApprove ?? false} path="autoRenewal.autoApprove" onChange={(v) => update('autoRenewal', 'autoApprove', v)}
                                         hint="Renewals are issued without an administrator approving each one, unless the profile itself demands approval. Off means every renewal waits in the approval queue and expires if nobody acts." />
                                 </div>
                                 <ScheduleMovedNote job="AutoRenewal" />
@@ -1326,14 +1390,14 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Cert Expiry Notifications */}
                     <div className={cardClass}>
-                        <SectionHeader title="Cert Expiry Notifications" expanded={expanded === 'certExpiryNotification'} onToggle={() => toggle('certExpiryNotification')}
+                        <SectionHeader fields={CARD_FIELDS.certExpiryNotification} title="Cert Expiry Notifications" expanded={expanded === 'certExpiryNotification'} onToggle={() => toggle('certExpiryNotification')}
                             description={config.certExpiryNotification?.enabled ? (warningDays.length ? `Warn at ${warningDays.join(', ')} days` : 'No warning days set') : 'Disabled'} tag="live" />
                         {expanded === 'certExpiryNotification' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.certExpiryNotification?.enabled ?? false} onChange={(v) => update('certExpiryNotification', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.certExpiryNotification?.enabled ?? false} path="certExpiryNotification.enabled" onChange={(v) => update('certExpiryNotification', 'enabled', v)}
                                         hint="The CertExpiryNotification job emails and webhooks a warning as certificates approach expiry. Needs Email or Webhook configured under Integrations to reach anyone." />
-                                    <ConfigChips label="Warning Days" value={warningDays} onChange={(v) => update('certExpiryNotification', 'warningDaysBeforeExpiry', v)}
+                                    <ConfigChips label="Warning Days" value={warningDays} path="certExpiryNotification.warningDaysBeforeExpiry" onChange={(v) => update('certExpiryNotification', 'warningDaysBeforeExpiry', v)}
                                         validate={validateWarningDay} numeric sort="desc" placeholder="e.g. 30"
                                         hint="Days before expiry, from 1 to 3650. A notice is sent once as a certificate crosses each mark; the order does not matter. Empty means no notices are sent." />
                                 </div>
@@ -1345,7 +1409,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Compliance Scan */}
                     <div className={cardClass}>
-                        <SectionHeader title="Compliance Scan" expanded={expanded === 'complianceScan'} onToggle={() => toggle('complianceScan')}
+                        <SectionHeader fields={CARD_FIELDS.complianceScan} title="Compliance Scan" expanded={expanded === 'complianceScan'} onToggle={() => toggle('complianceScan')}
                             description={config.complianceScan?.enabled ? `Min RSA ${config.complianceScan.minRsaKeySize || 2048}` : 'Disabled'} tag="live" />
                         {expanded === 'complianceScan' && (
                             <div className="p-4 border-t border-line space-y-4">
@@ -1355,20 +1419,20 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     Keep the two aligned to avoid surprises — the active policy baseline is shown beneath each field.
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.complianceScan?.enabled ?? false} onChange={(v) => update('complianceScan', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.complianceScan?.enabled ?? false} path="complianceScan.enabled" onChange={(v) => update('complianceScan', 'enabled', v)}
                                         hint="The Compliance job scans issued certificates and records findings. It reports; it never revokes or blocks." />
                                     <div />
                                     <div>
-                                        <ConfigNumber label="Min RSA Key Size" value={config.complianceScan?.minRsaKeySize} onChange={(v) => update('complianceScan', 'minRsaKeySize', v)} fallback={0}
+                                        <ConfigNumber label="Min RSA Key Size" value={config.complianceScan?.minRsaKeySize} path="complianceScan.minRsaKeySize" onChange={(v) => update('complianceScan', 'minRsaKeySize', v)} fallback={0}
                                             hint="Issued certificates with a shorter RSA key are flagged as weak." />
                                         <p className="text-[10px] text-ink-muted mt-1">Policy: {config.certPolicy?.enabled ? `blocks issuance below ${config.certPolicy?.minRsaKeySize || 'unset'}` : 'enforcement off'}</p>
                                     </div>
                                     <div>
-                                        <ConfigNumber label="Warn Over Validity Days" value={config.complianceScan?.warnOverValidityDays} onChange={(v) => update('complianceScan', 'warnOverValidityDays', v)} fallback={0} />
+                                        <ConfigNumber label="Warn Over Validity Days" value={config.complianceScan?.warnOverValidityDays} path="complianceScan.warnOverValidityDays" onChange={(v) => update('complianceScan', 'warnOverValidityDays', v)} fallback={0} />
                                         <p className="text-[10px] text-ink-muted mt-1">Reports only — it never blocks issuance. The enforced ceiling is per space, under Spaces &amp; Quotas.</p>
                                     </div>
                                     <div className="md:col-span-2">
-                                        <ConfigChips label="Deprecated Algorithms" value={listFromValue(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', v)}
+                                        <ConfigChips label="Deprecated Algorithms" value={listFromValue(config.complianceScan?.deprecatedAlgorithms)} path="complianceScan.deprecatedAlgorithms" onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', v)}
                                             suggestions={DEPRECATED_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1"
                                             hint="Issued certificates whose signature algorithm name contains one of these are flagged, ignoring case and hyphens: SHA1 matches SHA-1withRSA and SHA-1withECDSA." />
                                         <p className="text-[10px] text-ink-muted mt-1">Policy forbids at issuance: {listFromValue(config.certPolicy?.forbiddenAlgorithms).join(', ') || 'none'}</p>
@@ -1389,48 +1453,48 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                 <>
                     {/* Email / SMTP */}
                     <div className={cardClass}>
-                        <SectionHeader title="Email / SMTP" expanded={expanded === 'email'} onToggle={() => toggle('email')}
+                        <SectionHeader fields={CARD_FIELDS.email} title="Email / SMTP" expanded={expanded === 'email'} onToggle={() => toggle('email')}
                             description={config.email?.enabled ? `${config.email.authMethod} — ${config.email.smtpHost}` : 'Disabled'} tag="live" />
                         {expanded === 'email' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.email.enabled} onChange={(v) => update('email', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.email.enabled} path="email.enabled" onChange={(v) => update('email', 'enabled', v)}
                                         hint="Expiry notices, alerts and approval mail go out over SMTP. Off means they are dropped silently." />
-                                    <ConfigInput label="SMTP Host" value={config.email.smtpHost} onChange={(v) => update('email', 'smtpHost', v)} placeholder="smtp.example.com" />
-                                    <ConfigNumber label="SMTP Port" value={config.email.smtpPort} onChange={(v) => update('email', 'smtpPort', v)} fallback={587}
+                                    <ConfigInput label="SMTP Host" value={config.email.smtpHost} path="email.smtpHost" onChange={(v) => update('email', 'smtpHost', v)} placeholder="smtp.example.com" />
+                                    <ConfigNumber label="SMTP Port" value={config.email.smtpPort} path="email.smtpPort" onChange={(v) => update('email', 'smtpPort', v)} fallback={587}
                                         hint="587 for submission with STARTTLS, 465 for implicit TLS, 25 for unauthenticated relay." />
-                                    <ConfigToggle label="Use TLS" checked={config.email.useTls} onChange={(v) => update('email', 'useTls', v)}
+                                    <ConfigToggle label="Use TLS" checked={config.email.useTls} path="email.useTls" onChange={(v) => update('email', 'useTls', v)}
                                         hintTone={config.email.useTls ? 'muted' : 'warn'}
                                         hint="Encrypts the connection to the mail server. Off sends the credentials and every message in clear text." />
-                                    <ConfigSelect label="Auth Method" value={config.email.authMethod || 'Password'} options={['Password', 'OAuth2Token', 'OAuth2ClientCredentials']} onChange={(v) => update('email', 'authMethod', v)}
+                                    <ConfigSelect label="Auth Method" value={config.email.authMethod || 'Password'} options={['Password', 'OAuth2Token', 'OAuth2ClientCredentials']} path="email.authMethod" onChange={(v) => update('email', 'authMethod', v)}
                                         hint="Password: username and password. OAuth2Token: a token you obtained elsewhere, which expires and must be replaced by hand. OAuth2ClientCredentials: tokens are fetched automatically from the token URL." />
-                                    <ConfigInput label="Username" value={config.email.username} onChange={(v) => update('email', 'username', v)} />
+                                    <ConfigInput label="Username" value={config.email.username} path="email.username" onChange={(v) => update('email', 'username', v)} />
 
                                     {(config.email.authMethod === 'Password' || !config.email.authMethod) && (
-                                        <ConfigInput label="Password" value={config.email.password} onChange={(v) => update('email', 'password', v)} type="password" />
+                                        <ConfigInput label="Password" value={config.email.password} path="email.password" onChange={(v) => update('email', 'password', v)} type="password" />
                                     )}
 
                                     {config.email.authMethod === 'OAuth2Token' && (
-                                        <ConfigInput label="OAuth2 Access Token" value={config.email.oAuth2AccessToken} onChange={(v) => update('email', 'oAuth2AccessToken', v)} type="password"
+                                        <ConfigInput label="OAuth2 Access Token" value={config.email.oAuth2AccessToken} path="email.oAuth2AccessToken" onChange={(v) => update('email', 'oAuth2AccessToken', v)} type="password"
                                             hint="Sent as-is with each message. Mail stops when it expires." />
                                     )}
 
                                     {config.email.authMethod === 'OAuth2ClientCredentials' && (
                                         <>
-                                            <ConfigInput label="OAuth2 Client ID" value={config.email.oAuth2ClientId} onChange={(v) => update('email', 'oAuth2ClientId', v)} />
-                                            <ConfigInput label="OAuth2 Client Secret" value={config.email.oAuth2ClientSecret} onChange={(v) => update('email', 'oAuth2ClientSecret', v)} type="password" />
-                                            <ConfigInput label="OAuth2 Token URL" value={config.email.oAuth2TokenUrl} onChange={(v) => update('email', 'oAuth2TokenUrl', v)} placeholder="https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+                                            <ConfigInput label="OAuth2 Client ID" value={config.email.oAuth2ClientId} path="email.oAuth2ClientId" onChange={(v) => update('email', 'oAuth2ClientId', v)} />
+                                            <ConfigInput label="OAuth2 Client Secret" value={config.email.oAuth2ClientSecret} path="email.oAuth2ClientSecret" onChange={(v) => update('email', 'oAuth2ClientSecret', v)} type="password" />
+                                            <ConfigInput label="OAuth2 Token URL" value={config.email.oAuth2TokenUrl} path="email.oAuth2TokenUrl" onChange={(v) => update('email', 'oAuth2TokenUrl', v)} placeholder="https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
                                                 hint="Token endpoint tokens are fetched from. Google: https://oauth2.googleapis.com/token" />
-                                            <ConfigInput label="OAuth2 Scopes" value={config.email.oAuth2Scopes} onChange={(v) => update('email', 'oAuth2Scopes', v)} placeholder="https://outlook.office365.com/.default"
+                                            <ConfigInput label="OAuth2 Scopes" value={config.email.oAuth2Scopes} path="email.oAuth2Scopes" onChange={(v) => update('email', 'oAuth2Scopes', v)} placeholder="https://outlook.office365.com/.default"
                                                 hint="Space-separated. Empty defaults to the Microsoft 365 SMTP scope. Google: https://mail.google.com/" />
                                         </>
                                     )}
 
-                                    <ConfigInput label="From Address" value={config.email.fromAddress} onChange={(v) => update('email', 'fromAddress', v)} placeholder="ca@example.com"
+                                    <ConfigInput label="From Address" value={config.email.fromAddress} path="email.fromAddress" onChange={(v) => update('email', 'fromAddress', v)} placeholder="ca@example.com"
                                         hint="Must be an address the mail server allows this account to send as, or messages are rejected." />
-                                    <ConfigInput label="From Name" value={config.email.fromName} onChange={(v) => update('email', 'fromName', v)} />
+                                    <ConfigInput label="From Name" value={config.email.fromName} path="email.fromName" onChange={(v) => update('email', 'fromName', v)} />
                                     <div className="md:col-span-2">
-                                        <ConfigChips label="Admin Recipients" value={listFromValue(config.email.adminRecipients)} onChange={(v) => update('email', 'adminRecipients', listToCsv(v))}
+                                        <ConfigChips label="Admin Recipients" value={listFromValue(config.email.adminRecipients)} path="email.adminRecipients" onChange={(v) => update('email', 'adminRecipients', listToCsv(v))}
                                             validate={validateEmail} caseInsensitive placeholder="admin@example.com"
                                             hint="Addresses that receive system alerts (backup failures, scheduler failures, security changes). Empty means alerts reach nobody by mail." />
                                     </div>
@@ -1442,16 +1506,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Webhook */}
                     <div className={cardClass}>
-                        <SectionHeader title="Webhook" expanded={expanded === 'webhook'} onToggle={() => toggle('webhook')}
+                        <SectionHeader fields={CARD_FIELDS.webhook} title="Webhook" expanded={expanded === 'webhook'} onToggle={() => toggle('webhook')}
                             description={config.webhook?.enabled ? `Enabled, ${config.webhook.maxRetries || 3} retries` : 'Disabled'} tag="live" />
                         {expanded === 'webhook' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.webhook?.enabled ?? false} onChange={(v) => update('webhook', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.webhook?.enabled ?? false} path="webhook.enabled" onChange={(v) => update('webhook', 'enabled', v)}
                                         hint="Certificate lifecycle events are POSTed to the endpoints in config.yaml. Off means no deliveries are attempted." />
-                                    <ConfigNumber label="Max Retries" value={config.webhook?.maxRetries} onChange={(v) => update('webhook', 'maxRetries', v)} fallback={3}
+                                    <ConfigNumber label="Max Retries" value={config.webhook?.maxRetries} path="webhook.maxRetries" onChange={(v) => update('webhook', 'maxRetries', v)} fallback={3}
                                         hint="Further attempts after a failed delivery before the event is dropped." />
-                                    <ConfigNumber label="Retry Delay Seconds" value={config.webhook?.retryDelaySeconds} onChange={(v) => update('webhook', 'retryDelaySeconds', v)} fallback={10}
+                                    <ConfigNumber label="Retry Delay Seconds" value={config.webhook?.retryDelaySeconds} path="webhook.retryDelaySeconds" onChange={(v) => update('webhook', 'retryDelaySeconds', v)} fallback={10}
                                         hint="Wait before the first retry; each later retry waits exponentially longer." />
                                 </div>
                                 <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
@@ -1464,18 +1528,18 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Cert-Manager Integration */}
                     <div className={cardClass}>
-                        <SectionHeader title="Cert-Manager Integration" expanded={expanded === 'certManager'} onToggle={() => toggle('certManager')}
+                        <SectionHeader fields={CARD_FIELDS.certManager} title="Cert-Manager Integration" expanded={expanded === 'certManager'} onToggle={() => toggle('certManager')}
                             description={config.certManager?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'certManager' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.certManager?.enabled ?? false} onChange={(v) => update('certManager', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.certManager?.enabled ?? false} path="certManager.enabled" onChange={(v) => update('certManager', 'enabled', v)}
                                         hint="Opens /api/v1/integration/cert-manager/sign to any caller presenting the API key; that caller can obtain certificates without a human approval." />
-                                    <ConfigInput label="API Key" value={config.certManager?.apiKey} onChange={(v) => update('certManager', 'apiKey', v)} type="password"
+                                    <ConfigInput label="API Key" value={config.certManager?.apiKey} path="certManager.apiKey" onChange={(v) => update('certManager', 'apiKey', v)} type="password"
                                         hint="The one key every client shares, sent in X-API-Key. Named keys below are the better choice: each cluster gets its own, and one can be revoked alone. This key keeps working beside them." />
-                                    <ConfigInput label="Default Cert Profile ID" value={config.certManager?.defaultCertProfileId} onChange={(v) => update('certManager', 'defaultCertProfileId', v)}
+                                    <ConfigInput label="Default Cert Profile ID" value={config.certManager?.defaultCertProfileId} path="certManager.defaultCertProfileId" onChange={(v) => update('certManager', 'defaultCertProfileId', v)}
                                         hint="Certificate profile applied when a signing request names none." />
-                                    <ConfigInput label="Default Signing Profile ID" value={config.certManager?.defaultSigningProfileId} onChange={(v) => update('certManager', 'defaultSigningProfileId', v)}
+                                    <ConfigInput label="Default Signing Profile ID" value={config.certManager?.defaultSigningProfileId} path="certManager.defaultSigningProfileId" onChange={(v) => update('certManager', 'defaultSigningProfileId', v)}
                                         hint="Decides which CA signs when the request names no signing profile." />
                                 </div>
                                 <SaveButton saving={saving === 'certManager'} onClick={() => saveSection('cert-manager', config.certManager, 'certManager')} />
@@ -1488,14 +1552,14 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Integration API */}
                     <div className={cardClass}>
-                        <SectionHeader title="Integration API" expanded={expanded === 'integrationApi'} onToggle={() => toggle('integrationApi')}
+                        <SectionHeader fields={CARD_FIELDS.integrationApi} title="Integration API" expanded={expanded === 'integrationApi'} onToggle={() => toggle('integrationApi')}
                             description={config.integrationApi?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'integrationApi' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.integrationApi?.enabled ?? false} onChange={(v) => update('integrationApi', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.integrationApi?.enabled ?? false} path="integrationApi.enabled" onChange={(v) => update('integrationApi', 'enabled', v)}
                                         hint="Opens the infrastructure-as-code endpoints (Terraform, Ansible) to any caller presenting the API key." />
-                                    <ConfigInput label="API Key" value={config.integrationApi?.apiKey} onChange={(v) => update('integrationApi', 'apiKey', v)} type="password"
+                                    <ConfigInput label="API Key" value={config.integrationApi?.apiKey} path="integrationApi.apiKey" onChange={(v) => update('integrationApi', 'apiKey', v)} type="password"
                                         hint="The one key every client shares, sent in X-API-Key. Named keys below are the better choice: each tool gets its own, and one can be revoked alone. This key keeps working beside them." />
                                 </div>
                                 <SaveButton saving={saving === 'integrationApi'} onClick={() => saveSection('integration-api', config.integrationApi, 'integrationApi')} />
@@ -1508,17 +1572,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* ACME Policies */}
                     <div className={cardClass}>
-                        <SectionHeader title="ACME Policies" expanded={expanded === 'acme'} onToggle={() => toggle('acme')}
+                        <SectionHeader fields={CARD_FIELDS.acme} title="ACME Policies" expanded={expanded === 'acme'} onToggle={() => toggle('acme')}
                             description={`EAB: ${config.acme?.externalAccountRequired ? 'Required' : 'Off'}, CAA: ${config.acme?.enforceCaa ? 'On' : 'Off'}, ToS: ${config.acme?.termsOfServiceUrl ? 'Published' : 'None'}`} tag="live" />
                         {expanded === 'acme' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="External Account Required" checked={config.acme?.externalAccountRequired ?? false} onChange={(v) => update('acme', 'externalAccountRequired', v)}
+                                    <ConfigToggle label="External Account Required" checked={config.acme?.externalAccountRequired ?? false} path="acme.externalAccountRequired" onChange={(v) => update('acme', 'externalAccountRequired', v)}
                                         hint="New ACME accounts must carry an externalAccountBinding signed with a pre-shared key issued here. Clients without one cannot register, which is how you keep the directory from being open to anyone who can reach it." />
-                                    <ConfigToggle label="Enforce CAA" checked={config.acme?.enforceCaa ?? false} onChange={(v) => update('acme', 'enforceCaa', v)}
+                                    <ConfigToggle label="Enforce CAA" checked={config.acme?.enforceCaa ?? false} path="acme.enforceCaa" onChange={(v) => update('acme', 'enforceCaa', v)}
                                         hint="Before issuing, the DNS CAA records for each requested name are checked; a record that does not name this CA blocks issuance. Needs working DNS resolution from this host." />
                                 </div>
-                                <ConfigInput label="Terms of Service URL" value={config.acme?.termsOfServiceUrl} onChange={(v) => update('acme', 'termsOfServiceUrl', v)} placeholder="https://ca.example.com/terms (leave empty to publish none)" />
+                                <ConfigInput label="Terms of Service URL" value={config.acme?.termsOfServiceUrl} path="acme.termsOfServiceUrl" onChange={(v) => update('acme', 'termsOfServiceUrl', v)} placeholder="https://ca.example.com/terms (leave empty to publish none)" />
                                 <p className="text-xs text-ink-muted">
                                     Setting this advertises the URL in the ACME directory <em>and</em> makes account
                                     registration require agreement. Leave it empty and clients register without agreeing —
@@ -1531,16 +1595,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Policy Sync */}
                     <div className={cardClass}>
-                        <SectionHeader title="Policy Sync" expanded={expanded === 'policySync'} onToggle={() => toggle('policySync')}
+                        <SectionHeader fields={CARD_FIELDS.policySync} title="Policy Sync" expanded={expanded === 'policySync'} onToggle={() => toggle('policySync')}
                             description={config.policySync?.enabled ? `Dir: ${config.policySync.policyDirectory || 'Not set'}` : 'Disabled'} tag="live" />
                         {expanded === 'policySync' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.policySync?.enabled ?? false} onChange={(v) => update('policySync', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.policySync?.enabled ?? false} path="policySync.enabled" onChange={(v) => update('policySync', 'enabled', v)}
                                         hint="Profile definitions are imported from YAML files in the directory below, GitOps-style. Imported files overwrite the database copy of a profile with the same name." />
-                                    <ConfigInput label="Policy Directory" value={config.policySync?.policyDirectory} onChange={(v) => update('policySync', 'policyDirectory', v)} placeholder="/etc/modular-ca/policies"
+                                    <ConfigInput label="Policy Directory" value={config.policySync?.policyDirectory} path="policySync.policyDirectory" onChange={(v) => update('policySync', 'policyDirectory', v)} placeholder="/etc/modular-ca/policies"
                                         hint="Directory scanned for *.yaml profile files. A relative path resolves from the application directory." />
-                                    <ConfigToggle label="Sync On Startup" checked={config.policySync?.syncOnStartup ?? false} onChange={(v) => update('policySync', 'syncOnStartup', v)}
+                                    <ConfigToggle label="Sync On Startup" checked={config.policySync?.syncOnStartup ?? false} path="policySync.syncOnStartup" onChange={(v) => update('policySync', 'syncOnStartup', v)}
                                         hint="Import runs every time the service starts, so edits made in the UI to a file-managed profile are reverted at the next restart." />
                                 </div>
                                 <div className="flex gap-2">
@@ -1569,16 +1633,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Alert */}
                     <div className={cardClass}>
-                        <SectionHeader title="Alert" expanded={expanded === 'alert'} onToggle={() => toggle('alert')}
+                        <SectionHeader fields={CARD_FIELDS.alert} title="Alert" expanded={expanded === 'alert'} onToggle={() => toggle('alert')}
                             description={config.alert?.enabled ? `Min severity: ${config.alert.minimumSeverity || 'Warning'}` : 'Disabled'} tag="live" />
                         {expanded === 'alert' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.alert?.enabled ?? false} onChange={(v) => update('alert', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.alert?.enabled ?? false} path="alert.enabled" onChange={(v) => update('alert', 'enabled', v)}
                                         hint="Security and operational alerts (stale backups, failing jobs, config changes) are sent to the admin recipients and webhooks. Off means they are only logged." />
-                                    <ConfigSelect label="Minimum Severity" value={config.alert?.minimumSeverity || 'Warning'} options={['Critical', 'Warning', 'Info']} onChange={(v) => update('alert', 'minimumSeverity', v)}
+                                    <ConfigSelect label="Minimum Severity" value={config.alert?.minimumSeverity || 'Warning'} options={['Critical', 'Warning', 'Info']} path="alert.minimumSeverity" onChange={(v) => update('alert', 'minimumSeverity', v)}
                                         hint="Alerts below this severity are not sent. Info includes routine events and is noisy; Critical alone would drop backup and scheduler warnings until they escalate." />
-                                    <ConfigNumber label="Cooldown Minutes" value={config.alert?.cooldownMinutes} onChange={(v) => update('alert', 'cooldownMinutes', v)}
+                                    <ConfigNumber label="Cooldown Minutes" value={config.alert?.cooldownMinutes} path="alert.cooldownMinutes" onChange={(v) => update('alert', 'cooldownMinutes', v)}
                                         hint="Repeat alerts of the same type within this window are suppressed, so a flapping condition sends one message rather than hundreds." />
                                 </div>
                                 <SaveButton saving={saving === 'alert'} onClick={() => saveSection('alert', config.alert, 'alert')} />
@@ -1598,11 +1662,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                 <>
                     {/* Logging (live) */}
                     <div className={cardClass}>
-                        <SectionHeader title="Logging" expanded={expanded === 'logging'} onToggle={() => toggle('logging')}
+                        <SectionHeader fields={CARD_FIELDS.logging} title="Logging" expanded={expanded === 'logging'} onToggle={() => toggle('logging')}
                             description={config.logging?.minLevel || 'Information'} tag="live" />
                         {expanded === 'logging' && (
                             <div className="p-4 border-t border-line space-y-4">
-                                <ConfigSelect label="Min Level" value={config.logging.minLevel || 'Information'} options={['Debug', 'Information', 'Warning', 'Error']} onChange={(v) => update('logging', 'minLevel', v)}
+                                <ConfigSelect label="Min Level" value={config.logging.minLevel || 'Information'} options={['Debug', 'Information', 'Warning', 'Error']} path="logging.minLevel" onChange={(v) => update('logging', 'minLevel', v)}
                                     hint="Events below this level are discarded. Debug records every request in detail and fills the disk quickly; Warning hides normal operation, so a quiet log no longer means a healthy service." />
                                 <div className="text-xs text-ink-muted">
                                     Log level changes take effect immediately — no restart needed. This Save writes only the level; the
@@ -1615,18 +1679,18 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Log Storage (restart) */}
                     <div className={cardClass}>
-                        <SectionHeader title="Log Storage" expanded={expanded === 'logStorage'} onToggle={() => toggle('logStorage')}
+                        <SectionHeader fields={CARD_FIELDS.logStorage} title="Log Storage" expanded={expanded === 'logStorage'} onToggle={() => toggle('logStorage')}
                             description={`${config.logging?.retentionDays || 30}d retention, ${config.logging?.maxFileSizeMb || 100}MB max`} tag="restart" />
                         {expanded === 'logStorage' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigInput label="File Path" value={config.logging.filePath} onChange={(v) => update('logging', 'filePath', v)}
+                                    <ConfigInput label="File Path" value={config.logging.filePath} path="logging.filePath" onChange={(v) => update('logging', 'filePath', v)}
                                         hint="Log file path; the date is inserted before the extension on each daily roll. A relative path resolves from the application directory." />
-                                    <ConfigNumber label="Retention Days" value={config.logging.retentionDays} onChange={(v) => update('logging', 'retentionDays', v)} fallback={30}
+                                    <ConfigNumber label="Retention Days" value={config.logging.retentionDays} path="logging.retentionDays" onChange={(v) => update('logging', 'retentionDays', v)} fallback={30}
                                         hint="Log files older than this are deleted. The audit log is separate and is not affected." />
-                                    <ConfigNumber label="Max File Size (MB)" value={config.logging.maxFileSizeMb ?? 100} onChange={(v) => update('logging', 'maxFileSizeMb', v)} fallback={100}
+                                    <ConfigNumber label="Max File Size (MB)" value={config.logging.maxFileSizeMb ?? 100} path="logging.maxFileSizeMb" onChange={(v) => update('logging', 'maxFileSizeMb', v)} fallback={100}
                                         hint="A file that reaches this size rolls to a new one, in addition to the daily roll." />
-                                    <ConfigSelect label="Console Format" value={config.logging.consoleFormat || 'Auto'} options={['Auto', 'Systemd', 'Json', 'Text']} onChange={(v) => update('logging', 'consoleFormat', v)} />
+                                    <ConfigSelect label="Console Format" value={config.logging.consoleFormat || 'Auto'} options={['Auto', 'Systemd', 'Json', 'Text']} path="logging.consoleFormat" onChange={(v) => update('logging', 'consoleFormat', v)} />
                                 </div>
                                 <div className="text-xs text-ink-muted">
                                     Log files roll daily and when they reach the max file size. Old files are deleted after the retention period.
@@ -1646,15 +1710,15 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
                     {/* Network Audit */}
                     <div className={cardClass}>
-                        <SectionHeader title="Network Audit" expanded={expanded === 'networkAudit'} onToggle={() => toggle('networkAudit')}
+                        <SectionHeader fields={CARD_FIELDS.networkAudit} title="Network Audit" expanded={expanded === 'networkAudit'} onToggle={() => toggle('networkAudit')}
                             description={config.networkAudit?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'networkAudit' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.networkAudit?.enabled ?? false} onChange={(v) => update('networkAudit', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.networkAudit?.enabled ?? false} path="networkAudit.enabled" onChange={(v) => update('networkAudit', 'enabled', v)}
                                         hint="Every protocol and admin request is recorded (who, what, from where). Off removes the request trail auditors expect." />
                                     <div>
-                                        <ConfigToggle label="Log All Requests" checked={config.networkAudit?.logAllRequests ?? false} onChange={(v) => update('networkAudit', 'logAllRequests', v)}
+                                        <ConfigToggle label="Log All Requests" checked={config.networkAudit?.logAllRequests ?? false} path="networkAudit.logAllRequests" onChange={(v) => update('networkAudit', 'logAllRequests', v)}
                                             hint="Off records protocol and admin endpoints only. On records everything, static files included." />
                                         {config.networkAudit?.logAllRequests && (
                                             <div className="bg-warn-soft border border-warn/40 rounded p-2 text-xs text-warn mt-2">
@@ -1664,7 +1728,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     </div>
                                     <div className="md:col-span-2">
                                         <ConfigChips label="Exclude Paths" value={listFromValue(config.networkAudit?.excludePaths)}
-                                            onChange={(v) => update('networkAudit', 'excludePaths', v)}
+                                            path="networkAudit.excludePaths" onChange={(v) => update('networkAudit', 'excludePaths', v)}
                                             validate={validatePathPrefix} mono placeholder="/health"
                                             hint="Path prefixes never recorded, typically health checks and metrics scrapes that would otherwise dominate the log." />
                                     </div>
@@ -1677,6 +1741,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                 </>
             )}
         </div>
+        </SettingsMetaContext.Provider>
     );
 };
 

@@ -22,16 +22,21 @@ public enum SettingClass
     Secret,
 }
 
-/// <summary>How a change to a setting reaches a running process once its reader takes it from the store.</summary>
+/// <summary>
+/// When a saved change to a setting takes effect in the process that saved it. This says what
+/// is true of the code today, because the console shows it to the person saving: a setting whose
+/// reader is made to follow changes moves from <see cref="Restart"/> to <see cref="Live"/> in the
+/// same change. Another process takes any change at its next start.
+/// </summary>
 public enum SettingReload
 {
-    /// <summary>The next call sees the new value.</summary>
+    /// <summary>At once: the next use of the setting sees the new value.</summary>
     Live,
 
-    /// <summary>One component rebuilds itself on the change.</summary>
+    /// <summary>Reserved for a component that rebuilds itself on a change. Nothing uses it yet.</summary>
     Component,
 
-    /// <summary>The process must restart.</summary>
+    /// <summary>At the next start: something read the setting once and kept what it read.</summary>
     Restart,
 }
 

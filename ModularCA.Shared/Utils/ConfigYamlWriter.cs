@@ -47,9 +47,9 @@ public static class ConfigYamlWriter
 
     /// <summary>The first lines of a <c>config.yaml</c> that no longer holds the instance's settings.</summary>
     public const string HostOnlyHeader =
-        "# This file holds this host's settings: listeners, files, paths, network position, and the\n"
-        + "# secrets not yet moved. The instance's other settings are in the database. Change them in\n"
-        + "# the console under Settings; a value for one of them written here is ignored.\n";
+        "# This file holds this host's settings: listeners, files, paths and network position. The\n"
+        + "# instance's other settings, and its secrets, are in the database. Change them in the\n"
+        + "# console under Settings; a value for one of them written here is ignored.\n";
 
     /// <summary>
     /// Serialises the configuration as <see cref="Serialize(SystemConfig)"/> does, leaving out
@@ -81,6 +81,39 @@ public static class ConfigYamlWriter
         if (body.EndsWith("...", StringComparison.Ordinal))
             body = body[..^3].TrimEnd();
         return HostOnlyHeader + (root.Children.Count == 0 ? string.Empty : body + "\n");
+    }
+
+    /// <summary>
+    /// <paramref name="yaml"/> without the settings named by <paramref name="paths"/> (dotted),
+    /// and without a section they leave empty. For a copy of a configuration file that must not
+    /// carry what has just been moved somewhere safer. Comments are not kept.
+    /// </summary>
+    public static string WithoutPaths(string yaml, IEnumerable<string> paths)
+    {
+        var stream = new YamlStream();
+        using (var reader = new StringReader(yaml))
+            stream.Load(reader);
+        if (stream.Documents.Count == 0 || stream.Documents[0].RootNode is not YamlMappingNode root)
+            return yaml;
+        foreach (var path in paths)
+            Remove(root, path.Split('.'), 0);
+
+        using var writer = new StringWriter();
+        new YamlStream(new YamlDocument(root)).Save(writer, assignAnchors: false);
+        var body = writer.ToString().TrimEnd();
+        if (body.EndsWith("...", StringComparison.Ordinal))
+            body = body[..^3].TrimEnd();
+        return root.Children.Count == 0 ? string.Empty : body + "\n";
+    }
+
+    /// <summary>Removes the node at <paramref name="segments"/> and each section the removal empties. True when <paramref name="node"/> is left empty.</summary>
+    private static bool Remove(YamlMappingNode node, string[] segments, int index)
+    {
+        var key = new YamlScalarNode(segments[index]);
+        if (node.Children.TryGetValue(key, out var child)
+            && (index == segments.Length - 1 || (child is YamlMappingNode section && Remove(section, segments, index + 1))))
+            node.Children.Remove(key);
+        return node.Children.Count == 0;
     }
 
     /// <summary>
